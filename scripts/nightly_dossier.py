@@ -417,7 +417,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     return gen_s
 
 
-def _tail(queue: list[Candidate], reason: str, dry: bool, full: bool = False) -> None:
+def _tail(queue: list[Candidate], reason: str, dry: bool, full: bool) -> None:
     """Остаток очереди — на завтра. Записи с диска у этих тем уже в индексе:
     голый break отдавал write_index посещённый префикс, и _index/_ИНДЕКС
     терял темы — регресс бага 17.08 (круг по PR #363, GLM)."""

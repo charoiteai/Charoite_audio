@@ -191,6 +191,32 @@ def test_sunday_full_leaves_the_night_tail_its_time(nd, tmp_path, monkeypatch, c
     assert not nd.live_gate.night_is_over(wall)            # ночь ещё идёт — хвосту есть время
 
 
+def test_short_lets_an_exact_fit_through(nd):
+    """Догон мутантов PR #820: остаток ровно на тему — тема идёт, как у
+    `live_gate.fits`; на долю секунды меньше — шаг встаёт."""
+    started = nd.fake_clock.t
+    nd.fake_clock.t += 60
+    assert not nd._short(100.0, started, 40.0)
+    assert nd._short(100.0, started, 40.5)
+
+
+@pytest.mark.parametrize("own_left, night_left, why", [
+    (10.0, 50.0, "бюджет шага досье вышел"),                          # свой остаток меньше ночи
+    (60.0, 50.0, "до конца ночи — только время шагов после досье"),   # ночь меньше; старт не ноль
+    (50.0, 50.0, "бюджет шага досье вышел"),                          # поровну — свой бюджет
+])
+def test_why_short_names_the_smaller_rest(nd, monkeypatch, own_left, night_left, why):
+    """Догон мутантов PR #820: причина обрезки в логе — по меньшему из своего
+    остатка (бюджет минус прошедшее от старта) и ночи до резерва хвоста."""
+    wall = _Wall(1.0e9)
+    monkeypatch.setattr(nd, "wall_clock", wall)
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV,
+                       str(wall.t + nd.live_gate.NIGHT_TAIL_S + night_left))
+    started = nd.fake_clock.t
+    nd.fake_clock.t += 90
+    assert nd._why_short(90.0 + own_left, started) == why
+
+
 def test_sleep_mid_rebuild_does_not_eat_the_night_tail(nd, tmp_path, monkeypatch, capsys):
     """Выход out1 №749 (Sonnet I1, DS I1, Haiku I2): машина проспала посреди
     пересборки — монотонные часы шага стоят, стена ушла. Резерв хвоста,
