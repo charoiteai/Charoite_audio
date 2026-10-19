@@ -605,10 +605,10 @@ def test_segmentation_alone_does_not_fetch_embeddings(data_root, monkeypatch, ca
 
 # --- одна загрузка в одну цель (№643) ---------------------------------------
 
-def _serve(monkeypatch, body: bytes, short_first: int = 0) -> list:
+def _serve(monkeypatch, body: bytes, short_first: int = 0, length: bool = True) -> list:
     """Подменённая сеть: отдаёт `body` (на Range — хвост с 206), пишет заголовок Range.
     `short_first` — первый ответ тихо обрывается после стольких байт (зеркало рвёт
-    длинные закачки без ошибки)."""
+    длинные закачки без ошибки). `length=False` — ответ без Content-Length."""
     import io
 
     seen: list = []
@@ -623,7 +623,7 @@ def _serve(monkeypatch, body: bytes, short_first: int = 0) -> list:
 
         class Response(io.BytesIO):
             status = 206 if rng else 200
-            headers = {"Content-Length": str(len(body) - start)}
+            headers = {"Content-Length": str(len(body) - start)} if length else {}
 
             def __enter__(self):
                 return self
@@ -954,3 +954,32 @@ def test_a_truncated_archive_is_a_reason_and_leaves_no_part(monkeypatch, tmp_pat
         get_models.download("https://example.invalid/seg.tar.bz2", dest, expect_mb=1)
     assert "Compressed file ended" in str(exc.value)
     assert not dest.with_suffix(".onnx.part").exists()
+
+
+@pytest.mark.parametrize("with_sum", [False, True])
+def test_a_torn_answer_without_length_is_not_published(monkeypatch, tmp_path, with_sum):
+    """Сервер без Content-Length рвёт ответ молча: без суммы обрыв не отличить от конца
+    файла — отказ, а не обрезанная модель с кодом 0; с суммой отказ даёт сверка
+    (шаг Haiku №643 out4)."""
+    import hashlib
+
+    body = b"\x08" + b"x" * 3_000_000
+    dest = tmp_path / "m.onnx"
+    _serve(monkeypatch, body, short_first=1_500_000, length=False)
+    sha = hashlib.sha256(body).hexdigest() if with_sum else ""
+    with pytest.raises(SystemExit):
+        get_models.download("https://mirror.invalid/m.onnx", dest, expect_mb=2, onnx=True, sha256=sha)
+    assert not dest.exists()
+    assert not dest.with_suffix(".onnx.part").exists()
+
+
+def test_a_whole_answer_without_length_is_published_by_the_sum(monkeypatch, tmp_path):
+    """Без Content-Length, но с суммой — полноту решает она: целый файл ложится на место."""
+    import hashlib
+
+    body = b"\x08" + b"x" * 3_000_000
+    dest = tmp_path / "m.onnx"
+    _serve(monkeypatch, body, length=False)
+    get_models.download("https://mirror.invalid/m.onnx", dest, expect_mb=2, onnx=True,
+                        sha256=hashlib.sha256(body).hexdigest())
+    assert dest.read_bytes() == body

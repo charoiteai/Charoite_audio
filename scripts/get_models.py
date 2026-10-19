@@ -449,7 +449,7 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
                 # Докачка — только с суммой: без неё хвост с сервера не сверить
                 # с началом на диске, и зеркало, сменившее файл между попытками,
                 # давало склейку с кодом 0 (выход №643, Haiku C1 out2, DS C1 out3).
-                part.unlink()
+                part.unlink(missing_ok=True)
                 done = total = 0
             req = urllib.request.Request(url)
             if done:
@@ -489,6 +489,15 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
             raise SystemExit(
                 f"не докачалось: {got} из {want} байт за шесть попыток.\n"
                 "проверьте сеть или укажите своё зеркало через --url")
+        if not total and not sha256:
+            # Ни размера, ни суммы (своё зеркало --url без Content-Length): тихий
+            # обрыв не отличить от конца файла, и обрезанная модель ложилась на
+            # место с кодом 0 — тот же исход, от которого замок (шаг Haiku №643 out4).
+            part.unlink(missing_ok=True)
+            raise SystemExit(
+                f"не проверить, докачался ли {dest.name}: сервер не назвал размер, "
+                "а суммы для своего адреса нет.\nукажите зеркало, которое отдаёт "
+                "Content-Length")
     except (urllib.error.URLError, OSError) as e:
         # Недокачанное НЕ удаляем: с суммой следующий запуск продолжит с этого
         # места; без суммы он снесёт остаток и начнёт с нуля (докачка только с
