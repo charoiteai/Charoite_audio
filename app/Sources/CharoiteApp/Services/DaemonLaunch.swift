@@ -17,8 +17,9 @@ import Foundation
 /// оба — долг №640). Данные, EOF и выход идут в главный поток одной очередью
 /// `DispatchQueue.main` (FIFO): к блоку EOF все блоки данных этой трубы уже
 /// выполнены. Внук с унаследованным stdout держит EOF сколько угодно, поэтому
-/// после выхода ждём не дольше `eofCeiling`. Потолок продлевается (до
-/// `ceilingRearms` раз), пока байт где-то в пути: в ядре (`poll`) или у
+/// после выхода ждём не дольше `eofCeiling` (цена: смерть видна на 2–8 с
+/// позже выхода). Потолок продлевается (до `ceilingRearms` раз), пока байт
+/// где-то в пути: непрочитан в ядре (`FIONREAD`) или у
 /// читателя между чтением и постановкой блока (`reader.inFlight`, под тем же
 /// замком). Трубу потолок не читает: дочитка из чужого потока обогнала бы уже
 /// запущенного читателя. Решение потолка исполняется отдельным блоком
@@ -26,7 +27,9 @@ import Foundation
 ///
 /// Ресурсы принадлежат запуску, а не сервису: опоздавший исход старого
 /// запуска закрывает свои концы и не трогает трубы преемника. После
-/// `close()` запуск молчит: ни строк, ни смерти.
+/// `close()` запуск молчит: ни строк, ни смерти. Остановка запуск не
+/// закрывает: хвост stdout после её финиша разбирается, как до №619, а концы
+/// закрывает смерть самого запуска.
 @MainActor
 final class DaemonLaunch {
     static let eofCeiling: TimeInterval = 2
@@ -64,7 +67,7 @@ final class DaemonLaunch {
         func set(_ v: Bool) { lock.lock(); inFlight = v; lock.unlock() }
         func busy(orReadable fd: Int32) -> Bool {
             lock.lock(); defer { lock.unlock() }
-            return inFlight || DaemonLaunch.readable(fd)
+            return inFlight || DaemonLaunch.unreadBytes(fd) > 0
         }
     }
 
@@ -204,9 +207,16 @@ final class DaemonLaunch {
         try? stdinPipe.fileHandleForWriting.close()
     }
 
-    /// Есть ли что читать (данные или EOF), не забирая байты из трубы.
-    nonisolated static func readable(_ fd: Int32) -> Bool {
-        var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        return poll(&p, 1, 0) > 0 && (p.revents & Int16(POLLIN | POLLHUP)) != 0
+    /// Сколько байт лежит в трубе непрочитанными. Закрытый пустой канал — 0:
+    /// ждать там нечего, EOF доставит читатель или решит потолок. `poll` этого
+    /// не различает: на macOS закрытая пустая труба тоже даёт `POLLIN` (опыт
+    /// 19.10: revents 17 и с байтами, и без).
+    nonisolated static func unreadBytes(_ fd: Int32) -> Int32 {
+        var n: Int32 = 0
+        return ioctl(fd, fionread, &n) == 0 ? n : 0
     }
+
+    /// `FIONREAD` = `_IOR('f', 127, int)`: макрос-функция в Swift не импортируется.
+    private nonisolated static let fionread = UInt(IOC_OUT) | UInt((MemoryLayout<Int32>.size & Int(IOCPARM_MASK)) << 16)
+        | (UInt(UInt8(ascii: "f")) << 8) | 127
 }

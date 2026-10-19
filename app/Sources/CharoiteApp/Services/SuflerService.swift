@@ -538,15 +538,6 @@ final class SuflerService: ObservableObject {
         if wire { l.wireHandles() }
     }
 
-    /// Остановка закрыла встречу по опросу `isRunning`, не дождавшись EOF: исход
-    /// запуска ничего не решает. Гард — на случай нового вызывающего: `finish`
-    /// зовёт это после `process = nil`; хвост stdout здесь теряется (№640).
-    func releaseLaunchAfterFinish() {
-        guard process == nil else { return }
-        launch?.close()
-        launch = nil
-    }
-
     /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
     /// поднимаем свежий, не стирая встречу с экрана (стенограмма-файл цел).
     /// Зовётся только после того, как stdout запуска дочитан: иначе строка
@@ -798,7 +789,7 @@ final class SuflerService: ObservableObject {
     /// `wire: false` — события приходят только из `receiveForTest`.
     func adoptLaunchForTest(_ l: DaemonLaunch, wire: Bool) throws {
         lifecycleGate = RecordingLifecycleGate()
-        guard let token = lifecycleGate.beginStart() else { return }
+        guard let token = lifecycleGate.beginStart() else { preconditionFailure("гейт не дал старт") }
         beginLaunch(l, wire: wire)
         if wire { try l.process.run() }
         process = l.process

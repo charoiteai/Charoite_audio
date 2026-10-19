@@ -97,6 +97,33 @@ final class DaemonLaunchTests: XCTestCase {
 
         XCTAssertEqual(l.rearms, DaemonLaunch.ceilingRearms, "потолок продлевается, пока байты лежат в трубе")
         XCTAssertNil(s.process, "продления конечны: читатель мёртв — решение всё равно приходит")
+        withExtendedLifetime(out) {}
+    }
+
+    func testCeilingDoesNotWaitOnAClosedEmptyPipe() throws {
+        let s = SuflerService()
+        s.userStopped = true
+        let (l, out) = idleLaunch()
+        l.setCeilingForTest(0.05)
+        try s.adoptLaunchForTest(l, wire: false)
+        try out.fileHandleForWriting.close()   // байтов нет, EOF в пути — продлевать нечего
+
+        l.receiveForTest(.exit)
+        spin(until: { s.process == nil })
+
+        XCTAssertNil(s.process)
+        XCTAssertEqual(l.rearms, 0, "закрытый пустой канал продлил потолок — смерть видна на 8 с позже")
+    }
+
+    func testFIONREADCountsOnlyUnreadBytes() throws {
+        let p = Pipe()
+        let fd = p.fileHandleForReading.fileDescriptor
+        XCTAssertEqual(DaemonLaunch.unreadBytes(fd), 0)
+        p.fileHandleForWriting.write(Data("abc".utf8))
+        XCTAssertEqual(DaemonLaunch.unreadBytes(fd), 3)
+        try p.fileHandleForWriting.close()
+        _ = p.fileHandleForReading.readData(ofLength: 3)
+        XCTAssertEqual(DaemonLaunch.unreadBytes(fd), 0, "закрытая пустая труба — не байт в пути")
     }
 
     func testCeilingReadsTheLastLineWithoutNewline() throws {
@@ -119,8 +146,6 @@ final class DaemonLaunchTests: XCTestCase {
         let s = SuflerService()
         let (old, _) = idleLaunch()
         try s.adoptLaunchForTest(old, wire: false)
-        s.process = nil                 // так закрывает встречу остановка
-        s.releaseLaunchAfterFinish()
 
         let (next, _) = idleLaunch()
         try s.adoptLaunchForTest(next, wire: false)
@@ -136,15 +161,20 @@ final class DaemonLaunchTests: XCTestCase {
         XCTAssertFalse(next.closed, "исход старого запуска закрыл трубы преемника")
     }
 
-    func testFinishDoesNotCloseALaunchWhoseDaemonIsStillTracked() throws {
+    /// Остановка закрывает встречу по `isRunning`, раньше EOF: хвост stdout
+    /// разбирается и после её финиша, а концы закрывает смерть запуска.
+    func testTailAfterStopFinishIsReadAndTheLaunchClosesOnItsDeath() throws {
         let s = SuflerService()
         let (l, _) = idleLaunch()
         try s.adoptLaunchForTest(l, wire: false)
-        s.releaseLaunchAfterFinish()
-        XCTAssertFalse(l.closed, "закрытие запуска мимо остановки глушит stdin живого демона")
+        l.receiveForTest(.exit)
         s.process = nil              // так делает finish остановки
-        s.releaseLaunchAfterFinish()
-        XCTAssertTrue(l.closed)
+
+        l.receiveForTest(.output(Data((refusalLine + "\n").utf8)))
+        XCTAssertEqual(s.status, recipe, "хвост stdout после финиша остановки потерян")
+        XCTAssertFalse(l.closed)
+        l.receiveForTest(.eof)
+        XCTAssertTrue(l.closed, "концы запуска живут после его смерти")
         XCTAssertNil(s.launchForTest)
     }
 
