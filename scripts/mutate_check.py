@@ -189,6 +189,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
 from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
+import live_gate  # noqa: E402
 # `outcome` — по имени модуля, не `from …`: список читателей кодов в тестах
 # (`tests/test_exit_codes.py`) выведен из from-импортов EXIT_*, и лишнее имя
 # разошлось бы с ним. Слово исхода берём тем же классификатором, что и все.
@@ -1038,8 +1039,8 @@ def timed_run(cwd: pathlib.Path, suite: tuple[str, ...], timeout: int) -> tuple[
 
 
 def fits(budget_s: float | None, started: float, need: float) -> bool:
-    """Хватит ли остатка бюджета на `need` секунд. Без бюджета — всегда."""
-    return budget_s is None or budget_s - (clock() - started) >= need
+    """Хватит ли остатка бюджета на `need` секунд — `live_gate.fits` по своим часам."""
+    return live_gate.fits(budget_s, started, need, clock())
 
 
 def render_report(f: Facts, skipped: list | None = None,
