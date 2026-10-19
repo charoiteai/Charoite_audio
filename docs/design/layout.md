@@ -81,7 +81,7 @@
 
 Ручная точка входа — исполняемый файл, которого из кода репозитория никто не зовёт: запускает человек или внешний конфиг; обоснование обязательно, и пометку гейт снимает, как только файл начинает звать код.
 
-- `app/make_app.sh` ← .github/workflows/release-app.yml, scripts/doctor.py, scripts/make_dmg.sh; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
+- `app/make_app.sh` ← .github/workflows/release-app.yml, .github/workflows/swift-tests.yml, scripts/doctor.py, scripts/make_dmg.sh; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `app/stage_code.sh` ← app/make_app.sh; не запускается: shell-скрипт: пробника нет; поведение держит test_install_engine (дерево бандла из него же); снимет №364 (проба вместо none)
 - `scripts/bench_extract.py` ← ручной запуск: бенчмарк извлечения, ручной прогон; проба help
 - `scripts/bench_models.py` ← ручной запуск: бенчмарк моделей, ручной прогон; проба help
