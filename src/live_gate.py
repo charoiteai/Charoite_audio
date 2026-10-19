@@ -87,6 +87,35 @@ def night_wait_cap(default: float = 3600.0, now: Callable[[], float] = time.time
         return default              # мусор в переменной — не повод ждать без меры
     return max(0.0, min(default, left))
 
+
+# Хвост ночи после досье: облачная ревизия досье 14–18 мин, ядра 2 мин, бенч
+# памяти 6 мин (замер ночей 11.10–18.10, №749) — с запасом полчаса.
+NIGHT_TAIL_S = 1800.0
+
+
+def step_budget(requested: float | None, tail_s: float = NIGHT_TAIL_S,
+                now: Callable[[], float] = time.time) -> float | None:
+    """Бюджет ночного шага, после которого шагам за ним хватит ночи.
+
+    Шаг со своим бюджетом от собственного старта не знает, сколько ночи
+    осталось: воскресная пересборка досье шла до потолка, а хвост после неё
+    уходил в «(поздно)» (№749). Здесь, у владельца `NIGHTLY_UNTIL_ENV`:
+    `min(requested, UNTIL − сейчас − tail_s)`, не меньше нуля. Потолка нет —
+    `requested` как есть (None — «без бюджета», ручной запуск).
+    """
+    raw = os.environ.get(NIGHTLY_UNTIL_ENV)
+    if not raw:
+        return requested
+    try:
+        left = float(raw) - now() - tail_s
+    except ValueError:
+        return requested            # мусор в переменной — как у night_wait_cap
+    if not math.isfinite(left):
+        return requested
+    left = max(0.0, left)
+    return left if requested is None else min(requested, left)
+
+
 def fits(budget_s: float | None, started: float, need: float, now: float) -> bool:
     """Хватит ли остатка бюджета на `need` секунд. Без бюджета — всегда.
 

@@ -8,8 +8,11 @@ import shutil
 
 import pytest
 
+import live_gate
 from charoite_graph import dossier, safe_write
 from charoite_schema import CHAROITE
+
+_REAL_WINDOW = live_gate.night_window_open   # до подмены фикстурой `nd`
 
 GOOD = ("## Сейчас\nновое тело\n## Как пришли\nт\n## Решено\nт\n"
         "## Открыто\nт\n## Кто в теме\nт")
@@ -109,14 +112,70 @@ def test_budget_stops_the_queue_and_keeps_the_index(nd, tmp_path, capsys):
     assert "бюджет шага досье вышел" in capsys.readouterr().out
 
 
-def test_full_is_not_cut_by_budget_or_limit_and_takes_unchanged_themes(nd, tmp_path):
+def test_full_without_budget_ignores_the_limit_and_takes_unchanged_themes(nd, tmp_path):
     graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(4)})
     nd.run(graph, {}, full=False, dry=False, limit=None)          # отпечатки совпали
     nd.calls.clear()
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
     assert r["без_изменений"] == 4 and r["пропущено"] == 4 and nd.calls == []
-    r = nd.run(graph, {}, full=True, dry=False, limit=0, budget_s=1)
+    r = nd.run(graph, {}, full=True, dry=False, limit=0, budget_s=None)
     assert r["собрано"] == 4 and len(nd.calls) == 4, r
+
+
+def test_full_with_a_budget_is_cut_and_the_rest_waits(nd, tmp_path, capsys):
+    """№749: --full с бюджетом режется им же, остаток — следующей ночью; прежде
+    `_drive` бюджет у --full выбрасывал, и пересборка шла до потолка ночи."""
+    graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(6)})
+    r = nd.run(graph, {}, full=True, dry=False, limit=None, budget_s=100)
+    assert r["собрано"] == 3 and r["не_успели"] == 3, r
+    assert "бюджет шага досье вышел" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("given, full, expected", [
+    (None, False, 2400.0),     # умолчание будней
+    (None, True, None),        # ручная пересборка «всего» — без бюджета
+    (0.0, True, 2400.0),       # ноль — забытое значение и у --full (вход in1 №749, DS M1)
+    (-5.0, False, 2400.0),
+    (7200.0, True, 7200.0),
+])
+def test_budget_is_resolved_once_without_a_night_ceiling(nd, monkeypatch, given, full, expected):
+    monkeypatch.delenv(nd.live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    assert nd.resolve_budget(given, full) == expected
+
+
+def _main_full(nd, tmp_path, monkeypatch, graph, *extra):
+    monkeypatch.setattr(nd, "_root", lambda: tmp_path)     # лока встречи нет — окно не ждёт
+    monkeypatch.setattr(nd, "cfg", lambda: {})
+    monkeypatch.setattr(nd.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--full", *extra])
+    return nd.main()
+
+
+def test_sunday_full_leaves_the_night_tail_its_time(nd, tmp_path, monkeypatch, capsys):
+    """№749, сценарий ночи: потолок через «резерв хвоста + 100 с», --full без
+    бюджета. Шаг обязан остановиться по бюджету, урезанному до потолка минус
+    резерв, — а не дойти до потолка и отдать хвост ночи в «(поздно)». Окно
+    ночи — настоящее (`night_window_open` с потолком в окружении, вход in1,
+    DS I6)."""
+    import time
+    graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(6)})
+    monkeypatch.setattr(nd.live_gate, "night_window_open", _REAL_WINDOW)
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV,
+                       str(time.time() + nd.live_gate.NIGHT_TAIL_S + 100))
+    assert _main_full(nd, tmp_path, monkeypatch, graph) == 0
+    out = capsys.readouterr().out
+    # 40 с на старте, дальше 30 с: темы на 0, 30 и 60 с; на 90 с остаток < 30
+    assert len(nd.calls) == 3, nd.calls
+    assert "бюджет шага досье вышел" in out and "время ночного прогона вышло" not in out
+    assert not nd.live_gate.night_is_over()                # ночь ещё идёт — хвосту есть время
+
+
+def test_manual_full_without_a_ceiling_rebuilds_everything(nd, tmp_path, monkeypatch):
+    graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(6)})
+    monkeypatch.setattr(nd.live_gate, "night_window_open", _REAL_WINDOW)
+    monkeypatch.delenv(nd.live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    assert _main_full(nd, tmp_path, monkeypatch, graph) == 0
+    assert len(nd.calls) == 6, nd.calls
 
 
 def test_meeting_wait_eats_the_budget_and_is_checked_after_the_gate(nd, tmp_path, monkeypatch, capsys):
@@ -511,3 +570,29 @@ def test_graph_gone_mid_run_does_not_stop_the_night(nd, tmp_path, monkeypatch):
     monkeypatch.setattr(nd, "generate", generate)
     nd.run_all([a, b], {}, full=False, dry=False)
     assert "б1" in nd.calls
+
+
+def test_cut_full_rebuild_continues_from_the_rest_next_sunday(nd, tmp_path, monkeypatch):
+    """№749, вход in1 DS C3: урезанная полная пересборка не начинается заново,
+    а следующим воскресеньем берёт ровно то, что не успела, — по `собрано`
+    настоящих досье, а не по засеву теста."""
+    import datetime as dt
+    graph = _graph(tmp_path, "Г", {f"тема{i}": None for i in range(6)})
+
+    def on(day):
+        class _Day(dt.date):
+            @classmethod
+            def today(cls):
+                return cls.fromisoformat(day)
+        monkeypatch.setattr(nd, "date", _Day)
+
+    on("2026-10-18")
+    nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=10**6)   # засев сборкой
+    built = {}
+    for day in ("2026-10-25", "2026-11-01"):
+        on(day)
+        nd.calls.clear()
+        nd.run(graph, {}, full=True, dry=False, limit=None, budget_s=100)
+        built[day] = list(nd.calls)
+    assert len(built["2026-10-25"]) == 3 and len(built["2026-11-01"]) == 3, built
+    assert set(built["2026-10-25"]) | set(built["2026-11-01"]) == {f"тема{i}" for i in range(6)}

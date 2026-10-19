@@ -456,3 +456,28 @@ def test_fits_is_one_arithmetic_for_every_budget():
     assert live_gate.fits(None, 0.0, 10**9, now=10**9)
     assert live_gate.fits(100, 0.0, 40, now=60)
     assert not live_gate.fits(100, 0.0, 41, now=60)
+
+
+@pytest.mark.parametrize("until, requested, expected", [
+    (None, 7200.0, 7200.0),            # потолка нет — бюджет как есть
+    (None, None, None),                # и «без бюджета» остаётся им
+    ("12800", 7200.0, 1000.0),         # потолок близко: 12800 − 10000 − 1800
+    ("30000", 7200.0, 7200.0),         # потолок далеко — бюджет не трогаем
+    ("12800", None, 1000.0),           # «без бюджета» под потолком — остаток до резерва
+    ("11000", 7200.0, 0.0),            # резерв уже съеден — шагу не начинать
+    ("мусор", 7200.0, 7200.0),
+    ("inf", 7200.0, 7200.0),
+    ("nan", 7200.0, 7200.0),
+])
+def test_step_budget_leaves_the_night_tail(monkeypatch, until, requested, expected):
+    """№749: бюджет шага урезается до «потолок − сейчас − резерв хвоста»."""
+    if until is None:
+        monkeypatch.delenv(live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, until)
+    assert live_gate.step_budget(requested, 1800.0, now=lambda: 10000.0) == expected
+
+
+def test_step_budget_reads_the_real_clock_and_the_tail_constant(monkeypatch):
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, str(time.time() + live_gate.NIGHT_TAIL_S + 100))
+    assert 95 <= live_gate.step_budget(7200.0) <= 100

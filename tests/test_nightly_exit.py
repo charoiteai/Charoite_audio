@@ -449,3 +449,34 @@ def test_brief_slot_only_refreshes_the_brief(tmp_path, brief_rc):
     assert [c for c in calls if "scripts/" in c] == ["scripts/morning_brief.py"], calls
     assert (tmp_path / "logs" / "nightly.json").read_text() == before
     assert _gate_record(tmp_path)["decision"] == "brief"
+
+
+# Заглушка, записывающая аргументы шага досье.
+RECORD_DOSSIER_ARGS = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    '  *nightly_dossier.py*) echo "$@" > "$CHAROITE_ROOT/dossier_args" ;;\n'
+    "esac\n"
+    "exit 0\n"
+)
+
+
+@pytest.mark.parametrize("full_budget, expected", [(None, "7200"), ("мусор", "7200"), ("5400", "5400")])
+def test_full_dossier_gets_its_own_budget(tmp_path, full_budget, expected):
+    """№749: полная пересборка шла без бюджета до потолка ночи, хвост ночи — в
+    «(поздно)». Свой бюджет и свой санитайз: мусор не откатывает её к будничным
+    2400 (вход in1 №749, DS I2); выбор — по режиму, не по дню (DS I3)."""
+    extra = {"NIGHTLY_DOSSIER_FULL": "1"}
+    if full_budget is not None:
+        extra["DOSSIER_FULL_BUDGET"] = full_budget
+    _run(tmp_path, RECORD_DOSSIER_ARGS, **extra)
+    args = (tmp_path / "dossier_args").read_text().split()
+    assert "--full" in args and args[args.index("--budget-s") + 1] == expected, args
+
+
+def test_incremental_dossier_keeps_the_weekday_budget(tmp_path):
+    """Будний бюджет не путается с полным: какой бюджет — решает режим шага.
+    В воскресенье режим полный и без NIGHTLY_DOSSIER_FULL, тогда бюджет 7200."""
+    _run(tmp_path, RECORD_DOSSIER_ARGS, NIGHTLY_DOSSIER_FULL="0", DOSSIER_FULL_BUDGET="5400")
+    args = (tmp_path / "dossier_args").read_text().split()
+    assert args[args.index("--budget-s") + 1] == ("5400" if "--full" in args else "2400"), args

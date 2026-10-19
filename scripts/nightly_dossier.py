@@ -13,8 +13,10 @@
 
 Все графы — одна очередь: по одной теме из каждого графа с работой раньше
 вторых тем, внутри графа — несобранные, потом давно собранные. Шаг держит
-бюджет по времени (`--budget-s`, по умолчанию 40 минут); остаток очереди —
-следующей ночью, индекс каждого графа при этом полный.
+бюджет по времени (`--budget-s`, по умолчанию 40 минут, у `--full` без него —
+без бюджета) и под ночным потолком оставляет время шагам после себя
+(`live_gate.step_budget`); остаток очереди — следующей ночью, индекс каждого
+графа при этом полный.
 
 Запускается из nightly.sh ПОСЛЕ tier3 — чтобы досье собирались по уже
 причёсанным ядрам, без дублей.
@@ -431,7 +433,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
     attempts = 0
     built = 0                 # --limit — потолок прогона, а не графа (аудит 26.08, Codex)
     spent: list[float] = []   # все попытки с моделью, и отказы тоже (вход in3, DS M1)
-    budget = None if full else budget_s   # --full обещает «всё», бюджет его не режет
+    budget = budget_s   # решён в main: --full без бюджета — None (№749)
     for i, cand in enumerate(queue):
         g = cand.g
         if dry:
@@ -545,6 +547,22 @@ def _собрано(source: pathlib.Path | dossier.DossierLoad) -> str:
         return ""
 
 
+def resolve_budget(budget_s: float | None, full: bool) -> float | None:
+    """Бюджет прогона — одно место, `_drive` о `--full` не знает.
+
+    Не задан: `--full` — без бюджета (ручная пересборка «всего»), иначе
+    умолчание. Ноль и минус — не «ничего не делать», а забытое значение
+    (выход out3 №621), и с `--full` тоже. Под ночным потолком бюджет
+    урезается так, чтобы шагам после досье хватило ночи: воскресный `--full`
+    без бюджета доходил до потолка, и хвост ночи уходил в «(поздно)» (№749).
+    """
+    if budget_s is None:
+        budget_s = None if full else DEFAULT_BUDGET_S
+    elif budget_s <= 0:
+        budget_s = DEFAULT_BUDGET_S
+    return live_gate.step_budget(budget_s)
+
+
 def _terminate(signum, frame):  # noqa: ARG001
     """SIGTERM потолка ночи — в SystemExit, чтобы `finally` прогона дописал
     индексы графов (вход in3 №621, Sonnet I2)."""
@@ -557,15 +575,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Ночная сборка досье по темам графа")
     ap.add_argument("--graph", help="путь к графу")
     ap.add_argument("--all-graphs", action="store_true", help="все графы vault")
-    ap.add_argument("--full", action="store_true", help="пересобрать все темы (без бюджета)")
+    ap.add_argument("--full", action="store_true",
+                    help="пересобрать все темы (без --budget-s — без бюджета)")
     ap.add_argument("--dry", action="store_true", help="показать план, не писать")
-    ap.add_argument("--budget-s", type=float, default=DEFAULT_BUDGET_S,
-                    help="бюджет шага в секундах; остаток очереди — на завтра")
+    ap.add_argument("--budget-s", type=float, default=None,
+                    help=f"бюджет шага в секундах (по умолчанию {DEFAULT_BUDGET_S}); "
+                         "остаток очереди — на завтра")
     ap.add_argument("--limit", type=int, default=None, help="ручной потолок тем за прогон")
     ap.add_argument("--find", help="проверить, что найдётся по запросу")
     args = ap.parse_args()
-    if args.budget_s <= 0:   # ноль — не «ничего не делать», а забытое значение (выход out3 №621)
-        args.budget_s = DEFAULT_BUDGET_S
+    args.budget_s = resolve_budget(args.budget_s, args.full)
     c = cfg()
 
     if args.find:

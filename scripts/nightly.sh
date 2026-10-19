@@ -256,7 +256,11 @@ step "dossiers"
 # тема с готовым досье и неизменными источниками не освежается никогда, а
 # границы кластеров расходятся: собственный докстринг src/charoite_graph/dossier.py это
 # предписывает, но расписание такого прогона не заводило (аудит графа 26.08,
-# DS + GLM). В воскресенье ни бюджет, ни лимит не действуют: --full их не применяет.
+# DS + GLM). У полной пересборки свой бюджет (DOSSIER_FULL_BUDGET, 2 часа):
+# без него --full шёл до потолка ночи, и шаги после досье уходили в «(поздно)»
+# (№749). Не влезшее — следующей ночью в общей очереди. Время хвосту ночи
+# оставляет сам шаг (live_gate.step_budget): бюджет урезается до потолка
+# минус резерв на шаги после досье.
 DOSSIER_MODE=""
 if [ "$(date +%u)" = "7" ] || [ "${NIGHTLY_DOSSIER_FULL:-0}" = "1" ]; then
   DOSSIER_MODE="--full"
@@ -272,6 +276,12 @@ else
   # «модель молчала» (выход out1 №621, DS I2); санируем, как NIGHTLY_MAX_H.
   DOSSIER_BUDGET=${DOSSIER_BUDGET:-2400}
   case "$DOSSIER_BUDGET" in (""|*[!0-9]*|0|00*) DOSSIER_BUDGET=2400;; esac
+  if [ "$DOSSIER_MODE" = "--full" ]; then
+    # Своё умолчание и свой санитайз: мусор не должен откатывать полную
+    # пересборку к будничным 40 минутам (вход in1 №749, DS I2).
+    DOSSIER_BUDGET=${DOSSIER_FULL_BUDGET:-7200}
+    case "$DOSSIER_BUDGET" in (""|*[!0-9]*|0|00*) DOSSIER_BUDGET=7200;; esac
+  fi
   $PY scripts/nightly_dossier.py --all-graphs --budget-s "$DOSSIER_BUDGET" $DOSSIER_MODE || {
     case $? in
       2) echo "⚠️ досье собирались без модели — темы остались без разбора"
