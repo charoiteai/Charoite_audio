@@ -704,8 +704,8 @@ def test_waiting_follows_the_neighbours_progress_not_the_clock(tmp_path):
             if len(polls) == 10:           # 1000 с при потолке 300 с
                 holder.close()
 
-    with get_models._download_lock(dest, part, sleep=growing, now=lambda: clock[0]) as waited:
-        assert waited is True
+    with get_models._download_lock(dest, part, sleep=growing, now=lambda: clock[0]):
+        pass
     assert len(polls) == 10
 
     holder = _hold_lock(dest)
@@ -784,47 +784,107 @@ def test_a_failed_replace_is_a_reason_not_a_trace(monkeypatch, tmp_path):
 
 
 def test_two_processes_on_one_target_leave_one_good_file(tmp_path):
-    """Боевой путь: два процесса `download` в одну цель с медленного сервера. Второй
-    ждёт замка и находит цель на месте — файл цел, оба кода 0, в сеть сходили один раз
-    (опыт 19.10 до правки: битый файл с кодом 0 в 1 из 13 прогонов)."""
+    """Боевой путь: два процесса `download` в одну цель. Второй ждёт замка и находит
+    цель на месте — файл цел, оба кода 0, в сеть сходили один раз (опыт 19.10 до
+    правки: битый файл с кодом 0 в 1 из 13 прогонов). Пересечение не по часам:
+    сервер держит последний кусок, пока второй не скажет «жду» (выход №643, все
+    три головы: на занятом раннере окно 0,3 с не держится)."""
     import hashlib
     import http.server
     import threading
     import time as _time
 
     body = bytes([8]) + b"m" * (2 * 1024 * 1024)
-    gets = []
+    gets: list = []
+    second_waits = threading.Event()
 
-    class Slow(http.server.BaseHTTPRequestHandler):
+    class Held(http.server.BaseHTTPRequestHandler):
         def do_GET(self):                  # noqa: N802
             gets.append(self.headers.get("Range"))
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            for i in range(0, len(body), 64 * 1024):
-                self.wfile.write(body[i:i + 64 * 1024])
-                _time.sleep(0.04)       # ~1,3 с на файл: второй застаёт первый
+            self.wfile.write(body[:-1024])
+            self.wfile.flush()
+            second_waits.wait(30)
+            self.wfile.write(body[-1024:])
 
         def log_message(self, *a):         # noqa: ANN002
             pass
 
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Held)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # Прокси окружения мимо локального сервера (выход №643, Haiku M3).
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1"
+    dest = tmp_path / "model.bin"
+    url = f"http://127.0.0.1:{srv.server_address[1]}/model.bin"
+    code = ("import pathlib, sys; sys.path.insert(0, sys.argv[1]); import get_models; "
+            "get_models.download(sys.argv[2], pathlib.Path(sys.argv[3]), 2, onnx=False, "
+            "sha256=sys.argv[4])")
+    argv = [sys.executable, "-u", "-c", code, str(REPO / "scripts"), url, str(dest),
+            hashlib.sha256(body).hexdigest()]
     try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/model.bin"
-        dest = tmp_path / "model.bin"
-        code = ("import pathlib, sys; sys.path.insert(0, sys.argv[1]); import get_models; "
-                "get_models.download(sys.argv[2], pathlib.Path(sys.argv[3]), 2, onnx=False)")
-        procs = []
-        for _ in range(2):
-            procs.append(subprocess.Popen(
-                [sys.executable, "-c", code, str(REPO / "scripts"), url, str(dest)],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
-            _time.sleep(0.3)
-        outs = [p.communicate(timeout=60)[0] for p in procs]
+        first = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, env=env)
+        part = dest.with_suffix(".bin.part")
+        for _ in range(200):               # первый держит замок, пока сервер держит хвост
+            if part.exists() and part.stat().st_size:
+                break
+            first.poll()
+            assert first.returncode is None, first.communicate()[0]
+            _time.sleep(0.05)
+        second = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, env=env)
+        lines: list = []
+        for line in second.stdout:
+            lines.append(line)
+            if "жду" in line:
+                second_waits.set()
+        second.wait(timeout=60)
+        outs = [first.communicate(timeout=60)[0], "".join(lines)]
     finally:
+        second_waits.set()
         srv.shutdown()
-    assert [p.returncode for p in procs] == [0, 0], outs
+    assert [first.returncode, second.returncode] == [0, 0], outs
     assert hashlib.sha256(dest.read_bytes()).digest() == hashlib.sha256(body).digest()
     assert gets == [None], f"цель скачана не один раз: {gets}\n{outs}"
-    assert sum("уже на месте" in o for o in outs) == 1, outs
+    assert "жду" in outs[1] and "уже на месте" in outs[1], outs
+
+
+def test_a_complete_part_is_published_not_refused_by_416(monkeypatch, tmp_path):
+    """Сосед убит между последним куском и `replace`: `.part` полон. Зеркала (GitHub,
+    HF) на `Range: bytes=<длина>-` отвечают 416 — это `HTTPError`, и до правки каждый
+    повтор давал «не скачалось: HTTP Error 416 … докачается с этого места» (выход
+    №643, Haiku C1 = Sonnet I2 = DS M4). Полный `.part` идёт в сверку и публикацию."""
+    import hashlib
+    import urllib.error
+
+    body = b"q" * 3000
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    url = "https://example.invalid/tokens.txt"
+    sha = hashlib.sha256(body).hexdigest()
+    part.write_bytes(body)
+    part.with_name(part.name + ".src").write_text(f"{url}\n{sha}\n", encoding="utf-8")
+    seen = []
+
+    def range_not_satisfiable(req, timeout=0):  # noqa: ANN001, ARG001
+        seen.append(req.get_header("Range"))
+        raise urllib.error.HTTPError(url, 416, "Range Not Satisfiable", {}, None)
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", range_not_satisfiable)
+    get_models.download(url, dest, expect_mb=1, onnx=False, sha256=sha)
+    assert seen == ["bytes=3000-"] and dest.read_bytes() == body
+
+
+def test_a_failed_publication_leaves_no_part_behind(monkeypatch, tmp_path):
+    """Публикация упала (архив без .onnx, место на диске): `.part` и его источник
+    уходят — иначе следующий запуск докачивал бы тот же негодный файл по Range
+    (выход №643, Haiku C1)."""
+    dest = tmp_path / "seg.onnx"
+    part = dest.with_suffix(".onnx.part")
+    _serve(monkeypatch, b"not a tar" * 400)
+    with pytest.raises(SystemExit):
+        get_models.download("https://example.invalid/seg.tar.bz2", dest, expect_mb=1)
+    assert not part.exists() and not part.with_name(part.name + ".src").exists()

@@ -309,9 +309,8 @@ class DownloadBusy(SystemExit):
     """Цель качает другой процесс, и его файл не растёт: отказ «занято», а не порча.
 
     Подкласс `SystemExit`: для терминала и кнопки это такой же отказ строкой
-    причины. Установщик движка переводит его в своё «занято» на шве
-    `ensure_voice_set` — `InstallBusy` его `main` ловит раньше общего
-    `SystemExit` (вход №643, Haiku C1)."""
+    причины. `main` установщика движка ловит его раньше общего `SystemExit` и
+    отвечает своим кодом «занято» — и за набор голосов, и за веса Nemotron."""
 
 
 #: Сосед держит замок цели: опрос раз в столько секунд, пока его `.part` растёт.
@@ -329,8 +328,7 @@ def _download_lock(dest: pathlib.Path, part: pathlib.Path, *, sleep=None, now=No
     Писателей цели несколько — кнопка набора голосов (`--diar`), установщик
     движка (`ensure_voice_set`), человек из терминала, — и без замка второй
     принимал живой `.part` соседа за свой обрыв и дописывал в него (№643: битая
-    модель на месте с кодом 0). Даёт True, если пришлось ждать соседа: тогда
-    цель стоит перепроверить. Том без flock — загрузка без замка с
+    модель на месте с кодом 0). Том без flock — загрузка без замка с
     предупреждением, как до замка: она повторяема и сверяется суммой."""
     sleep = sleep or time.sleep
     now = now or time.monotonic
@@ -339,7 +337,7 @@ def _download_lock(dest: pathlib.Path, part: pathlib.Path, *, sleep=None, now=No
         fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     except OSError as e:
         print(f"замок загрузки не взять ({e}) — качаю без защиты от параллельной загрузки")
-        yield False
+        yield
         return
     with os.fdopen(fd, "r+b") as f:
         waited = False
@@ -369,20 +367,22 @@ def _download_lock(dest: pathlib.Path, part: pathlib.Path, *, sleep=None, now=No
                     f"идёт другая загрузка {dest.name}, и её файл не растёт "
                     f"{int(NEIGHBOUR_STALL_S)} с — дождитесь её конца и повторите")
             sleep(LOCK_POLL_S)
-        yield waited
+        yield
 
 
-def _in_place(dest: pathlib.Path, url: str, expect_mb: int, onnx: bool, sha256: str) -> bool:
-    """Цель уже годна — так же, как её принял бы конец `download`."""
-    if not dest.is_file():
+def _in_place(dest: pathlib.Path, url: str, sha256: str) -> bool:
+    """Цель уже стоит с этой суммой — её поставил сосед, пока мы шли к замку.
+
+    Верим только сумме: без неё сосед мог поставить файл с другого адреса
+    (`--url` против адреса по умолчанию), и годная форма — не наш файл (выход
+    №643, DS I1). У архива сумма — архива, а не распакованной цели. Нечитаемая
+    цель — «не на месте»: причину скажет публикация."""
+    if not sha256 or url.endswith(_ARCHIVES) or not dest.is_file():
         return False
-    if url.endswith(_ARCHIVES):
-        return check(dest, min_bytes=1024 * 1024) is None
-    if sha256:
+    try:
         return _digest(dest) == sha256
-    if onnx:
-        return check(dest, min_bytes=max(1, expect_mb // 2) * 1024 * 1024) is None
-    return dest.stat().st_size >= 1024
+    except OSError:
+        return False
 
 
 def _part_source(part: pathlib.Path, url: str, sha256: str) -> None:
@@ -396,7 +396,7 @@ def _part_source(part: pathlib.Path, url: str, sha256: str) -> None:
     want = f"{url}\n{sha256}\n"
     try:
         same = src.read_text(encoding="utf-8") == want
-    except OSError:
+    except (OSError, ValueError):   # обрезанный сайдкар не в UTF-8 — тоже чужой
         same = False
     if not same:
         part.unlink(missing_ok=True)
@@ -416,8 +416,10 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
     except OSError as e:
         raise SystemExit(f"не создать каталог модели {dest.parent}: {e}") from None
     part = dest.with_suffix(dest.suffix + ".part")
-    with _download_lock(dest, part) as waited:
-        if waited and _in_place(dest, url, expect_mb, onnx, sha256):
+    with _download_lock(dest, part):
+        # Под замком, а не только после ожидания: сосед мог закончить между
+        # проверкой вызывающего и нашим flock (выход №643, S M3).
+        if _in_place(dest, url, sha256):
             print(f"уже на месте: {dest} — поставила соседняя загрузка")
             return
         try:
@@ -447,8 +449,18 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
             if done:
                 req.add_header("Range", f"bytes={done}-")
                 print(f"  докачиваю с {done // 1024 // 1024} МБ (попытка {attempt})")
-            # nosemgrep — адрес из константы MODELS, не пользовательский ввод
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            try:
+                # nosemgrep — адрес из константы MODELS, не пользовательский ввод
+                resp = urllib.request.urlopen(req, timeout=120)
+            except urllib.error.HTTPError as e:
+                # Хвоста нет: `.part` уже полный — сосед убит между последним
+                # куском и публикацией. Зеркала отвечают на это 416, и каждый
+                # повтор упирался в него же (выход №643, Haiku C1). Полноту
+                # решают сумма и проверка формы при публикации.
+                if done and e.code == 416:
+                    break
+                raise
+            with resp:
                 # Докачка законна только на 206: сервер, не знающий Range,
                 # отдаёт 200 и файл целиком — дописывать его к хвосту значило
                 # бы удвоить файл; по размеру он проходил проверку, а при
@@ -484,11 +496,20 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
     # Сумма, распаковка и публикация — той же строкой причины, что сеть: кнопка
     # показывает последнюю строку вывода, и трасса Python там — не причина (вход
     # №643, DS I4: место на диске, права, битый архив).
+    # Негодный `.part` уходит вместе с источником: оставленный, он докачивался бы
+    # по Range тем же негодным файлом при каждом повторе (выход №643, Haiku C1).
+    src = part.with_name(part.name + ".src")
     try:
         _publish(url, dest, part, expect_mb, onnx, sha256)
     except (OSError, tarfile.TarError) as e:
+        part.unlink(missing_ok=True)
+        src.unlink(missing_ok=True)
         raise SystemExit(f"не удалось сохранить модель {dest.name}: {e}") from None
-    part.with_name(part.name + ".src").unlink(missing_ok=True)
+    except SystemExit:
+        part.unlink(missing_ok=True)
+        src.unlink(missing_ok=True)
+        raise
+    src.unlink(missing_ok=True)
     print(f"готово: {dest} ({dest.stat().st_size // 1024 // 1024} МБ)")
 
 
