@@ -137,9 +137,10 @@ final class SuflerService: ObservableObject {
     nonisolated static let tooShortToStop: TimeInterval = 20
 
     var process: Process?
-    private var stdinPipe: Pipe?
-    private var stdoutHandle: FileHandle?  // для снятия readabilityHandler при смерти демона
-    private var errHandle: FileHandle?     // daemon.err.log — закрывать, иначе fd-утечка на рестартах
+    /// Концы труб текущего демона (stdin, stdout, daemon.err.log) — у
+    /// запуска, а не у сервиса: опоздавший исход старого демона закрывает
+    /// свои, не трубы преемника (№619).
+    private var launch: DaemonLaunch?
     /// Захват ScreenCaptureKit — основной путь к системному звуку с 07.08.
     /// Живёт столько же, сколько демон: поднимается перед стартом, гаснет
     /// в stop() и при смерти демона.
@@ -479,46 +480,14 @@ final class SuflerService: ObservableObject {
         p.arguments = ["src/daemon.py"]
         AppSettings.preparePython(p, root: suflerRoot)
 
-        let outPipe = Pipe()
-        let inPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardInput = inPipe
-        // stderr — в лог: без него сбои демона невидимы (logs/daemon.err.log)
-        let logDir = suflerRoot.appendingPathComponent("logs")
-        FileManager.default.createPrivateDirectory(at: logDir)  // логи демона несут куски стенограмм
-        let errURL = logDir.appendingPathComponent("daemon.err.log")
-        // append, не пересоздание: авто-рестарт после крэша затирал трейсбек
-        // ровно в момент, когда он нужен для диагноза
-        if !FileManager.default.fileExists(atPath: errURL.path) {
-            FileManager.default.createPrivateFile(atPath: errURL.path)   // 0600 сразу, не по umask
-        }
-        FileManager.default.makePrivate(atPath: errURL.path)   // лог старой установки
-        LogTrim.trim(errURL)   // потолок: хвост остаётся, гигабайты — нет
-        LogTrim.trim(SystemAudioCapture.captureLogURL)   // журнал захвата — тот же потолок (DS M2)
-        let errFH = try? FileHandle(forWritingTo: errURL)
-        errFH?.seekToEndOfFile()
-        p.standardError = errFH ?? FileHandle.nullDevice
-        errHandle = errFH
-
-        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                // EOF: без снятия хендлера dispatch-source жил после смерти демона —
-                // CPU-спин пустыми срабатываниями + утечка pipe на каждый рестарт
-                handle.readabilityHandler = nil
-                return
-            }
-            Task { @MainActor [weak self] in self?.consume(data) }
-        }
-        stdoutHandle = outPipe.fileHandleForReading
-        p.terminationHandler = { [weak self] proc in
-            Task { @MainActor [weak self] in self?.daemonDied(proc) }
-        }
+        let l = DaemonLaunch.prepare(p, logDir: suflerRoot.appendingPathComponent("logs"))
+        LogTrim.trim(SystemAudioCapture.captureLogURL)   // журнал захвата — тот же потолок, что у daemon.err.log (DS M2)
+        beginLaunch(l, wire: true)
 
         do {
             try p.run()
             process = p
-            stdinPipe = inPipe
+            launch = l
             guard lifecycleGate.markRecording(token) else {
                 p.terminate()
                 return
@@ -550,23 +519,32 @@ final class SuflerService: ObservableObject {
                 Task { @MainActor [weak self] in self?.checkAlive() }
             }
         } catch {
+            l.close()
             fail(L.t("Не удалось начать запись: \(error.localizedDescription)", "Could not start recording: \(error.localizedDescription)", "无法开始录音：\(error.localizedDescription)"))
             beginFailedStartCleanup(token: token)
         }
     }
 
+    /// До `run()`: хвост строки и причина отказа принадлежат прошлому демону.
+    /// Смерть запуска приходит после EOF его stdout (`DaemonLaunch`, №619).
+    private func beginLaunch(_ l: DaemonLaunch, wire: Bool) {
+        launch?.close()
+        launch = nil
+        stdoutBuffer = Data()
+        daemonFatalReason = nil
+        // Прежний запуск закрыт выше, а закрытый молчит: события идут только от текущего.
+        l.attach(onOutput: { [weak self] in self?.consume($0) },
+                 onDead: { [weak self] l in self?.launch = nil; self?.daemonDied(l.process) })
+        if wire { l.wireHandles() }
+    }
+
     /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
     /// поднимаем свежий, не стирая встречу с экрана (стенограмма-файл цел).
+    /// Зовётся только после того, как stdout запуска дочитан: иначе строка
+    /// с причиной отказа приходила после решения о повторе.
     private func daemonDied(_ proc: Process) {
         guard proc === process else { return }  // умер прошлый демон, не текущий
         process = nil
-        stdoutHandle?.readabilityHandler = nil
-        stdoutHandle = nil
-        try? errHandle?.close()
-        errHandle = nil
-        // write-end stdin жил до конца сеанса — та же fd-утечка, что у errHandle (аудит 13.09, DS M2)
-        try? stdinPipe?.fileHandleForWriting.close()
-        stdinPipe = nil
         let wasRecording = lifecycle == .recording
         stopClock()
         isHinting = false   // ждать hint_done от мёртвого демона бессмысленно
@@ -765,9 +743,9 @@ final class SuflerService: ObservableObject {
     /// живёт в соседнем файле: снаружи сервиса звать её нельзя — она минует
     /// и lifecycle-гейт, и подтверждение остановки короткой записи.
     func send(_ cmd: String) {
-        guard let fh = stdinPipe?.fileHandleForWriting,
+        guard let l = launch, !l.closed,
               let data = (cmd + "\n").data(using: .utf8) else { return }
-        try? fh.write(contentsOf: data)
+        try? l.stdinPipe.fileHandleForWriting.write(contentsOf: data)
     }
 
     private func noteSTTProgress(_ obj: [String: Any]) {
@@ -804,7 +782,23 @@ final class SuflerService: ObservableObject {
     /// Тестовый вход: private consume виден extension ЭТОГО файла — сырой
     /// NDJSON-вход не открывается модулю (DS r1 по #473: из consume
     /// достижим stop() живой записи).
+    #if DEBUG
     func consumeForTest(_ json: String) { consume(Data((json + "\n").utf8)) }
+    var launchForTest: DaemonLaunch? { launch }
+    /// Тестовый вход (сбрасывает гейт): запуск «идёт запись» без python и захвата;
+    /// `wire: false` — события приходят только из `receiveForTest`.
+    func adoptLaunchForTest(_ l: DaemonLaunch, wire: Bool) throws {
+        lifecycleGate = RecordingLifecycleGate()
+        guard let token = lifecycleGate.beginStart() else { preconditionFailure("гейт не дал старт") }
+        beginLaunch(l, wire: wire)
+        if wire { try l.process.run() }
+        process = l.process
+        launch = l
+        _ = lifecycleGate.markRecording(token)
+        publishLifecycle()
+    }
+
+    #endif
 
     private func consume(_ data: Data) {
         stdoutBuffer.append(data)

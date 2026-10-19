@@ -45,9 +45,14 @@ def test_swift_mirror_is_wired_before_daemon_log_opens():
     потолок был бы только у mlx_server.log.
 
 """
-    svc = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
-           / "SuflerService.swift").read_text(encoding="utf-8")
-    assert svc.index("LogTrim.trim(errURL)") < svc.index("FileHandle(forWritingTo: errURL)")
+    services = ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
+    launch = (services / "DaemonLaunch.swift").read_text(encoding="utf-8")   # запуск переехал из SuflerService (№619)
+    svc = (services / "SuflerService.swift").read_text(encoding="utf-8")
+    assert launch.count("LogTrim.trim(errURL)") == 1
+    assert launch.count("FileHandle(forWritingTo: errURL)") == 1
+    assert launch.index("LogTrim.trim(errURL)") < launch.index("FileHandle(forWritingTo: errURL)")
+    # Сервис открывает лог только через prepare: своё открытие обошло бы потолок.
+    assert "DaemonLaunch.prepare(" in svc and "forWritingTo" not in svc
 
 
 def test_mlx_log_is_trimmed_before_open_and_left_owner_only(tmp_path, monkeypatch):
