@@ -104,6 +104,8 @@ def _run(tmp_path: pathlib.Path, stub: str, **env_extra: str) -> subprocess.Comp
     env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
     env.pop("CHAROITE_SLOT", None)
     env.pop("NIGHT_GATE", None)
+    for name in ("DOSSIER_BUDGET", "DOSSIER_FULL_BUDGET", "NIGHTLY_DOSSIER_FULL"):
+        env.pop(name, None)       # окружение разработчика не решает за тест (выход out1 №749, DS M4)
     env.update(env_extra)
     return subprocess.run([LAUNCHD_BASH, str(tmp_path / "scripts" / "nightly.sh")],
                           capture_output=True, text=True, timeout=60, env=env)
@@ -449,3 +451,50 @@ def test_brief_slot_only_refreshes_the_brief(tmp_path, brief_rc):
     assert [c for c in calls if "scripts/" in c] == ["scripts/morning_brief.py"], calls
     assert (tmp_path / "logs" / "nightly.json").read_text() == before
     assert _gate_record(tmp_path)["decision"] == "brief"
+
+
+# Заглушка, записывающая аргументы шага досье.
+RECORD_DOSSIER_ARGS = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    '  *nightly_dossier.py*) echo "$@" > "$CHAROITE_ROOT/dossier_args" ;;\n'
+    "esac\n"
+    "exit 0\n"
+)
+
+
+def _weekday(tmp_path: pathlib.Path, dow: str) -> str:
+    """PATH с `date`, у которого `+%u` — заданный день, остальное — настоящий date."""
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "date"
+    fake.write_text('#!/bin/sh\n[ "$1" = "+%u" ] && { echo ' + dow + '; exit 0; }\nexec /bin/date "$@"\n')
+    fake.chmod(0o755)
+    return f"{bin_dir}:{os.environ['PATH']}"
+
+
+def _dossier_args(tmp_path: pathlib.Path) -> list[str]:
+    return (tmp_path / "dossier_args").read_text().split()
+
+
+@pytest.mark.parametrize("dow, full_flag, full_budget, mode, expected", [
+    ("7", None, None, "--full", "7200"),        # воскресенье: свой бюджет полной пересборки
+    ("7", None, "мусор", "--full", "7200"),     # свой санитайз, не будничные 2400 (вход in1, DS I2)
+    ("7", None, "0", "--full", "7200"),
+    ("7", None, "007", "--full", "7200"),
+    ("7", None, "5400", "--full", "5400"),
+    ("3", "1", None, "--full", "7200"),         # выбор по режиму, не по дню (вход in1, DS I3)
+    ("3", None, "5400", "", "2400"),            # будни: полный бюджет не путается с будним
+])
+def test_dossier_budget_follows_the_mode(tmp_path, dow, full_flag, full_budget, mode, expected):
+    """№749: полная пересборка шла без бюджета до потолка ночи, хвост ночи — в
+    «(поздно)». Таблица «режим × переменная → бюджет» на обе ветки."""
+    extra = {"PATH": _weekday(tmp_path, dow)}
+    if full_flag is not None:
+        extra["NIGHTLY_DOSSIER_FULL"] = full_flag
+    if full_budget is not None:
+        extra["DOSSIER_FULL_BUDGET"] = full_budget
+    _run(tmp_path, RECORD_DOSSIER_ARGS, **extra)
+    args = _dossier_args(tmp_path)
+    assert ("--full" in args) == (mode == "--full"), args
+    assert args[args.index("--budget-s") + 1] == expected, args

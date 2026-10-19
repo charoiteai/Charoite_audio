@@ -275,6 +275,16 @@ def _кэш_свёртки_пуст():
 
 
 @pytest.fixture(autouse=True)
+def _потолок_ночи_не_протекает(monkeypatch):
+    """`CHAROITE_NIGHTLY_UNTIL` выставляет ночная оболочка: прогон тестов из неё
+    (или из окружения, где переменная осталась) иначе резал бы бюджеты шагов
+    чужим потолком. Тест, которому потолок нужен, ставит его сам (выход out2
+    №749, DS M2)."""
+    monkeypatch.delenv("CHAROITE_NIGHTLY_UNTIL", raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _реестр_однократных_пуст():
     """Реестр «уже сказали» (`once`) живёт на модуле — весь прогон.
 
