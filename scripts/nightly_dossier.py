@@ -5,11 +5,16 @@
     .venv/bin/python scripts/nightly_dossier.py --full        # пересобрать всё
     .venv/bin/python scripts/nightly_dossier.py --all-graphs  # все графы vault
     .venv/bin/python scripts/nightly_dossier.py --dry         # показать план, не писать
+    .venv/bin/python scripts/nightly_dossier.py --budget-s 600  # бюджет шага в секундах
     .venv/bin/python scripts/nightly_dossier.py --find "запрос"  # проверить, что найдётся
 
 Инкрементальность: у каждого досье в frontmatter лежит отпечаток состава
 (список источников + их mtime). Совпал — тема не менялась, модель не зовём.
-На типичной ночи пересобираются единицы тем из десятков.
+
+Все графы — одна очередь: по одной теме из каждого графа с работой раньше
+вторых тем, внутри графа — несобранные, потом давно собранные. Шаг держит
+бюджет по времени (`--budget-s`, по умолчанию 40 минут); остаток очереди —
+следующей ночью, индекс каждого графа при этом полный.
 
 Запускается из nightly.sh ПОСЛЕ tier3 — чтобы досье собирались по уже
 причёсанным ядрам, без дублей.
@@ -19,6 +24,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import pathlib
+import signal
 import sys
 import time
 from datetime import date, datetime
@@ -43,11 +49,6 @@ CODE = code_root(__file__)
 def _root() -> pathlib.Path:
     """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
     return resolve_root(__file__)
-
-
-# Потолок на ночь: если тем изменилось много, лучше растянуть на две ночи,
-# чем занять машину до утра.
-MAX_PER_NIGHT = 12
 
 
 def cfg() -> dict:
@@ -95,12 +96,11 @@ class _DossierReads:
                 print(f"  ⚠️ битое досье: {path} — UTF-8 прочитан с заменой")
         return self.loaded[path]
 
-
-def _keep_in_index(entries: list[dict], theme: str, members: list[str],
-                   loaded: dossier.DossierLoad, fp: str, today: str) -> None:
-    """Любая неприменённая пересборка оставляет прежнее досье в индексе."""
-    if loaded.state != "missing":
-        entries.append(_index_entry_from_disk(theme, members, loaded, fp, today))
+    def reload(self, path: pathlib.Path) -> dossier.DossierLoad:
+        """Свежий снимок пути, если файл правили после скана."""
+        self.loaded.pop(path, None)
+        self.damaged.discard(path)
+        return self.load(path)
 
 
 def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, str | None, int]:
@@ -146,7 +146,7 @@ LOCK_WAIT = 5 * 60          # дольше держит только завис�
 
 
 @contextlib.contextmanager
-def _graph_lock(graph: pathlib.Path):
+def _graph_lock(graph: pathlib.Path, wait: float = LOCK_WAIT):
     """Общий замок пишущих в граф: разбор встречи, облачная ревизия — и мы.
 
     Локальная сборка досье замок не брала вовсе, хотя переписывает те же
@@ -162,173 +162,377 @@ def _graph_lock(graph: pathlib.Path):
         print(f"  замок графа не взять ({e}) — не пишу")
         yield False
         return
-    with file_locks.graph_lock(lock_dir, LOCK_WAIT) as taken:
+    with file_locks.graph_lock(lock_dir, wait) as taken:
         yield taken
 
 
-def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict:
-    folder = graph / CHAROITE.dossier_dir
-    files, backlinks = dossier.scan(graph, schema=CHAROITE)
-    if not files:
-        return {"граф": graph.name, "тем": 0, "собрано": 0, "пропущено": 0, "отказы": 0, "битые": 0}
+# Бюджет шага по времени вместо потолка в штуках (№621): 12 тем за ночь на
+# все графы разом уходили большому графу, а пять малых стояли без свежих
+# досье с июля. Секунды, а не темы: ночь меряется часами. 2400 — 40 минут
+# окна, по соглашению с индексом поиска (`MEMORY_INDEX_BUDGET` в nightly.sh).
+DEFAULT_BUDGET_S = 2400
+# Оценка темы, пока этот прогон не собрал ни одной: замер 18.10 — 37,6 с.
+NEED_START_S = 40.0
 
-    cl = dossier.clusters(files, backlinks, schema=CHAROITE)
+# Шов часов: бюджет тесты судят подменённым временем, а не сном (как в mutate_check)
+clock = time.monotonic
+
+# Классы кандидата: досье нет / отпечаток разошёлся / без изменений (только --full)
+NEW, CHANGED, SAME = 1, 2, 3
+_CLASS_WORD = {NEW: "новое", CHANGED: "изменилось", SAME: "без изменений"}
+
+
+class _GraphRun:
+    """Один граф за прогон: снимок источников, индекс и счётчики причин.
+
+    Индекс — карта ВСЕХ досье на диске, а не только тех, что посетил прогон:
+    темы сверх лимита, с отказом и не успевшие за ночь раньше выпадали из
+    _index/_ИНДЕКС (аудит 17.08). Поэтому `entries` заполняется со скана
+    записями с диска, а собранная тема заменяет свою запись.
+    """
+
+    def __init__(self, graph: pathlib.Path, files: dict, cl: dict, today: str, stamp: str):
+        self.graph, self.folder = graph, graph / CHAROITE.dossier_dir
+        self.files, self.cl, self.today, self.stamp = files, cl, today, stamp
+        self.reads = _DossierReads()
+        self.entries: dict[str, dict] = {}
+        self.pending = 0          # кандидатов графа ещё в очереди
+        self.busy = False         # сосед держал замок дольше LOCK_WAIT
+        self.indexed = False
+        self.built = self.skipped = self.отказы = 0
+        # Раздельно, иначе ночь с занятым графом выглядит как «всё без
+        # изменений» (круг-2 по PR #438, DS Minor 9).
+        self.unchanged = self.over_limit = self.locked = self.late = 0
+        self.changed = self.broken_manual = 0
+
+    def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
+        """Неприменённая пересборка оставляет прежнее досье в индексе."""
+        if loaded.state != "missing":
+            self.entries[theme] = _index_entry_from_disk(theme, members, loaded, fp, self.today)
+
+    def write_index(self, dry: bool) -> None:
+        """Один раз за прогон: как только у графа кончились кандидаты, а для
+        остальных — в `finally` прогона. Без замка: write_index пишет через
+        tmp+replace, полуфайла не будет, а ждать соседа значило бы оставить
+        свежие досье невидимыми для поиска до следующей ночи (круг-2 по PR
+        #438, DS Important 3)."""
+        if self.indexed:
+            return
+        self.indexed = True
+        if not dry and self.entries:
+            dossier.write_index(self.folder, list(self.entries.values()))
+
+    def done(self, dry: bool) -> None:
+        self.pending -= 1
+        if self.pending == 0:
+            self.write_index(dry)
+
+    def result(self) -> dict:
+        return {"граф": self.graph.name, "тем": len(self.cl), "собрано": self.built,
+                "пропущено": self.skipped, "отказы": self.отказы, "битые": len(self.reads.damaged),
+                "без_изменений": self.unchanged, "сверх_лимита": self.over_limit,
+                "занят": self.locked, "не_успели": self.late,
+                "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed}
+
+    def report(self) -> None:
+        if self.skipped:
+            print(f"  {self.graph.name}: пропущено {self.skipped}: без изменений {self.unchanged}, "
+                  f"сверх лимита {self.over_limit}, граф занят {self.locked}, "
+                  f"не успели за ночь {self.late}, правки автора повреждены {self.broken_manual}, "
+                  f"досье изменилось {self.changed}")
+
+
+class Candidate:
+    """Тема к сборке. Не dataclass: тесты грузят скрипт без записи в
+    sys.modules, а dataclass ищет там свой модуль для строковых аннотаций."""
+
+    def __init__(self, g: _GraphRun, theme: str, members: list[str], fp: str, cls: int,
+                 собрано: str, loaded: dossier.DossierLoad, mtime: tuple[int, int] | None):
+        self.g, self.theme, self.members, self.fp = g, theme, members, fp
+        self.cls, self.собрано, self.loaded, self.mtime = cls, собрано, loaded, mtime
+
+
+def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_GraphRun, list[Candidate]]:
+    files, backlinks = dossier.scan(graph, schema=CHAROITE)
+    cl = dossier.clusters(files, backlinks, schema=CHAROITE) if files else {}
+    g = _GraphRun(graph, files, cl, today, stamp)
+    found = []
+    for theme, members in cl.items():
+        path = g.folder / f"{theme}.md"
+        fp = dossier.fingerprint(members, files)
+        loaded = g.reads.load(path)
+        g.keep(theme, members, loaded, fp)
+        same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
+        if same and not full:
+            g.skipped += 1
+            g.unchanged += 1
+            continue
+        cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
+        found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
+    g.pending = len(found)
+    return g, found
+
+
+def _graph_key(c: Candidate) -> tuple:
+    """Порядок внутри графа: несобранные, потом давно собранные, потом крупные.
+    Прежняя сортировка только по размеру отдавала все слоты ночи большим
+    «несвежим» кластерам, а новые маленькие темы стояли в хвосте (аудит 26.08)."""
+    return (c.cls, c.собрано, -len(c.members), c.theme.casefold(), c.theme)
+
+
+def queue_order(candidates: list[Candidate]) -> list[Candidate]:
+    """Одна очередь на все графы: по одной теме из каждого графа с работой
+    раньше вторых тем. Круг — позиция темы в своём графе по `_graph_key`, и он
+    старше класса: при классе впереди все новые темы большого графа шли бы
+    раньше любой темы малого (вход in3 №621, DS C1 — первая тема малого графа
+    на позиции 600)."""
+    groups: dict[int, list[Candidate]] = {}
+    for c in candidates:
+        groups.setdefault(id(c.g), []).append(c)
+    keyed = []
+    for group in groups.values():
+        for rnd, c in enumerate(sorted(group, key=_graph_key)):
+            # круг и граф различают любые две темы: хвост ключа графа не нужен
+            keyed.append(((rnd, c.cls, c.собрано, -len(c.members),
+                           c.g.graph.name.casefold(), str(c.g.graph)), c))
+    return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
+
+
+def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | None:
+    """Собрать одну тему. Возвращает секунды генерации — цену темы для
+    `need`, без ожидания замка; None — модель не звали. Собрана ли тема —
+    счётчик `g.built` (флаг рядом с ним мутанты #819 не видели); `lock_wait` —
+    сколько ждать замок, считается в момент записи, после генерации."""
+    g, theme, members, fp = cand.g, cand.theme, cand.members, cand.fp
+    path = g.folder / f"{theme}.md"
+    loaded = cand.loaded
+    if safe_write.stat_snapshot(path) != cand.mtime:
+        # Досье правили после скана (автор в Obsidian): снимок устарел, иначе
+        # сверка после генерации выбросит её как «изменилось за время
+        # генерации» (вход in3 №621, DS M2).
+        loaded = g.reads.reload(path)
+        g.keep(theme, members, loaded, fp)
+    allowed, manual, failures = _manual_for_rebuild(theme, loaded)
+    if not allowed:
+        g.отказы += failures
+        if failures == 0:
+            # Отказ из-за повреждённых «Правок автора» — это пропуск темы,
+            # а не молчание модели: тема уйдёт на следующую ночь.
+            g.skipped += 1
+            g.broken_manual += 1
+        return None
+    g0 = clock()
+    body = ""
+    for temperature in (0.2, 0.05):          # вторая попытка чуть холоднее
+        try:
+            body = dossier.trim_to_format(
+                generate(theme, members, g.files, c, temperature=temperature))
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
+            body = ""
+            break          # отказ считается ниже, в ветке `if not body`
+        if dossier.looks_valid(body):
+            break
+        print(f"  … {theme}: ответ не по формату (температура {temperature})")
+        body = ""
+    if not body:
+        # Брак дважды подряд — тот же отказ, что и исключение: тема
+        # осталась без разбора. Раньше он не считался, ночь при
+        # «Принято, что дальше?» на всех темах выходила с кодом 0 и
+        # статусом «ok» (аудит 17.08). Прежнее досье в индексе остаётся.
+        g.отказы += 1
+        return clock() - g0
+    gen_s = clock() - g0
+
+    text = dossier.render(theme, body, members, g.files, fp, g.today)
+    if manual:
+        text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
+
+    copy = None
+    wait = lock_wait()
+    with _graph_lock(g.graph, wait) as taken:
+        if not taken:
+            # Занятость — свойство графа на прогон, а не темы: без отметки
+            # каждая его тема ждала бы замок пять минут после генерации, и
+            # бюджет ушёл бы на ожидание (вход in3 №621, Haiku C1, Sonnet I3).
+            print(f"  ⏸ {g.graph.name}: замок графа не взят за {wait:.0f} с "
+                  "— его темы уйдут на следующую ночь")
+            # Ожидание в ноль — это вышедшая ночь или бюджет, а не сосед:
+            # хвост с верной причиной отдаст _drive (выход out3 №621).
+            g.busy = wait > 0
+            g.skipped += 1
+            g.locked += 1
+            return gen_s
+        # Снимок — до сверочного чтения: правка автора между сверкой и
+        # replace не затирается, запись идёт через гейт `expect` (выход out2
+        # №621, DS C1; окно было и в базе).
+        snap = safe_write.stat_snapshot(path)
+        # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
+        fresh = dossier.load_dossier(path)
+        if fresh.state != loaded.state or fresh.text != loaded.text:
+            print(f"  ⏸ {theme}: досье изменилось за время генерации — "
+                  "тема уйдёт на следующую ночь")
+            g.skipped += 1
+            g.changed += 1
+            g.keep(theme, members, fresh, fp)
+            return gen_s
+        if snap is None and fresh.state != "missing":
+            # stat не прочёл файл, который читается: без снимка гейт слеп,
+            # и «не сосчитать» стало бы «файла нет» (выход out3 №621, DS I1).
+            print(f"  ⏸ {theme}: досье не дало снимок перед записью — тема уйдёт на следующую ночь")
+            g.skipped += 1
+            g.changed += 1
+            g.keep(theme, members, fresh, fp)
+            return gen_s
+        # копия прежнего досье: пересборка сохраняла только «Правки автора» и
+        # стирала тело с редактурой облачной ревизии без единой копии
+        # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии. Не вышла
+        # копия — тему не перезаписываем, остальные не теряем (DS I2 / GLM I1 по #561)
+        try:
+            copy = dossier.backup(g.folder, g.stamp, path)
+        except OSError as e:
+            print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
+            g.отказы += 1
+            return gen_s
+        # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
+        if not safe_write.write_text(path, text, expect=snap, expect_absent=snap is None):
+            print(f"  ⏸ {theme}: досье изменилось перед записью — тема уйдёт на следующую ночь")
+            g.skipped += 1
+            g.changed += 1
+            g.keep(theme, members, dossier.load_dossier(path), fp)
+            return gen_s
+    g.built += 1
+    if copy is not None:
+        print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{g.stamp}/")
+    print(f"  ✓ {g.graph.name} · {theme}: {len(members)} источников, {len(body)} зн., {gen_s:.0f}с")
+    g.entries[theme] = {
+        "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
+        "источников": len(members), "собрано": g.today, "отпечаток": fp,
+        "ключи": dossier.keywords(theme + " " + " ".join(members) + " " + body),
+    }
+    return gen_s
+
+
+def _tail(queue: list[Candidate], reason: str, dry: bool) -> None:
+    """Остаток очереди — на завтра. Записи с диска у этих тем уже в индексе:
+    голый break отдавал write_index посещённый префикс, и _index/_ИНДЕКС
+    терял темы — регресс бага 17.08 (круг по PR #363, GLM)."""
+    print(f"  ⏹ {reason} — остальные темы завтра")
+    for cand in queue:
+        cand.g.skipped += 1          # сводка не врёт про хвост (круг-2, DS)
+        cand.g.late += 1
+        cand.g.done(dry)
+
+
+def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
+           limit: int | None, budget_s: float | None, started: float) -> int:
+    """Пройти очередь; вернуть число попыток с моделью — знаменатель порога
+    «модель молчала» (выход out1 №621: «занят» и «изменилось» тоже попытки)."""
+    attempts = 0
+    built = 0                 # --limit — потолок прогона, а не графа (аудит 26.08, Codex)
+    spent: list[float] = []   # все попытки с моделью, и отказы тоже (вход in3, DS M1)
+    budget = None if full else budget_s   # --full обещает «всё», бюджет его не режет
+    for i, cand in enumerate(queue):
+        g = cand.g
+        if dry:
+            print(f"  [план] {g.graph.name} · {cand.theme}: {len(cand.members)} источников"
+                  f" ({_CLASS_WORD[cand.cls]})")
+            g.built += 1
+            g.done(dry)
+            continue
+        if g.busy:
+            g.skipped += 1
+            g.locked += 1
+            g.done(dry)
+            continue
+        if not full and limit is not None and built >= limit:
+            g.skipped += 1
+            g.over_limit += 1
+            g.done(dry)
+            continue
+        need = sum(spent) / len(spent) if spent else NEED_START_S
+        if not live_gate.fits(budget, started, need, clock()):
+            _tail(queue[i:], "бюджет шага досье вышел", dry)
+            break
+        # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
+        # его — досье подождёт, но не дольше остатка бюджета. Окно — одна
+        # дверь у владельца гейта, потолок ночи внутри.
+        gate = {} if budget is None else {"default": budget - (clock() - started)}
+        if not live_gate.night_window_open(_root(), what="досье", **gate):
+            _tail(queue[i:], "время ночного прогона вышло", dry)
+            break
+        if not live_gate.fits(budget, started, need, clock()):
+            _tail(queue[i:], "бюджет шага досье вышел, пока ждали конца встречи", dry)
+            break
+        # Замок ждёт не дольше остатка бюджета: пять минут соседа на последней
+        # теме перебирали бы бюджет на всё ожидание (выход out1 №621, Sonnet I2).
+        def lock_wait() -> float:
+            # и потолок ночи — у его владельца (выход out2 №621, Sonnet I1)
+            return live_gate.night_wait_cap(
+                LOCK_WAIT if budget is None else min(LOCK_WAIT, budget - (clock() - started)))
+        refused, before = g.отказы, g.built
+        gen_s = _build(cand, c, lock_wait)
+        called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
+        if called:                 # цена темы — генерация, без ожидания замка (Haiku I1)
+            spent.append(gen_s)
+        attempts += called or g.отказы > refused   # нечитаемое досье — отказ без модели
+        built += g.built - before
+        g.done(dry)
+    return attempts
+
+
+class RunResult:
+    """Итог прогона: графы, попытки с моделью, графы с упавшим сканом."""
+
+    def __init__(self):
+        self.graphs: list[_GraphRun] = []
+        self.attempts = 0
+        self.scan_failed: list[str] = []
+
+
+def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
+            limit: int | None = None, budget_s: float | None = None,
+            started: float | None = None) -> "RunResult":
+    """Все графы одной очередью: скан всех, порядок `queue_order`, сборка до
+    бюджета. Индекс каждого графа пишется, даже если прогон оборвался."""
+    started = clock() if started is None else started
     today = date.today().isoformat()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")   # штамп копий .backup/, с секундами как у ревизии
-    entries, built, skipped = [], 0, 0
-    # Раздельно, иначе ночь с занятым графом выглядит как «всё без
-    # изменений» (круг-2 по PR #438, DS Minor 9).
-    unchanged = over_limit = locked = late = changed = broken_manual = 0
-    reads = _DossierReads()
-    отказы = 0   # модель не ответила: тема осталась без разбора
-
-    # Несобранные темы — вперёд, и только потом крупнейшие. Прежняя
-    # сортировка только по размеру отдавала все 12 слотов ночи большим
-    # «несвежим» кластерам (их отпечаток меняет каждая встреча), а новые
-    # маленькие темы стояли в хвосте неопределённо долго: на графе 26.08
-    # это 112 собранных досье из 419 тем (аудит графа, DS + GLM).
-    themes = sorted(cl.items(),
-                    key=lambda kv: ((folder / f"{kv[0]}.md").exists(), -len(kv[1]),
-                                    kv[0].casefold(), kv[0]))
-    for ti, (theme, members) in enumerate(themes):
-        path = folder / f"{theme}.md"
-        fp = dossier.fingerprint(members, files)
-        loaded = reads.load(path)
-        old_fp = dossier.read_fingerprint(loaded)
-
-        if not full and old_fp == fp and path.exists():
-            skipped += 1
-            unchanged += 1
-            _keep_in_index(entries, theme, members, loaded, fp, today)
-            continue
-
-        if not full and built >= limit:
-            skipped += 1
-            over_limit += 1
-            _keep_in_index(entries, theme, members, loaded, fp, today)
-            continue
-
-        if dry:
-            print(f"  [план] {theme}: {len(members)} источников"
-                  f" ({'новое' if not old_fp else 'изменилось'})")
-            built += 1
-            continue
-
-        # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
-        # его — досье подождёт (с потолком, чтобы ночь не стала днём). Окно —
-        # одна дверь у владельца гейта, потолок внутри.
-        if not live_gate.night_window_open(_root(), what="досье"):
-            print("  ⏹ время ночного прогона вышло — остальные темы завтра")
-            # Индекс от потолка не худеет: оставшиеся темы остаются в нём
-            # записями с диска — как темы сверх лимита. Голый break отдавал
-            # write_index посещённый префикс, и _index/_ИНДЕКС терял темы —
-            # регресс бага 17.08 (круг по PR #363, GLM).
-            skipped += len(themes) - ti   # сводка не врёт про хвост (круг-2, DS)
-            late += len(themes) - ti
-            for late_theme, late_members in themes[ti:]:
-                late_path = folder / f"{late_theme}.md"
-                _keep_in_index(entries, late_theme, late_members, reads.load(late_path),
-                               dossier.fingerprint(late_members, files), today)
-            break
-        allowed, manual, failures = _manual_for_rebuild(theme, loaded)
-        if not allowed:
-            отказы += failures
-            if failures == 0:
-                # Отказ из-за повреждённых «Правок автора» — это пропуск темы,
-                # а не молчание модели: тема уйдёт на следующую ночь.
-                skipped += 1
-                broken_manual += 1
-            _keep_in_index(entries, theme, members, loaded, fp, today)
-            continue
-        t0 = time.time()
-        body = ""
-        for attempt in (1, 2):          # вторая попытка чуть холоднее
+    out = RunResult()
+    candidates: list[Candidate] = []
+    try:
+        for path in paths:
+            # Граф — единица отказа: прежний цикл по графам успевал собрать
+            # графы до сломанного, а общий скан без этой границы отменял бы
+            # работу всех (выход out1 №621, Sonnet I1, DS I1).
             try:
-                body = dossier.trim_to_format(
-                    generate(theme, members, files, c, temperature=0.2 if attempt == 1 else 0.05))
+                g, found = _scan(path, full, today, stamp)
             except Exception as e:  # noqa: BLE001
-                print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
-                body = ""
-                break          # отказ считается ниже, в ветке `if not body`
-            if dossier.looks_valid(body):
-                break
-            print(f"  … {theme}: попытка {attempt} — ответ не по формату, повтор")
-            body = ""
-        if not body:
-            # Брак дважды подряд — тот же отказ, что и исключение: тема
-            # осталась без разбора. Раньше он не считался, ночь при
-            # «Принято, что дальше?» на всех темах выходила с кодом 0 и
-            # статусом «ok» (аудит 17.08). Прежнее досье в индексе оставляем.
-            отказы += 1
-            _keep_in_index(entries, theme, members, loaded, fp, today)
-            continue
-
-        text = dossier.render(theme, body, members, files, fp, today)
-        if manual:
-            text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
-
-        with _graph_lock(graph) as taken:
-            if not taken:
-                print(f"  ⏸ {theme}: граф занят соседом дольше "
-                      f"{LOCK_WAIT // 60} мин — тема уйдёт на следующую ночь")
-                skipped += 1
-                locked += 1
-                _keep_in_index(entries, theme, members, loaded, fp, today)
+                print(f"⚠️ скан {path.name} не удался ({type(e).__name__}: {e}) — граф пропущен")
+                out.scan_failed.append(path.name)
                 continue
-            # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
-            fresh = dossier.load_dossier(path)
-            if fresh.state != loaded.state or fresh.text != loaded.text:
-                print(f"  ⏸ {theme}: досье изменилось за время генерации — "
-                      "тема уйдёт на следующую ночь")
-                skipped += 1
-                changed += 1
-                _keep_in_index(entries, theme, members, fresh, fp, today)
-                continue
-            folder.mkdir(parents=True, exist_ok=True)
-            # копия прежнего досье: пересборка сохраняла только «Правки автора» и
-            # стирала тело с редактурой облачной ревизии без единой копии
-            # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии. Не вышла
-            # копия — тему не перезаписываем, остальные не теряем (DS I2 / GLM I1 по #561)
-            try:
-                copy = dossier.backup(folder, stamp, path)
-            except OSError as e:
-                print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
-                отказы += 1
-                _keep_in_index(entries, theme, members, loaded, fp, today)
-                continue
-            # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
-            safe_write.write_text(path, text)
-        built += 1
-        if copy is not None:
-            print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{stamp}/")
-        print(f"  ✓ {theme}: {len(members)} источников, {len(body)} зн., {time.time()-t0:.0f}с")
+            out.graphs.append(g)
+            candidates += found
+            print(f"скан {path.name}: тем {len(g.cl)}, к сборке {len(found)}")
+        out.attempts = _drive(queue_order(candidates), c, full=full, dry=dry, limit=limit,
+                              budget_s=budget_s, started=started)
+    finally:
+        # Исключение или SIGTERM посреди очереди не оставляет графы со старым
+        # индексом (вход in3 №621, Sonnet I2, DS I2).
+        for g in out.graphs:
+            g.write_index(dry)
+    return out
 
-        entries.append({
-            "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
-            "источников": len(members), "собрано": today, "отпечаток": fp,
-            "ключи": dossier.keywords(theme + " " + " ".join(members) + " " + body),
-        })
 
-    if not dry and entries:
-        # Индекс — карта ВСЕХ досье на диске, а не только тех, что посетил
-        # этот прогон: темы сверх лимита ночи и темы с отказом раньше
-        # выпадали из _index/_ИНДЕКС, поиск деградировал, а --full на
-        # большом графе оставлял в индексе 12 записей (аудит 17.08).
-        # Без замка: write_index пишет через tmp+replace, полуфайла не будет,
-        # а ждать соседа здесь значило бы оставить свежие досье невидимыми для
-        # поиска до следующей ночи (круг-2 по PR #438, DS Important 3).
-        dossier.write_index(folder, entries)
-
-    if skipped:
-        print(f"  пропущено {skipped}: без изменений {unchanged}, "
-              f"сверх лимита {over_limit}, граф занят {locked}, "
-              f"не успели за ночь {late}, правки автора повреждены {broken_manual}, "
-              f"досье изменилось {changed}")
-    return {"граф": graph.name, "тем": len(cl), "собрано": built,
-            "пропущено": skipped, "отказы": отказы, "битые": len(reads.damaged),
-            "без_изменений": unchanged, "сверх_лимита": over_limit,
-            "занят": locked, "не_успели": late,
-            "правки_повреждены": broken_manual, "досье_изменилось": changed}
+def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int | None,
+        budget_s: float | None = None) -> dict:
+    """Один граф — та же очередь из одного графа."""
+    result = run_all([graph], c, full=full, dry=dry, limit=limit, budget_s=budget_s)
+    if not result.graphs:
+        raise RuntimeError(f"скан графа {graph} не удался")
+    g = result.graphs[0]
+    g.report()
+    return g.result()
 
 
 def _собрано(source: pathlib.Path | dossier.DossierLoad) -> str:
@@ -341,17 +545,27 @@ def _собрано(source: pathlib.Path | dossier.DossierLoad) -> str:
         return ""
 
 
+def _terminate(signum, frame):  # noqa: ARG001
+    """SIGTERM потолка ночи — в SystemExit, чтобы `finally` прогона дописал
+    индексы графов (вход in3 №621, Sonnet I2)."""
+    raise SystemExit(143)
+
+
 def main() -> int:
     charoite_paths.harden_umask()   # досье по темам встреч — только владельцу (№385)
+    started = clock()   # бюджет — со старта, скан всех графов внутри него (вход in3, DS I3)
     ap = argparse.ArgumentParser(description="Ночная сборка досье по темам графа")
     ap.add_argument("--graph", help="путь к графу")
     ap.add_argument("--all-graphs", action="store_true", help="все графы vault")
-    ap.add_argument("--full", action="store_true", help="пересобрать все темы")
+    ap.add_argument("--full", action="store_true", help="пересобрать все темы (без бюджета)")
     ap.add_argument("--dry", action="store_true", help="показать план, не писать")
-    ap.add_argument("--limit", type=int, default=MAX_PER_NIGHT, help="потолок тем за прогон")
+    ap.add_argument("--budget-s", type=float, default=DEFAULT_BUDGET_S,
+                    help="бюджет шага в секундах; остаток очереди — на завтра")
+    ap.add_argument("--limit", type=int, default=None, help="ручной потолок тем за прогон")
     ap.add_argument("--find", help="проверить, что найдётся по запросу")
     args = ap.parse_args()
-
+    if args.budget_s <= 0:   # ноль — не «ничего не делать», а забытое значение (выход out3 №621)
+        args.budget_s = DEFAULT_BUDGET_S
     c = cfg()
 
     if args.find:
@@ -365,42 +579,45 @@ def main() -> int:
             print(f"       {h['файл']}")
         return 0
 
-    graphs = all_graphs() if args.all_graphs else [
+    graph_paths = all_graphs() if args.all_graphs else [
         pathlib.Path(args.graph).expanduser() if args.graph else default_graph(c)]
-
-    total = 0
-    remaining = args.limit
-    тем = 0
-    отказов = 0
-    for g in graphs:
-        if not g.is_dir():
+    present = []
+    for g in graph_paths:
+        if g.is_dir():
+            present.append(g)
+        else:
             print(f"{g}: нет такой папки")
-            continue
-        print(f"=== {g.name}")
-        # Потолок — на ПРОГОН, а не на каждый граф: при --all-graphs с двумя
-        # графами ночь собирала до 24 досье вместо 12 и уходила за своё окно
-        # вдвое (аудит графа 26.08, Codex).
-        r = run(g, c, full=args.full, dry=args.dry, limit=remaining)
-        remaining = max(0, remaining - r["собрано"])
-        print(f"    тем: {r['тем']}, собрано: {r['собрано']}, пропущено: {r['пропущено']}, битые: {r['битые']}"
-              + (f", отказов модели: {r['отказы']}" if r.get("отказы") else ""))
+
+    signal.signal(signal.SIGTERM, _terminate)
+    result = run_all(present, c, full=args.full, dry=args.dry, limit=args.limit,
+                     budget_s=args.budget_s, started=started)
+    total = отказов = 0
+    for g in result.graphs:
+        r = g.result()
+        print(f"=== {r['граф']}: тем: {r['тем']}, собрано: {r['собрано']}, пропущено: {r['пропущено']}, битые: {r['битые']}"
+              + (f", отказов модели: {r['отказы']}" if r["отказы"] else ""))
+        g.report()
         total += r["собрано"]
-        тем += r["тем"]
-        отказов += r.get("отказы", 0)
+        отказов += r["отказы"]
 
     print(f"итого собрано досье: {total}")
+    попыток = result.attempts
     if отказов:
-        print(f"отказов модели: {отказов} из {тем} тем")
+        print(f"отказов модели: {отказов} из {попыток} попыток")
     # Молчащая модель — это не успех.
     #
     # 12.08 локальный сервер лёг посреди прогона: 258 тем ушли без разбора,
     # а шаг закончился нулём — и статус ночи получился «ok». Досье не
     # собрались, граф черствел, и заметить это можно было только вручную
     # читая лог. Единичный отказ случается и на живой модели, поэтому порог,
-    # а не «любой отказ».
-    if отказов >= max(3, тем // 10):
-        return 2
-    return 0
+    # а не «любой отказ». Знаменатель — попытки, а не темы: бюджет пускает
+    # 40–80 попыток из ~950 тем, и порог по темам не срабатывал бы вовсе
+    # (вход in3 №621, Sonnet I1).
+    if result.scan_failed:   # до порога: код 2 не прячет пропавший граф (выход out2 №621)
+        print(f"⚠️ скан не удался: {', '.join(result.scan_failed)}")
+    if отказов >= max(3, попыток // 10):
+        return 4 if result.scan_failed else 2   # 4 — и то и другое (выход out3 №621)
+    return 1 if result.scan_failed else 0
 
 
 if __name__ == "__main__":
