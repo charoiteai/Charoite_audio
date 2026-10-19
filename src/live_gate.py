@@ -322,7 +322,11 @@ def night_window_open(root: pathlib.Path, what: str, log: Callable[[str], None] 
     передаёт вовсе — только `default` для своей шкалы.
 
     `clock` — стенные часы ночи (`NIGHTLY_UNTIL_ENV` — unix-время); `gate` уходит
-    в `wait_while_live` как есть (poll, sleep, now, alive) — его часы свои.
+    в `wait_while_live` как есть (poll, sleep, now, alive). Ожидание меряется теми
+    же часами, что потолок: monotonic на macOS во сне стоит, и потолок по стене,
+    отмеренный монотонными секундами, после сна машины ждал сверх ночи (выход
+    out2 №749, DS I1, Haiku I1). Свои часы ожидания вызывающий передаёт `now`.
     """
+    gate.setdefault("now", clock)
     wait_while_live(root, log, what=what, cap=night_wait_cap(default, clock), **gate)
     return not night_is_over(clock)

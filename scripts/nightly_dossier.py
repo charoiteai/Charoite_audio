@@ -417,11 +417,13 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     return gen_s
 
 
-def _tail(queue: list[Candidate], reason: str, dry: bool) -> None:
+def _tail(queue: list[Candidate], reason: str, dry: bool, full: bool = False) -> None:
     """Остаток очереди — на завтра. Записи с диска у этих тем уже в индексе:
     голый break отдавал write_index посещённый префикс, и _index/_ИНДЕКС
     терял темы — регресс бага 17.08 (круг по PR #363, GLM)."""
-    print(f"  ⏹ {reason} — остальные темы завтра")
+    # темы без изменений берёт только --full: у них «завтра» — следующее воскресенье (выход out2 №749, DS M4)
+    later = ", без изменений — в следующую полную пересборку" if full else ""
+    print(f"  ⏹ {reason} — остальные темы завтра{later}")
     for cand in queue:
         cand.g.skipped += 1          # сводка не врёт про хвост (круг-2, DS)
         cand.g.late += 1
@@ -476,7 +478,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             continue
         need = sum(spent) / len(spent) if spent else NEED_START_S
         if _short(budget, started, need):
-            _tail(queue[i:], _why_short(budget, started), dry)
+            _tail(queue[i:], _why_short(budget, started), dry, full)
             break
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
         # его — досье подождёт, но не дольше остатка шага. Окно — одна
@@ -484,10 +486,10 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
         rest = _rest(budget, started)
         gate = {} if rest is None else {"default": rest}
         if not live_gate.night_window_open(_root(), what="досье", clock=wall_clock, **gate):
-            _tail(queue[i:], "время ночного прогона вышло", dry)
+            _tail(queue[i:], "время ночного прогона вышло", dry, full)
             break
         if _short(budget, started, need):
-            _tail(queue[i:], _why_short(budget, started) + ", пока ждали конца встречи", dry)
+            _tail(queue[i:], _why_short(budget, started) + ", пока ждали конца встречи", dry, full)
             break
         # Замок ждёт не дольше остатка шага: пять минут соседа на последней
         # теме перебирали бы бюджет на всё ожидание (выход out1 №621, Sonnet I2).
@@ -495,7 +497,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             # и потолок ночи — у его владельца (выход out2 №621, Sonnet I1)
             rest = _rest(budget, started)
             return live_gate.night_wait_cap(
-                LOCK_WAIT if rest is None else min(LOCK_WAIT, rest))
+                LOCK_WAIT if rest is None else min(LOCK_WAIT, rest), now=wall_clock)
         refused, before = g.отказы, g.built
         gen_s = _build(cand, c, lock_wait)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)

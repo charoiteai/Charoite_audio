@@ -458,9 +458,9 @@ def test_fits_is_one_arithmetic_for_every_budget():
     assert not live_gate.fits(100, 0.0, 41, now=60)
 
 
-_UNTILS = [None, "12800", "30000", "11000", "мусор", "inf", "-inf", "nan"]
+_UNTILS = [None, "12800", "30000", "11000", "10000", "мусор", "inf", "-inf", "nan"]
 # Ночь до резерва хвоста при стене 10000 и резерве 1800: None — потолка нет
-_NIGHT = {None: None, "12800": 1000.0, "30000": 18200.0, "11000": 0.0,
+_NIGHT = {None: None, "12800": 1000.0, "30000": 18200.0, "11000": 0.0, "10000": 0.0,
           "мусор": None, "inf": None, "-inf": 0.0, "nan": None}
 
 
@@ -508,7 +508,27 @@ def test_every_reader_of_the_night_ceiling_parses_it_the_same(monkeypatch, until
     over = live_gate.night_is_over(now=lambda: 10000.0)
     cap = live_gate.night_wait_cap(1e9, now=lambda: 10000.0)
     left = live_gate.night_left(0.0, wall=lambda: 10000.0)
+    until_s = live_gate._until()
+    assert over == (until_s is not None and 10000.0 > until_s)   # граница — через разбор (выход out2, Haiku M2)
     if left is None:
-        assert cap == 1e9 and not over
+        assert until_s is None and cap == 1e9
     else:
-        assert cap == left and over == (left == 0.0)
+        assert cap == left == max(0.0, until_s - 10000.0)
+
+
+def test_meeting_wait_is_measured_by_the_ceiling_clock(tmp_path, monkeypatch):
+    """Выход out2 №749 (DS I1, Haiku I1): потолок ожидания встречи — по стене,
+    а отмерялся монотонными секундами, которые во сне стоят. Машина проспала
+    1000 с при потолке 600 — ожидание обязано кончиться на первом же опросе."""
+    wall = [1.0e9]
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, str(wall[0] + 2400))
+    sleeps = []
+
+    def sleep(sec):
+        sleeps.append(sec)
+        wall[0] += 1000 if len(sleeps) == 1 else 20
+
+    assert live_gate.night_window_open(tmp_path, "проба", lambda m: None, default=600.0,
+                                       clock=lambda: wall[0], sleep=sleep,
+                                       alive=lambda r: True) is True
+    assert len(sleeps) == 1, sleeps

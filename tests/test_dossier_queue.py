@@ -428,7 +428,7 @@ def test_zero_lock_wait_is_the_night_not_a_busy_graph(nd, tmp_path, monkeypatch)
     """Выход out3 №621, Sonnet M1: вышедшая ночь записывала граф в «занятые»."""
     graph = _graph(tmp_path, "Г", {f"т{i}": None for i in range(3)})
     monkeypatch.setattr(nd, "_graph_lock", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(wait > 0))
-    monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default: 0.0)
+    monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default, **k: 0.0)
     states = nd.run_all([graph], {}, full=False, dry=False).graphs
     assert not states[0].busy
 
@@ -606,7 +606,7 @@ def test_a_build_that_found_the_graph_locked_is_an_attempt(nd, tmp_path, monkeyp
     """Мутант #819: тема, у которой модель отработала, а замок не дался, — попытка."""
     graph = _graph(tmp_path, "Г", {"одна": None})
     monkeypatch.setattr(nd, "_graph_lock", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(False))
-    monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default: default)
+    monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default, **k: default)
     r = nd.run_all([graph], {}, full=False, dry=False)
     assert r.attempts == 1 and r.graphs[0].locked == 1 and r.graphs[0].built == 0
 
@@ -658,3 +658,23 @@ def test_cut_full_rebuild_continues_from_the_rest_next_sunday(nd, tmp_path, monk
         built[day] = list(nd.calls)
     assert len(built["2026-10-25"]) == 3 and len(built["2026-11-01"]) == 3, built
     assert set(built["2026-10-25"]) | set(built["2026-11-01"]) == {f"тема{i}" for i in range(6)}
+
+
+def test_night_running_out_during_the_meeting_wait_stops_before_the_theme(nd, tmp_path, monkeypatch, capsys):
+    """Выход out2 №749, DS M3: стена ушла внутри ожидания встречи за резерв
+    хвоста — тему не начинаем, причина — ночь, а не бюджет."""
+    graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(3)})
+    wall = _Wall(1.0e9)
+    monkeypatch.setattr(nd, "wall_clock", wall)
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV, str(wall.t + nd.live_gate.NIGHT_TAIL_S + 600))
+
+    def window(*a, **k):
+        wall.t += 590              # ждали конца встречи, до резерва осталось 10 с
+        return True
+
+    monkeypatch.setattr(nd.live_gate, "night_window_open", window)
+    r = nd.run(graph, {}, full=True, dry=False, limit=None, budget_s=7200)
+    assert nd.calls == [] and r["не_успели"] == 3, r
+    out = capsys.readouterr().out
+    assert "до конца ночи — только время шагов после досье, пока ждали конца встречи" in out
+    assert "без изменений — в следующую полную пересборку" in out
