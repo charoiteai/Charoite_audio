@@ -2073,17 +2073,19 @@ below the root: a module moved into a package, `src/<pkg>/x.py`, would have got
 the package directory as the code root and the same directory as the data root
 (№331; one batch form — №424).
 
-The app reads a refusal only after the daemon's stdout is drained. `Process`
+The app reads a refusal after the daemon's stdout is drained. `Process`
 reports the exit on one queue and the last stdout bytes on another, so judging
 death at the exit lost the error status, and with it the refusal reason,
-whenever the reader lagged: with a 1 ms delay in the reader, 200 runs of 200
-lost it before №619 and 0 of 200 after. `DaemonLaunch`
-(`app/Sources/CharoiteApp/Services/DaemonLaunch.swift`) declares death only when
-both facts are in — the process has exited and stdout has reached EOF. A
-grandchild that keeps the pipe open is bounded by a 2 s ceiling, re-armed while
-bytes are still unread (`FIONREAD`), at most three times. A last line without a
-newline is flushed before the launch closes, and a closed launch never feeds its
-successor.
+whenever the reader lagged: in a one-off run on 19.10 with a 1 ms delay in the
+reader, 200 launches of 200 lost it before №619 and 0 of 200 after
+(`testRealProcessRefusalGivesUpThroughTheWiring` keeps the case: 5 ms, 20
+launches). `DaemonLaunch` (`app/Sources/CharoiteApp/Services/DaemonLaunch.swift`,
+the rule is in its header) declares death when the process has exited and
+stdout has reached EOF, or when the ceiling runs out. The ceiling exists for a
+grandchild that keeps the pipe open: 2 s, re-armed while bytes are still unread
+(`FIONREAD`), at most three times; bytes that arrive after a death by the
+ceiling are dropped. A last line without a newline is flushed before the launch
+closes, and a closed launch never feeds its successor.
 
 The answer is asked for, never remembered. `ROOT = resolve_root(__file__)` at
 module level — or the same line as a class field — looks like a call to the
