@@ -75,7 +75,10 @@ final class GraphInventoryService: ObservableObject {
             ((try? FileManager.default.contentsOfDirectory(
                 at: graph.appendingPathComponent(folder),
                 includingPropertiesForKeys: [.contentModificationDateKey]))?
-                .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".") } ?? [])
+                // указатель «_ЯДРА.md» пересобирается каждую ночь — свежайший
+                // mtime сажал его в блок ядер как тему (№750, круг in1)
+                .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".")
+                    && !GraphFolders.isServiceFile($0.lastPathComponent) } ?? [])
                 .map { (folder, $0) }
         }
         snap.nodes += coreFiles.count

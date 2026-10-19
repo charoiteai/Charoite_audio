@@ -1,0 +1,109 @@
+import XCTest
+@testable import CharoiteApp
+
+#if os(macOS)
+/// Служебные файлы графа (карта, указатели папок, индекс досье) — не источник
+/// чата (№750): чип «_MOC» без вида и смысла, слоты выдачи на навигацию.
+final class ServiceFilesTests: XCTestCase {
+
+    private func makeGraph(_ files: [String: String]) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graph-svc-\(UUID().uuidString)")
+        for (rel, text) in files {
+            let url = dir.appendingPathComponent(rel)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    func testServiceRuleIsTheFileNameRuleOfTheSchema() {
+        XCTAssertTrue(GraphFolders.isServiceFile("_MOC.md"))
+        XCTAssertTrue(GraphFolders.isServiceFile("Ядра/_ЯДРА.md"))
+        XCTAssertTrue(GraphFolders.isServiceFile("Досье/_ИНДЕКС.md"))
+        XCTAssertTrue(GraphFolders.isServiceFile("Служебное_отчёт.md"))
+        // форма сравнения схемы: регистр, ё→е, разложенный Unicode (имя с диска macOS)
+        XCTAssertTrue(GraphFolders.isServiceFile("служебное_x.md"))
+        XCTAssertTrue(GraphFolders.isServiceFile("СЛУЖЕБНОЕ_x.md"))
+        XCTAssertTrue(GraphFolders.isServiceFile("Служебное_".decomposedStringWithCanonicalMapping + "x.md"))
+        XCTAssertFalse(GraphFolders.isServiceFile("Ядра/Тема.md"))
+        XCTAssertFalse(GraphFolders.isServiceFile("Системы/Карта_mockups.md"))
+        // правило ИМЕНИ файла: папку с «_» оно не судит
+        XCTAssertFalse(GraphFolders.isServiceFile("_Архив/Встреча.md"))
+    }
+
+    /// Swift-копия префиксов совпадает с литералом схемы Чароита: третий
+    /// префикс в Python без правки здесь — красный тест, а не тихое расхождение.
+    func testPrefixesMatchThePythonSchema() throws {
+        let schema = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // app
+            .deletingLastPathComponent()   // репозиторий
+            .appendingPathComponent("src/charoite_schema.py")
+        let text = try String(contentsOf: schema, encoding: .utf8)
+        let re = try NSRegularExpression(pattern: #"service_prefixes\s*=\s*\(([^)]*)\)"#)
+        let m = try XCTUnwrap(re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                              "service_prefixes не найден в \(schema.path)")
+        let inside = String(text[Range(m.range(at: 1), in: text)!])
+        let lits = try NSRegularExpression(pattern: #""([^"]*)""#)
+            .matches(in: inside, range: NSRange(inside.startIndex..., in: inside))
+            .map { String(inside[Range($0.range(at: 1), in: inside)!]) }
+        XCTAssertEqual(lits, GraphFolders.servicePrefixes)
+    }
+
+    func testLocalSearchLeavesServiceFilesOut() async throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-svc-index-\(UUID().uuidString).json")
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let graph = try makeGraph([
+            // карта и указатель повторяют слова запроса гуще, чем узел
+            "_MOC.md": "# Карта\nПлатёжный шлюз, платёжный шлюз, провайдер, провайдер.",
+            "Ядра/_ЯДРА.md": "- [[Ядра/Платёжный шлюз]] — провайдер выбран",
+            "Ядра/Платёжный шлюз.md": "# Платёжный шлюз\nПровайдер выбран после теста.",
+        ])
+        let out = await ArchiveSearch.localSearchOutcome(
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
+        let rels = try XCTUnwrap(out.rels)
+        XCTAssertEqual(rels, ["Ядра/Платёжный шлюз.md"])
+        XCTAssertFalse(out.text.contains("_MOC.md") || out.text.contains("_ЯДРА.md"),
+                       "служебный блок ушёл модели: \(out.text.prefix(200))")
+    }
+
+    func testBrainHeadersDropServiceFiles() {
+        let text = """
+        • Ядра/_ЯДРА.md
+          …сводка статусов…
+
+        • Люди/Мария Соколова.md
+          …см. Досье/_ИНДЕКС.md…
+        """
+        XCTAssertEqual(ArchiveSearch.brainRels(text), ["Люди/Мария Соколова.md"])
+        // одни служебные заголовки — пустой список, а не nil: фолбэк по телам
+        // сниппетов собрал бы чипы из упоминаний
+        XCTAssertEqual(ArchiveSearch.brainRels("• _MOC.md\n  …Ядра/Тема.md…"), [])
+        XCTAssertNil(ArchiveSearch.brainRels("текст без заголовков, Ядра/Тема.md"))
+    }
+
+    func testFallbackParserAndDocChipTitle() {
+        let s = MemoryScreenPolicy.sources(from: "см. Ядра/_ЯДРА.md и Документация/Отчёт.md")
+        XCTAssertEqual(s.map(\.rel), ["Документация/Отчёт.md"])
+        XCTAssertEqual(s.first?.title, "Документ · Отчёт")
+    }
+
+    func testInventoryCoresSkipTheCoreIndex() throws {
+        let graph = try makeGraph([
+            "Ядра/Релиз.md": "---\ntype: core\n---\n# Релиз\nподпись решена",
+            "Ядра/_ЯДРА.md": "- [[Ядра/Релиз|Релиз]] — подпись решена",
+        ])
+        let snap = GraphInventoryService.scan(graph: graph)
+        XCTAssertEqual(snap.cores.map(\.name), ["Релиз"])
+        XCTAssertEqual(snap.nodes, 1)
+    }
+
+    func testMockInNameIsNotADistillate() {
+        XCTAssertEqual(ArchiveSearch.roleWeightForTests("Системы/Карта_mockups.md"), 1.0)
+    }
+}
+#endif

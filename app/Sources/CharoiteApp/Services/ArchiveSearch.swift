@@ -158,21 +158,29 @@ enum ArchiveSearch {
         }
         if !graphOverridden,
            let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
-            // Brain отдаёт тот же формат блоков «• путь\n  …фрагмент…»:
-            // берём rels ТОЛЬКО из строк-заголовков — упоминание пути в теле
-            // сниппета источником не становится и на brain-пути (круг-2,
-            // GLM). Ни одного заголовка — rels=nil, честный фолбэк текста.
-            let headerRels = viaBrain.split(separator: "\n", omittingEmptySubsequences: false)
-                .compactMap { line -> String? in
-                    let s = line.trimmingCharacters(in: .whitespaces)
-                    guard s.hasPrefix("• "), s.hasSuffix(".md") else { return nil }
-                    return String(s.dropFirst(2))
-                }
-            return Outcome(text: viaBrain, rels: headerRels.isEmpty ? nil : headerRels)
+            return Outcome(text: viaBrain, rels: brainRels(viaBrain))
         }
         return await localSearchOutcome(query: query, limit: limit,
                                         snippet: snippet, budget: budget,
                                         includeLinked: includeLinked)
+    }
+
+    /// Источники brain-ответа. Brain отдаёт тот же формат блоков «• путь\n
+    /// …фрагмент…»: rels берём ТОЛЬКО из строк-заголовков — упоминание пути в
+    /// теле сниппета источником не становится и на brain-пути (круг-2, GLM).
+    /// Ни одного заголовка — nil, честный фолбэк текста. Служебные заголовки
+    /// отброшены (№750): фильтр обхода локального поиска сюда не доходит, а
+    /// заголовки, которые все оказались служебными, — пустой список, не nil:
+    /// иначе фолбэк собрал бы чипы из упоминаний в телах сниппетов.
+    static func brainRels(_ text: String) -> [String]? {
+        let headers = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> String? in
+                let s = line.trimmingCharacters(in: .whitespaces)
+                guard s.hasPrefix("• "), s.hasSuffix(".md") else { return nil }
+                return String(s.dropFirst(2))
+            }
+        guard !headers.isEmpty else { return nil }
+        return headers.filter { !GraphFolders.isServiceFile($0) }
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -296,6 +304,11 @@ enum ArchiveSearch {
                 // .obsidian/, .trash/, .git/, .DS_Store и подобное.
                 !url.pathComponents.contains { $0.hasPrefix(".") && $0.count > 1 }
             }
+            // Служебные файлы графа (карта, указатели папок, индекс досье) —
+            // навигация, не документ: занимали слоты выдачи и становились
+            // чипом «_MOC» (№750). До чтения и дедупа по содержимому — иначе
+            // служебная копия выигрывала бы дедуп у настоящего файла.
+            .filter { !GraphFolders.isServiceFile($0.lastPathComponent) }
             .sorted { a, b in
                 let aArch = a.path.contains("/Встречи-архив/")
                 let bArch = b.path.contains("/Встречи-архив/")
@@ -633,7 +646,9 @@ enum ArchiveSearch {
                    "_hints", "вопросы и ответы", "черновик"]
         if raw.contains(where: { low.contains($0) }) { return 0.7 }
         // Дистиллят: решения уже отобраны и сформулированы.
-        let distilled = ["минутк", "_minutes", "саммари", "разбор", "ядра/", "_moc"]
+        // «_moc» убран (№750): служебная карта в поиск не входит, а подстрока
+        // поднимала любой «…_mock…» как дистиллят.
+        let distilled = ["минутк", "_minutes", "саммари", "разбор", "ядра/"]
         if distilled.contains(where: { low.contains($0) }) { return 1.15 }
         return 1.0
     }

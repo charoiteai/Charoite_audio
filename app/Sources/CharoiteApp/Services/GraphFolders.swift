@@ -15,4 +15,24 @@ enum GraphFolders {
     static let docs = ["Документация", "Docs", "文档"]
     static let cores = ["Ядра", "Cores", "核心"]
     static var all: [String] { meetings + nodes + dossiers + docs }
+
+    /// Префиксы служебного файла — зеркало `service_prefixes` схемы Чароита
+    /// (src/charoite_schema.py; тест сверяет литерал). Указатели папок, карта
+    /// содержания, кандидаты, индекс досье пишет конвейер: это навигация, не
+    /// документ, и Python-поиск держит их вне индекса (`doc_role` → SERVICE).
+    /// Правило ИМЕНИ ФАЙЛА: папки с «_» оно не судит.
+    static let servicePrefixes = ["_", "Служебное_"]
+
+    /// Служебный ли файл — по имени (последний компонент пути), в форме
+    /// сравнения Python-схемы: единая форма Unicode, регистр, ё→е.
+    static func isServiceFile(_ rel: String) -> Bool {
+        let name = (rel as NSString).lastPathComponent
+        let f = fold(name)
+        return servicePrefixes.contains { f.hasPrefix(fold($0)) }
+    }
+
+    private static func fold(_ s: String) -> String {
+        s.precomposedStringWithCanonicalMapping.lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+    }
 }

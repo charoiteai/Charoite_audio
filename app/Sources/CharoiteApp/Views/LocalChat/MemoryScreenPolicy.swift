@@ -37,7 +37,8 @@ enum MemoryScreenPolicy {
             case .dossier:
                 return L.t("Досье", "Dossier", "档案") + " · " + stem
             case .doc:
-                return stem
+                // голый стем не говорил, что это за чип (№750)
+                return L.t("Документ", "Document", "文档") + " · " + stem
             }
         }
     }
@@ -86,7 +87,8 @@ enum MemoryScreenPolicy {
         for m in re.matches(in: block, range: NSRange(block.startIndex..., in: block)) {
             guard let r = Range(m.range, in: block) else { continue }
             let rel = String(block[r]).trimmingCharacters(in: .whitespaces)
-            if seen.contains(rel) { continue }
+            // указатель папки в тексте brain-блока — не источник (№750)
+            if seen.contains(rel) || GraphFolders.isServiceFile(rel) { continue }
             seen.insert(rel)
             out.append(Source(rel: rel, kind: kind(of: rel)))
             if out.count >= limit { break }

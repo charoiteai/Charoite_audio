@@ -1827,6 +1827,19 @@ differ sharply as an answer to "what did we decide": raw material (transcript,
 hints, drafts) is damped to 0.7, distilled material (minutes, summaries, cores)
 is lifted to 1.15. Raw text is best for a quotation and worst for an answer.
 
+**Service files are navigation, not sources.** A file whose name starts with a
+service prefix of the schema (`_` or `Служебное_`, compared the way
+`src/charoite_schema.py` compares them: case, ё/е, Unicode form) — `_MOC.md`,
+the folder indexes, the dossier index — never reaches the chat: not the
+context, not a source chip, not the cores block of the memory column. The map
+repeats the words of the nodes it lists more densely than the nodes do, so it
+won slots in the answer and showed up as a bare «_MOC» chip; its handwritten
+overview is a historical slice, and every fact in it lives in a node or a
+meeting. The Swift rule is `GraphFolders.isServiceFile`, a file-name rule (a
+folder starting with `_` is not judged by it); a test reads the Python literal
+so the two copies cannot drift. The same rule cuts the answers of a running
+brain server (:8100) by their `• path` headers.
+
 **Context budget.** Output is capped: no single source takes more than 40% of
 the budget, a source left with under 300 characters is dropped whole, and the
 two strongest sources go to the beginning and the end — attention sags in the
