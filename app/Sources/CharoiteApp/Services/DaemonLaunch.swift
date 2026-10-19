@@ -39,6 +39,11 @@ final class DaemonLaunch {
     let errHandle: FileHandle?
     /// Потолок ожидания EOF после выхода; тесты сжимают его.
     var eofCeiling = DaemonLaunch.eofCeiling
+    #if DEBUG
+    /// Задержка читателя перед `availableData`: гонка №619 воспроизводится
+    /// ею всегда (1 мс — 200 из 200 на прежней проводке).
+    var readerDelayForTest: useconds_t = 0
+    #endif
 
     private(set) var exited = false
     private(set) var reachedEOF = false
@@ -104,9 +109,15 @@ final class DaemonLaunch {
     /// `Task`: порядок между `Task` и блоками очереди не задан.
     func wireHandles() {
         let reader = reader
+        #if DEBUG
+        let delay = readerDelayForTest
+        #endif
         stdout.readabilityHandler = { [weak self] handle in
             reader.set(true)
             defer { reader.set(false) }
+            #if DEBUG
+            if delay > 0 { usleep(delay) }
+            #endif
             let data = handle.availableData
             // EOF: без снятия хендлера dispatch-source жил после смерти демона —
             // CPU-спин пустыми срабатываниями + утечка pipe на каждый рестарт
@@ -122,9 +133,14 @@ final class DaemonLaunch {
         }
     }
 
-    /// Единственный вход событий запуска; тесты зовут его напрямую, чтобы
-    /// задать порядок, который в проде даёт гонка.
-    func received(_ event: Event) {
+    #if DEBUG
+    /// Тестовый вход: порядок событий, который в проде даёт гонка.
+    func receiveForTest(_ event: Event) { received(event) }
+    #endif
+
+    /// Единственный вход событий запуска. Закрыт модулю: из него достижима
+    /// смерть живого демона и `stop()` по строке autostop (out1 №619).
+    private func received(_ event: Event) {
         guard !closed else { return }
         switch event {
         case .output(let data):
@@ -180,6 +196,7 @@ final class DaemonLaunch {
         onOutput = nil
         onDead = nil
         stdout.readabilityHandler = nil
+        process.terminationHandler = nil
         try? errHandle?.close()
         // write-end stdin жил до конца сеанса — та же fd-утечка, что у errHandle (аудит 13.09, DS M2)
         try? stdinPipe.fileHandleForWriting.close()

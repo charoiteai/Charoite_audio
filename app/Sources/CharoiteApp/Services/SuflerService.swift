@@ -525,29 +525,29 @@ final class SuflerService: ObservableObject {
         }
     }
 
-    /// До `run()`: хвост строки и причина отказа принадлежат прошлому
-    /// демону — новый начинает с чистого буфера. Смерть запуска приходит
-    /// после EOF его stdout (`DaemonLaunch`, №619).
+    /// До `run()`: хвост строки и причина отказа принадлежат прошлому демону.
+    /// Смерть запуска приходит после EOF его stdout (`DaemonLaunch`, №619).
     private func beginLaunch(_ l: DaemonLaunch, wire: Bool) {
-        if let old = launch { closeLaunch(old) }
+        launch?.close()
+        launch = nil
         stdoutBuffer = Data()
         daemonFatalReason = nil
         l.attach(onOutput: { [weak self, weak l] data in
-                     guard let self, let l, l === self.launch else { return }
-                     self.consume(data)
-                 },
-                 onDead: { [weak self] l in
-                     self?.closeLaunch(l)
-                     self?.daemonDied(l.process)
-                 })
+            guard let self, let l, l === self.launch else { return }
+            self.consume(data)
+        }, onDead: { [weak self] l in
+            if self?.launch === l { self?.launch = nil }
+            self?.daemonDied(l.process)
+        })
         if wire { l.wireHandles() }
     }
 
-    /// Остановка зовёт это, закрывая встречу по опросу `isRunning`, не
-    /// дождавшись EOF: исход запуска после этого ничего не решает.
-    func closeLaunch(_ l: DaemonLaunch) {
-        l.close()
-        if launch === l { launch = nil }
+    /// Остановка закрыла встречу по опросу `isRunning`, не дождавшись EOF: исход
+    /// запуска ничего не решает. Живой демон (`process` назначен) так не закрыть.
+    func releaseLaunchAfterFinish() {
+        guard process == nil else { return }
+        launch?.close()
+        launch = nil
     }
 
     /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
@@ -796,8 +796,9 @@ final class SuflerService: ObservableObject {
     /// достижим stop() живой записи).
     func consumeForTest(_ json: String) { consume(Data((json + "\n").utf8)) }
 
-    /// Тестовый вход: запуск в состоянии «идёт запись» без python, захвата
-    /// и часов. `wire: false` — события приходят только из `received`.
+    #if DEBUG
+    /// Тестовый вход (сбрасывает гейт): запуск «идёт запись» без python и захвата;
+    /// `wire: false` — события приходят только из `receiveForTest`.
     func adoptLaunchForTest(_ l: DaemonLaunch, wire: Bool) throws {
         lifecycleGate = RecordingLifecycleGate()
         guard let token = lifecycleGate.beginStart() else { return }
@@ -808,6 +809,8 @@ final class SuflerService: ObservableObject {
         _ = lifecycleGate.markRecording(token)
         publishLifecycle()
     }
+
+    #endif
 
     private func consume(_ data: Data) {
         stdoutBuffer.append(data)

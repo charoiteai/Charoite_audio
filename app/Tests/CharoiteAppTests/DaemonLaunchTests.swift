@@ -45,11 +45,11 @@ final class DaemonLaunchTests: XCTestCase {
         let (l, _) = idleLaunch()
         try s.adoptLaunchForTest(l, wire: false)
 
-        l.received(.exit)
+        l.receiveForTest(.exit)
         XCTAssertTrue(s.process === l.process, "решение принято до EOF stdout — строка причины ещё в пути")
 
-        l.received(.output(Data((refusalLine + "\n").utf8)))
-        l.received(.eof)
+        l.receiveForTest(.output(Data((refusalLine + "\n").utf8)))
+        l.receiveForTest(.eof)
         XCTAssertNil(s.process)
         assertGaveUpOnRecipe(s)
         XCTAssertTrue(l.closed, "концы запуска закрыты вместе с исходом")
@@ -60,10 +60,10 @@ final class DaemonLaunchTests: XCTestCase {
         let (l, _) = idleLaunch()
         try s.adoptLaunchForTest(l, wire: false)
 
-        l.received(.output(Data(refusalLine.utf8)))   // демон умер, не дописав \n
-        l.received(.eof)
+        l.receiveForTest(.output(Data(refusalLine.utf8)))   // демон умер, не дописав \n
+        l.receiveForTest(.eof)
         XCTAssertTrue(s.process === l.process, "EOF без выхода — процесс ещё жив")
-        l.received(.exit)
+        l.receiveForTest(.exit)
         assertGaveUpOnRecipe(s)
     }
 
@@ -74,7 +74,7 @@ final class DaemonLaunchTests: XCTestCase {
         l.eofCeiling = 0.05
         try s.adoptLaunchForTest(l, wire: false)
 
-        l.received(.exit)   // write-конец открыт у теста, как у внука
+        l.receiveForTest(.exit)   // write-конец открыт у теста, как у внука
         XCTAssertNotNil(s.process, "решение раньше потолка — EOF не ждали вовсе")
         spin(until: { s.process == nil })
 
@@ -92,7 +92,7 @@ final class DaemonLaunchTests: XCTestCase {
         try s.adoptLaunchForTest(l, wire: false)
         out.fileHandleForWriting.write(Data("{}\n".utf8))   // читатель не успел их забрать
 
-        l.received(.exit)
+        l.receiveForTest(.exit)
         spin(until: { s.process == nil })
 
         XCTAssertEqual(l.rearms, DaemonLaunch.ceilingRearms, "потолок продлевается, пока байты лежат в трубе")
@@ -103,20 +103,33 @@ final class DaemonLaunchTests: XCTestCase {
         let s = SuflerService()
         let (old, _) = idleLaunch()
         try s.adoptLaunchForTest(old, wire: false)
-        s.closeLaunch(old)               // так закрывает встречу остановка
+        s.process = nil                 // так закрывает встречу остановка
+        s.releaseLaunchAfterFinish()
 
         let (next, _) = idleLaunch()
         try s.adoptLaunchForTest(next, wire: false)
         let before = s.status
 
-        old.received(.output(Data((refusalLine + "\n").utf8)))
-        old.received(.exit)
-        old.received(.eof)
+        old.receiveForTest(.output(Data((refusalLine + "\n").utf8)))
+        old.receiveForTest(.exit)
+        old.receiveForTest(.eof)
 
         XCTAssertEqual(s.status, before, "строка старого демона затёрла экран нового")
         XCTAssertTrue(s.launch === next)
         XCTAssertTrue(s.process === next.process)
         XCTAssertFalse(next.closed, "исход старого запуска закрыл трубы преемника")
+    }
+
+    func testFinishDoesNotCloseALaunchWhoseDaemonIsStillTracked() throws {
+        let s = SuflerService()
+        let (l, _) = idleLaunch()
+        try s.adoptLaunchForTest(l, wire: false)
+        s.releaseLaunchAfterFinish()
+        XCTAssertFalse(l.closed, "закрытие запуска мимо остановки глушит stdin живого демона")
+        s.process = nil              // так делает finish остановки
+        s.releaseLaunchAfterFinish()
+        XCTAssertTrue(l.closed)
+        XCTAssertNil(s.launch)
     }
 
     func testNewLaunchClosesTheOpenOne() throws {
@@ -130,6 +143,8 @@ final class DaemonLaunchTests: XCTestCase {
     }
 
     /// Настоящий процесс через ту же проводку: строка отказа, затем выход 11.
+    /// Читатель задержан на 5 мс — так прежняя проводка (`Task` на каждый
+    /// колбэк) теряла причину всегда.
     func testRealProcessRefusalGivesUpThroughTheWiring() throws {
         for _ in 0..<20 {
             let s = SuflerService()
@@ -140,6 +155,7 @@ final class DaemonLaunchTests: XCTestCase {
             p.standardOutput = out
             p.standardInput = inp
             let l = DaemonLaunch(process: p, stdinPipe: inp, stdout: out.fileHandleForReading, errHandle: nil)
+            l.readerDelayForTest = 5_000
             try s.adoptLaunchForTest(l, wire: true)
 
             spin(until: { s.process == nil })

@@ -216,7 +216,7 @@ extension SuflerService {
             self.captureShutdownToken = nil
             self.shutdownPhase = .done
             self.process = nil
-            if let l = self.launch { self.closeLaunch(l) }
+            self.releaseLaunchAfterFinish()
             self.publishLifecycle()
 
             if let final = Self.finalStatus(disposition: self.cleanupDisposition,
