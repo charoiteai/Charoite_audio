@@ -5,7 +5,31 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release --arch arm64
+# Флаги — один массив для сборки и для вопроса «где продукт»: разойдись они,
+# путь указал бы в чужую конфигурацию.
+SWIFT_FLAGS=(-c release --arch arm64)
+swift build "${SWIFT_FLAGS[@]}"
+# Каталог продукта называет сам SwiftPM: раскладка .build у бэкендов разная
+# (native — .build/arm64-apple-macosx/release, swiftbuild со Swift 6.4 —
+# .build/out/Products/Release), и жёсткий путь ломал сборку на 6.4 (№745).
+BIN="$(swift build "${SWIFT_FLAGS[@]}" --show-bin-path)/CharoiteApp"
+
+# Mach-O ли файл: по магии заголовка. Подписывать надо ВСЕ бинарники
+# (нотаризация отвергает бандл с одним неподписанным .so), но только их —
+# скрипты, .py, .h и заголовки .a codesign не примет, а раньше сбой на них
+# глушился `|| true`, вместе со всеми настоящими сбоями подписи.
+is_macho() {
+    case "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" in
+        feedface|feedfacf|cefaedfe|cffaedfe|cafebabe|bebafeca|cafebabf|bfbafeca) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+# Нет продукта — отказ ДО того, как снесён прежний бандл: иначе на руках не
+# остаётся ни старого Charoite.app, ни нового.
+if [ ! -x "$BIN" ] || ! is_macho "$BIN"; then
+    echo "нет собранного бинаря: $BIN (swift build ${SWIFT_FLAGS[*]})" >&2
+    exit 1
+fi
 
 # версия бандла = последний git-тег (release-please), не зашитая константа:
 # приложение перестаёт представляться древней версией
@@ -16,7 +40,7 @@ VERSION=${VERSION:-0.0.0}
 APP=build/Charoite.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .build/arm64-apple-macosx/release/CharoiteApp "$APP/Contents/MacOS/CharoiteApp"
+cp "$BIN" "$APP/Contents/MacOS/CharoiteApp"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # Assets.car — иконка нового формата (Icon Composer) для macOS 26+: без неё
 # Tahoe показывает старый .icns в серой плитке. Собирается
@@ -156,16 +180,6 @@ if [ -z "$SIGN_ID" ] && [ "$FORCE_ADHOC" = 0 ]; then
         | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
 fi
 
-# Mach-O ли файл: по магии заголовка. Подписывать надо ВСЕ бинарники
-# (нотаризация отвергает бандл с одним неподписанным .so), но только их —
-# скрипты, .py, .h и заголовки .a codesign не примет, а раньше сбой на них
-# глушился `|| true`, вместе со всеми настоящими сбоями подписи.
-is_macho() {
-    case "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" in
-        feedface|feedfacf|cefaedfe|cffaedfe|cafebabe|bebafeca|cafebabf|bfbafeca) return 0 ;;
-        *) return 1 ;;
-    esac
-}
 # Все Mach-O дерева, NUL-разделённые, — по магии, а не по имени или битам
 # исполнения: `libfoo.so.1` с режимом 644 — тоже Mach-O, и нотаризация
 # отвергнет бандл из-за него (второе мнение DeepSeek). Заведомо не бинарные

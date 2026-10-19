@@ -13,6 +13,7 @@ on:
       - "app-ios/**"
       - "scripts/install_engine.py"
       - ".swiftlint.yml"
+      - "tests/test_make_app.py"
       - ".github/workflows/swift-tests.yml"
   push:
     paths:
@@ -20,6 +21,7 @@ on:
       - "app-ios/**"
       - "scripts/install_engine.py"
       - ".swiftlint.yml"
+      - "tests/test_make_app.py"
       - ".github/workflows/swift-tests.yml"
 
 concurrency:
@@ -57,17 +59,36 @@ jobs:
           brew list swiftlint >/dev/null 2>&1 || brew install swiftlint >/dev/null
           swiftlint lint --quiet | tee /tmp/lint.out
           ! grep -q error /tmp/lint.out
+      # Версия тулчейна — в ключе кэша: имя образа macos-26 не меняется, когда
+      # в нём обновляется Swift, а .build одной версии (и одного бэкенда сборки —
+      # со Swift 6.4 раскладка другая, №745) другой не годится.
+      - name: Swift toolchain id
+        id: swift
+        shell: bash
+        run: |
+          set -euo pipefail
+          # присваивание, а не подстановка в echo: упавший swift иначе дал бы
+          # ключ из пустого ввода и чужой .build
+          id="$(swift --version 2>/dev/null | shasum -a 256 | cut -c1-16)"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
         with:
           path: app/.build
-          # Образ в ключе: .build от Swift 6.1 (macos-15) на 6.2 не годится
-          key: spm-macos-26-${{ hashFiles('app/Package.swift') }}
-          restore-keys: spm-macos-26-
+          key: spm-macos-26-${{ steps.swift.outputs.id }}-${{ hashFiles('app/Package.swift') }}
+          restore-keys: spm-macos-26-${{ steps.swift.outputs.id }}-
       # Живые пробы — отдельный test target: компилируем, чтобы не гнили
       # сигнатуры, но не запускаем на CI без приватного графа и моделей.
       - name: Build app and all test targets
         working-directory: app
-        run: swift build --build-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --build-tests
+          # make_app.sh берёт бинарь по --show-bin-path (№745). Здесь проверен
+          # контракт SwiftPM на тулчейне раннера — путь ведёт к продукту, — но в
+          # debug: release-сборки в этой джобе нет. Свои флаги make_app.sh
+          # сверяет сам и отказывает до сноса прежнего бандла.
+          test -x "$(swift build --show-bin-path)/CharoiteApp"
       # Фильтр, не совпавший ни с одним тестом, даёт exit 0 при нуле
       # прогонов — «зелёный без прогона» (круг-1 по #426: DS, GLM и Codex
       # сошлись). Поэтому сверяем строку Executed: тестов должно быть >0.
@@ -78,6 +99,15 @@ jobs:
           python-version: "3.12"
       - name: PyYAML для проверки записи конфига
         run: python -m pip install -q "pyyaml==6.0.3"
+      # Проба make_app.sh — только macOS (codesign, Mach-O), а pytest на PR идёт
+      # на ubuntu, где она пропускается. Здесь она живёт на PR: секунды, без
+      # зависимостей проекта (--noconftest — conftest тянет src/). Пины — как в ci.yml.
+      - name: Проба make_app.sh (№745)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q "pytest==9.1.1" "pytest-timeout==2.4.0"
+          python -m pytest tests/test_make_app.py -q --noconftest -p no:cacheprovider
       - name: Test deterministic suite
         working-directory: app
         shell: bash
