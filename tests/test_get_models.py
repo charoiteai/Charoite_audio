@@ -143,12 +143,15 @@ def test_resume_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
     (аудит DeepSeek 16.08)."""
     import io
 
+    import hashlib
+
     body = b"x" * 3000
+    sha = hashlib.sha256(body).hexdigest()   # докачка — только с суммой (№643)
     dest = tmp_path / "tokens.txt"
     part = dest.with_suffix(dest.suffix + ".part")
     part.write_bytes(body[:1000])         # оборванная прошлая закачка
     # с этого же адреса — иначе `.part` чужой и качается с нуля (№643)
-    part.with_name(part.name + ".src").write_text('https://example.invalid/tokens.txt\n\n"v1"\n',
+    part.with_name(part.name + ".src").write_text(f"https://example.invalid/tokens.txt\n{sha}\n",
                                                   encoding="utf-8")
 
     class FakeResponse(io.BytesIO):
@@ -168,7 +171,8 @@ def test_resume_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
         return FakeResponse(body)
 
     monkeypatch.setattr(get_models.urllib.request, "urlopen", fake_urlopen)
-    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                        sha256=sha)
 
     assert seen and seen[0] == "bytes=1000-", "докачка не запросила Range"
     assert dest.read_bytes() == body, "файл удвоен или не докачан"
@@ -601,10 +605,10 @@ def test_segmentation_alone_does_not_fetch_embeddings(data_root, monkeypatch, ca
 
 # --- одна загрузка в одну цель (№643) ---------------------------------------
 
-def _serve(monkeypatch, body: bytes, etag: str = '"e1"', fail_after: int = 0) -> list:
-    """Подменённая сеть: отдаёт `body` с версией `etag`; на Range — хвост с 206, если
-    `If-Range` совпал с версией, иначе файл целиком (200). Пишет заголовок Range.
-    `fail_after` — обрыв соединения после стольких байт."""
+def _serve(monkeypatch, body: bytes, short_first: int = 0) -> list:
+    """Подменённая сеть: отдаёт `body` (на Range — хвост с 206), пишет заголовок Range.
+    `short_first` — первый ответ тихо обрывается после стольких байт (зеркало рвёт
+    длинные закачки без ошибки)."""
     import io
 
     seen: list = []
@@ -612,18 +616,14 @@ def _serve(monkeypatch, body: bytes, etag: str = '"e1"', fail_after: int = 0) ->
     def fake_urlopen(req, timeout=0):      # noqa: ANN001, ARG001
         rng = req.get_header("Range")
         seen.append(rng)
-        if rng and req.get_header("If-range") not in (None, etag):
-            rng = None
         start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+        payload = body[start:]
+        if short_first and len(seen) == 1:
+            payload = payload[:short_first]
 
         class Response(io.BytesIO):
             status = 206 if rng else 200
-            headers = {"Content-Length": str(len(body) - start), "ETag": etag}
-
-            def read(self, n=-1):          # noqa: ANN001
-                if fail_after and self.tell() >= fail_after:
-                    raise OSError("соединение оборвано")
-                return super().read(n)
+            headers = {"Content-Length": str(len(body) - start)}
 
             def __enter__(self):
                 return self
@@ -631,7 +631,7 @@ def _serve(monkeypatch, body: bytes, etag: str = '"e1"', fail_after: int = 0) ->
             def __exit__(self, *a):        # noqa: ANN002
                 self.close()
 
-        return Response(body[start:])
+        return Response(payload)
 
     monkeypatch.setattr(get_models.urllib.request, "urlopen", fake_urlopen)
     return seen
@@ -790,8 +790,9 @@ def test_a_failed_replace_is_a_reason_not_a_trace(monkeypatch, tmp_path):
         get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
     assert "не удалось сохранить модель tokens.txt" in str(exc.value)
     assert not isinstance(exc.value, get_models.DownloadBusy)
-    # Сбой среды, а не файла: скачанное остаётся, повтор опубликует его (выход №643, DS I2).
-    assert dest.with_suffix(".txt.part").stat().st_size == 3000
+    # Снос при любом сбое публикации: класс исключения вину среды от вины файла не
+    # отличает — битый bz2 тоже `OSError` (выход №643, out3).
+    assert not dest.with_suffix(".txt.part").exists()
 
 
 def test_two_processes_on_one_target_leave_one_good_file(tmp_path):
@@ -909,10 +910,25 @@ def test_a_failed_publication_leaves_no_part_behind(monkeypatch, tmp_path):
     assert not part.exists() and not part.with_name(part.name + ".src").exists()
 
 
-def test_a_part_without_sum_or_version_restarts_from_zero(monkeypatch, tmp_path):
-    """Без суммы и без версии файла хвост с сервера не сверить с началом на диске:
-    зеркало сменило файл между попытками — склейка с кодом 0 (выход №643, Haiku C1).
-    Такой `.part` качается с нуля; 416 «полон» без проверки тоже не бывает (DS C1)."""
+@pytest.mark.parametrize("sha", [False, True])
+def test_a_torn_download_resumes_only_with_a_sum(monkeypatch, tmp_path, sha):
+    """Зеркало тихо оборвало первый ответ. С суммой хвост дотягиваем по Range — сумма
+    сверит склейку; без суммы каждая попытка с нуля: сменённый между попытками файл
+    склеился бы с кодом 0 (выход №643, Haiku C1 out2, DS C1 out3)."""
+    import hashlib
+
+    body = b"t" * 3000
+    dest = tmp_path / "tokens.txt"
+    seen = _serve(monkeypatch, body, short_first=1000)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                        sha256=hashlib.sha256(body).hexdigest() if sha else "")
+    assert seen == ([None, "bytes=1000-"] if sha else [None, None])
+    assert dest.read_bytes() == body
+
+
+def test_a_part_without_a_sum_is_not_resumed_across_runs(monkeypatch, tmp_path):
+    """Остаток прошлого запуска без суммы — с нуля, без Range: 416 «полон» без
+    проверки или склейка со сменённым файлом невозможны (выход №643, DS C1 out2)."""
     body = b"n" * 3000
     dest = tmp_path / "tokens.txt"
     part = dest.with_suffix(".txt.part")
@@ -924,31 +940,16 @@ def test_a_part_without_sum_or_version_restarts_from_zero(monkeypatch, tmp_path)
     assert seen == [None] and dest.read_bytes() == body
 
 
-def test_a_changed_file_on_the_mirror_is_fetched_whole_not_glued(monkeypatch, tmp_path):
-    """Версия первого ответа идёт в `If-Range`: сменённый файл сервер отдаёт целиком
-    (200), и хвост новой версии не дописывается к началу старой."""
-    body = b"2" * 3000
-    dest = tmp_path / "tokens.txt"
-    part = dest.with_suffix(".txt.part")
-    part.write_bytes(b"1" * 1000)
-    url = "https://example.invalid/tokens.txt"
-    part.with_name(part.name + ".src").write_text(f'{url}\n\n"e1"\n', encoding="utf-8")
-    seen = _serve(monkeypatch, body, etag='"e2"')
-    get_models.download(url, dest, expect_mb=1, onnx=False)
-    assert seen == ["bytes=1000-"] and dest.read_bytes() == body
+def test_a_truncated_archive_is_a_reason_and_leaves_no_part(monkeypatch, tmp_path):
+    """Обрезанный bz2 отдаёт `EOFError` или `OSError`: строка причины, `.part` снесён —
+    иначе каждый повтор публиковал бы тот же битый архив (выход №643, out3)."""
+    dest = tmp_path / "seg.onnx"
+    _serve(monkeypatch, b"BZh" + b"0" * 3000)
 
+    def truncated(archive, target):        # noqa: ARG001
+        raise EOFError("Compressed file ended before the end-of-stream marker was reached")
 
-def test_the_first_answer_records_the_file_version_for_resume(monkeypatch, tmp_path):
-    """Обрыв посреди первой загрузки: версия файла уже записана, и повтор докачивает
-    хвост по `If-Range`, а не начинает с нуля."""
-    body = b"v" * 600 * 1024
-    dest = tmp_path / "tokens.txt"
-    url = "https://example.invalid/tokens.txt"
-    _serve(monkeypatch, body, fail_after=256 * 1024)
-    with pytest.raises(SystemExit, match="не скачалось"):
-        get_models.download(url, dest, expect_mb=1, onnx=False)
-    part = dest.with_suffix(".txt.part")
-    assert part.with_name(part.name + ".src").read_text(encoding="utf-8") == f'{url}\n\n"e1"\n'
-    seen = _serve(monkeypatch, body)
-    get_models.download(url, dest, expect_mb=1, onnx=False)
-    assert seen == [f"bytes={256 * 1024}-"] and dest.read_bytes() == body
+    monkeypatch.setattr(get_models, "_extract_onnx", truncated)
+    with pytest.raises(SystemExit, match="не удалось сохранить модель seg.onnx"):
+        get_models.download("https://example.invalid/seg.tar.bz2", dest, expect_mb=1)
+    assert not dest.with_suffix(".onnx.part").exists()
