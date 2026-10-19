@@ -971,6 +971,7 @@ def test_a_torn_answer_without_length_is_not_published(monkeypatch, tmp_path, wi
         get_models.download("https://mirror.invalid/m.onnx", dest, expect_mb=2, onnx=True, sha256=sha)
     assert not dest.exists()
     assert not dest.with_suffix(".onnx.part").exists()
+    assert not dest.with_suffix(".onnx.part.src").exists()
 
 
 def test_a_whole_answer_without_length_is_published_by_the_sum(monkeypatch, tmp_path):

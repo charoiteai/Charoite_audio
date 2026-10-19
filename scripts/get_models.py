@@ -489,7 +489,7 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
                 break
         if total and part.stat().st_size < total:
             got, want = part.stat().st_size, total
-            part.unlink(missing_ok=True)
+            _drop_part(part)
             raise SystemExit(
                 f"не докачалось: {got} из {want} байт за шесть попыток.\n"
                 "проверьте сеть или укажите своё зеркало через --url" + _URL_TERMS)
@@ -497,24 +497,20 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
             # Ни размера, ни суммы (своё зеркало --url без Content-Length): тихий
             # обрыв не отличить от конца файла, и обрезанная модель ложилась на
             # место с кодом 0 — тот же исход, от которого замок (шаг Haiku №643 out4).
-            part.unlink(missing_ok=True)
+            _drop_part(part)
             raise SystemExit(
                 f"не проверить, докачался ли {dest.name}: сервер не назвал размер, "
                 "а суммы для своего адреса нет.\nукажите зеркало, которое отдаёт "
                 "Content-Length")
     except (urllib.error.URLError, OSError) as e:
-        # Недокачанное НЕ удаляем: с суммой следующий запуск продолжит с этого
-        # места; без суммы он снесёт остаток и начнёт с нуля (докачка только с
-        # суммой — выше, на входе в попытку).
-        # Первая версия чистила .part на любой ошибке — и каждая попытка
-        # начиналась с нуля, хотя сервер поддерживает Range. На модели в
-        # 228 МБ по рвущемуся каналу это означало «никогда».
-        # Без суммы остаток не продолжить — убираем сразу, а не до следующего
+        # С суммой недокачанное НЕ удаляем: следующий запуск продолжит с этого
+        # места. Первая версия чистила .part на любой ошибке — и каждая попытка
+        # начиналась с нуля, хотя сервер поддерживает Range; на модели в 228 МБ
+        # по рвущемуся каналу это означало «никогда». Без суммы докачки нет
+        # (выше, на входе в попытку) — остаток убираем сразу, а не до следующего
         # запуска той же цели (финальный Opus №643, M2).
         if not sha256:
-            for leftover in (part, part.with_name(part.name + ".src")):
-                with contextlib.suppress(OSError):
-                    leftover.unlink(missing_ok=True)
+            _drop_part(part)
         done = part.stat().st_size // 1024 // 1024 if part.exists() else 0
         raise SystemExit(
             f"не скачалось: {e}\n"
@@ -528,19 +524,24 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
     # докачивался бы тем же файлом при каждом повторе (выход №643, Haiku C1), а
     # «вина среды или файла» по классу не различается — битый bz2 тоже `OSError`
     # (выход №643, out3). Цена — повтор после нехватки места качает заново.
-    src = part.with_name(part.name + ".src")
     try:
         _publish(url, dest, part, expect_mb, onnx, sha256)
     except (OSError, EOFError, tarfile.TarError, SystemExit) as e:
-        for leftover in (part, src):   # уборка не подменяет причину
-            with contextlib.suppress(OSError):
-                leftover.unlink(missing_ok=True)
+        _drop_part(part)
         if isinstance(e, SystemExit):
             raise
         raise SystemExit(f"не удалось сохранить модель {dest.name}: {e}") from None
     with contextlib.suppress(OSError):
-        src.unlink(missing_ok=True)
+        part.with_name(part.name + ".src").unlink(missing_ok=True)
     print(f"готово: {dest} ({dest.stat().st_size // 1024 // 1024} МБ)")
+
+
+def _drop_part(part: pathlib.Path) -> None:
+    """Убрать `.part`, который не продолжить, вместе с его источником `.part.src`.
+    Каждый файл — под своим `suppress`: уборка не подменяет причину отказа."""
+    for leftover in (part, part.with_name(part.name + ".src")):
+        with contextlib.suppress(OSError):
+            leftover.unlink(missing_ok=True)
 
 
 def _publish(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb: int,

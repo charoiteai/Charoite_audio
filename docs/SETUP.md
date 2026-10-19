@@ -241,7 +241,7 @@ CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --pl
 
 The exit code is honest: 0 — installed and the probe is green; 12
 (`EXIT_INSTALL_BUSY`) — the machine is busy, another install is running, or another
-process is downloading the same model file; 13
+process's download of the same model file has stalled; 13
 (`EXIT_INSTALL_CANCELLED`) — cancelled; 1 — refused. Details —
 [DIARIZATION.md](DIARIZATION.md).
 
