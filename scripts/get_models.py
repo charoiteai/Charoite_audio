@@ -385,22 +385,38 @@ def _in_place(dest: pathlib.Path, url: str, sha256: str) -> bool:
         return False
 
 
+def _source_lines(part: pathlib.Path) -> list[str]:
+    """Строки `.part.src`: адрес, сумма и, если сервер её дал, версия файла."""
+    try:
+        return part.with_name(part.name + ".src").read_text(encoding="utf-8").split("\n")
+    except (OSError, ValueError):   # обрезанный сайдкар не в UTF-8 — тоже чужой
+        return []
+
+
+def _write_source(part: pathlib.Path, url: str, sha256: str, version: str = "") -> None:
+    part.with_name(part.name + ".src").write_text(
+        f"{url}\n{sha256}\n" + (f"{version}\n" if version else ""), encoding="utf-8")
+
+
 def _part_source(part: pathlib.Path, url: str, sha256: str) -> None:
     """`.part` продолжаем, только если он начат с того же адреса и суммы.
 
     Источник пишется рядом (`.part.src`) до первого байта. Без него обрыв одной
     модели и загрузка другой в ту же цель склеивали два файла: с суммой — ложное
     «файл по этому адресу изменился», без суммы — битая модель с кодом 0 (вход
-    №643, DS C1). `.part` без записи источника — тоже с нуля."""
-    src = part.with_name(part.name + ".src")
-    want = f"{url}\n{sha256}\n"
-    try:
-        same = src.read_text(encoding="utf-8") == want
-    except (OSError, ValueError):   # обрезанный сайдкар не в UTF-8 — тоже чужой
-        same = False
-    if not same:
+    №643, DS C1). `.part` без записи источника — тоже с нуля. Версию файла
+    (третья строка) дописывает первый ответ сервера — см. `_download_locked`."""
+    if _source_lines(part)[:2] != [url, sha256]:
         part.unlink(missing_ok=True)
-    src.write_text(want, encoding="utf-8")
+        _write_source(part, url, sha256)
+
+
+def _version(resp) -> str:
+    """Версия файла на сервере для `If-Range`: сильный ETag или Last-Modified."""
+    etag = resp.headers.get("ETag") or ""
+    if etag and not etag.startswith("W/"):
+        return etag
+    return resp.headers.get("Last-Modified") or ""
 
 
 def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
@@ -420,7 +436,7 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
         # Под замком, а не только после ожидания: сосед мог закончить между
         # проверкой вызывающего и нашим flock (выход №643, S M3).
         if _in_place(dest, url, sha256):
-            print(f"уже на месте: {dest} — поставила соседняя загрузка")
+            print(f"уже на месте: {dest} — сумма сошлась")
             return
         try:
             _part_source(part, url, sha256)
@@ -445,9 +461,20 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
             done = part.stat().st_size if part.exists() else 0
             if total and done >= total:
                 break
+            lines = _source_lines(part)
+            version = lines[2] if len(lines) > 2 else ""
+            if done and not sha256 and not version:
+                # Без суммы и без версии файла хвост с сервера не сверить с
+                # началом на диске: зеркало сменило файл — склейка с кодом 0
+                # (выход №643, Haiku C1). Такой `.part` — с нуля.
+                part.unlink()
+                done = 0
             req = urllib.request.Request(url)
             if done:
                 req.add_header("Range", f"bytes={done}-")
+                if version:
+                    # Файл сменился — сервер отдаст его целиком (200), а не хвост.
+                    req.add_header("If-Range", version)
                 print(f"  докачиваю с {done // 1024 // 1024} МБ (попытка {attempt})")
             try:
                 # nosemgrep — адрес из константы MODELS, не пользовательский ввод
@@ -455,9 +482,11 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
             except urllib.error.HTTPError as e:
                 # Хвоста нет: `.part` уже полный — сосед убит между последним
                 # куском и публикацией. Зеркала отвечают на это 416, и каждый
-                # повтор упирался в него же (выход №643, Haiku C1). Полноту
-                # решают сумма и проверка формы при публикации.
-                if done and e.code == 416:
+                # повтор упирался в него же (выход №643, Haiku C1). Докачку
+                # здесь просят только с суммой или с версией в `If-Range`
+                # (сменённый файл пришёл бы целиком, а не 416): полноту решает
+                # сумма или эта же версия, а не код ответа (выход №643, DS C1).
+                if done and e.code == 416 and (sha256 or version):
                     break
                 raise
             with resp:
@@ -469,6 +498,10 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
                 if done and resp.status != 206:
                     done = 0
                     total = 0
+                if not done:
+                    # Версия файла, с которого начат `.part`: по ней следующая
+                    # докачка попросит хвост именно этого файла (`If-Range`).
+                    _write_source(part, url, sha256, _version(resp))
                 if not total:
                     length = resp.headers.get("Content-Length")
                     total = int(length) + done if length else 0
@@ -496,20 +529,24 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
     # Сумма, распаковка и публикация — той же строкой причины, что сеть: кнопка
     # показывает последнюю строку вывода, и трасса Python там — не причина (вход
     # №643, DS I4: место на диске, права, битый архив).
-    # Негодный `.part` уходит вместе с источником: оставленный, он докачивался бы
-    # по Range тем же негодным файлом при каждом повторе (выход №643, Haiku C1).
+    # Негодный `.part` (битый архив, отказ проверки) уходит вместе с источником:
+    # оставленный, он докачивался бы тем же негодным файлом при каждом повторе
+    # (выход №643, Haiku C1). Сбой среды (`OSError`: место, права) `.part` не
+    # трогает — он годен, повтор опубликует его без сети (выход №643, DS I2).
     src = part.with_name(part.name + ".src")
     try:
         _publish(url, dest, part, expect_mb, onnx, sha256)
-    except (OSError, tarfile.TarError) as e:
-        part.unlink(missing_ok=True)
-        src.unlink(missing_ok=True)
+    except OSError as e:
         raise SystemExit(f"не удалось сохранить модель {dest.name}: {e}") from None
-    except SystemExit:
-        part.unlink(missing_ok=True)
+    except (tarfile.TarError, SystemExit) as e:
+        with contextlib.suppress(OSError):   # уборка не подменяет причину
+            part.unlink(missing_ok=True)
+            src.unlink(missing_ok=True)
+        if isinstance(e, SystemExit):
+            raise
+        raise SystemExit(f"не удалось сохранить модель {dest.name}: {e}") from None
+    with contextlib.suppress(OSError):
         src.unlink(missing_ok=True)
-        raise
-    src.unlink(missing_ok=True)
     print(f"готово: {dest} ({dest.stat().st_size // 1024 // 1024} МБ)")
 
 

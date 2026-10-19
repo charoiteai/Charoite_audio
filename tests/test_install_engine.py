@@ -757,18 +757,24 @@ def test_the_voice_set_is_checked_and_fetched_in_process(tmp_path, monkeypatch):
     assert calls == [("segmentation.onnx", get_models.SEGMENTATION[get_models.SEG_DEFAULT].url)]
 
 
-def test_a_busy_download_target_is_code_busy(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("step", ["voice_set", "weights"])
+def test_a_busy_download_target_is_code_busy(tmp_path, monkeypatch, capsys, step):
     """«Цель качает другой процесс» у загрузчика — подкласс `SystemExit`; `main` ловит
     его раньше общего `SystemExit` и отвечает кодом «занято», а не отказом с кодом 1 —
-    из набора голосов и из весов Nemotron одинаково (выход №643, Haiku M2)."""
+    из набора голосов и из весов Nemotron одинаково (выход №643, Haiku M2 и M4):
+    настоящие `ensure_voice_set` и `fetch_nemotron`, подменена только загрузка."""
     _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie.get_models, "check", lambda dest, min_bytes: "нет")
 
-    def busy(name, root):
-        raise get_models.DownloadBusy("идёт другая загрузка segmentation.onnx")
+    def busy(url, dest, *a, **k):          # noqa: ANN002, ANN003
+        raise get_models.DownloadBusy(f"идёт другая загрузка {dest.name}")
 
-    monkeypatch.setattr(ie, "install", busy)
+    monkeypatch.setattr(ie.get_models, "download", busy)
+    run = (lambda root: ie.ensure_voice_set(root)) if step == "voice_set" \
+        else (lambda root: get_models.fetch_nemotron(root / "weights"))
+    monkeypatch.setattr(ie, "install", lambda name, root: run(root))
     assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_BUSY
-    assert "занято: идёт другая загрузка segmentation.onnx" in capsys.readouterr().err
+    assert "занято: идёт другая загрузка" in capsys.readouterr().err
 
 
 def test_a_cancel_inside_the_real_voice_set_download_is_code_13(tmp_path, monkeypatch, capsys):

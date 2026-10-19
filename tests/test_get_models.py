@@ -148,7 +148,7 @@ def test_resume_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
     part = dest.with_suffix(dest.suffix + ".part")
     part.write_bytes(body[:1000])         # оборванная прошлая закачка
     # с этого же адреса — иначе `.part` чужой и качается с нуля (№643)
-    part.with_name(part.name + ".src").write_text("https://example.invalid/tokens.txt\n\n",
+    part.with_name(part.name + ".src").write_text('https://example.invalid/tokens.txt\n\n"v1"\n',
                                                   encoding="utf-8")
 
     class FakeResponse(io.BytesIO):
@@ -601,8 +601,10 @@ def test_segmentation_alone_does_not_fetch_embeddings(data_root, monkeypatch, ca
 
 # --- одна загрузка в одну цель (№643) ---------------------------------------
 
-def _serve(monkeypatch, body: bytes) -> list:
-    """Подменённая сеть: отдаёт `body` (на Range — хвост с 206), пишет заголовок Range."""
+def _serve(monkeypatch, body: bytes, etag: str = '"e1"', fail_after: int = 0) -> list:
+    """Подменённая сеть: отдаёт `body` с версией `etag`; на Range — хвост с 206, если
+    `If-Range` совпал с версией, иначе файл целиком (200). Пишет заголовок Range.
+    `fail_after` — обрыв соединения после стольких байт."""
     import io
 
     seen: list = []
@@ -610,11 +612,18 @@ def _serve(monkeypatch, body: bytes) -> list:
     def fake_urlopen(req, timeout=0):      # noqa: ANN001, ARG001
         rng = req.get_header("Range")
         seen.append(rng)
+        if rng and req.get_header("If-range") not in (None, etag):
+            rng = None
         start = int(rng.split("=")[1].rstrip("-")) if rng else 0
 
         class Response(io.BytesIO):
             status = 206 if rng else 200
-            headers = {"Content-Length": str(len(body) - start)}
+            headers = {"Content-Length": str(len(body) - start), "ETag": etag}
+
+            def read(self, n=-1):          # noqa: ANN001
+                if fail_after and self.tell() >= fail_after:
+                    raise OSError("соединение оборвано")
+                return super().read(n)
 
             def __enter__(self):
                 return self
@@ -781,6 +790,8 @@ def test_a_failed_replace_is_a_reason_not_a_trace(monkeypatch, tmp_path):
         get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
     assert "не удалось сохранить модель tokens.txt" in str(exc.value)
     assert not isinstance(exc.value, get_models.DownloadBusy)
+    # Сбой среды, а не файла: скачанное остаётся, повтор опубликует его (выход №643, DS I2).
+    assert dest.with_suffix(".txt.part").stat().st_size == 3000
 
 
 def test_two_processes_on_one_target_leave_one_good_file(tmp_path):
@@ -828,20 +839,28 @@ def test_two_processes_on_one_target_leave_one_good_file(tmp_path):
         first = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, env=env)
         part = dest.with_suffix(".bin.part")
-        for _ in range(200):               # первый держит замок, пока сервер держит хвост
+        for _ in range(400):               # первый держит замок, пока сервер держит хвост
             if part.exists() and part.stat().st_size:
                 break
             first.poll()
             assert first.returncode is None, first.communicate()[0]
             _time.sleep(0.05)
+        else:
+            pytest.fail("первый процесс не начал загрузку за 20 с")
         second = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, env=env)
         lines: list = []
-        for line in second.stdout:
-            lines.append(line)
-            if "жду" in line:
-                second_waits.set()
+
+        def read_second():
+            for line in second.stdout:
+                lines.append(line)
+                if "жду" in line:
+                    second_waits.set()
+
+        reader = threading.Thread(target=read_second, daemon=True)
+        reader.start()
         second.wait(timeout=60)
+        reader.join(10)
         outs = [first.communicate(timeout=60)[0], "".join(lines)]
     finally:
         second_waits.set()
@@ -888,3 +907,48 @@ def test_a_failed_publication_leaves_no_part_behind(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         get_models.download("https://example.invalid/seg.tar.bz2", dest, expect_mb=1)
     assert not part.exists() and not part.with_name(part.name + ".src").exists()
+
+
+def test_a_part_without_sum_or_version_restarts_from_zero(monkeypatch, tmp_path):
+    """Без суммы и без версии файла хвост с сервера не сверить с началом на диске:
+    зеркало сменило файл между попытками — склейка с кодом 0 (выход №643, Haiku C1).
+    Такой `.part` качается с нуля; 416 «полон» без проверки тоже не бывает (DS C1)."""
+    body = b"n" * 3000
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    part.write_bytes(b"o" * 3500)          # остаток старой, более длинной версии
+    url = "https://example.invalid/tokens.txt"
+    part.with_name(part.name + ".src").write_text(f"{url}\n\n", encoding="utf-8")
+    seen = _serve(monkeypatch, body)
+    get_models.download(url, dest, expect_mb=1, onnx=False)
+    assert seen == [None] and dest.read_bytes() == body
+
+
+def test_a_changed_file_on_the_mirror_is_fetched_whole_not_glued(monkeypatch, tmp_path):
+    """Версия первого ответа идёт в `If-Range`: сменённый файл сервер отдаёт целиком
+    (200), и хвост новой версии не дописывается к началу старой."""
+    body = b"2" * 3000
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    part.write_bytes(b"1" * 1000)
+    url = "https://example.invalid/tokens.txt"
+    part.with_name(part.name + ".src").write_text(f'{url}\n\n"e1"\n', encoding="utf-8")
+    seen = _serve(monkeypatch, body, etag='"e2"')
+    get_models.download(url, dest, expect_mb=1, onnx=False)
+    assert seen == ["bytes=1000-"] and dest.read_bytes() == body
+
+
+def test_the_first_answer_records_the_file_version_for_resume(monkeypatch, tmp_path):
+    """Обрыв посреди первой загрузки: версия файла уже записана, и повтор докачивает
+    хвост по `If-Range`, а не начинает с нуля."""
+    body = b"v" * 600 * 1024
+    dest = tmp_path / "tokens.txt"
+    url = "https://example.invalid/tokens.txt"
+    _serve(monkeypatch, body, fail_after=256 * 1024)
+    with pytest.raises(SystemExit, match="не скачалось"):
+        get_models.download(url, dest, expect_mb=1, onnx=False)
+    part = dest.with_suffix(".txt.part")
+    assert part.with_name(part.name + ".src").read_text(encoding="utf-8") == f'{url}\n\n"e1"\n'
+    seen = _serve(monkeypatch, body)
+    get_models.download(url, dest, expect_mb=1, onnx=False)
+    assert seen == [f"bytes={256 * 1024}-"] and dest.read_bytes() == body
