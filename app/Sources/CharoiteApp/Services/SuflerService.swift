@@ -140,7 +140,7 @@ final class SuflerService: ObservableObject {
     /// Концы труб текущего демона (stdin, stdout, daemon.err.log) — у
     /// запуска, а не у сервиса: опоздавший исход старого демона закрывает
     /// свои, не трубы преемника (№619).
-    private(set) var launch: DaemonLaunch?
+    private var launch: DaemonLaunch?
     /// Захват ScreenCaptureKit — основной путь к системному звуку с 07.08.
     /// Живёт столько же, сколько демон: поднимается перед стартом, гаснет
     /// в stop() и при смерти демона.
@@ -532,18 +532,15 @@ final class SuflerService: ObservableObject {
         launch = nil
         stdoutBuffer = Data()
         daemonFatalReason = nil
-        l.attach(onOutput: { [weak self, weak l] data in
-            guard let self, let l, l === self.launch else { return }
-            self.consume(data)
-        }, onDead: { [weak self] l in
-            if self?.launch === l { self?.launch = nil }
-            self?.daemonDied(l.process)
-        })
+        // Прежний запуск закрыт выше, а закрытый молчит: события идут только от текущего.
+        l.attach(onOutput: { [weak self] in self?.consume($0) },
+                 onDead: { [weak self] l in self?.launch = nil; self?.daemonDied(l.process) })
         if wire { l.wireHandles() }
     }
 
     /// Остановка закрыла встречу по опросу `isRunning`, не дождавшись EOF: исход
-    /// запуска ничего не решает. Живой демон (`process` назначен) так не закрыть.
+    /// запуска ничего не решает. Гард — на случай нового вызывающего: `finish`
+    /// зовёт это после `process = nil`; хвост stdout здесь теряется (№640).
     func releaseLaunchAfterFinish() {
         guard process == nil else { return }
         launch?.close()
@@ -794,9 +791,9 @@ final class SuflerService: ObservableObject {
     /// Тестовый вход: private consume виден extension ЭТОГО файла — сырой
     /// NDJSON-вход не открывается модулю (DS r1 по #473: из consume
     /// достижим stop() живой записи).
-    func consumeForTest(_ json: String) { consume(Data((json + "\n").utf8)) }
-
     #if DEBUG
+    func consumeForTest(_ json: String) { consume(Data((json + "\n").utf8)) }
+    var launchForTest: DaemonLaunch? { launch }
     /// Тестовый вход (сбрасывает гейт): запуск «идёт запись» без python и захвата;
     /// `wire: false` — события приходят только из `receiveForTest`.
     func adoptLaunchForTest(_ l: DaemonLaunch, wire: Bool) throws {

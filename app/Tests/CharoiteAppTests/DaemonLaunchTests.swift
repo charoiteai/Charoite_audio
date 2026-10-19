@@ -71,7 +71,7 @@ final class DaemonLaunchTests: XCTestCase {
         let s = SuflerService()
         s.userStopped = true       // решение «.none»: без перезапуска python из теста
         let (l, out) = idleLaunch()
-        l.eofCeiling = 0.05
+        l.setCeilingForTest(0.05)
         try s.adoptLaunchForTest(l, wire: false)
 
         l.receiveForTest(.exit)   // write-конец открыт у теста, как у внука
@@ -88,7 +88,7 @@ final class DaemonLaunchTests: XCTestCase {
         let s = SuflerService()
         s.userStopped = true
         let (l, out) = idleLaunch()
-        l.eofCeiling = 0.05
+        l.setCeilingForTest(0.05)
         try s.adoptLaunchForTest(l, wire: false)
         out.fileHandleForWriting.write(Data("{}\n".utf8))   // читатель не успел их забрать
 
@@ -99,7 +99,23 @@ final class DaemonLaunchTests: XCTestCase {
         XCTAssertNil(s.process, "продления конечны: читатель мёртв — решение всё равно приходит")
     }
 
-    func testLateEventsOfAReplacedLaunchDoNotTouchTheSuccessor() throws {
+    func testCeilingReadsTheLastLineWithoutNewline() throws {
+        let s = SuflerService()
+        let (l, out) = idleLaunch()
+        l.setCeilingForTest(0.05)
+        try s.adoptLaunchForTest(l, wire: false)
+
+        l.receiveForTest(.output(Data(refusalLine.utf8)))   // без \n, и EOF не придёт: внук держит stdout
+        l.receiveForTest(.exit)
+        spin(until: { s.process == nil })
+
+        XCTAssertEqual(s.status, recipe, "хвост строки не разобран на смерти по потолку: \(s.status)")
+        XCTAssertTrue(s.statusErrorFromDaemon, "fail() звался — значит, пошёл повтор")
+        withExtendedLifetime(out) {}
+    }
+
+    /// Закрытый запуск молчит: опоздавшие события старого не доходят до сервиса.
+    func testClosedLaunchStaysSilentForTheSuccessor() throws {
         let s = SuflerService()
         let (old, _) = idleLaunch()
         try s.adoptLaunchForTest(old, wire: false)
@@ -115,7 +131,7 @@ final class DaemonLaunchTests: XCTestCase {
         old.receiveForTest(.eof)
 
         XCTAssertEqual(s.status, before, "строка старого демона затёрла экран нового")
-        XCTAssertTrue(s.launch === next)
+        XCTAssertTrue(s.launchForTest === next)
         XCTAssertTrue(s.process === next.process)
         XCTAssertFalse(next.closed, "исход старого запуска закрыл трубы преемника")
     }
@@ -129,7 +145,7 @@ final class DaemonLaunchTests: XCTestCase {
         s.process = nil              // так делает finish остановки
         s.releaseLaunchAfterFinish()
         XCTAssertTrue(l.closed)
-        XCTAssertNil(s.launch)
+        XCTAssertNil(s.launchForTest)
     }
 
     func testNewLaunchClosesTheOpenOne() throws {

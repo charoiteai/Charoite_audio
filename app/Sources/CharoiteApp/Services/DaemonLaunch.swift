@@ -12,8 +12,9 @@ import Foundation
 /// «восстанавливаю» (№619, опыт 19.10: 5 из 200 при `usleep(0)`, 200 из 200
 /// при задержке читателя 1 мс).
 ///
-/// Поэтому смерть запуска — это «процесс вышел И stdout дал EOF», как у
-/// `LongProcess`. Данные, EOF и выход идут в главный поток одной очередью
+/// Поэтому смерть запуска — это «процесс вышел И stdout дал EOF» (правило
+/// `LongProcess`, но без его дочитки на потолке — см. ниже; один барьер на
+/// оба — долг №640). Данные, EOF и выход идут в главный поток одной очередью
 /// `DispatchQueue.main` (FIFO): к блоку EOF все блоки данных этой трубы уже
 /// выполнены. Внук с унаследованным stdout держит EOF сколько угодно, поэтому
 /// после выхода ждём не дольше `eofCeiling`. Потолок продлевается (до
@@ -38,8 +39,9 @@ final class DaemonLaunch {
     let stdout: FileHandle
     let errHandle: FileHandle?
     /// Потолок ожидания EOF после выхода; тесты сжимают его.
-    var eofCeiling = DaemonLaunch.eofCeiling
+    private(set) var eofCeiling = DaemonLaunch.eofCeiling
     #if DEBUG
+    func setCeilingForTest(_ s: TimeInterval) { eofCeiling = s }
     /// Задержка читателя перед `availableData`: гонка №619 воспроизводится
     /// ею всегда (1 мс — 200 из 200 на прежней проводке).
     var readerDelayForTest: useconds_t = 0
@@ -146,9 +148,6 @@ final class DaemonLaunch {
         case .output(let data):
             onOutput?(data)
         case .eof:
-            // Последняя строка без перевода строки — тоже строка: в ней
-            // может быть причина отказа.
-            onOutput?(Data([0x0A]))
             reachedEOF = true
             if exited { die() }
         case .exit:
@@ -183,7 +182,10 @@ final class DaemonLaunch {
         return true
     }
 
+    /// Последняя строка без перевода строки — тоже строка: в ней может быть
+    /// причина отказа. Дописываем её при любой смерти — по EOF и по потолку.
     private func die() {
+        onOutput?(Data([0x0A]))
         let dead = onDead
         close()
         dead?(self)
