@@ -34,7 +34,9 @@ Python приложения mlx нет, бандл подписан. Раньш�
     CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --plan   # план одной строкой JSON
 
 Исход установщика честный: 0 — поставлено и проба зелёная; `EXIT_INSTALL_BUSY` —
-машина занята или идёт другая установка; `EXIT_INSTALL_CANCELLED` — прервали
+машина занята, идёт другая установка или загрузка того же файла у другого
+процесса не продвигается;
+`EXIT_INSTALL_CANCELLED` — прервали
 (SIGTERM/SIGHUP/Ctrl-C); 1 — отказ (`Refused`, том без flock, отказ загрузчика
 весов). Единственный переводчик «исключение → код» — `main`.
 
@@ -944,6 +946,12 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_INSTALL_CANCELLED
     except InstallBusy as e:
         print(f"занято: {e}", file=sys.stderr)
+        return EXIT_INSTALL_BUSY
+    except get_models.DownloadBusy as e:
+        # Цель качает другой процесс (кнопка набора голосов, терминал): это
+        # «занято», а не отказ — подкласс `SystemExit`, поэтому раньше общего
+        # (№643; набор голосов и веса Nemotron — одной точкой).
+        print(f"занято: {get_models._exit_text(e)}", file=sys.stderr)
         return EXIT_INSTALL_BUSY
     except Refused as e:
         print(f"{refusal}: {e}", file=sys.stderr)

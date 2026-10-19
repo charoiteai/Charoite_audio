@@ -39,16 +39,20 @@ PRIVACY.md.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import os
 import pathlib
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 
 # Вставка — только чтобы импортировать сам канон путей: модели качаем в
 # корень ДАННЫХ, а где он — знает канон (CHAROITE_ROOT), не этот файл.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import file_locks  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
 # Минимальный разумный размер: ERes2Net в ONNX — десятки мегабайт. Всё, что
@@ -301,15 +305,141 @@ def _extract_onnx(archive: pathlib.Path, dest: pathlib.Path) -> None:
             _sh.move(str(pathlib.Path(tmp) / best.name), str(dest))
 
 
+class DownloadBusy(SystemExit):
+    """Цель качает другой процесс, и его файл не растёт: отказ «занято», а не порча.
+
+    Подкласс `SystemExit`: для терминала и кнопки это такой же отказ строкой
+    причины. `main` установщика движка ловит его раньше общего `SystemExit` и
+    отвечает своим кодом «занято» — и за набор голосов, и за веса Nemotron."""
+
+
+#: Сосед держит замок цели: опрос раз в столько секунд, пока его `.part` растёт.
+LOCK_POLL_S = 2.0
+#: Сколько ждать соседа, чей `.part` не растёт. Потолок по прогрессу, а не по
+#: часам: 40 МБ через корпоративный прокси на 53 КБ/с — это 13 минут живой загрузки.
+NEIGHBOUR_STALL_S = 300.0
+#: Попыток на один запуск: зеркала рвут длинные закачки молча, хвост дотягиваем по Range.
+DOWNLOAD_ATTEMPTS = 6
+_ARCHIVES = (".tar.bz2", ".tar.gz")
+#: Условия своего адреса (--url): суммы нет, значит, нет сверки и докачки, а полноту
+#: подтверждает только Content-Length (№643).
+_URL_TERMS = (" (без сверки суммы и без докачки: сервер должен отдавать "
+              "Content-Length и не рвать поток)")
+
+
+@contextlib.contextmanager
+def _download_lock(dest: pathlib.Path, part: pathlib.Path, *, sleep=None, now=None):
+    """Одна загрузка в одну цель: flock на `.<имя>.download.lock` рядом с целью.
+
+    Писателей цели несколько — кнопка набора голосов (`--diar`), установщик
+    движка (`ensure_voice_set`), человек из терминала, — и без замка второй
+    принимал живой `.part` соседа за свой обрыв и дописывал в него (№643: битая
+    модель на месте с кодом 0). Том без flock — загрузка без замка с
+    предупреждением, как до замка: она повторяема и сверяется суммой."""
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
+    lock = dest.with_name(f".{dest.name}.download.lock")
+    try:
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        print(f"замок загрузки не взять ({e}) — качаю без защиты от параллельной загрузки")
+        yield
+        return
+    with os.fdopen(fd, "r+b") as f:
+        waited = False
+        seen, since = -1, now()
+        while True:
+            # Одна попытка: паузы — свои, по прогрессу соседа; и «ждали» верно даже
+            # тогда, когда сосед закончил за долю секунды.
+            outcome = file_locks.acquire_outcome(f, attempts=1, sleep=sleep)
+            if outcome == file_locks.TAKEN:
+                break
+            if outcome == file_locks.NO_FLOCK:
+                print("замок загрузки не взять: том без flock — параллельную загрузку "
+                      "этой цели не отличу")
+                break
+            if not waited:
+                # Одна строка, не на каждом опросе: кнопка читает вывод после выхода (№640).
+                print(f"жду: идёт другая загрузка {dest.name}")
+                waited = True
+            try:
+                size = part.stat().st_size
+            except OSError:
+                size = -1
+            if size != seen:
+                seen, since = size, now()
+            elif now() - since >= NEIGHBOUR_STALL_S:
+                raise DownloadBusy(
+                    f"идёт другая загрузка {dest.name}, и её файл не растёт "
+                    f"{int(NEIGHBOUR_STALL_S)} с — дождитесь её конца и повторите")
+            sleep(LOCK_POLL_S)
+        yield
+
+
+def _in_place(dest: pathlib.Path, url: str, sha256: str) -> bool:
+    """Цель уже стоит с этой суммой — её поставил сосед, пока мы шли к замку.
+
+    Верим только сумме: без неё сосед мог поставить файл с другого адреса
+    (`--url` против адреса по умолчанию), и годная форма — не наш файл (выход
+    №643, DS I1). У архива сумма — архива, а не распакованной цели. Нечитаемая
+    цель — «не на месте»: причину скажет публикация."""
+    if not sha256 or url.endswith(_ARCHIVES) or not dest.is_file():
+        return False
+    try:
+        return _digest(dest) == sha256
+    except OSError:
+        return False
+
+
+def _part_source(part: pathlib.Path, url: str, sha256: str) -> None:
+    """`.part` продолжаем, только если он начат с того же адреса и суммы.
+
+    Источник пишется рядом (`.part.src`) до первого байта. Без него обрыв одной
+    модели и загрузка другой в ту же цель склеивали два файла: с суммой — ложное
+    «файл по этому адресу изменился», без суммы — битая модель с кодом 0 (вход
+    №643, DS C1). `.part` без записи источника — тоже с нуля."""
+    src = part.with_name(part.name + ".src")
+    want = f"{url}\n{sha256}\n"
+    try:
+        same = src.read_text(encoding="utf-8") == want
+    except (OSError, ValueError):   # обрезанный сайдкар не в UTF-8 — тоже чужой
+        same = False
+    if not same:
+        part.unlink(missing_ok=True)
+        src.write_text(want, encoding="utf-8")
+
+
 def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
              sha256: str = "") -> None:
     """Скачать модель. Печатает адрес ДО соединения — это единственный выход в сеть.
 
     `onnx=False` — для файлов-спутников вроде `tokens.txt`: они текстовые, и
     проверка на ONNX-магию отвергла бы их как «скачанную HTML-страницу».
+    Всё — от чтения `.part` до публикации — под замком цели (№643).
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise SystemExit(f"не создать каталог модели {dest.parent}: {e}") from None
     part = dest.with_suffix(dest.suffix + ".part")
+    with _download_lock(dest, part):
+        # Под замком, а не только после ожидания: сосед мог закончить между
+        # проверкой вызывающего и нашим flock (выход №643, S M3).
+        if _in_place(dest, url, sha256):
+            print(f"уже на месте: {dest} — сумма сошлась")
+            return
+        try:
+            _part_source(part, url, sha256)
+        except OSError as e:
+            raise SystemExit(f"не подготовить загрузку {part}: {e}") from None
+        _download_locked(url, dest, part, expect_mb, onnx, sha256)
+
+
+def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb: int,
+                     onnx: bool, sha256: str) -> None:
+    """Тело загрузки: зовётся только из `download`, под замком цели."""
+    import tarfile
+
     print(f"качаю {expect_mb} МБ:\n  {url}")
     # Зеркало рвёт длинные закачки на середине — на модели в 239 МБ приходило
     # 25 МБ без единой ошибки, и файл молча оказывался битым. Поэтому качаем с
@@ -317,16 +447,33 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
     # Первая же попытка обычно и последняя; цикл нужен ровно для этого случая.
     try:
         total = 0
-        for attempt in range(1, 7):
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
             done = part.stat().st_size if part.exists() else 0
             if total and done >= total:
                 break
+            if done and not sha256:
+                # Докачка — только с суммой: без неё хвост с сервера не сверить
+                # с началом на диске, и зеркало, сменившее файл между попытками,
+                # давало склейку с кодом 0 (выход №643, Haiku C1 out2, DS C1 out3).
+                part.unlink(missing_ok=True)
+                done = total = 0
             req = urllib.request.Request(url)
             if done:
                 req.add_header("Range", f"bytes={done}-")
                 print(f"  докачиваю с {done // 1024 // 1024} МБ (попытка {attempt})")
-            # nosemgrep — адрес из константы MODELS, не пользовательский ввод
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            try:
+                # nosemgrep — адрес из константы MODELS, не пользовательский ввод
+                resp = urllib.request.urlopen(req, timeout=120)
+            except urllib.error.HTTPError as e:
+                # Хвоста нет: `.part` уже полный — сосед убит между последним
+                # куском и публикацией. Зеркала отвечают на это 416, и каждый
+                # повтор упирался в него же (выход №643, Haiku C1). Докачку
+                # просят только с суммой — полноту решает она при публикации,
+                # а не код ответа (выход №643, DS C1 out2).
+                if done and e.code == 416:
+                    break
+                raise
+            with resp:
                 # Докачка законна только на 206: сервер, не знающий Range,
                 # отдаёт 200 и файл целиком — дописывать его к хвосту значило
                 # бы удвоить файл; по размеру он проходил проверку, а при
@@ -344,21 +491,69 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
                 break
         if total and part.stat().st_size < total:
             got, want = part.stat().st_size, total
-            part.unlink(missing_ok=True)
+            # С суммой остаток продолжит следующий запуск — как после обрыва сети
+            # ниже; без суммы докачки нет, убираем (круг по правкам №643, Haiku I1).
+            if not sha256:
+                _drop_part(part)
             raise SystemExit(
-                f"не докачалось: {got} из {want} байт за шесть попыток.\n"
-                "проверьте сеть или укажите своё зеркало через --url")
+                f"не докачалось: {got} из {want} байт за {DOWNLOAD_ATTEMPTS} попыток.\n"
+                + ("повторите ту же команду — докачается с этого места\n" if sha256 else "")
+                + "проверьте сеть или укажите своё зеркало через --url" + _URL_TERMS)
+        if not total and not sha256:
+            # Ни размера, ни суммы (своё зеркало --url без Content-Length): тихий
+            # обрыв не отличить от конца файла, и обрезанная модель ложилась на
+            # место с кодом 0 — тот же исход, от которого замок (шаг Haiku №643 out4).
+            _drop_part(part)
+            raise SystemExit(
+                f"не проверить, докачался ли {dest.name}: сервер не назвал размер, "
+                "а суммы для своего адреса нет.\nукажите зеркало, которое отдаёт "
+                "Content-Length")
     except (urllib.error.URLError, OSError) as e:
-        # Недокачанное НЕ удаляем: следующий запуск продолжит с этого места.
-        # Первая версия чистила .part на любой ошибке — и каждая попытка
-        # начиналась с нуля, хотя сервер поддерживает Range. На модели в
-        # 228 МБ по рвущемуся каналу это означало «никогда».
+        # С суммой недокачанное НЕ удаляем: следующий запуск продолжит с этого
+        # места. Первая версия чистила .part на любой ошибке — и каждая попытка
+        # начиналась с нуля, хотя сервер поддерживает Range; на модели в 228 МБ
+        # по рвущемуся каналу это означало «никогда». Без суммы докачки нет
+        # (выше, на входе в попытку) — остаток убираем сразу, а не до следующего
+        # запуска той же цели (финальный Opus №643, M2).
+        if not sha256:
+            _drop_part(part)
         done = part.stat().st_size // 1024 // 1024 if part.exists() else 0
         raise SystemExit(
             f"не скачалось: {e}\n"
             + (f"на диске уже {done} МБ — повторите ту же команду, докачается "
-               "с этого места\n" if done else "")
-            + "или укажите своё зеркало через --url")
+               "с этого места\n" if done and sha256 else "")
+            + "или укажите своё зеркало через --url" + _URL_TERMS)
+    # Сумма, распаковка и публикация — той же строкой причины, что сеть: кнопка
+    # показывает последнюю строку вывода, и трасса Python там — не причина (вход
+    # №643, DS I4: место на диске, права, битый архив).
+    # Любой сбой публикации сносит `.part` с источником: оставленный, он
+    # докачивался бы тем же файлом при каждом повторе (выход №643, Haiku C1), а
+    # «вина среды или файла» по классу не различается — битый bz2 тоже `OSError`
+    # (выход №643, out3). Цена — повтор после нехватки места качает заново.
+    try:
+        _publish(url, dest, part, expect_mb, onnx, sha256)
+    except (OSError, EOFError, tarfile.TarError, SystemExit) as e:
+        _drop_part(part)
+        if isinstance(e, SystemExit):
+            raise
+        raise SystemExit(f"не удалось сохранить модель {dest.name}: {e}") from None
+    with contextlib.suppress(OSError):
+        part.with_name(part.name + ".src").unlink(missing_ok=True)
+    print(f"готово: {dest} ({dest.stat().st_size // 1024 // 1024} МБ)")
+
+
+def _drop_part(part: pathlib.Path) -> None:
+    """Убрать `.part`, который вызывающий решил не продолжать (нечем сверить, попытки
+    исчерпаны или публикация не удалась), вместе с источником `.part.src`.
+    Каждый файл — под своим `suppress`: уборка не подменяет причину отказа."""
+    for leftover in (part, part.with_name(part.name + ".src")):
+        with contextlib.suppress(OSError):
+            leftover.unlink(missing_ok=True)
+
+
+def _publish(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb: int,
+             onnx: bool, sha256: str) -> None:
+    """Сверить скачанный `.part` и положить его на место цели."""
     if sha256:
         got = _digest(part)
         if got != sha256:
@@ -373,7 +568,7 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
                 "модели — обновите sha256 в scripts/get_models.py; если нет — "
                 "не ставьте его: модель слушает все ваши встречи.")
 
-    if url.endswith((".tar.bz2", ".tar.gz")):
+    if url.endswith(_ARCHIVES):
         _extract_onnx(part, dest)
         part.unlink(missing_ok=True)
         problem = check(dest, min_bytes=1024 * 1024)
@@ -391,7 +586,6 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
             part.unlink(missing_ok=True)
             raise SystemExit(f"скачанный файл пуст: {url}")
         part.replace(dest)
-    print(f"готово: {dest} ({dest.stat().st_size // 1024 // 1024} МБ)")
 
 
 def list_models() -> None:
@@ -569,7 +763,8 @@ def main() -> int:
                     help="модель распознавания речи (sensevoice — китайский и ещё 4 языка)")
     ap.add_argument("--model", default=DEFAULT, choices=sorted(MODELS),
                     help=f"какую модель брать (по умолчанию {DEFAULT})")
-    ap.add_argument("--url", default=None, help="своя ссылка на .onnx вместо известных")
+    ap.add_argument("--url", default=None,
+                    help="своя ссылка на .onnx вместо известных" + _URL_TERMS)
     ap.add_argument("--dest", type=pathlib.Path, default=None,
                     help="куда положить (по умолчанию models/diar/embedding.onnx)")
     ap.add_argument("--check", action="store_true",

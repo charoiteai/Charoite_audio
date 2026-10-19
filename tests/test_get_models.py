@@ -143,10 +143,16 @@ def test_resume_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
     (аудит DeepSeek 16.08)."""
     import io
 
+    import hashlib
+
     body = b"x" * 3000
+    sha = hashlib.sha256(body).hexdigest()   # докачка — только с суммой (№643)
     dest = tmp_path / "tokens.txt"
     part = dest.with_suffix(dest.suffix + ".part")
     part.write_bytes(body[:1000])         # оборванная прошлая закачка
+    # с этого же адреса — иначе `.part` чужой и качается с нуля (№643)
+    part.with_name(part.name + ".src").write_text(f"https://example.invalid/tokens.txt\n{sha}\n",
+                                                  encoding="utf-8")
 
     class FakeResponse(io.BytesIO):
         status = 200                       # Range проигнорирован
@@ -165,7 +171,8 @@ def test_resume_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
         return FakeResponse(body)
 
     monkeypatch.setattr(get_models.urllib.request, "urlopen", fake_urlopen)
-    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                        sha256=sha)
 
     assert seen and seen[0] == "bytes=1000-", "докачка не запросила Range"
     assert dest.read_bytes() == body, "файл удвоен или не докачан"
@@ -594,3 +601,463 @@ def test_segmentation_alone_does_not_fetch_embeddings(data_root, monkeypatch, ca
     assert err == ""
     assert calls == [(_SEG_URL, seg, 7, _SEG_SHA)]
     assert out == f"модели диаризации нет ({seg})\n"
+
+
+# --- одна загрузка в одну цель (№643) ---------------------------------------
+
+def _serve(monkeypatch, body: bytes, short_first: int = 0, length: bool = True) -> list:
+    """Подменённая сеть: отдаёт `body` (на Range — хвост с 206), пишет заголовок Range.
+    `short_first` — первый ответ тихо обрывается после стольких байт (зеркало рвёт
+    длинные закачки без ошибки). `length=False` — ответ без Content-Length."""
+    import io
+
+    seen: list = []
+
+    def fake_urlopen(req, timeout=0):      # noqa: ANN001, ARG001
+        rng = req.get_header("Range")
+        seen.append(rng)
+        start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+        payload = body[start:]
+        if short_first and len(seen) == 1:
+            payload = payload[:short_first]
+
+        class Response(io.BytesIO):
+            status = 206 if rng else 200
+            headers = {"Content-Length": str(len(body) - start)} if length else {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):        # noqa: ANN002
+                self.close()
+
+        return Response(payload)
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", fake_urlopen)
+    return seen
+
+
+def _hold_lock(dest: pathlib.Path):
+    """Замок цели держит «сосед»: другое открытие того же файла — тот же отказ flock,
+    что у второго процесса."""
+    import fcntl
+
+    f = open(dest.with_name(f".{dest.name}.download.lock"), "a+b")  # noqa: SIM115
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return f
+
+
+def test_a_second_download_of_a_busy_target_is_refused_and_the_part_stays(monkeypatch, tmp_path, capsys):
+    """Отрицательный: замок цели держит сосед, его `.part` не растёт — вторая загрузка
+    получает «занято», в сеть не идёт, `.part` соседа и цель не тронуты. Без замка она
+    приняла бы живой `.part` за свой обрыв и дописала в него (опыт 19.10: битая
+    модель на месте с кодом 0)."""
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"n" * 5000)
+    seen = _serve(monkeypatch, b"x" * 3000)
+    monkeypatch.setattr(get_models, "LOCK_POLL_S", 0)
+    monkeypatch.setattr(get_models, "NEIGHBOUR_STALL_S", 0)
+    monkeypatch.setattr(get_models.time, "sleep", lambda s: None)
+    holder = _hold_lock(dest)
+    try:
+        with pytest.raises(get_models.DownloadBusy) as exc:
+            get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+    finally:
+        holder.close()
+    assert "идёт другая загрузка tokens.txt" in str(exc.value)
+    assert seen == [], "занятая цель всё равно пошла в сеть"
+    assert part.read_bytes() == b"n" * 5000 and not dest.exists()
+    assert capsys.readouterr().out.count("жду: идёт другая загрузка") == 1
+
+
+def test_a_target_finished_by_the_neighbour_is_not_fetched_again(monkeypatch, tmp_path, capsys):
+    """Сосед поставил цель, пока мы ждали замка: повторная проверка под замком — и в
+    сеть не идём (вход №643, S I1)."""
+    import hashlib
+
+    body = b"y" * 3000
+    dest = tmp_path / "tokens.txt"
+    seen = _serve(monkeypatch, body)
+    holder = _hold_lock(dest)
+    calls = []
+
+    def neighbour_finishes(s):             # noqa: ANN001, ARG001
+        calls.append(s)
+        if len(calls) == 3:
+            dest.write_bytes(body)
+            holder.close()
+
+    monkeypatch.setattr(get_models, "LOCK_POLL_S", 0)
+    monkeypatch.setattr(get_models.time, "sleep", neighbour_finishes)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                        sha256=hashlib.sha256(body).hexdigest())
+    assert seen == [] and dest.read_bytes() == body
+    assert "уже на месте" in capsys.readouterr().out
+
+
+def test_waiting_follows_the_neighbours_progress_not_the_clock(tmp_path):
+    """Потолок ожидания — по прогрессу: пока `.part` соседа растёт, ждём сколько угодно
+    (40 МБ на 53 КБ/с — 13 минут); стоит дольше потолка — «занято»."""
+    dest = tmp_path / "m.onnx"
+    part = dest.with_suffix(".onnx.part")
+    clock = [0.0]
+    holder = _hold_lock(dest)
+    polls = []
+
+    def growing(s):                        # noqa: ANN001
+        clock[0] += 100
+        if s == get_models.LOCK_POLL_S:    # опрос соседа, не пауза flock
+            polls.append(s)
+            part.write_bytes(b"p" * len(polls))
+            if len(polls) == 10:           # 1000 с при потолке 300 с
+                holder.close()
+
+    with get_models._download_lock(dest, part, sleep=growing, now=lambda: clock[0]):
+        pass
+    assert len(polls) == 10
+
+    holder = _hold_lock(dest)
+    try:
+        with pytest.raises(get_models.DownloadBusy):
+            with get_models._download_lock(dest, part, sleep=lambda s: clock.__setitem__(0, clock[0] + 100),
+                                           now=lambda: clock[0]):
+                pass
+    finally:
+        holder.close()
+
+
+def test_a_volume_without_flock_downloads_with_a_warning(monkeypatch, tmp_path, capsys):
+    """Том без flock: загрузка как до замка, с предупреждением — она повторяема и
+    сверяется суммой (вход №643, S I3)."""
+    body = b"z" * 3000
+    dest = tmp_path / "tokens.txt"
+    _serve(monkeypatch, body)
+    monkeypatch.setattr(get_models.file_locks, "acquire_outcome",
+                        lambda f, **k: get_models.file_locks.NO_FLOCK)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+    assert dest.read_bytes() == body
+    assert "том без flock" in capsys.readouterr().out
+
+
+def test_a_lock_that_cannot_be_opened_downloads_with_a_warning(monkeypatch, tmp_path, capsys):
+    body = b"z" * 3000
+    dest = tmp_path / "tokens.txt"
+    _serve(monkeypatch, body)
+    real_open = get_models.os.open
+
+    def no_lock(path, *a, **k):            # noqa: ANN001, ANN002
+        if str(path).endswith(".download.lock"):
+            raise PermissionError("нет прав")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(get_models.os, "open", no_lock)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+    assert dest.read_bytes() == body
+    assert "замок загрузки не взять" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("src", [None, "https://example.invalid/other.txt\n\n",
+                                 "https://example.invalid/tokens.txt\nдругая\n"])
+def test_a_part_from_another_source_restarts_from_zero(monkeypatch, tmp_path, src):
+    """`.part` продолжаем только с того же адреса и суммы: обрыв одной модели и
+    загрузка другой в ту же цель склеивали два файла (вход №643, DS C1, опыт:
+    «докачиваю с 1 МБ», код 0, чужая модель)."""
+    body = b"s" * 3000
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    part.write_bytes(b"F" * 1000)
+    if src is not None:
+        part.with_name(part.name + ".src").write_text(src, encoding="utf-8")
+    seen = _serve(monkeypatch, body)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+    assert seen == [None], "чужой .part докачан по Range"
+    assert dest.read_bytes() == body
+    assert not part.with_name(part.name + ".src").exists(), "источник пережил публикацию"
+
+
+def test_a_failed_replace_is_a_reason_not_a_trace(monkeypatch, tmp_path):
+    """Отказ публикации — строкой причины, как отказ сети: кнопка показывает последнюю
+    строку вывода (вход №643, DS I4; опыт 19.10: `FileNotFoundError` трассой)."""
+    dest = tmp_path / "tokens.txt"
+    _serve(monkeypatch, b"r" * 3000)
+
+    def no_space(self, target):            # noqa: ANN001, ARG001
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(get_models.pathlib.Path, "replace", no_space)
+    with pytest.raises(SystemExit) as exc:
+        get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+    assert "не удалось сохранить модель tokens.txt" in str(exc.value)
+    assert not isinstance(exc.value, get_models.DownloadBusy)
+    # Снос при любом сбое публикации: класс исключения вину среды от вины файла не
+    # отличает — битый bz2 тоже `OSError` (выход №643, out3).
+    assert not dest.with_suffix(".txt.part").exists()
+
+
+def test_two_processes_on_one_target_leave_one_good_file(tmp_path):
+    """Боевой путь: два процесса `download` в одну цель. Второй ждёт замка и находит
+    цель на месте — файл цел, оба кода 0, в сеть сходили один раз (опыт 19.10 до
+    правки: битый файл с кодом 0 в 1 из 13 прогонов). Пересечение не по часам:
+    сервер держит последний кусок, пока второй не скажет «жду» (выход №643, все
+    три головы: на занятом раннере окно 0,3 с не держится)."""
+    import hashlib
+    import http.server
+    import threading
+    import time as _time
+
+    body = bytes([8]) + b"m" * (2 * 1024 * 1024)
+    gets: list = []
+    second_waits = threading.Event()
+
+    class Held(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):                  # noqa: N802
+            gets.append(self.headers.get("Range"))
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body[:-1024])
+            self.wfile.flush()
+            second_waits.wait(30)
+            self.wfile.write(body[-1024:])
+
+        def log_message(self, *a):         # noqa: ANN002
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Held)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # Прокси окружения мимо локального сервера (выход №643, Haiku M3).
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1"
+    dest = tmp_path / "model.bin"
+    url = f"http://127.0.0.1:{srv.server_address[1]}/model.bin"
+    code = ("import pathlib, sys; sys.path.insert(0, sys.argv[1]); import get_models; "
+            "get_models.download(sys.argv[2], pathlib.Path(sys.argv[3]), 2, onnx=False, "
+            "sha256=sys.argv[4])")
+    argv = [sys.executable, "-u", "-c", code, str(REPO / "scripts"), url, str(dest),
+            hashlib.sha256(body).hexdigest()]
+    try:
+        first = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, env=env)
+        part = dest.with_suffix(".bin.part")
+        for _ in range(400):               # первый держит замок, пока сервер держит хвост
+            if part.exists() and part.stat().st_size:
+                break
+            first.poll()
+            assert first.returncode is None, first.communicate()[0]
+            _time.sleep(0.05)
+        else:
+            pytest.fail("первый процесс не начал загрузку за 20 с")
+        second = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, env=env)
+        lines: list = []
+
+        def read_second():
+            for line in second.stdout:
+                lines.append(line)
+                if "жду" in line:
+                    second_waits.set()
+
+        reader = threading.Thread(target=read_second, daemon=True)
+        reader.start()
+        second.wait(timeout=60)
+        reader.join(10)
+        outs = [first.communicate(timeout=60)[0], "".join(lines)]
+    finally:
+        second_waits.set()
+        srv.shutdown()
+    assert [first.returncode, second.returncode] == [0, 0], outs
+    assert hashlib.sha256(dest.read_bytes()).digest() == hashlib.sha256(body).digest()
+    assert gets == [None], f"цель скачана не один раз: {gets}\n{outs}"
+    assert "жду" in outs[1] and "уже на месте" in outs[1], outs
+
+
+def test_a_complete_part_is_published_not_refused_by_416(monkeypatch, tmp_path):
+    """Сосед убит между последним куском и `replace`: `.part` полон. Зеркала (GitHub,
+    HF) на `Range: bytes=<длина>-` отвечают 416 — это `HTTPError`, и до правки каждый
+    повтор давал «не скачалось: HTTP Error 416 … докачается с этого места» (выход
+    №643, Haiku C1 = Sonnet I2 = DS M4). Полный `.part` идёт в сверку и публикацию."""
+    import hashlib
+    import urllib.error
+
+    body = b"q" * 3000
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    url = "https://example.invalid/tokens.txt"
+    sha = hashlib.sha256(body).hexdigest()
+    part.write_bytes(body)
+    part.with_name(part.name + ".src").write_text(f"{url}\n{sha}\n", encoding="utf-8")
+    seen = []
+
+    def range_not_satisfiable(req, timeout=0):  # noqa: ANN001, ARG001
+        seen.append(req.get_header("Range"))
+        raise urllib.error.HTTPError(url, 416, "Range Not Satisfiable", {}, None)
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", range_not_satisfiable)
+    get_models.download(url, dest, expect_mb=1, onnx=False, sha256=sha)
+    assert seen == ["bytes=3000-"] and dest.read_bytes() == body
+
+
+def test_a_failed_publication_leaves_no_part_behind(monkeypatch, tmp_path):
+    """Публикация упала (архив без .onnx, место на диске): `.part` и его источник
+    уходят — иначе следующий запуск докачивал бы тот же негодный файл по Range
+    (выход №643, Haiku C1)."""
+    dest = tmp_path / "seg.onnx"
+    part = dest.with_suffix(".onnx.part")
+    _serve(monkeypatch, b"not a tar" * 400)
+    with pytest.raises(SystemExit):
+        get_models.download("https://example.invalid/seg.tar.bz2", dest, expect_mb=1)
+    assert not part.exists() and not part.with_name(part.name + ".src").exists()
+
+
+@pytest.mark.parametrize("sha", [False, True])
+def test_a_torn_download_resumes_only_with_a_sum(monkeypatch, tmp_path, sha):
+    """Зеркало тихо оборвало первый ответ. С суммой хвост дотягиваем по Range — сумма
+    сверит склейку; без суммы каждая попытка с нуля: сменённый между попытками файл
+    склеился бы с кодом 0 (выход №643, Haiku C1 out2, DS C1 out3)."""
+    import hashlib
+
+    body = b"t" * 3000
+    dest = tmp_path / "tokens.txt"
+    seen = _serve(monkeypatch, body, short_first=1000)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                        sha256=hashlib.sha256(body).hexdigest() if sha else "")
+    assert seen == ([None, "bytes=1000-"] if sha else [None, None])
+    assert dest.read_bytes() == body
+
+
+def test_a_part_without_a_sum_is_not_resumed_across_runs(monkeypatch, tmp_path):
+    """Остаток прошлого запуска без суммы — с нуля, без Range: 416 «полон» без
+    проверки или склейка со сменённым файлом невозможны (выход №643, DS C1 out2)."""
+    body = b"n" * 3000
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    part.write_bytes(b"o" * 3500)          # остаток старой, более длинной версии
+    url = "https://example.invalid/tokens.txt"
+    part.with_name(part.name + ".src").write_text(f"{url}\n\n", encoding="utf-8")
+    seen = _serve(monkeypatch, body)
+    get_models.download(url, dest, expect_mb=1, onnx=False)
+    assert seen == [None] and dest.read_bytes() == body
+
+
+def test_a_truncated_archive_is_a_reason_and_leaves_no_part(monkeypatch, tmp_path):
+    """Обрезанный bz2 отдаёт `EOFError` или `OSError`: строка причины, `.part` снесён —
+    иначе каждый повтор публиковал бы тот же битый архив (выход №643, out3)."""
+    dest = tmp_path / "seg.onnx"
+    _serve(monkeypatch, b"BZh" + b"0" * 3000)
+
+    def truncated(archive, target):        # noqa: ARG001
+        raise EOFError("Compressed file ended before the end-of-stream marker was reached")
+
+    monkeypatch.setattr(get_models, "_extract_onnx", truncated)
+    with pytest.raises(SystemExit, match="не удалось сохранить модель seg.onnx") as exc:
+        get_models.download("https://example.invalid/seg.tar.bz2", dest, expect_mb=1)
+    assert "Compressed file ended" in str(exc.value)
+    assert not dest.with_suffix(".onnx.part").exists()
+
+
+@pytest.mark.parametrize("with_sum", [False, True])
+def test_a_torn_answer_without_length_is_not_published(monkeypatch, tmp_path, with_sum):
+    """Сервер без Content-Length рвёт ответ молча: без суммы обрыв не отличить от конца
+    файла — отказ, а не обрезанная модель с кодом 0; с суммой отказ даёт сверка
+    (шаг Haiku №643 out4)."""
+    import hashlib
+
+    body = b"\x08" + b"x" * 3_000_000
+    dest = tmp_path / "m.onnx"
+    _serve(monkeypatch, body, short_first=1_500_000, length=False)
+    sha = hashlib.sha256(body).hexdigest() if with_sum else ""
+    with pytest.raises(SystemExit):
+        get_models.download("https://mirror.invalid/m.onnx", dest, expect_mb=2, onnx=True, sha256=sha)
+    assert not dest.exists()
+    assert not dest.with_suffix(".onnx.part").exists()
+    assert not dest.with_suffix(".onnx.part.src").exists()
+
+
+def test_a_whole_answer_without_length_is_published_by_the_sum(monkeypatch, tmp_path):
+    """Без Content-Length, но с суммой — полноту решает она: целый файл ложится на место."""
+    import hashlib
+
+    body = b"\x08" + b"x" * 3_000_000
+    dest = tmp_path / "m.onnx"
+    _serve(monkeypatch, body, length=False)
+    get_models.download("https://mirror.invalid/m.onnx", dest, expect_mb=2, onnx=True,
+                        sha256=hashlib.sha256(body).hexdigest())
+    assert dest.read_bytes() == body
+
+
+@pytest.mark.parametrize("with_sum", [False, True])
+def test_a_network_break_keeps_the_part_only_with_a_sum(monkeypatch, tmp_path, with_sum):
+    """Сеть оборвалась посреди ответа. С суммой `.part` ждёт докачки следующим запуском;
+    без суммы его не продолжить — убран сразу, вместе с источником (финальный Opus №643, M2)."""
+    import hashlib
+    import io
+
+    body = b"r" * 3000
+
+    class Torn(io.BytesIO):
+        status = 200
+        headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):            # noqa: ANN002
+            self.close()
+
+        def read(self, n=-1):              # noqa: ANN001
+            if self.tell() >= 1000:
+                raise ConnectionResetError("сеть оборвалась")
+            return super().read(min(n, 1000 - self.tell()) if n and n > 0 else 1000 - self.tell())
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", lambda req, timeout=0: Torn(body))
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    with pytest.raises(SystemExit, match="не скачалось: сеть оборвалась"):
+        get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                            sha256=hashlib.sha256(body).hexdigest() if with_sum else "")
+    assert part.exists() is with_sum
+    assert part.with_name(part.name + ".src").exists() is with_sum
+
+
+@pytest.mark.parametrize("with_sum", [False, True])
+def test_short_answers_exhaust_the_attempts_and_keep_the_part_only_with_a_sum(
+        monkeypatch, tmp_path, with_sum):
+    """Зеркало каждый раз отдаёт кусок и молча рвёт: после `DOWNLOAD_ATTEMPTS` попыток —
+    «не докачалось». С суммой `.part` и источник ждут докачки следующим запуском, без
+    суммы убраны (круги по правкам №643: Sonnet M1, Haiku I1, DS I1)."""
+    import hashlib
+    import io
+
+    body = b"s" * 10_000
+    seen: list = []
+
+    def short(req, timeout=0):             # noqa: ANN001, ARG001
+        rng = req.get_header("Range")
+        seen.append(rng)
+        start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+
+        class Response(io.BytesIO):
+            status = 206 if rng else 200
+            headers = {"Content-Length": str(len(body) - start)}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):        # noqa: ANN002
+                self.close()
+
+        return Response(body[start:start + 1000])
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", short)
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    with pytest.raises(SystemExit, match="не докачалось") as exc:
+        get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                            sha256=hashlib.sha256(body).hexdigest() if with_sum else "")
+    n = get_models.DOWNLOAD_ATTEMPTS
+    assert seen == ([None] + [f"bytes={k * 1000}-" for k in range(1, n)] if with_sum else [None] * n)
+    assert f"за {n} попыток" in str(exc.value)
+    assert ("докачается" in str(exc.value)) is with_sum
+    assert part.exists() is with_sum
+    assert part.with_name(part.name + ".src").exists() is with_sum
