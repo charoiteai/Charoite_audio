@@ -345,9 +345,11 @@ def verdict_code(f: Facts) -> int:
 RUN_LOG_KIND = "mutation_run"
 
 
-def run_caps() -> list[int]:
-    """Политика потолков прогона — часть ключа и манифеста журнала."""
-    return [WORST_RUN_FACTOR, BASE_RUN_FACTOR, MUTANT_BASE_MARGIN]
+def run_caps() -> list[float]:
+    """Политика потолков прогона — часть ключа и манифеста журнала. Не константы,
+    а сами формулы на опорных точках: правка формулы без правки множителя тоже
+    меняет ключ (out1 №661, DS M2)."""
+    return [base_cap(1), overrun_s(1), mutant_cap(1, 0), mutant_cap(1, 1000)]
 
 
 def run_key(rng: str, max_n: int | None, timeout: int, sample: str) -> str:
@@ -394,7 +396,9 @@ def journal_read(data_root: pathlib.Path, key: str) -> tuple[list[dict], dict[st
             if "manifest" in row:
                 manifests.append(row)
             elif isinstance(row.get("key"), str) and row.get("outcome") in \
-                    ("killed", "survived", "skipped"):
+                    ("killed", "survived", "skipped") and not row.get("capped"):
+                # «убит по потолку» не переносится: потолок мутанта — от замера
+                # базы этого прогона, у продолжения он свой (out1 №661, Haiku I3)
                 done[row["key"]] = row
     return manifests, done
 
@@ -1070,12 +1074,35 @@ RUNNING = "прогон не дошёл до конца плана"
 #: PR #640, та же дыра в #637).
 BASE_RUNNING = "базовый прогон не закончен"
 BASE_RED = "база красная"
-#: Набор базы зелёный, но не уложился в `base_cap`: тесты не падали, мутанты не
-#: судятся — догон локально с бо́льшим `--timeout` (№661).
+#: Набор базы не уложился в `base_cap`: до конца не дошёл, красных среди дошедших
+#: нет. Мутанты не судятся — догон локально с бо́льшим `--timeout` (№661).
 BASE_SLOW = "база не уложилась в потолок"
 #: Копия дерева не собралась (клон или checkout): план есть, отчёт и машинная
 #: строка пишутся, как у красной базы; исход — «сломалась сама проверка».
 COPY_FAILED = "копия дерева не собралась"
+
+
+def base_verdict(results: dict[tuple[str, ...], RunResult], timeout: int) -> tuple[str, str] | None:
+    """Причина остановки по исходам базы и текст для лога шага; None — база
+    прошла. Красный набор важнее не уложившегося: догон с бо́льшим --timeout его
+    не вылечит. Не уложившийся — «до конца не дошёл», а не «зелёный»: тест мог
+    и упасть позже потолка (out1 №661, DS M3)."""
+    red = {ts: r for ts, r in results.items() if r.status == FAILED}
+    slow = [ts for ts, r in results.items() if r.status == TIMEOUT]
+    cap = base_cap(timeout)
+    slow_text = "".join(f"\n  не уложился в {cap} с: {' '.join(ts)}" for ts in slow)
+    if red:
+        body = "".join(f"\n  {' '.join(ts)} (rc {r.rc})\n{r.tail}" for ts, r in red.items())
+        return BASE_RED, ("БАЗА КРАСНАЯ: без единой мутации падают наборы:" + body + slow_text +
+                          "\nВ отдельном дереве нет того, что лежит в .gitignore "
+                          "(модели, конфиг, данные).\nМутанты этих модулей "
+                          "засчитались бы убитыми — считать их бессмысленно.")
+    if slow:
+        return f"{BASE_SLOW} {cap} с", (
+            f"БАЗА НЕ УЛОЖИЛАСЬ В ПОТОЛОК {cap} с — до конца не дошла:" + slow_text +
+            f"\nМутанты не судятся. Догон: mutate_check.py --range <тот же> "
+            f"--only-critical --timeout {timeout * 2}")
+    return None
 
 # Шов часов: бюджет прогона тесты судят подменённым временем, а не сном
 clock = time.monotonic
@@ -1398,7 +1425,7 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
         elif f.broken:
             head, code = f"сломалась сама проверка: {f.broken}", 1
             if BASE_SLOW in f.broken:
-                head += ("; база зелёная, но не уложилась в потолок — догнать до мержа: "
+                head += ("; база не дошла до конца в потолке — догнать до мержа: "
                          "mutate_check.py --range <тот же> --only-critical --timeout <вдвое больше>")
         elif f.critical_survivors:
             head, code = (f"держит мерж: выжили мутанты в критичных зонах — "
@@ -1813,9 +1840,10 @@ def main(argv: list[str]) -> int:
         write_artifacts(args.report, render_report(facts, skipped, totals.unreadable),
                         facts, verdict_code(facts) if rc is None else rc)
 
-    def note(mut: Mutation, outcome: str, seconds: float = 0.0, why: str = "") -> None:
+    def note(mut: Mutation, outcome: str, seconds: float = 0.0, why: str = "",
+             capped: bool = False) -> None:
         journal_add(journal, {"key": mut.key, "outcome": outcome, "s": round(seconds, 1),
-                              **({"why": why} if why else {})})
+                              **({"why": why} if why else {}), **({"capped": True} if capped else {})})
 
     aborted = ""
     # Факты — на диск до копии и базы: остановка в первые минуты (база бывает
@@ -1847,38 +1875,26 @@ def main(argv: list[str]) -> int:
         for cache in work.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
         print(f"Базовый прогон (без мутаций), наборов: {len(subsets)}…")
-        # Явный цикл, а не включение: из него выходят по бюджету и на первом
-        # непрошедшем наборе — дальше мутанты всё равно не судятся. Набор ещё
-        # не мерили — оценка `WORST_RUN_FACTOR × --timeout`, потолок `base_cap`;
-        # допуск один с мутантом (`admits`).
+        # Явный цикл, а не включение: из него выходят по бюджету. Гоняются все
+        # наборы — список красных и не уложившихся нужен целиком (out1 №661).
+        # Набор ещё не мерили — оценка `WORST_RUN_FACTOR × --timeout`, потолок
+        # `base_cap`; допуск один с мутантом (`admits`).
         cap = base_cap(args.timeout)
+        results: dict[tuple[str, ...], RunResult] = {}
         for ts in sorted(subsets):
             if not admits(args.budget_s, started, WORST_RUN_FACTOR * args.timeout, cap, args.timeout):
                 aborted = "бюджет"
                 print(f"⏹ бюджет — базовый прогон не уложится, мутанты не "
                       f"запускаются ({len(durations)}/{len(subsets)} наборов)")
                 break
-            r = timed_run(work, ts, args.timeout, cap)
+            results[ts] = r = timed_run(work, ts, args.timeout, cap)
             durations[ts] = r.seconds
             print(f"  {r.seconds:.0f} с · {r.status} · {' '.join(ts)}")
-            if r.status == PASSED:
-                save(BASE_RUNNING)
-                continue
-            if r.status == TIMEOUT:
-                # Тесты не падали — набор не уложился в потолок. Мутанты не
-                # судятся, как у красной базы, но причина своя: владельцу нужен
-                # догон с бо́льшим --timeout, а не поиск сломанного теста (№661).
-                reason = f"{BASE_SLOW} {cap} с"
-                print(f"\nБАЗА НЕ УЛОЖИЛАСЬ В ПОТОЛОК {cap} с: {' '.join(ts)}\n"
-                      f"Мутанты не судятся. Догон: mutate_check.py --range <тот же> "
-                      f"--only-critical --timeout {args.timeout * 2}")
-            else:
-                reason = BASE_RED
-                print(f"\nБАЗА КРАСНАЯ: без единой мутации падает набор (rc {r.rc}):\n"
-                      f"  {' '.join(ts)}\n{r.tail}\n"
-                      "В отдельном дереве нет того, что лежит в .gitignore "
-                      "(модели, конфиг, данные).\nМутанты этих модулей "
-                      "засчитались бы убитыми — считать их бессмысленно.")
+            save(BASE_RUNNING)
+        verdict = base_verdict(results, args.timeout)
+        if verdict:
+            reason, text = verdict
+            print("\n" + text)
             facts.broken, facts.broken_rc = reason, 2
             save(reason)
             return 2
@@ -1935,7 +1951,7 @@ def main(argv: list[str]) -> int:
             print(f"  [{i}/{len(todo)}] {mark}: {mut}{zone}")
             if alive:
                 facts.survivors.append(survivor_row(mut, root))
-            note(mut, "survived" if alive else "killed", r.seconds, why=capped)
+            note(mut, "survived" if alive else "killed", r.seconds, why=capped, capped=bool(capped))
             # На диске всегда проверенное к этому моменту: оборвёт раннер —
             # отчёт скажет, сколько успели, а не пропадёт целиком
             save(RUNNING)

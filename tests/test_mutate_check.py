@@ -292,26 +292,51 @@ def test_потолки_базы_и_мутанта():
     assert mc.overrun_s(120) == 480
 
 
-@pytest.mark.parametrize("base_s", [0, 100, 480, 900, 3000])
-@pytest.mark.parametrize("role", ["база", "мутант"])
-def test_допуск_держит_перебег_бюджета(monkeypatch, base_s, role):
-    """Свойство `admits` на сетке: прогон допущен — значит, дойдя до своего
-    потолка, он выйдет за бюджет не больше чем на `overrun_s`. На этом стоит
-    сторож шага CI (`budget + overrun_s ≤ timeout-minutes`): потолок мутанта
-    растёт с базой, и без допуска долгий набор переполнил бы шаг (№661, вход in1:
-    DS C2). Опыт 19.10: допуск по одной оценке `fits(estimate)` нарушает свойство
-    в 42 точках сетки мутанта (base 900 и 3000: потолок 2 × base при остатке base)."""
-    timeout, budget = 120, 2400
+def _сетка_допуска(monkeypatch, estimate, cap, timeout=120, budget=7200):
+    """Свойство `admits` по всем остаткам бюджета: допущен — значит, дойдя до
+    потолка, прогон выйдет за бюджет не больше чем на `overrun_s`. Возвращает
+    (допущено, отказано) — ячейка без допусков или без отказов вакуумна."""
     monkeypatch.setattr(mc, "clock", lambda: 0.0)
-    for remaining in range(0, budget + 1, 10):
-        started = remaining - budget
-        if role == "база":
-            estimate, cap = mc.WORST_RUN_FACTOR * timeout, mc.base_cap(timeout)
+    допущено = отказано = 0
+    for remaining in range(-100, budget + 1, 10):   # меньше нуля — бюджет уже перебран
+        if mc.admits(budget, remaining - budget, estimate, cap, timeout):
+            допущено += 1
+            assert cap <= remaining + mc.overrun_s(timeout), (estimate, cap, remaining)
+            assert estimate <= remaining, (estimate, cap, remaining)
         else:
-            estimate, cap = base_s, mc.mutant_cap(timeout, base_s)
-        if mc.admits(budget, started, estimate, cap, timeout):
-            assert cap <= remaining + mc.overrun_s(timeout), (role, base_s, remaining, cap)
-            assert estimate <= remaining, (role, base_s, remaining, estimate)
+            отказано += 1
+    return допущено, отказано
+
+
+@pytest.mark.parametrize("base_s", [0, 100, 480, 900, 3000])
+def test_допуск_мутанта_держит_перебег_бюджета(monkeypatch, base_s):
+    """Потолок мутанта растёт с базой, а сторож шага CI считает только
+    `budget + overrun_s`: без допуска долгий набор переполнил бы шаг (№661, вход
+    in1: DS C2). Опыт 19.10: допуск по одной оценке `fits(estimate)` нарушает
+    свойство в 42 точках сетки (base 900 и 3000: потолок 2 × base при остатке base)."""
+    допущено, отказано = _сетка_допуска(monkeypatch, base_s, mc.mutant_cap(120, base_s))
+    assert допущено and отказано, (допущено, отказано)
+
+
+def test_допуск_базы_держит_перебег_бюджета(monkeypatch):
+    """База: оценка `WORST_RUN_FACTOR × timeout`, потолок `base_cap` — тот же допуск."""
+    допущено, отказано = _сетка_допуска(monkeypatch, mc.WORST_RUN_FACTOR * 120, mc.base_cap(120))
+    assert допущено and отказано, (допущено, отказано)
+
+
+def test_вердикт_базы_красный_важнее_медленного():
+    """Исходы всех наборов базы → одна причина: красный набор важнее не
+    уложившегося (догон с бо́льшим --timeout его не вылечит), оба — в тексте;
+    только не уложившиеся — своя причина с рецептом; все прошли — None."""
+    ok, red, slow = (mc.RunResult(mc.PASSED), mc.RunResult(mc.FAILED, rc=1, tail="FAILED t"),
+                     mc.RunResult(mc.TIMEOUT))
+    assert mc.base_verdict({("a",): ok}, 100) is None
+    причина, текст = mc.base_verdict({("a",): slow, ("b",): red, ("c",): ok}, 100)
+    assert причина == mc.BASE_RED, причина
+    assert "b (rc 1)\nFAILED t" in текст and "не уложился в 800 с: a" in текст, текст
+    причина, текст = mc.base_verdict({("a",): slow, ("c",): ok}, 100)
+    assert причина == f"{mc.BASE_SLOW} 800 с", причина
+    assert "--only-critical --timeout 200" in текст and "не уложился в 800 с: c" not in текст, текст
 
 
 def test_арифметика_ломается(tmp_path):
@@ -1561,6 +1586,41 @@ def test_мутант_по_потолку_убит_с_пометкой(tmp_path,
     assert [r.get("why") for r in строки if r.get("outcome") == "killed"] == ["потолок 600 с"], строки
 
 
+def test_база_гоняет_все_наборы(tmp_path, monkeypatch, capsys):
+    """Непрошедший набор базы не обрывает её: гоняются все, красный набор после
+    не уложившегося — всё равно «база красная», и в выводе оба (out1 №661:
+    остановка на первом прятала красный за рецептом догона)."""
+    а, б = _мутанты("scripts/mutate_check.py", 1), _мутанты("src/busy_signals.py", 1)
+    журнал = _прогон(tmp_path, monkeypatch, [а[0], б[0]], секунды={_MC: 1, _BS: 1})
+    исходы = {_BS: mc.RunResult(mc.TIMEOUT), _MC: mc.RunResult(mc.FAILED, rc=1, tail="FAILED t")}
+
+    def run_tests(cwd, targets, timeout, cap):
+        журнал.append((tuple(targets), timeout))
+        return исходы[targets[0]]
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "100",
+                    "--report", str(отчёт)]) == 2
+    assert [ts for ts, _ in журнал] == [(_BS,), (_MC,)], журнал
+    assert отчёт.read_text(encoding="utf-8").startswith(
+        "Проверено мутантов: 0 из 2 (остановка: база красная)"), отчёт.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert f"не уложился в 800 с: {_BS}" in out and f"{_MC} (rc 1)" in out, out
+
+
+def test_мутант_долгой_базы_не_допущен_за_перебег(tmp_path, monkeypatch):
+    """База 390 с при `--timeout 50` даёт мутанту потолок 780 с. Остаток 510 с
+    хватает на оценку (390), но потолок вышел бы за бюджет на 270 > 200 с
+    (`overrun_s`) — мутант не запускается, прогон стоит по бюджету. Допуск по
+    одной оценке пустил бы его (out1 №661, Sonnet I1)."""
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 1)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 390})
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "50",
+                    "--budget-s", "900"]) == exit_codes.EXIT_UNJUDGED
+    assert len(журнал) == 1, журнал
+
+
 def test_без_бюджета_поведение_прежнее(tmp_path, monkeypatch, capsys):
     """Без `--budget-s` время не ограничивает ничего: часы уходят на годы вперёд,
     а судится весь план, и исход — «проверено всё, чисто»."""
@@ -2579,6 +2639,20 @@ def test_journal_read_терпит_оборванную_строку(tmp_path):
                     encoding="utf-8")
     manifests, done = mc.journal_read(tmp_path, "abc")
     assert len(manifests) == 1 and set(done) == {"a"}
+
+
+def test_journal_read_не_переносит_убитого_по_потолку(tmp_path):
+    """Потолок мутанта — от замера базы этого прогона: «убит по потолку» под
+    прежним потолком `--resume` не переносит, мутант судится заново; убитый
+    тестами — переносится (out1 №661, Haiku I3)."""
+    import charoite_paths
+    путь = charoite_paths.log_path(tmp_path, mc.RUN_LOG_KIND, part="abc-1", suffix=".jsonl")
+    путь.parent.mkdir(parents=True)
+    путь.write_text('{"manifest": 2}\n{"key": "a", "outcome": "killed"}\n'
+                    '{"key": "b", "outcome": "killed", "why": "потолок 600 с", "capped": true}\n',
+                    encoding="utf-8")
+    _, done = mc.journal_read(tmp_path, "abc")
+    assert set(done) == {"a"}, done
 
 
 def test_signal_group_жнёт_зомби_лидера(tmp_path):

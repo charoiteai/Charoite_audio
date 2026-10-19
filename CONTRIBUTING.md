@@ -74,11 +74,13 @@ review gates, and who answers for what — is documented in
   duration of its suite, and no run may start whose ceiling would overshoot the
   budget by more than 4 × `--timeout`. A baseline suite's ceiling is
   8 × `--timeout`; a mutant's is 4 × `--timeout` but never below twice its
-  suite's baseline. A green baseline suite that hits its ceiling stops the run
-  with "база не уложилась в потолок" ("baseline did not fit its ceiling",
-  code 2, no mutant judged) — catch up locally with `--only-critical` and a
-  larger `--timeout`; a mutant that hits its ceiling counts as killed and is
-  printed as "убит (потолок N с)". Short of it, the run stops with the tool's own line
+  suite's baseline. A baseline suite that does not finish within its ceiling,
+  with no suite failing, stops the run with "база не уложилась в потолок"
+  ("baseline did not fit its ceiling", code 2, no mutant judged) — catch up
+  locally with `--only-critical` and a larger `--timeout`; a mutant that hits
+  its ceiling counts as killed and is printed as "убит (потолок N с)";
+  `--resume` judges such a mutant again. Short of it, the run stops with the
+  tool's own line
   `прервано: бюджет` ("interrupted: budget"; `--force` does not lift it) and
   ends as `partial`, or as `unjudged` (code 9) when not a single mutant of a
   non-empty plan was judged — in CI that one is red. `--report` is rewritten
