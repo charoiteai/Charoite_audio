@@ -20,6 +20,13 @@ open build/Charoite.app
 Requirements: macOS 14+ on Apple Silicon, Xcode Command Line Tools
 (`xcode-select --install`).
 
+The binary is taken from the directory SwiftPM names
+(`swift build -c release --arch arm64 --show-bin-path`), so any build backend
+works: native puts it in `.build/arm64-apple-macosx/release`, swiftbuild (the
+default since Swift 6.4) in `.build/out/Products/Release`. If the build leaves
+no binary there, the script stops with that path before touching the previous
+`build/Charoite.app`.
+
 Signing: Developer ID Application with the hardened runtime and a timestamp
 when such a certificate is in the keychain (or named in
 `CHAROITE_SIGN_IDENTITY`; `-` forces ad-hoc), otherwise ad-hoc. With an ad-hoc
