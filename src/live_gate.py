@@ -43,6 +43,20 @@ CONSOLE_LOCK_NAME = "console.lock"
 NIGHTLY_UNTIL_ENV = "CHAROITE_NIGHTLY_UNTIL"
 
 
+def _until() -> float | None:
+    """Потолок ночи из окружения — один разбор на всех читателей (выход out1
+    №749, DS M6: три копии разбора расходились в контракте). None — потолка
+    нет: переменной нет, мусор, nan или +inf; −inf — ночь уже вышла."""
+    raw = os.environ.get(NIGHTLY_UNTIL_ENV)
+    if not raw:
+        return None
+    try:
+        until = float(raw)
+    except ValueError:
+        return None         # мусор в переменной — не повод рвать прогон или ждать без меры
+    return None if math.isnan(until) or until == math.inf else until
+
+
 def night_is_over(now: Callable[[], float] = time.time) -> bool:
     """Вышло ли время, отведённое ночному прогону.
 
@@ -55,13 +69,8 @@ def night_is_over(now: Callable[[], float] = time.time) -> bool:
     Пауза на живую запись (`wait_while_live`) сюда не входит: она не
     двигает потолок, потому что и она сама, и он считаются от одних часов.
     """
-    raw = os.environ.get(NIGHTLY_UNTIL_ENV)
-    if not raw:
-        return False
-    try:
-        return now() > float(raw)
-    except ValueError:
-        return False        # мусор в переменной — не повод рвать прогон
+    until = _until()
+    return until is not None and now() > until
 
 
 
@@ -78,14 +87,41 @@ def night_wait_cap(default: float = 3600.0, now: Callable[[], float] = time.time
     # Отрицательный `default` — остаток бюджета, ушедший в минус между
     # проверкой и вызовом: ждать нечего, а не ValueError у гейта (вход in3 №621).
     default = max(0.0, float(default))
-    raw = os.environ.get(NIGHTLY_UNTIL_ENV)
-    if not raw:
-        return default
-    try:
-        left = float(raw) - now()
-    except ValueError:
-        return default              # мусор в переменной — не повод ждать без меры
-    return max(0.0, min(default, left))
+    until = _until()
+    return default if until is None else max(0.0, min(default, until - now()))
+
+
+# Хвост ночи после досье: облачная ревизия досье 14–18 мин, ядра 2 мин, бенч
+# памяти 6 мин (замер ночей 11.10–18.10, №749) — с запасом полчаса.
+NIGHT_TAIL_S = 1800.0
+
+
+def night_left(tail_s: float = NIGHT_TAIL_S, wall: Callable[[], float] = time.time) -> float | None:
+    """Сколько ночи осталось шагу, если шагам за ним оставить `tail_s`.
+
+    None — потолка нет (`_until`); иначе `UNTIL − стена − tail_s`, не меньше нуля.
+    """
+    until = _until()
+    return None if until is None else max(0.0, until - wall() - tail_s)
+
+
+def step_left(budget_s: float | None, started: float, now: float, *,
+              tail_s: float = NIGHT_TAIL_S, wall: Callable[[], float] = time.time) -> float | None:
+    """Остаток ночного шага: меньшее из своего бюджета и ночи до резерва хвоста.
+
+    Шаг со своим бюджетом не знает, сколько ночи осталось: воскресная
+    пересборка досье шла до потолка, хвост после неё уходил в «(поздно)»
+    (№749). Бюджет — по монотонным часам шага (`started`, `now`): сон машины
+    его не тратит. Резерв хвоста — по стене и на каждой проверке: число,
+    посчитанное один раз на старте, сон машины съедал (выход out1 №749,
+    Sonnet I1, DS I1). None — нет ни бюджета, ни потолка.
+    """
+    own = None if budget_s is None else budget_s - (now - started)
+    night = night_left(tail_s, wall)
+    if own is None:
+        return night
+    return own if night is None else min(own, night)
+
 
 def fits(budget_s: float | None, started: float, need: float, now: float) -> bool:
     """Хватит ли остатка бюджета на `need` секунд. Без бюджета — всегда.
@@ -286,7 +322,11 @@ def night_window_open(root: pathlib.Path, what: str, log: Callable[[str], None] 
     передаёт вовсе — только `default` для своей шкалы.
 
     `clock` — стенные часы ночи (`NIGHTLY_UNTIL_ENV` — unix-время); `gate` уходит
-    в `wait_while_live` как есть (poll, sleep, now, alive) — его часы свои.
+    в `wait_while_live` как есть (poll, sleep, now, alive). Ожидание меряется теми
+    же часами, что потолок: monotonic на macOS во сне стоит, и потолок по стене,
+    отмеренный монотонными секундами, после сна машины ждал сверх ночи (выход
+    out2 №749, DS I1, Haiku I1). Свои часы ожидания вызывающий передаёт `now`.
     """
+    gate.setdefault("now", clock)
     wait_while_live(root, log, what=what, cap=night_wait_cap(default, clock), **gate)
     return not night_is_over(clock)

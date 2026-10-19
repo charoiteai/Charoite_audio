@@ -13,8 +13,10 @@
 
 Все графы — одна очередь: по одной теме из каждого графа с работой раньше
 вторых тем, внутри графа — несобранные, потом давно собранные. Шаг держит
-бюджет по времени (`--budget-s`, по умолчанию 40 минут); остаток очереди —
-следующей ночью, индекс каждого графа при этом полный.
+бюджет по времени (`--budget-s`, по умолчанию 40 минут, у `--full` без него —
+без бюджета) и под ночным потолком оставляет время шагам после себя
+(`live_gate.step_left`); остаток очереди — следующей ночью (у `--full` темы
+без изменений — следующим воскресеньем), индекс каждого графа при этом полный.
 
 Запускается из nightly.sh ПОСЛЕ tier3 — чтобы досье собирались по уже
 причёсанным ядрам, без дублей.
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import math
 import pathlib
 import signal
 import sys
@@ -176,6 +179,7 @@ NEED_START_S = 40.0
 
 # Шов часов: бюджет тесты судят подменённым временем, а не сном (как в mutate_check)
 clock = time.monotonic
+wall_clock = time.time   # потолок ночи — unix-время; тесты подменяют его отдельно от clock
 
 # Классы кандидата: досье нет / отпечаток разошёлся / без изменений (только --full)
 NEW, CHANGED, SAME = 1, 2, 3
@@ -413,15 +417,37 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     return gen_s
 
 
-def _tail(queue: list[Candidate], reason: str, dry: bool) -> None:
+def _tail(queue: list[Candidate], reason: str, dry: bool, full: bool) -> None:
     """Остаток очереди — на завтра. Записи с диска у этих тем уже в индексе:
     голый break отдавал write_index посещённый префикс, и _index/_ИНДЕКС
     терял темы — регресс бага 17.08 (круг по PR #363, GLM)."""
-    print(f"  ⏹ {reason} — остальные темы завтра")
+    # темы без изменений берёт только --full: у них «завтра» — следующее воскресенье (выход out2 №749, DS M4)
+    later = ", без изменений — в следующую полную пересборку" if full else ""
+    print(f"  ⏹ {reason} — остальные темы завтра{later}")
     for cand in queue:
         cand.g.skipped += 1          # сводка не врёт про хвост (круг-2, DS)
         cand.g.late += 1
         cand.g.done(dry)
+
+
+def _rest(budget: float | None, started: float) -> float | None:
+    """Остаток шага: свой бюджет по `clock`, резерв хвоста ночи по стене."""
+    return live_gate.step_left(budget, started, clock(), wall=wall_clock)
+
+
+def _short(budget: float | None, started: float, need: float) -> bool:
+    rest = _rest(budget, started)
+    return rest is not None and rest < need
+
+
+def _why_short(budget: float | None, started: float) -> str:
+    """Что кончилось: свой бюджет шага или ночь до резерва хвоста — в логе
+    разное (выход out1 №749, DS I2: «бюджет вышел» при обрезке ночью врал)."""
+    own = None if budget is None else budget - (clock() - started)
+    night = live_gate.night_left(wall=wall_clock)
+    if night is not None and (own is None or night < own):
+        return "до конца ночи — только время шагов после досье"
+    return "бюджет шага досье вышел"
 
 
 def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
@@ -431,7 +457,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
     attempts = 0
     built = 0                 # --limit — потолок прогона, а не графа (аудит 26.08, Codex)
     spent: list[float] = []   # все попытки с моделью, и отказы тоже (вход in3, DS M1)
-    budget = None if full else budget_s   # --full обещает «всё», бюджет его не режет
+    budget = budget_s   # решён в main: --full без бюджета — None (№749)
     for i, cand in enumerate(queue):
         g = cand.g
         if dry:
@@ -451,25 +477,27 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             g.done(dry)
             continue
         need = sum(spent) / len(spent) if spent else NEED_START_S
-        if not live_gate.fits(budget, started, need, clock()):
-            _tail(queue[i:], "бюджет шага досье вышел", dry)
+        if _short(budget, started, need):
+            _tail(queue[i:], _why_short(budget, started), dry, full)
             break
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
-        # его — досье подождёт, но не дольше остатка бюджета. Окно — одна
+        # его — досье подождёт, но не дольше остатка шага. Окно — одна
         # дверь у владельца гейта, потолок ночи внутри.
-        gate = {} if budget is None else {"default": budget - (clock() - started)}
-        if not live_gate.night_window_open(_root(), what="досье", **gate):
-            _tail(queue[i:], "время ночного прогона вышло", dry)
+        rest = _rest(budget, started)
+        gate = {} if rest is None else {"default": rest}
+        if not live_gate.night_window_open(_root(), what="досье", clock=wall_clock, **gate):
+            _tail(queue[i:], "время ночного прогона вышло", dry, full)
             break
-        if not live_gate.fits(budget, started, need, clock()):
-            _tail(queue[i:], "бюджет шага досье вышел, пока ждали конца встречи", dry)
+        if _short(budget, started, need):
+            _tail(queue[i:], _why_short(budget, started) + ", пока ждали конца встречи", dry, full)
             break
-        # Замок ждёт не дольше остатка бюджета: пять минут соседа на последней
+        # Замок ждёт не дольше остатка шага: пять минут соседа на последней
         # теме перебирали бы бюджет на всё ожидание (выход out1 №621, Sonnet I2).
         def lock_wait() -> float:
             # и потолок ночи — у его владельца (выход out2 №621, Sonnet I1)
+            rest = _rest(budget, started)
             return live_gate.night_wait_cap(
-                LOCK_WAIT if budget is None else min(LOCK_WAIT, budget - (clock() - started)))
+                LOCK_WAIT if rest is None else min(LOCK_WAIT, rest), now=wall_clock)
         refused, before = g.отказы, g.built
         gen_s = _build(cand, c, lock_wait)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
@@ -545,6 +573,22 @@ def _собрано(source: pathlib.Path | dossier.DossierLoad) -> str:
         return ""
 
 
+def resolve_budget(budget_s: float | None, full: bool) -> float | None:
+    """Бюджет прогона — одно место, `_drive` о `--full` не знает.
+
+    Не задан: `--full` — без бюджета (ручная пересборка «всего»), иначе
+    умолчание. Ноль, минус, nan и inf — не «ничего не делать» и не «вечно»,
+    а забытое значение (выход out3 №621), и с `--full` тоже. Резерв хвоста
+    ночи сюда не входит: его `_drive` проверяет по стене на каждой теме
+    (`live_gate.step_left`).
+    """
+    if budget_s is None:
+        return None if full else DEFAULT_BUDGET_S
+    if not (math.isfinite(budget_s) and budget_s > 0):   # и nan, inf (выход out1, Haiku M2)
+        return DEFAULT_BUDGET_S
+    return budget_s
+
+
 def _terminate(signum, frame):  # noqa: ARG001
     """SIGTERM потолка ночи — в SystemExit, чтобы `finally` прогона дописал
     индексы графов (вход in3 №621, Sonnet I2)."""
@@ -557,15 +601,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Ночная сборка досье по темам графа")
     ap.add_argument("--graph", help="путь к графу")
     ap.add_argument("--all-graphs", action="store_true", help="все графы vault")
-    ap.add_argument("--full", action="store_true", help="пересобрать все темы (без бюджета)")
+    ap.add_argument("--full", action="store_true",
+                    help="пересобрать все темы (без --budget-s — без бюджета)")
     ap.add_argument("--dry", action="store_true", help="показать план, не писать")
-    ap.add_argument("--budget-s", type=float, default=DEFAULT_BUDGET_S,
-                    help="бюджет шага в секундах; остаток очереди — на завтра")
+    ap.add_argument("--budget-s", type=float, default=None,
+                    help=f"бюджет шага в секундах (по умолчанию {DEFAULT_BUDGET_S}); "
+                         "остаток очереди — на завтра")
     ap.add_argument("--limit", type=int, default=None, help="ручной потолок тем за прогон")
     ap.add_argument("--find", help="проверить, что найдётся по запросу")
     args = ap.parse_args()
-    if args.budget_s <= 0:   # ноль — не «ничего не делать», а забытое значение (выход out3 №621)
-        args.budget_s = DEFAULT_BUDGET_S
+    args.budget_s = resolve_budget(args.budget_s, args.full)
     c = cfg()
 
     if args.find:

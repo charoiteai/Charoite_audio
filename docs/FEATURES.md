@@ -267,8 +267,11 @@ then the largest. The step holds a time budget (`--budget-s`, 40 minutes); the
 rest of the queue waits for the next night and every graph's index stays
 complete. The old cap of 12 topics across all graphs gave the night to the
 large graph while small ones went months without a fresh dossier. Once a week
-(the Sunday run) every dossier is rebuilt: `--full` is cut neither by the
-budget nor by a manual `--limit`. Writes
+(the Sunday run) every dossier is rebuilt: `--full` ignores a manual
+`--limit` and runs under its own budget (`DOSSIER_FULL_BUDGET`, two hours);
+unchanged topics it did not reach wait for the next Sunday. Under the night
+ceiling the step checks the wall clock before every topic and stops while the
+steps after it still have their half hour. Writes
 take the shared graph lock — the same one the meeting pipeline and the cloud
 review take. Hand-written additions live in the
 `## Правки автора` ("author edits") section and survive rebuilds. To check what a query would
