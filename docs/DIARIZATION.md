@@ -44,7 +44,8 @@ Charoite uses two diarization passes:
    [3D-Speaker project](https://github.com/modelscope/3D-Speaker) (Apache-2.0;
    ERes2Net works well for Russian and English), segmentation from
    [pyannote](https://github.com/pyannote/pyannote-audio), with ONNX builds
-   assembled for sherpa-onnx. Your own link: `--url` (no checksum then).
+   assembled for sherpa-onnx. Your own link: `--url` (no checksum and no resume then; the server must send
+   Content-Length and not cut the stream).
 
    The script reaches the network only when you run it: at most two one-off
    downloads (embeddings, then segmentation); the models work offline
@@ -464,7 +465,8 @@ engine needs it, and both files are fetched by the same loader. It prints the
 weight licence (NVIDIA OpenMDW 1.1, with its link) in the network block, before
 connecting. The outcome is honest: **0** — installed and the probe is green;
 **`EXIT_INSTALL_BUSY` (12)** — the machine is busy (a meeting being processed, a
-live recording, the night cycle, a test mutation) or another install is running;
+live recording, the night cycle, a test mutation), another install is running, or
+another process is downloading the same model file;
 the refusal names the reasons and asks to wait for them to finish — the
 night-cycle reason carries the status file and how many minutes ago it was
 updated, so an abandoned `running` is told from a night actually under way; the

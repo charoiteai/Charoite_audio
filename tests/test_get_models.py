@@ -983,3 +983,37 @@ def test_a_whole_answer_without_length_is_published_by_the_sum(monkeypatch, tmp_
     get_models.download("https://mirror.invalid/m.onnx", dest, expect_mb=2, onnx=True,
                         sha256=hashlib.sha256(body).hexdigest())
     assert dest.read_bytes() == body
+
+
+@pytest.mark.parametrize("with_sum", [False, True])
+def test_a_network_break_keeps_the_part_only_with_a_sum(monkeypatch, tmp_path, with_sum):
+    """Сеть оборвалась посреди ответа. С суммой `.part` ждёт докачки следующим запуском;
+    без суммы его не продолжить — убран сразу, вместе с источником (финальный Opus №643, M2)."""
+    import hashlib
+    import io
+
+    body = b"r" * 3000
+
+    class Torn(io.BytesIO):
+        status = 200
+        headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):            # noqa: ANN002
+            self.close()
+
+        def read(self, n=-1):              # noqa: ANN001
+            if self.tell() >= 1000:
+                raise ConnectionResetError("сеть оборвалась")
+            return super().read(min(n, 1000 - self.tell()) if n and n > 0 else 1000 - self.tell())
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", lambda req, timeout=0: Torn(body))
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    with pytest.raises(SystemExit, match="не скачалось: сеть оборвалась"):
+        get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                            sha256=hashlib.sha256(body).hexdigest() if with_sum else "")
+    assert part.exists() is with_sum
+    assert part.with_name(part.name + ".src").exists() is with_sum

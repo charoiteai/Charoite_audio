@@ -319,6 +319,10 @@ LOCK_POLL_S = 2.0
 #: часам: 40 МБ через корпоративный прокси на 53 КБ/с — это 13 минут живой загрузки.
 NEIGHBOUR_STALL_S = 300.0
 _ARCHIVES = (".tar.bz2", ".tar.gz")
+#: Условия своего адреса (--url): суммы нет, значит, нет сверки и докачки, а полноту
+#: подтверждает только Content-Length (№643).
+_URL_TERMS = (" (без сверки суммы и без докачки: сервер должен отдавать "
+              "Content-Length и не рвать поток)")
 
 
 @contextlib.contextmanager
@@ -488,7 +492,7 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
             part.unlink(missing_ok=True)
             raise SystemExit(
                 f"не докачалось: {got} из {want} байт за шесть попыток.\n"
-                "проверьте сеть или укажите своё зеркало через --url")
+                "проверьте сеть или укажите своё зеркало через --url" + _URL_TERMS)
         if not total and not sha256:
             # Ни размера, ни суммы (своё зеркало --url без Content-Length): тихий
             # обрыв не отличить от конца файла, и обрезанная модель ложилась на
@@ -505,12 +509,18 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
         # Первая версия чистила .part на любой ошибке — и каждая попытка
         # начиналась с нуля, хотя сервер поддерживает Range. На модели в
         # 228 МБ по рвущемуся каналу это означало «никогда».
+        # Без суммы остаток не продолжить — убираем сразу, а не до следующего
+        # запуска той же цели (финальный Opus №643, M2).
+        if not sha256:
+            for leftover in (part, part.with_name(part.name + ".src")):
+                with contextlib.suppress(OSError):
+                    leftover.unlink(missing_ok=True)
         done = part.stat().st_size // 1024 // 1024 if part.exists() else 0
         raise SystemExit(
             f"не скачалось: {e}\n"
             + (f"на диске уже {done} МБ — повторите ту же команду, докачается "
                "с этого места\n" if done and sha256 else "")
-            + "или укажите своё зеркало через --url")
+            + "или укажите своё зеркало через --url" + _URL_TERMS)
     # Сумма, распаковка и публикация — той же строкой причины, что сеть: кнопка
     # показывает последнюю строку вывода, и трасса Python там — не причина (вход
     # №643, DS I4: место на диске, права, битый архив).
@@ -745,7 +755,8 @@ def main() -> int:
                     help="модель распознавания речи (sensevoice — китайский и ещё 4 языка)")
     ap.add_argument("--model", default=DEFAULT, choices=sorted(MODELS),
                     help=f"какую модель брать (по умолчанию {DEFAULT})")
-    ap.add_argument("--url", default=None, help="своя ссылка на .onnx вместо известных")
+    ap.add_argument("--url", default=None,
+                    help="своя ссылка на .onnx вместо известных" + _URL_TERMS)
     ap.add_argument("--dest", type=pathlib.Path, default=None,
                     help="куда положить (по умолчанию models/diar/embedding.onnx)")
     ap.add_argument("--check", action="store_true",

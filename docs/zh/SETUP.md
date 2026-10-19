@@ -161,7 +161,7 @@ CHAROITE_ROOT=<数据文件夹> <应用 Python> scripts/install_engine.py nemotr
 CHAROITE_ROOT=<数据文件夹> <应用 Python> scripts/install_engine.py nemotron --plan   # 以一行 JSON 输出计划，不联网
 ```
 
-退出码如实反映结果：0 —— 已安装且探测通过；12（`EXIT_INSTALL_BUSY`）—— 机器正忙或另一次安装正在进行；13（`EXIT_INSTALL_CANCELLED`）—— 已取消；1 —— 拒绝。详情见 [DIARIZATION.md](DIARIZATION.md)。
+退出码如实反映结果：0 —— 已安装且探测通过；12（`EXIT_INSTALL_BUSY`）—— 机器正忙、另一次安装正在进行，或另一个进程正在下载同一个模型文件；13（`EXIT_INSTALL_CANCELLED`）—— 已取消；1 —— 拒绝。详情见 [DIARIZATION.md](DIARIZATION.md)。
 
 ## 6. 运行
 
