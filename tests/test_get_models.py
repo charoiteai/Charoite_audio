@@ -1021,16 +1021,20 @@ def test_a_network_break_keeps_the_part_only_with_a_sum(monkeypatch, tmp_path, w
 
 
 @pytest.mark.parametrize("with_sum", [False, True])
-def test_six_short_answers_are_a_reason_and_leave_nothing(monkeypatch, tmp_path, with_sum):
-    """Зеркало каждый раз отдаёт кусок и молча рвёт: после шести попыток — «не докачалось»,
-    `.part` и источник убраны одним хелпером (круг по правкам №643, Sonnet M1)."""
+def test_short_answers_exhaust_the_attempts_and_keep_the_part_only_with_a_sum(
+        monkeypatch, tmp_path, with_sum):
+    """Зеркало каждый раз отдаёт кусок и молча рвёт: после `DOWNLOAD_ATTEMPTS` попыток —
+    «не докачалось». С суммой `.part` и источник ждут докачки следующим запуском, без
+    суммы убраны (круги по правкам №643: Sonnet M1, Haiku I1, DS I1)."""
     import hashlib
     import io
 
     body = b"s" * 10_000
+    seen: list = []
 
     def short(req, timeout=0):             # noqa: ANN001, ARG001
         rng = req.get_header("Range")
+        seen.append(rng)
         start = int(rng.split("=")[1].rstrip("-")) if rng else 0
 
         class Response(io.BytesIO):
@@ -1048,8 +1052,12 @@ def test_six_short_answers_are_a_reason_and_leave_nothing(monkeypatch, tmp_path,
     monkeypatch.setattr(get_models.urllib.request, "urlopen", short)
     dest = tmp_path / "tokens.txt"
     part = dest.with_suffix(".txt.part")
-    with pytest.raises(SystemExit, match="не докачалось"):
+    with pytest.raises(SystemExit, match="не докачалось") as exc:
         get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
                             sha256=hashlib.sha256(body).hexdigest() if with_sum else "")
-    assert not part.exists()
-    assert not part.with_name(part.name + ".src").exists()
+    n = get_models.DOWNLOAD_ATTEMPTS
+    assert seen == ([None] + [f"bytes={k * 1000}-" for k in range(1, n)] if with_sum else [None] * n)
+    assert f"за {n} попыток" in str(exc.value)
+    assert ("докачается" in str(exc.value)) is with_sum
+    assert part.exists() is with_sum
+    assert part.with_name(part.name + ".src").exists() is with_sum

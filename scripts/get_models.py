@@ -318,6 +318,8 @@ LOCK_POLL_S = 2.0
 #: Сколько ждать соседа, чей `.part` не растёт. Потолок по прогрессу, а не по
 #: часам: 40 МБ через корпоративный прокси на 53 КБ/с — это 13 минут живой загрузки.
 NEIGHBOUR_STALL_S = 300.0
+#: Попыток на один запуск: зеркала рвут длинные закачки молча, хвост дотягиваем по Range.
+DOWNLOAD_ATTEMPTS = 6
 _ARCHIVES = (".tar.bz2", ".tar.gz")
 #: Условия своего адреса (--url): суммы нет, значит, нет сверки и докачки, а полноту
 #: подтверждает только Content-Length (№643).
@@ -445,7 +447,7 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
     # Первая же попытка обычно и последняя; цикл нужен ровно для этого случая.
     try:
         total = 0
-        for attempt in range(1, 7):
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
             done = part.stat().st_size if part.exists() else 0
             if total and done >= total:
                 break
@@ -489,10 +491,14 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
                 break
         if total and part.stat().st_size < total:
             got, want = part.stat().st_size, total
-            _drop_part(part)
+            # С суммой остаток продолжит следующий запуск — как после обрыва сети
+            # ниже; без суммы докачки нет, убираем (круг по правкам №643, Haiku I1).
+            if not sha256:
+                _drop_part(part)
             raise SystemExit(
-                f"не докачалось: {got} из {want} байт за шесть попыток.\n"
-                "проверьте сеть или укажите своё зеркало через --url" + _URL_TERMS)
+                f"не докачалось: {got} из {want} байт за {DOWNLOAD_ATTEMPTS} попыток.\n"
+                + ("повторите ту же команду — докачается с этого места\n" if sha256 else "")
+                + "проверьте сеть или укажите своё зеркало через --url" + _URL_TERMS)
         if not total and not sha256:
             # Ни размера, ни суммы (своё зеркало --url без Content-Length): тихий
             # обрыв не отличить от конца файла, и обрезанная модель ложилась на
