@@ -439,10 +439,10 @@ def test_ceiled_jobs_fit_their_step_ceilings():
 
 
 def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summary():
-    """Бюджет мутатора плюс худший прогон одного набора (`WORST_RUN_FACTOR` ×
-    `--timeout`, тот же множитель, что у `run_tests`) — не больше потолка его шага:
-    бюджет проверяется ДО прогона набора, и последний допущенный набор ещё должен
-    успеть. Отчёт, который пишет мутатор (`--report`), читает шаг сводки — по тому
+    """Бюджет мутатора плюс предел перебега (`overrun_s` — `WORST_RUN_FACTOR` ×
+    `--timeout`; допуск `admits` не пускает прогон, чей потолок выйдет за остаток
+    бюджета больше чем на него) — не больше потолка его шага: бюджет проверяется
+    ДО прогона набора, и последний допущенный набор ещё должен успеть (№661). Отчёт, который пишет мутатор (`--report`), читает шаг сводки — по тому
     же имени: разошедшиеся литералы вернули бы «отчёт не доехал» зелёным (Important
     DeepSeek по PR #637). Множитель закреплён значением: его снижение делает часть
     наборов «убитыми» по потолку подпроцесса, а сторож читал бы его как вход."""
@@ -459,7 +459,7 @@ def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summar
     timeout = re.search(r"--timeout\s+(\d+)", run)
     report = re.search(r"--report\s+(\S+)", run)
     assert budget and timeout and report, "шаг мутатора обязан назвать --budget-s, --timeout и --report"
-    worst = mutate_check.WORST_RUN_FACTOR * int(timeout.group(1))
+    worst = mutate_check.overrun_s(int(timeout.group(1)))
     assert float(budget.group(1)) + worst <= step["timeout-minutes"] * 60, (
         "бюджет плюс худший прогон набора не укладываются в потолок шага мутатора")
     summary = [s for s in job["steps"] if s.get("if") == "always()" and "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]

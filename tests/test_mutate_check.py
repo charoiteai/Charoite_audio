@@ -194,17 +194,44 @@ def test_скрипты_с_загрузкой_по_пути_судятся_св�
     assert test in mc.tests_for(REPO, REPO / "scripts" / f"{module}.py")
 
 
-def test_зависший_прогон_считается_убитым(tmp_path, monkeypatch):
-    """Мутант, подвесивший тесты, изменил поведение — это kill, а не выживший;
-    иначе один такой съедает весь ночной бюджет и попадает в отчёт как
-    «тесты не заметили»."""
+def _исход(ok: bool) -> "mc.RunResult":
+    """Исход подменённого прогона: зелёный или красный."""
+    return mc.RunResult(mc.PASSED if ok else mc.FAILED, rc=0 if ok else 1)
+
+
+def test_прогон_дольше_потолка_исход_timeout_с_хвостом(tmp_path, monkeypatch):
+    """Прогон дольше потолка — отдельный исход `timeout`, а не `failed`: на базе
+    это «не уложилась», а не «красная» (№661). Хвост вывода `TimeoutExpired`
+    приходит байтами — читается, а не роняет мутатор."""
     import subprocess
 
     def hang(*a, **k):
-        raise subprocess.TimeoutExpired(cmd="pytest", timeout=1)
+        raise subprocess.TimeoutExpired(cmd="pytest", timeout=1, output=b"collected 6\n\xff",
+                                        stderr=None)
 
     monkeypatch.setattr(subprocess, "run", hang)
-    assert mc.run_tests(tmp_path, ["tests"], timeout=1) is False
+    r = mc.run_tests(tmp_path, ["tests"], timeout=1, cap=4)
+    assert r.status == mc.TIMEOUT and r.rc is None, r
+    assert r.tail.startswith("collected 6"), r.tail
+
+
+def test_красный_прогон_несёт_код_и_хвост(tmp_path, monkeypatch):
+    """Красный прогон — `failed` с кодом pytest и хвостом вывода: причина красной
+    базы видна в логе шага, а не угадывается (№661, вход in1)."""
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, "строка 1\nFAILED tests/test_x.py::test_a\n", "ошибка\n"))
+    r = mc.run_tests(tmp_path, ["tests"], timeout=1, cap=4)
+    assert (r.status, r.rc) == (mc.FAILED, 1), r
+    assert "FAILED tests/test_x.py::test_a" in r.tail and "ошибка" in r.tail, r.tail
+
+
+def test_исход_прогона_не_читается_как_bool():
+    """Истинность исхода не спрашивается: объект был бы истинен и при `failed`,
+    и вердикт мутанта перевернулся бы молча (№661, вход in1: DS C5)."""
+    with pytest.raises(TypeError):
+        bool(mc.RunResult(mc.FAILED))
 
 
 def test_прогон_мутанта_без_xdist(tmp_path, monkeypatch):
@@ -219,7 +246,7 @@ def test_прогон_мутанта_без_xdist(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
-    assert mc.run_tests(tmp_path, ["tests"], timeout=3) is True
+    assert mc.run_tests(tmp_path, ["tests"], timeout=3, cap=3 * mc.WORST_RUN_FACTOR).status == mc.PASSED
     argv = seen[0]
     assert any(argv[i:i + 2] == ["-p", "no:xdist"] for i in range(len(argv))), argv
 
@@ -231,29 +258,103 @@ def test_глобальный_n_роняет_прогон_мутанта_гро�
     pytest.importorskip("xdist")
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_x.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
-    assert mc.run_tests(tmp_path, ["tests"], timeout=30) is True
+    assert mc.run_tests(tmp_path, ["tests"], timeout=30, cap=30 * mc.WORST_RUN_FACTOR).status == mc.PASSED
     monkeypatch.setenv("PYTEST_ADDOPTS", "-n 2")
-    assert mc.run_tests(tmp_path, ["tests"], timeout=30) is False
+    assert mc.run_tests(tmp_path, ["tests"], timeout=30, cap=30 * mc.WORST_RUN_FACTOR).status == mc.FAILED
 
 
-def test_потолок_прогона_набора_выше_потолка_теста_в_худший_раз(tmp_path, monkeypatch):
-    """Жёсткий потолок прогона набора — `WORST_RUN_FACTOR` × `--timeout`: потолок
-    pytest действует на один тест, а тестов в наборе много. Ниже него живой, но
-    долгий набор обрывался бы и записывался в убитые — выживший мутант прятался бы
-    за таймаутом. На этом множителе стоит и бюджет шага мутатора в CI (№395).
-    Реальный прогон ниже (`timeout=60`) порядок не различает: набор идёт секунды,
-    а 60 // 4 — ещё 15 с (выживший мутатора по #637)."""
+def test_потолок_прогона_уходит_в_subprocess(tmp_path, monkeypatch):
+    """Жёсткий потолок прогона набора — аргумент `cap`, а потолок pytest
+    `--timeout` действует на один тест: тестов в наборе много. Ниже него живой,
+    но долгий набор обрывался бы и записывался в убитые (№395, №661)."""
     import subprocess
 
     seen: dict = {}
 
     def run(cmd, **kw):
-        seen["timeout"] = kw["timeout"]
+        seen["timeout"], seen["cmd"] = kw["timeout"], cmd
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
-    assert mc.run_tests(tmp_path, ["tests"], timeout=3) is True
-    assert seen["timeout"] == 3 * mc.WORST_RUN_FACTOR
+    assert mc.run_tests(tmp_path, ["tests"], timeout=3, cap=17).status == mc.PASSED
+    assert seen["timeout"] == 17
+    assert seen["cmd"][seen["cmd"].index("--timeout") + 1] == "3"
+
+
+def test_потолки_базы_и_мутанта():
+    """База — `BASE_RUN_FACTOR × --timeout` (замер CI: зелёная база двух наборов
+    393–484 с при прежнем потолке 480 с, №661). Мутант — не ниже
+    `WORST_RUN_FACTOR × --timeout` и не ниже двух длительностей базы его набора:
+    зелёный долгий набор не даёт мутантам «убит» по потолку."""
+    assert mc.base_cap(120) == 960
+    assert mc.mutant_cap(120, 100.0) == 480
+    assert mc.mutant_cap(120, 400.0) == 800
+    assert mc.overrun_s(120) == 480
+
+
+def _сетка_допуска(monkeypatch, estimate, cap, timeout=120, budget=7200):
+    """Свойство `admits` по всем остаткам бюджета: допущен — значит, дойдя до
+    потолка, прогон выйдет за бюджет не больше чем на `overrun_s`. Возвращает
+    (допущено, отказано) — ячейка без допусков или без отказов вакуумна."""
+    monkeypatch.setattr(mc, "clock", lambda: 0.0)
+    допущено = отказано = 0
+    for remaining in range(-100, budget + 1, 10):   # меньше нуля — бюджет уже перебран
+        if mc.admits(budget, remaining - budget, estimate, cap, timeout):
+            допущено += 1
+            assert cap <= remaining + mc.overrun_s(timeout), (estimate, cap, remaining)
+            assert estimate <= remaining, (estimate, cap, remaining)
+        else:
+            отказано += 1
+    return допущено, отказано
+
+
+@pytest.mark.parametrize("base_s", [0, 100, 480, 900, 3000])
+def test_допуск_мутанта_держит_перебег_бюджета(monkeypatch, base_s):
+    """Потолок мутанта растёт с базой, а сторож шага CI считает только
+    `budget + overrun_s`: без допуска долгий набор переполнил бы шаг (№661, вход
+    in1: DS C2). Опыт 19.10: допуск по одной оценке `fits(estimate)` нарушает
+    свойство в 42 точках сетки (base 900 и 3000: потолок 2 × base при остатке base)."""
+    допущено, отказано = _сетка_допуска(monkeypatch, base_s, mc.mutant_cap(120, base_s))
+    assert допущено and отказано, (допущено, отказано)
+
+
+def test_допуск_базы_держит_перебег_бюджета(monkeypatch):
+    """База: оценка `WORST_RUN_FACTOR × timeout`, потолок `base_cap` — тот же допуск.
+    Откат допуска к одной оценке эта ячейка не различает (у базы `cap − overrun_s`
+    равно оценке) — его ловят ячейки мутанта; здесь держатся множители."""
+    допущено, отказано = _сетка_допуска(monkeypatch, mc.WORST_RUN_FACTOR * 120, mc.base_cap(120))
+    assert допущено and отказано, (допущено, отказано)
+
+
+def test_ключ_прогона_меняется_с_формулой_потолка(monkeypatch):
+    """Правка формулы потолка, меняющая потолок при этом `--timeout`, меняет ключ
+    прогона, хоть множители те же: `--resume` не смешает исходы двух политик
+    (out2 №661: при опорах на `timeout=1` `min(8t, 600)` ключ не сдвигал)."""
+    assert mc.run_caps(120) == [960, 480, 480, 480, 2400]
+    до = mc.run_key("a..b", 60, 120, "s")
+    monkeypatch.setattr(mc, "base_cap", lambda t: min(mc.BASE_RUN_FACTOR * t, 600))
+    assert mc.run_key("a..b", 60, 120, "s") != до
+    monkeypatch.undo()
+    monkeypatch.setattr(mc, "mutant_cap", lambda t, b: max(mc.WORST_RUN_FACTOR * t, 2 * b + t - 1))
+    assert mc.run_key("a..b", 60, 120, "s") != до
+
+
+def test_вердикт_базы_красный_важнее_медленного():
+    """Исходы всех наборов базы → одна причина: красный набор важнее не
+    уложившегося (догон с бо́льшим --timeout его не вылечит), оба — в тексте;
+    только не уложившиеся — своя причина с рецептом; все прошли — None."""
+    ok, red, slow = (mc.RunResult(mc.PASSED), mc.RunResult(mc.FAILED, rc=1, tail="FAILED t"),
+                     mc.RunResult(mc.TIMEOUT))
+    assert mc.base_verdict({("a",): ok}, 100) is None
+    причина, текст = mc.base_verdict({("a",): slow, ("b",): red, ("c",): ok}, 100)
+    assert причина == mc.BASE_RED, причина
+    assert "b (rc 1)\nFAILED t" in текст and "не уложился в 800 с: a" in текст, текст
+    причина, текст = mc.base_verdict({("a",): slow, ("c",): ok}, 100)
+    assert причина == f"{mc.BASE_SLOW} 800 с", причина
+    assert "--only-critical --timeout 200" in текст and "не уложился в 800 с: c" not in текст, текст
+    assert "не гонялось" not in текст, текст
+    _, текст = mc.base_verdict({("a",): slow}, 100, not_run=2)
+    assert "не гонялось наборов (бюджет): 2" in текст, текст
 
 
 def test_арифметика_ломается(tmp_path):
@@ -436,16 +537,16 @@ def test_устаревший_байткод_не_судит_мутанта_по
         "    assert out.strip() == '1'\n", encoding="utf-8")
     mod = src / "mod.py"
     mod.write_text("def value():\n    return 1\n", encoding="utf-8")
-    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is True
+    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60, cap=60 * mc.WORST_RUN_FACTOR).status == mc.PASSED
     stamp = int(mod.stat().st_mtime) + 5
     # Первый мутант зелёный (`+1` — та же единица), второй — красный (`-1`);
     # длина файла одинаковая, mtime подгоняем в одну секунду.
     mod.write_text("def value():\n    return +1\n", encoding="utf-8")
     os.utime(mod, (stamp, stamp))
-    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is True
+    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60, cap=60 * mc.WORST_RUN_FACTOR).status == mc.PASSED
     mod.write_text("def value():\n    return -1\n", encoding="utf-8")
     os.utime(mod, (stamp, stamp))
-    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is False
+    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60, cap=60 * mc.WORST_RUN_FACTOR).status == mc.FAILED
     assert not list(tmp_path.rglob("__pycache__")), "мутатор оставил байткод в дереве"
 
 
@@ -457,7 +558,7 @@ def test_прогон_мутанта_не_получает_корень_данн
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_env.py").write_text(
         "import os\n\ndef test_env():\n    assert 'CHAROITE_ROOT' not in os.environ\n", encoding="utf-8")
-    assert mc.run_tests(tmp_path, ["tests/test_env.py"], timeout=60) is True
+    assert mc.run_tests(tmp_path, ["tests/test_env.py"], timeout=60, cap=60 * mc.WORST_RUN_FACTOR).status == mc.PASSED
 
 
 def test_явный_return_none_не_мутируется(tmp_path):
@@ -928,12 +1029,12 @@ def test_main_не_засчитывает_битого_мутанта_убиты
                                                                             planned=1)))
     monkeypatch.setattr(mc, "tests_for", lambda root, module: ["tests"])
 
-    def run_tests(cwd, targets, timeout):
+    def run_tests(cwd, targets, timeout, cap):
         try:
             ast.parse((cwd / rel).read_text(encoding="utf-8"))
         except SyntaxError:
-            return False
-        return True
+            return _исход(False)
+        return _исход(True)
     monkeypatch.setattr(mc, "run_tests", run_tests)
     monkeypatch.setattr(mc, "patch_source", lambda s, n: s + "\n!")
 
@@ -1120,13 +1221,13 @@ def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_�
     monkeypatch.setattr(mc, "clock", часы)
     журнал = []
 
-    def run_tests(cwd, targets, timeout):
+    def run_tests(cwd, targets, timeout, cap):
         журнал.append((tuple(targets), timeout))
         if падать_на is not None and len(журнал) == падать_на:
             raise RuntimeError("раннер оборвал job")
         часы.t += секунды[targets[0]]
         # база зелёная (первый прогон каждого набора), мутанты убиты
-        return [t for t, _ in журнал].count(tuple(targets)) == 1
+        return _исход([t for t, _ in журнал].count(tuple(targets)) == 1)
     monkeypatch.setattr(mc, "run_tests", run_tests)
     return журнал
 
@@ -1246,9 +1347,9 @@ def test_сдвиг_head_после_разрешения_не_меняет_ко�
     ревизии = []
     прежний = mc.run_tests
 
-    def run_tests(cwd, targets, timeout):
+    def run_tests(cwd, targets, timeout, cap):
         ревизии.append(_rev(cwd, "HEAD"))
-        return прежний(cwd, targets, timeout)
+        return прежний(cwd, targets, timeout, cap)
     monkeypatch.setattr(mc, "run_tests", run_tests)
     assert mc.main(["mutate_check.py", "--range", "HEAD~1...HEAD", "--timeout", "100"]) == 0
     assert журнал and set(ревизии) == {second}, (ревизии, second)
@@ -1436,11 +1537,106 @@ def test_красная_база_оставляет_отчёт(tmp_path, monkeyp
     """База покраснела — исход 2 и отчёт с причиной, а не пустое место."""
     plan = _мутанты("scripts/mutate_check.py", 2)
     _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
-    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout: False)
+    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout, cap: _исход(False))
     отчёт = tmp_path / "отчёт.txt"
     assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)]) == 2
     assert отчёт.read_text(encoding="utf-8").startswith(
         "Проверено мутантов: 0 из 2 (остановка: база красная), выжило: 0"), отчёт.read_text(encoding="utf-8")
+
+
+def test_база_дольше_потолка_своя_причина_и_рецепт(tmp_path, monkeypatch, capsys):
+    """Набор базы, не дошедший до конца в `base_cap`, — не «база красная»: своя
+    причина в отчёте, рецепт догона в выводе, мутанты не судятся (№661: в CI
+    зелёная база 483–484 с читалась красной при потолке 480 с)."""
+    plan = _мутанты("scripts/mutate_check.py", 2)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
+    потолки = []
+
+    def run_tests(cwd, targets, timeout, cap):
+        потолки.append(cap)
+        return mc.RunResult(mc.TIMEOUT)
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "100",
+                    "--report", str(отчёт)]) == 2
+    assert потолки == [800], потолки
+    assert отчёт.read_text(encoding="utf-8").startswith(
+        "Проверено мутантов: 0 из 2 (остановка: база не уложилась в потолок 800 с), выжило: 0"), \
+        отчёт.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert "--only-critical --timeout 200" in out and "БАЗА КРАСНАЯ" not in out, out
+
+
+def test_вердикт_шардов_несёт_рецепт_догона_долгой_базы(tmp_path, capsys):
+    """Шард с причиной «база не уложилась» — вердикт красный и с рецептом догона,
+    а красная база — без него: владельцу нужен бо́льший `--timeout`, а не поиск
+    сломанного теста (№661)."""
+    for имя, причина, рецепт in (("a", f"{mc.BASE_SLOW} 960 с", True), ("b", mc.BASE_RED, False)):
+        каталог = tmp_path / имя
+        каталог.mkdir()
+        (каталог / f"r1.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+            _факт(1, 1, 2, 2, "unjudged", broken=причина, broken_rc=2)), encoding="utf-8")
+        assert mc.merge_shards(каталог) == 1
+        out = capsys.readouterr().out
+        assert f"сломалась сама проверка: шард 1: {причина}" in out, out
+        assert ("--only-critical --timeout <вдвое больше>" in out) is рецепт, out
+
+
+def test_мутант_по_потолку_убит_с_пометкой(tmp_path, monkeypatch, capsys):
+    """Потолок мутанта — от замера базы его набора (база 300 с при `--timeout 50`
+    → 600 с, а не 200): зелёный долгий набор не даёт ложное «убит». Упёрся в
+    потолок — «убит» (решение 30.09), но с пометкой в выводе и `why` в журнале."""
+    plan = _мутанты("scripts/mutate_check.py", 1)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
+    потолки, строки = [], []
+
+    def run_tests(cwd, targets, timeout, cap):
+        потолки.append(cap)
+        mc.clock.t += 300
+        return mc.RunResult(mc.PASSED if len(потолки) == 1 else mc.TIMEOUT)
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    прежний = mc.journal_add
+    monkeypatch.setattr(mc, "journal_add", lambda path, row: (строки.append(row), прежний(path, row)))
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "50"]) == 0
+    assert потолки == [400, 600], потолки
+    assert "убит (потолок 600 с)" in capsys.readouterr().out
+    убитые = [r for r in строки if r.get("outcome") == "killed"]
+    assert [(r.get("why"), r.get("capped")) for r in убитые] == [("потолок 600 с", True)], строки
+
+
+def test_база_гоняет_все_наборы(tmp_path, monkeypatch, capsys):
+    """Непрошедший набор базы не обрывает её: гоняются все, красный набор после
+    не уложившегося — всё равно «база красная», и в выводе оба (out1 №661:
+    остановка на первом прятала красный за рецептом догона)."""
+    а, б = _мутанты("scripts/mutate_check.py", 1), _мутанты("src/busy_signals.py", 1)
+    журнал = _прогон(tmp_path, monkeypatch, [а[0], б[0]], секунды={_MC: 1, _BS: 1})
+    исходы = {_BS: mc.RunResult(mc.TIMEOUT), _MC: mc.RunResult(mc.FAILED, rc=1, tail="FAILED t")}
+
+    def run_tests(cwd, targets, timeout, cap):
+        журнал.append((tuple(targets), timeout))
+        return исходы[targets[0]]
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "100",
+                    "--report", str(отчёт)]) == 2
+    assert [ts for ts, _ in журнал] == [(_BS,), (_MC,)], журнал
+    assert отчёт.read_text(encoding="utf-8").startswith(
+        "Проверено мутантов: 0 из 2 (остановка: база красная)"), отчёт.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert f"не уложился в 800 с: {_BS}" in out and f"{_MC} (rc 1)" in out, out
+
+
+def test_мутант_долгой_базы_не_допущен_за_перебег(tmp_path, monkeypatch):
+    """База 390 с при `--timeout 50` даёт мутанту потолок 780 с. Остаток 510 с
+    хватает на оценку (390), но потолок вышел бы за бюджет на 270 > 200 с
+    (`overrun_s`) — мутант не запускается, прогон стоит по бюджету. Допуск по
+    одной оценке пустил бы его (out1 №661, Sonnet I1)."""
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 1)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 390})
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "50",
+                    "--budget-s", "900"]) == exit_codes.EXIT_UNJUDGED
+    assert len(журнал) == 1, журнал
 
 
 def test_без_бюджета_поведение_прежнее(tmp_path, monkeypatch, capsys):
@@ -1518,9 +1714,9 @@ def test_порядок_сначала_выборка_потом_шард(tmp_pa
     monkeypatch.chdir(repo)
     calls = {"n": 0}
 
-    def run_tests(cwd, targets, timeout):
+    def run_tests(cwd, targets, timeout, cap):
         calls["n"] += 1
-        return calls["n"] == 1          # база зелёная, мутанты убиты
+        return _исход(calls["n"] == 1)          # база зелёная, мутанты убиты
 
     monkeypatch.setattr(mc, "run_tests", run_tests)
     отчёт = tmp_path / "отчёт.txt"
@@ -1712,9 +1908,9 @@ def test_шард_с_выборкой_судит_выборку_целиком(t
     monkeypatch.chdir(repo)
     calls = {"n": 0}
 
-    def run_tests(cwd, targets, timeout):
+    def run_tests(cwd, targets, timeout, cap):
         calls["n"] += 1
-        return calls["n"] == 1          # база зелёная, мутанты убиты
+        return _исход(calls["n"] == 1)          # база зелёная, мутанты убиты
 
     monkeypatch.setattr(mc, "run_tests", run_tests)
     отчёт = tmp_path / "отчёт.txt"
@@ -1739,9 +1935,9 @@ def test_потолок_равный_плану_не_переставляет_м
     monkeypatch.chdir(repo)
     calls = {"n": 0}
 
-    def run_tests(cwd, targets, timeout):
+    def run_tests(cwd, targets, timeout, cap):
         calls["n"] += 1
-        return calls["n"] == 1
+        return _исход(calls["n"] == 1)
 
     monkeypatch.setattr(mc, "run_tests", run_tests)
     mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--max", str(len(план)),
@@ -1783,7 +1979,7 @@ def test_json_пишется_при_красной_базе(tmp_path, monkeypatc
     `fail`, а не пустое место рядом с отчётом."""
     plan = _мутанты("scripts/mutate_check.py", 2)
     _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
-    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout: False)
+    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout, cap: _исход(False))
     отчёт = tmp_path / "отчёт.txt"
     assert mc.main(["mutate_check.py", "--range", "HEAD", "--force",
                     "--report", str(отчёт)]) == 2
@@ -2393,12 +2589,12 @@ def test_продолжение_судит_только_остаток_и_ито
     вызовы = []
     выживают = {3}
 
-    def run_tests(cwd, targets, timeout):
+    def run_tests(cwd, targets, timeout, cap):
         вызовы.append(1)
         if len(вызовы) == 5 and обрыв:
             raise RuntimeError("раннер оборвал job")
         # база зелёная; мутант №3 выживает
-        return len(вызовы) == 1 or (len(вызовы) - 1) in выживают
+        return _исход(len(вызовы) == 1 or (len(вызовы) - 1) in выживают)
     monkeypatch.setattr(mc, "run_tests", run_tests)
     обрыв = True
     with pytest.raises(RuntimeError):
@@ -2439,7 +2635,7 @@ def test_продолжение_с_чужим_ключом_или_без_жур�
     _quiet_machine(monkeypatch)
     monkeypatch.setenv("CHAROITE_ROOT", str(данные))
     monkeypatch.chdir(repo)
-    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout: False)
+    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout, cap: _исход(False))
     assert mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--force",
                     "--resume", "0123456789abcdef"]) == 1
     assert "не найден или истёк" in capsys.readouterr().out
@@ -2461,6 +2657,20 @@ def test_journal_read_терпит_оборванную_строку(tmp_path):
                     encoding="utf-8")
     manifests, done = mc.journal_read(tmp_path, "abc")
     assert len(manifests) == 1 and set(done) == {"a"}
+
+
+def test_journal_read_не_переносит_убитого_по_потолку(tmp_path):
+    """Потолок мутанта — от замера базы этого прогона: «убит по потолку» под
+    прежним потолком `--resume` не переносит, мутант судится заново; убитый
+    тестами — переносится (out1 №661, Haiku I3)."""
+    import charoite_paths
+    путь = charoite_paths.log_path(tmp_path, mc.RUN_LOG_KIND, part="abc-1", suffix=".jsonl")
+    путь.parent.mkdir(parents=True)
+    путь.write_text('{"manifest": 2}\n{"key": "a", "outcome": "killed"}\n'
+                    '{"key": "b", "outcome": "killed", "why": "потолок 600 с", "capped": true}\n',
+                    encoding="utf-8")
+    _, done = mc.journal_read(tmp_path, "abc")
+    assert set(done) == {"a"}, done
 
 
 def test_signal_group_жнёт_зомби_лидера(tmp_path):
