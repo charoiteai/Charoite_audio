@@ -44,7 +44,7 @@ def _graph(root: pathlib.Path, name: str, themes: dict[str, str | None]) -> path
 
 class _Clock:
     def __init__(self):
-        self.t = 0.0
+        self.t = 1000.0   # не ноль: «плюс вместо минус» у отсчёта от старта виден (мутанты #819)
 
     def __call__(self):
         return self.t
@@ -102,7 +102,7 @@ def test_budget_stops_the_queue_and_keeps_the_index(nd, tmp_path, capsys):
     graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(6)})
     # 40 с на старте, дальше среднее 30 с: темы на 0, 30 и 60 с; на 90 с остаток 10 < 30
     r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
-    assert r["собрано"] == 3 and r["не_успели"] == 3, r
+    assert r["собрано"] == 3 and r["не_успели"] == 3 and r["пропущено"] == 3, r
     assert {e["тема"] for e in dossier.load_index(graph / CHAROITE.dossier_dir)} == {
         f"тема{i}" for i in range(6)}
     assert "бюджет шага досье вышел" in capsys.readouterr().out
@@ -113,7 +113,7 @@ def test_full_is_not_cut_by_budget_or_limit_and_takes_unchanged_themes(nd, tmp_p
     nd.run(graph, {}, full=False, dry=False, limit=None)          # отпечатки совпали
     nd.calls.clear()
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert r["без_изменений"] == 4 and nd.calls == []
+    assert r["без_изменений"] == 4 and r["пропущено"] == 4 and nd.calls == []
     r = nd.run(graph, {}, full=True, dry=False, limit=0, budget_s=1)
     assert r["собрано"] == 4 and len(nd.calls) == 4, r
 
@@ -151,6 +151,7 @@ def test_limit_is_per_run_not_per_graph(nd, tmp_path):
     b = _graph(tmp_path, "Б", {"б1": None, "б2": None})
     states = nd.run_all([a, b], {}, full=False, dry=False, limit=1).graphs
     assert sum(g.built for g in states) == 1
+    assert sum(g.over_limit for g in states) == 3 and sum(g.skipped for g in states) == 3
 
 
 def test_crash_mid_queue_still_writes_every_index(nd, tmp_path, monkeypatch):
@@ -268,7 +269,7 @@ def test_author_edit_between_check_and_write_is_not_overwritten(nd, tmp_path, mo
 
     monkeypatch.setattr(nd.dossier, "backup", backup)
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert r["собрано"] == 0 and r["досье_изменилось"] == 1, r
+    assert r["собрано"] == 0 and r["досье_изменилось"] == 1 and r["пропущено"] == 1, r
     assert "правка автора в окне" in path.read_text(encoding="utf-8")
     assert {e["тема"] for e in dossier.load_index(graph / CHAROITE.dossier_dir)} == {"тема"}
 
@@ -297,7 +298,7 @@ def test_unreadable_stat_of_a_present_dossier_does_not_write(nd, tmp_path, monke
     monkeypatch.setattr(nd.safe_write, "stat_snapshot", lambda p: None)
     monkeypatch.setattr(nd.safe_write, "write_text", lambda *a, **k: pytest.fail("запись без снимка"))
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert r["собрано"] == 0 and r["досье_изменилось"] == 1, r
+    assert r["собрано"] == 0 and r["досье_изменилось"] == 1 and r["пропущено"] == 1, r
     assert path.read_text(encoding="utf-8") == before
 
 
@@ -403,3 +404,32 @@ def test_attempts_count_refusals_before_the_model(nd, tmp_path, monkeypatch, fai
 def test_a_model_call_is_an_attempt(nd, tmp_path):
     graph = _graph(tmp_path, "Г", {"одна": None, "другая": None})
     assert nd.run_all([graph], {}, full=False, dry=False).attempts == 2
+
+
+def test_across_graphs_a_round_goes_new_then_oldest_then_largest(nd):
+    """Мутант #819: ключ круга без класса ставил графы по имени."""
+    gs = [nd._GraphRun(pathlib.Path(n), {}, {}, "2026-10-18", "s") for n in "АБВГ"]
+    cands = [_cand(nd, gs[0], "изменённая", nd.CHANGED, "2026-08-01", size=1),
+             _cand(nd, gs[1], "свежая", nd.CHANGED, "2026-09-01", size=9),
+             _cand(nd, gs[2], "мелкая новая", nd.NEW, "", size=1),
+             _cand(nd, gs[3], "крупная новая", nd.NEW, "", size=5)]
+    assert [c.theme for c in nd.queue_order(cands)] == [
+        "крупная новая", "мелкая новая", "изменённая", "свежая"]
+
+
+def test_index_is_written_once_per_graph(nd, tmp_path, monkeypatch):
+    """Мутант #819: индекс графа писался и по `done`, и в `finally`."""
+    graph = _graph(tmp_path, "Г", {"одна": None, "другая": None})
+    writes = []
+    real = dossier.write_index
+    monkeypatch.setattr(nd.dossier, "write_index", lambda folder, entries: writes.append(folder) or real(folder, entries))
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert len(writes) == 1, writes
+
+
+def test_closed_night_sends_the_whole_queue_to_tomorrow_once(nd, tmp_path, monkeypatch, capsys):
+    graph = _graph(tmp_path, "Г", {"одна": None, "другая": None})
+    monkeypatch.setattr(nd.live_gate, "night_window_open", lambda *a, **k: False)
+    r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
+    assert nd.calls == [] and r["не_успели"] == 2 and r["пропущено"] == 2, r
+    assert capsys.readouterr().out.count("время ночного прогона вышло") == 1

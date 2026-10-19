@@ -292,14 +292,16 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     keyed = []
     for group in groups.values():
         for rnd, c in enumerate(sorted(group, key=_graph_key)):
-            k = _graph_key(c)
-            keyed.append(((rnd, *k[:3], c.g.graph.name.casefold(), str(c.g.graph), *k[3:]), c))
+            # круг и граф различают любые две темы: хвост ключа графа не нужен
+            keyed.append(((rnd, c.cls, c.собрано, -len(c.members),
+                           c.g.graph.name.casefold(), str(c.g.graph)), c))
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
-def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool, float | None]:
-    """Собрать одну тему. Возвращает (собрана, секунды генерации — цена темы
-    для `need`, без ожидания замка; None — модель не звали); `lock_wait` —
+def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | None:
+    """Собрать одну тему. Возвращает секунды генерации — цену темы для
+    `need`, без ожидания замка; None — модель не звали. Собрана ли тема —
+    счётчик `g.built` (флаг рядом с ним мутанты #819 не видели); `lock_wait` —
     сколько ждать замок, считается в момент записи, после генерации."""
     g, theme, members, fp = cand.g, cand.theme, cand.members, cand.fp
     path = g.folder / f"{theme}.md"
@@ -318,21 +320,20 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             # а не молчание модели: тема уйдёт на следующую ночь.
             g.skipped += 1
             g.broken_manual += 1
-        return False, None
-    t0 = time.time()
+        return None
     g0 = clock()
     body = ""
-    for attempt in (1, 2):          # вторая попытка чуть холоднее
+    for temperature in (0.2, 0.05):          # вторая попытка чуть холоднее
         try:
             body = dossier.trim_to_format(
-                generate(theme, members, g.files, c, temperature=0.2 if attempt == 1 else 0.05))
+                generate(theme, members, g.files, c, temperature=temperature))
         except Exception as e:  # noqa: BLE001
             print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
             body = ""
             break          # отказ считается ниже, в ветке `if not body`
         if dossier.looks_valid(body):
             break
-        print(f"  … {theme}: попытка {attempt} — ответ не по формату, повтор")
+        print(f"  … {theme}: ответ не по формату (температура {temperature})")
         body = ""
     if not body:
         # Брак дважды подряд — тот же отказ, что и исключение: тема
@@ -340,7 +341,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
         # «Принято, что дальше?» на всех темах выходила с кодом 0 и
         # статусом «ok» (аудит 17.08). Прежнее досье в индексе остаётся.
         g.отказы += 1
-        return False, clock() - g0
+        return clock() - g0
     gen_s = clock() - g0
 
     text = dossier.render(theme, body, members, g.files, fp, g.today)
@@ -361,7 +362,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             g.busy = wait > 0
             g.skipped += 1
             g.locked += 1
-            return False, gen_s
+            return gen_s
         # Снимок — до сверочного чтения: правка автора между сверкой и
         # replace не затирается, запись идёт через гейт `expect` (выход out2
         # №621, DS C1; окно было и в базе).
@@ -374,7 +375,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
-            return False, gen_s
+            return gen_s
         if snap is None and fresh.state != "missing":
             # stat не прочёл файл, который читается: без снимка гейт слеп,
             # и «не сосчитать» стало бы «файла нет» (выход out3 №621, DS I1).
@@ -382,8 +383,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
-            return False, gen_s
-        g.folder.mkdir(parents=True, exist_ok=True)
+            return gen_s
+        g.folder.mkdir(exist_ok=True)
         # копия прежнего досье: пересборка сохраняла только «Правки автора» и
         # стирала тело с редактурой облачной ревизии без единой копии
         # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии. Не вышла
@@ -393,24 +394,24 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
         except OSError as e:
             print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
             g.отказы += 1
-            return False, gen_s
+            return gen_s
         # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
         if not safe_write.write_text(path, text, expect=snap, expect_absent=snap is None):
             print(f"  ⏸ {theme}: досье изменилось перед записью — тема уйдёт на следующую ночь")
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, dossier.load_dossier(path), fp)
-            return False, gen_s
+            return gen_s
     g.built += 1
     if copy is not None:
         print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{g.stamp}/")
-    print(f"  ✓ {g.graph.name} · {theme}: {len(members)} источников, {len(body)} зн., {time.time()-t0:.0f}с")
+    print(f"  ✓ {g.graph.name} · {theme}: {len(members)} источников, {len(body)} зн., {gen_s:.0f}с")
     g.entries[theme] = {
         "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
         "источников": len(members), "собрано": g.today, "отпечаток": fp,
         "ключи": dossier.keywords(theme + " " + " ".join(members) + " " + body),
     }
-    return True, gen_s
+    return gen_s
 
 
 def _tail(queue: list[Candidate], reason: str, dry: bool) -> None:
@@ -453,30 +454,30 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
         need = sum(spent) / len(spent) if spent else NEED_START_S
         if not live_gate.fits(budget, started, need, clock()):
             _tail(queue[i:], "бюджет шага досье вышел", dry)
-            return attempts
+            break
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
         # его — досье подождёт, но не дольше остатка бюджета. Окно — одна
         # дверь у владельца гейта, потолок ночи внутри.
         gate = {} if budget is None else {"default": budget - (clock() - started)}
         if not live_gate.night_window_open(_root(), what="досье", **gate):
             _tail(queue[i:], "время ночного прогона вышло", dry)
-            return attempts
+            break
         if not live_gate.fits(budget, started, need, clock()):
             _tail(queue[i:], "бюджет шага досье вышел, пока ждали конца встречи", dry)
-            return attempts
+            break
         # Замок ждёт не дольше остатка бюджета: пять минут соседа на последней
         # теме перебирали бы бюджет на всё ожидание (выход out1 №621, Sonnet I2).
         def lock_wait() -> float:
             # и потолок ночи — у его владельца (выход out2 №621, Sonnet I1)
             return live_gate.night_wait_cap(
                 LOCK_WAIT if budget is None else min(LOCK_WAIT, budget - (clock() - started)))
-        refused = g.отказы
-        ok, gen_s = _build(cand, c, lock_wait)
+        refused, before = g.отказы, g.built
+        gen_s = _build(cand, c, lock_wait)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
         if called:                 # цена темы — генерация, без ожидания замка (Haiku I1)
             spent.append(gen_s)
         attempts += called or g.отказы > refused   # нечитаемое досье — отказ без модели
-        built += ok
+        built += g.built - before
         g.done(dry)
     return attempts
 
