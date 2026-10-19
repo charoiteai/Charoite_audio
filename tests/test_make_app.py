@@ -5,7 +5,11 @@ Swift 6.4 по умолчанию собирает бэкендом swiftbuild �
 `.build/out/Products/Release` — сборка проходила, бандла не было. Проба гонит
 настоящий скрипт целиком в каркасе репозитория во временном каталоге: `swift`
 подменён и кладёт продукт в каталог, которого нет ни в одной реальной раскладке,
-подпись — ad-hoc, бинарь — копия `/usr/bin/true` (Mach-O, `codesign` его примет).
+подпись — ad-hoc, бинарь — копия `/bin/echo` (Mach-O, `codesign` его примет).
+
+Граница: проба доказывает, что скрипт берёт бинарь там, где назвал SwiftPM, и
+отказывает без продукта. Что настоящий SwiftPM называет верный каталог, она не
+проверяет — это видит шаг сборки в workflow тестов Swift и сам `make_app.sh` на релизе.
 """
 from __future__ import annotations
 
@@ -18,16 +22,21 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="codesign и Mach-O — только macOS")
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin" or not (shutil.which("otool") and shutil.which("codesign")),
+    reason="codesign, otool и Mach-O — только macOS с инструментами командной строки")
 
 FAKE_SWIFT = """#!/bin/bash
 printf '%s\\n' "$*" >> "$FAKE_SWIFT_LOG"
 for a in "$@"; do
     if [ "$a" = --show-bin-path ]; then echo "$FAKE_BIN_DIR"; exit 0; fi
 done
-[ -n "${FAKE_SWIFT_NO_PRODUCT:-}" ] && exit 0
 mkdir -p "$FAKE_BIN_DIR"
-cp /usr/bin/true "$FAKE_BIN_DIR/CharoiteApp"
+case "${FAKE_SWIFT_PRODUCT:-macho}" in
+    none) ;;
+    script) printf '#!/bin/sh\n' > "$FAKE_BIN_DIR/CharoiteApp"; chmod +x "$FAKE_BIN_DIR/CharoiteApp" ;;
+    *) cp /bin/echo "$FAKE_BIN_DIR/CharoiteApp" ;;
+esac
 """
 
 
@@ -83,7 +92,9 @@ def test_bundle_takes_the_binary_where_swiftpm_put_it(tmp_path):
     assert out.returncode == 0, out.stderr[-800:]
     bundled = app / "build" / "Charoite.app" / "Contents" / "MacOS" / "CharoiteApp"
     assert bundled.is_file(), out.stdout[-400:]
+    # UUID продукта — не тот, что у любого бинаря, который скрипт мог бы взять сам
     assert _uuids(bundled) and _uuids(bundled) == _uuids(product / "CharoiteApp")
+    assert _uuids(bundled) != _uuids(pathlib.Path("/usr/bin/true"))
     # путь спрашивается теми же флагами, что и сборка: иначе он указал бы в чужую конфигурацию
     calls = (tmp_path / "swift.log").read_text(encoding="utf-8").splitlines()
     builds = [c for c in calls if "--show-bin-path" not in c]
@@ -92,9 +103,11 @@ def test_bundle_takes_the_binary_where_swiftpm_put_it(tmp_path):
     assert asks == builds, calls
 
 
-def test_missing_product_refuses_and_keeps_the_previous_bundle(tmp_path):
-    """Сборка «прошла», продукта нет — отказ с путём до того, как снесён прежний бандл."""
-    out, app, product = _run(tmp_path, old_bundle=True, FAKE_SWIFT_NO_PRODUCT="1")
+@pytest.mark.parametrize("kind", ["none", "script"])
+def test_missing_product_refuses_and_keeps_the_previous_bundle(tmp_path, kind):
+    """Сборка «прошла», продукта нет (или на его месте исполняемый не-Mach-O) —
+    отказ с путём до того, как снесён прежний бандл."""
+    out, app, product = _run(tmp_path, old_bundle=True, FAKE_SWIFT_PRODUCT=kind)
     assert out.returncode != 0
     assert "нет собранного бинаря" in out.stderr and str(product / "CharoiteApp") in out.stderr, out.stderr[-400:]
     plist = app / "build" / "Charoite.app" / "Contents" / "Info.plist"
