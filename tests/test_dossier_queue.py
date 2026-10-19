@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import pathlib
+import shutil
 
 import pytest
 
@@ -417,6 +418,14 @@ def test_across_graphs_a_round_goes_new_then_oldest_then_largest(nd):
         "крупная новая", "мелкая новая", "изменённая", "свежая"]
 
 
+def test_in_a_round_a_changed_theme_goes_before_an_older_unchanged_one(nd):
+    """Выход out4 №621, DS M1: без класса в ключе старая неизменная (--full) обгоняла изменённую."""
+    gs = [nd._GraphRun(pathlib.Path(n), {}, {}, "2026-10-18", "s") for n in "АБ"]
+    cands = [_cand(nd, gs[0], "старая неизменная", nd.SAME, "2026-01-01", size=9),
+             _cand(nd, gs[1], "изменённая", nd.CHANGED, "2026-09-01", size=1)]
+    assert [c.theme for c in nd.queue_order(cands)] == ["изменённая", "старая неизменная"]
+
+
 def test_index_is_written_once_per_graph(nd, tmp_path, monkeypatch):
     """Мутант #819: индекс графа писался и по `done`, и в `finally`."""
     graph = _graph(tmp_path, "Г", {"одна": None, "другая": None})
@@ -439,7 +448,11 @@ def _raise(*a, **k):
     raise OSError("диск")
 
 
-@pytest.mark.parametrize("path", ["refusal", "changed", "no_snapshot", "backup", "write"])
+_FAILED = {"refusal": "отказы", "changed": "досье_изменилось", "no_snapshot": "досье_изменилось",
+           "backup": "отказы", "write": "досье_изменилось"}
+
+
+@pytest.mark.parametrize("path", list(_FAILED))
 def test_a_failed_build_still_costs_its_generation(nd, tmp_path, monkeypatch, path):
     """Мутанты #819 (`return gen_s` → `return None`): генерация без записи — тоже цена темы для `need`."""
     graph = _graph(tmp_path, "Г", {"т1": "2026-07-20", "т2": "2026-07-20"})
@@ -464,6 +477,8 @@ def test_a_failed_build_still_costs_its_generation(nd, tmp_path, monkeypatch, pa
     # первая тема — 100 с генерации; вторая с need 100 в остаток 50 не влезает, с NEED_START_S 40 влезла бы
     r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=150)
     assert len(nd.calls) == 1 and r["не_успели"] == 1, (nd.calls, r)
+    # и тема действительно не собралась по своей причине (выход out4 №621, DS I1)
+    assert r["собрано"] == 0 and r[_FAILED[path]] == 1, r
 
 
 def test_a_build_that_found_the_graph_locked_is_an_attempt(nd, tmp_path, monkeypatch):
@@ -471,11 +486,28 @@ def test_a_build_that_found_the_graph_locked_is_an_attempt(nd, tmp_path, monkeyp
     graph = _graph(tmp_path, "Г", {"одна": None})
     monkeypatch.setattr(nd, "_graph_lock", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(False))
     monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default: default)
-    assert nd.run_all([graph], {}, full=False, dry=False).attempts == 1
+    r = nd.run_all([graph], {}, full=False, dry=False)
+    assert r.attempts == 1 and r.graphs[0].locked == 1 and r.graphs[0].built == 0
 
 
 def test_limit_counts_only_the_new_builds(nd, tmp_path):
-    """Мутант #819 (`g.built - before` → `+`): уже собранное графом не сокращает лимит дважды."""
+    """Мутант #819 (`g.built - before` → `+`): лимит считает сборки этого прогона по одной."""
     graph = _graph(tmp_path, "Г", {f"т{i}": None for i in range(4)})
     states = nd.run_all([graph], {}, full=False, dry=False, limit=3).graphs
     assert states[0].built == 3 and states[0].over_limit == 1
+
+
+def test_graph_gone_mid_run_does_not_stop_the_night(nd, tmp_path, monkeypatch):
+    """Выход out4 №621, DS M2 / Haiku I1: `mkdir` без `parents` ронял весь прогон на пропавшем графе."""
+    a = _graph(tmp_path, "А", {"а1": None, "а2": None})
+    b = _graph(tmp_path, "Б", {"б1": None})
+
+    def generate(theme, *x, **k):
+        nd.calls.append(theme)
+        if theme == "а1":
+            shutil.rmtree(a)
+        return GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
+    nd.run_all([a, b], {}, full=False, dry=False)
+    assert "б1" in nd.calls

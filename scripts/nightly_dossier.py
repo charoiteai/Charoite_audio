@@ -384,7 +384,6 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             g.changed += 1
             g.keep(theme, members, fresh, fp)
             return gen_s
-        g.folder.mkdir(exist_ok=True)
         # копия прежнего досье: пересборка сохраняла только «Правки автора» и
         # стирала тело с редактурой облачной ревизии без единой копии
         # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии. Не вышла
