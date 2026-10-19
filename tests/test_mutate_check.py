@@ -319,9 +319,24 @@ def test_допуск_мутанта_держит_перебег_бюджета(
 
 
 def test_допуск_базы_держит_перебег_бюджета(monkeypatch):
-    """База: оценка `WORST_RUN_FACTOR × timeout`, потолок `base_cap` — тот же допуск."""
+    """База: оценка `WORST_RUN_FACTOR × timeout`, потолок `base_cap` — тот же допуск.
+    Откат допуска к одной оценке эта ячейка не различает (у базы `cap − overrun_s`
+    равно оценке) — его ловят ячейки мутанта; здесь держатся множители."""
     допущено, отказано = _сетка_допуска(monkeypatch, mc.WORST_RUN_FACTOR * 120, mc.base_cap(120))
     assert допущено and отказано, (допущено, отказано)
+
+
+def test_ключ_прогона_меняется_с_формулой_потолка(monkeypatch):
+    """Правка формулы потолка, меняющая потолок при этом `--timeout`, меняет ключ
+    прогона, хоть множители те же: `--resume` не смешает исходы двух политик
+    (out2 №661: при опорах на `timeout=1` `min(8t, 600)` ключ не сдвигал)."""
+    assert mc.run_caps(120) == [960, 480, 480, 480, 2400]
+    до = mc.run_key("a..b", 60, 120, "s")
+    monkeypatch.setattr(mc, "base_cap", lambda t: min(mc.BASE_RUN_FACTOR * t, 600))
+    assert mc.run_key("a..b", 60, 120, "s") != до
+    monkeypatch.undo()
+    monkeypatch.setattr(mc, "mutant_cap", lambda t, b: max(mc.WORST_RUN_FACTOR * t, 2 * b + t - 1))
+    assert mc.run_key("a..b", 60, 120, "s") != до
 
 
 def test_вердикт_базы_красный_важнее_медленного():
@@ -337,6 +352,9 @@ def test_вердикт_базы_красный_важнее_медленног�
     причина, текст = mc.base_verdict({("a",): slow, ("c",): ok}, 100)
     assert причина == f"{mc.BASE_SLOW} 800 с", причина
     assert "--only-critical --timeout 200" in текст and "не уложился в 800 с: c" not in текст, текст
+    assert "не гонялось" not in текст, текст
+    _, текст = mc.base_verdict({("a",): slow}, 100, not_run=2)
+    assert "не гонялось наборов (бюджет): 2" in текст, текст
 
 
 def test_арифметика_ломается(tmp_path):
@@ -1527,10 +1545,9 @@ def test_красная_база_оставляет_отчёт(tmp_path, monkeyp
 
 
 def test_база_дольше_потолка_своя_причина_и_рецепт(tmp_path, monkeypatch, capsys):
-    """Зелёный набор базы, не уложившийся в `base_cap`, — не «база красная»:
-    своя причина в отчёте и машинной строке, рецепт догона в выводе, мутанты не
-    судятся, остальные наборы не гоняются (№661: в CI зелёная база 483–484 с
-    читалась красной при потолке 480 с)."""
+    """Набор базы, не дошедший до конца в `base_cap`, — не «база красная»: своя
+    причина в отчёте, рецепт догона в выводе, мутанты не судятся (№661: в CI
+    зелёная база 483–484 с читалась красной при потолке 480 с)."""
     plan = _мутанты("scripts/mutate_check.py", 2)
     _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
     потолки = []
@@ -1583,7 +1600,8 @@ def test_мутант_по_потолку_убит_с_пометкой(tmp_path,
     assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "50"]) == 0
     assert потолки == [400, 600], потолки
     assert "убит (потолок 600 с)" in capsys.readouterr().out
-    assert [r.get("why") for r in строки if r.get("outcome") == "killed"] == ["потолок 600 с"], строки
+    убитые = [r for r in строки if r.get("outcome") == "killed"]
+    assert [(r.get("why"), r.get("capped")) for r in убитые] == [("потолок 600 с", True)], строки
 
 
 def test_база_гоняет_все_наборы(tmp_path, monkeypatch, capsys):

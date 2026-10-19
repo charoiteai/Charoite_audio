@@ -345,11 +345,13 @@ def verdict_code(f: Facts) -> int:
 RUN_LOG_KIND = "mutation_run"
 
 
-def run_caps() -> list[float]:
-    """Политика потолков прогона — часть ключа и манифеста журнала. Не константы,
-    а сами формулы на опорных точках: правка формулы без правки множителя тоже
-    меняет ключ (out1 №661, DS M2)."""
-    return [base_cap(1), overrun_s(1), mutant_cap(1, 0), mutant_cap(1, 1000)]
+def run_caps(timeout: int) -> list[float]:
+    """Политика потолков прогона — часть ключа и манифеста журнала: значения
+    формул при этом `--timeout` на опорных базах набора, а не их множители —
+    правка формулы, меняющая потолок этого прогона, меняет и ключ (out1–out2
+    №661). Строки «убит по потолку» `--resume` не переносит и так (`capped`)."""
+    return [base_cap(timeout), overrun_s(timeout),
+            *(mutant_cap(timeout, b) for b in (0, timeout, 10 * timeout))]
 
 
 def run_key(rng: str, max_n: int | None, timeout: int, sample: str) -> str:
@@ -359,13 +361,13 @@ def run_key(rng: str, max_n: int | None, timeout: int, sample: str) -> str:
     старым тестам на новые не переносится (входные круги 1–2 по №469). Потолки
     прогона — тоже: «убит» под прежним потолком под новым не переносится (№661)."""
     raw = json.dumps({"v": FACTS_VERSION, "range": rng, "max": max_n, "timeout": timeout,
-                      "sample": sample, "caps": run_caps()}, sort_keys=True)
+                      "sample": sample, "caps": run_caps(timeout)}, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _manifest(rng: str, args: argparse.Namespace, totals: ScanTotals) -> dict:
     return {"manifest": FACTS_VERSION, "range": rng, "max": args.max,
-            "timeout": args.timeout, "sample": totals.sample, "caps": run_caps()}
+            "timeout": args.timeout, "sample": totals.sample, "caps": run_caps(args.timeout)}
 
 
 def journal_add(path: pathlib.Path, row: dict) -> None:
@@ -1082,15 +1084,18 @@ BASE_SLOW = "база не уложилась в потолок"
 COPY_FAILED = "копия дерева не собралась"
 
 
-def base_verdict(results: dict[tuple[str, ...], RunResult], timeout: int) -> tuple[str, str] | None:
+def base_verdict(results: dict[tuple[str, ...], RunResult], timeout: int,
+                 not_run: int = 0) -> tuple[str, str] | None:
     """Причина остановки по исходам базы и текст для лога шага; None — база
-    прошла. Красный набор важнее не уложившегося: догон с бо́льшим --timeout его
+    прошла. `not_run` — сколько наборов бюджет не дал прогнать: о них текст
+    говорит прямо, судят только прогнанные (out2 №661, Sonnet M2). Красный набор важнее не уложившегося: догон с бо́льшим --timeout его
     не вылечит. Не уложившийся — «до конца не дошёл», а не «зелёный»: тест мог
     и упасть позже потолка (out1 №661, DS M3)."""
     red = {ts: r for ts, r in results.items() if r.status == FAILED}
     slow = [ts for ts, r in results.items() if r.status == TIMEOUT]
     cap = base_cap(timeout)
     slow_text = "".join(f"\n  не уложился в {cap} с: {' '.join(ts)}" for ts in slow)
+    slow_text += f"\n  не гонялось наборов (бюджет): {not_run}" if not_run else ""
     if red:
         body = "".join(f"\n  {' '.join(ts)} (rc {r.rc})\n{r.tail}" for ts, r in red.items())
         return BASE_RED, ("БАЗА КРАСНАЯ: без единой мутации падают наборы:" + body + slow_text +
@@ -1891,7 +1896,7 @@ def main(argv: list[str]) -> int:
             durations[ts] = r.seconds
             print(f"  {r.seconds:.0f} с · {r.status} · {' '.join(ts)}")
             save(BASE_RUNNING)
-        verdict = base_verdict(results, args.timeout)
+        verdict = base_verdict(results, args.timeout, len(subsets) - len(results))
         if verdict:
             reason, text = verdict
             print("\n" + text)
