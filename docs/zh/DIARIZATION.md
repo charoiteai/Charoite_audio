@@ -37,7 +37,8 @@ Charoite 采用两遍说话人分离：
    来自 [3D-Speaker 项目](https://github.com/modelscope/3D-Speaker)（Apache-2.0；
    ERes2Net 对俄语和英语效果良好），分段模型来自
    [pyannote](https://github.com/pyannote/pyannote-audio)，ONNX 构建为 sherpa-onnx
-   整理。自定义链接用 `--url`（此时不核对校验和）。
+   整理。自定义链接用 `--url`（此时不核对校验和，也不续传；服务器必须返回
+   Content-Length 且不能中断数据流）。
 
    脚本只在你手动运行时联网：最多两次一次性下载（先嵌入，后分段），之后模型完全离线工作；`--check` 完全不开连接。
    除可选云层之外，产品只在版本检查和首次运行时下载 STT 模型时联网——见
