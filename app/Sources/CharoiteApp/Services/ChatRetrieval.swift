@@ -37,6 +37,9 @@ enum ChatRetrieval {
         /// Подвал «слабые совпадения» — только у проверенного «слабо»;
         /// неполный поиск подвал называет своими словами (out3, DS I6).
         var weak: Bool { verdict == .weak && !text.isEmpty }
+        /// Подвал «поиск неполный»: выдача есть, охват или семантика не
+        /// доказаны — и при видимых чипах, как велит промпт (out4, Sonnet M2).
+        var searchIncomplete: Bool { verdict == .unverified && !text.isEmpty }
         /// Строка статуса — из той же таблицы, что и правило честности.
         var status: String { ChatRetrieval.honesty(verdict, hasText: !text.isEmpty).status }
     }
@@ -217,7 +220,7 @@ enum ChatRetrieval {
         "в памяти этого нет", "в памяти нет", "этого нет в памяти", "нет в памяти",
         "в графе этого нет", "в графе нет", "в предоставленных данных нет", "в предоставленных блоках нет",
         "в блоках нет", "информации об этом нет", "точного ответа нет", "точного ответа не нашлось",
-        "найти не удалось", "ничего не нашлось", "ничего не найдено",
+        "найти не удалось", "не удалось найти", "ничего не нашлось", "ничего не найдено",
         "not in memory", "not in the memory", "no information about", "no information on",
         "don't have information", "do not have information", "no exact answer", "no record of",
         "could not be found", "couldn't find",

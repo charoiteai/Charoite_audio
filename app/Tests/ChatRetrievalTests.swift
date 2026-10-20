@@ -70,6 +70,11 @@ final class ChatRetrievalTests: XCTestCase {
         if L.lang == "ru" { XCTAssertEqual(LocalChatService.memoryStatus(unverifiedText), "граф: поиск неполный") }
         // сильная лексика без семантики: маркера нет — чипы видны (out3, DS I3)
         XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified)).hidesSources)
+        // подвал «поиск неполный» — у любого unverified с выдачей, без выдачи — нет (out5, Haiku M1)
+        XCTAssertTrue(ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified)).searchIncomplete)
+        XCTAssertTrue(unverifiedText.searchIncomplete)
+        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("", .unverified)).searchIncomplete)
+        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak)).searchIncomplete)
         XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .confident)).hidesSources)
         let weakText = ChatRetrieval.contextBlock(outcome(m + "- a.md\nт", .weak))
         XCTAssertTrue(weakText.weak)
@@ -177,7 +182,7 @@ final class ChatRetrievalTests: XCTestCase {
                        "Ответ:\nВ графе этого нет.", "I don't have information about that.", "That isn't in memory… no, it is not in memory.",
                        "没有找到相关内容。", "That is not in memory.",
                        // метка и заголовок, которые сами отказ, не пропускаются (out2, Sonnet I5)
-                       "Нет в памяти:\nпереезд не обсуждали, обсуждали ремонт.", "## В графе этого нет\nЕсть про ремонт."] {
+                       "Нет в памяти:\nпереезд не обсуждали, обсуждали ремонт.", "Не удалось найти информацию о переезде.", "## В графе этого нет\nЕсть про ремонт."] {
             XCTAssertTrue(ChatRetrieval.isAbsence(answer), answer)
         }
         // вопрос без ответа: найденное первой строкой, отказ второй — воздержание

@@ -227,9 +227,7 @@ final class LocalChatService: ObservableObject {
             // честный запасной разбор текста. Слабые совпадения чипами не
             // выдаём — их нельзя показывать как опору ответа.
             weakMatches = context.weak
-            // неполный поиск с выдачей: подвал не «слабые совпадения» и не «граф
-            // не в контексте» (out3, DS I6), и при чипах — как велит промпт (out4, Sonnet M2)
-            searchIncomplete = context.verdict == .unverified && !vault.isEmpty
+            searchIncomplete = context.searchIncomplete
             let found = outcome.rels.map { rels in
                 rels.map { MemoryScreenPolicy.Source(rel: $0, kind: MemoryScreenPolicy.kind(of: $0)) }
             } ?? MemoryScreenPolicy.sources(from: vault)
