@@ -409,18 +409,13 @@ def test_daemon_refusal_names_the_console_reason(tmp_path):
         "причина демона неизвестна приложению — три перезапуска вместо рецепта (выход 13, Haiku C1)")
 
 
-def test_rebuild_waits_for_a_console_recording_like_for_the_daemon(tmp_path, monkeypatch):
-    """Консоль финализирует свои записи тем же `AudioHub` и тем же `.wav.part`: пока она
-    держит лок встречи, пересборка `.part` не удаляет (выход 5 №725, DS C1)."""
+def test_rebuild_no_longer_reads_the_meeting_lock():
+    """Пересборка судит о записи по заявке на сам `.pcm`, а не по локу встречи
+    (№728): после автоперезапуска лок держит новая встреча, а консоль на томе
+    без flock пишет без него. Прежний мост `_daemon_alive` снят."""
     import rebuild_transcript as rt
-    monkeypatch.setattr(rt, "_root", lambda: tmp_path)
-    assert rt._daemon_alive() is False, "лока нет — никто"
-    console, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
-    try:
-        assert outcome == live_gate.file_locks.TAKEN
-        assert rt._daemon_alive() is True
-    finally:
-        console.close()
+
+    assert not hasattr(rt, "_daemon_alive")
 
 
 def test_console_mark_survives_a_reader_probe(tmp_path):

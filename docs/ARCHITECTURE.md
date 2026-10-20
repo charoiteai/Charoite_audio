@@ -112,11 +112,14 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   holder is the console: the kernel tells who holds, not the file contents.
   A refused daemon then names the console (`live_gate.refusal`); without
   the sign it only says another window is listening. Both writers finalize
-  their recordings the same way, so the rebuild waits for a `.part` (up to
-  45 s) while anyone holds the meeting lock. The meeting lock is not the
-  lock of that file: on a volume without flock the writer is invisible and
-  counts as dead — while its `.pcm` is still there, the `.part` is dropped
-  and the `.pcm` converted (№728).
+  their recordings the same way. Who writes a recording is decided by the
+  writer's claim on the `.pcm` itself — an exclusive flock held from creating
+  the file until its name is removed after the `.wav` is published, not by
+  the meeting lock (after an auto-restart that is held by a new meeting).
+  The rebuild converts a `.pcm` (and drops a killed writer's `.part`) only
+  under its own claim on that file; while the writer holds it, it waits up to
+  45 s. On a volume without flock no claim exists, so nothing is converted
+  or deleted — recover such a meeting by hand (№728).
 - **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429/502` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts

@@ -63,6 +63,30 @@ def test_records_not_ready_is_a_skipped_outcome(tmp_path, monkeypatch):
     assert "записи не готовы — оставляю живую стенограмму" in lines, lines
 
 
+def test_one_channel_not_ready_keeps_the_live_transcript(tmp_path, monkeypatch):
+    """Один канал готов, у второго `.pcm` есть, а `.wav` нет (писатель держит
+    заявку весь срок): финал из одного канала вытеснил бы живую стенограмму,
+    где были оба. Это «не готово», а не «канала не было» (in2 №728, DS C2)."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    mic = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "wav")
+    mic.write_bytes(b"\0" * 32)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "blackhole", "pcm").write_bytes(b"\0" * 32)
+    lines: list[str] = []
+    monkeypatch.setattr(rt, "wait_recording", lambda _d, _s, label, _c: mic if label == "mic" else None)
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got == RS(RS.RECORDING_NOT_READY) and isinstance(got, RS)
+    assert "blackhole: запись не готова — оставляю живую стенограмму" in lines, lines
+
+
 def test_only_a_neighbours_files_under_the_minute_is_a_deterministic_refusal(tmp_path, monkeypatch):
     """Под минутой лежат файлы соседки, под своим штампом — ничего (свои смёл
     ретеншн): ждать нечего, повтор даст то же — немой None, без кода и кнопки
