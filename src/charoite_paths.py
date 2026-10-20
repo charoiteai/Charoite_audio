@@ -35,6 +35,7 @@
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import pathlib
@@ -709,3 +710,50 @@ def free_bytes(path) -> int:
     """
     return int(shutil.disk_usage(path).free)
 
+
+def _flush_to_disk(fd: int) -> bool:
+    """Данные дескриптора — на носитель; True — только если сброс прошёл. На
+    macOS `os.fsync` отдаёт их только диску, а его кэш при пропаже питания
+    теряется: нужен `F_FULLFSYNC`; `os.fsync` — там, где его нет. Любой отказ
+    (том не умеет, EIO) — False: гарантии нет, чем бы ни кончилось."""
+    full = getattr(fcntl, "F_FULLFSYNC", None)
+    try:
+        if full is not None:
+            fcntl.fcntl(fd, full)
+        else:
+            os.fsync(fd)
+    except OSError:
+        return False
+    return True
+
+
+def flush_file(path: pathlib.Path) -> bool:
+    """Файл или каталог `path` — на носитель; True — только если сброс прошёл.
+    Не открылся — тоже False: гарантии нет."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        return _flush_to_disk(fd)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def durable_replace(tmp: pathlib.Path, target: pathlib.Path) -> bool:
+    """Опубликовать готовый `tmp` под именем `target`: данные — на носитель,
+    затем `replace`, затем каталог. Данные до имени — как у
+    `MeetingStatusStore._write_path`; там `os.fsync` и каталог не
+    сбрасывается (№572). Возвращает «данные на носителе»: True — только если
+    оба сброса прошли.
+
+    Публикует всегда, как база до №728: сбой сброса не исключение и не
+    откат имени. Вызывающий снимает исходник (`.pcm`) только при True — без
+    этого после краха питания под `.wav` бывал усечённый файл или нули, а
+    `.pcm` рядом уже снят (opusfix8). Ошибка самого `replace` — исключение."""
+    data = flush_file(tmp)
+    os.replace(tmp, target)
+    return flush_file(target.parent) and data

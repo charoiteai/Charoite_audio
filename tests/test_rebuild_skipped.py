@@ -60,7 +60,141 @@ def test_records_not_ready_is_a_skipped_outcome(tmp_path, monkeypatch):
     got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
 
     assert got == RS(RS.RECORDING_NOT_READY) and isinstance(got, RS)
-    assert "записи не готовы — оставляю живую стенограмму" in lines, lines
+    assert "записи не готовы (нет ни одной) — оставляю живую стенограмму" in lines, lines
+
+
+def test_one_channel_not_ready_keeps_the_live_transcript(tmp_path, monkeypatch):
+    """Один канал готов, у второго `.pcm` есть, а `.wav` нет (писатель держит
+    заявку весь срок): финал из одного канала вытеснил бы живую стенограмму,
+    где были оба. Это «не готово», а не «канала не было» (in2 №728, DS C2)."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    mic = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "wav")
+    mic.write_bytes(b"\0" * 32)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "blackhole", "pcm").write_bytes(b"\0" * 32)
+    lines: list[str] = []
+    monkeypatch.setattr(rt, "wait_recording",
+                        lambda _d, _s, label, _c: mic if label == "mic" else rt.file_locks.BUSY)
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got == RS(RS.RECORDING_NOT_READY) and isinstance(got, RS)
+    assert "записи не готовы (blackhole) — оставляю живую стенограмму" in lines, lines
+
+
+def _meeting(tmp_path):
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    return live, rec
+
+
+def test_a_not_ready_mic_also_keeps_the_live_transcript(tmp_path, monkeypatch):
+    """То же для микрофона: гейт судит оба канала, а не один (out1 Sonnet M2)."""
+    live, rec = _meeting(tmp_path)
+    bh = meeting_stamp.recording_path(rec, "2026-08-04_120314", "blackhole", "wav")
+    bh.write_bytes(b"\0" * 32)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm").write_bytes(b"\0" * 32)
+    monkeypatch.setattr(rt, "wait_recording",
+                        lambda _d, _s, label, _c: bh if label == "blackhole" else rt.file_locks.BUSY)
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) == RS(RS.RECORDING_NOT_READY)
+
+
+def test_a_volume_without_flock_is_a_deterministic_refusal(tmp_path, monkeypatch):
+    """Том без flock: повтор даст то же — немой None без кода и кнопки
+    «Пересобрать», а не вечное «записи ещё не готовы» (out1 Sonnet I1)."""
+    live, rec = _meeting(tmp_path)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm").write_bytes(b"\0" * 32)
+    monkeypatch.setattr(rt, "wait_recording", lambda *_a: rt.file_locks.NO_FLOCK)
+    lines: list[str] = []
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got is None and not isinstance(got, RS)
+    assert any("без flock" in m for m in lines), lines
+
+
+def test_only_empty_recordings_are_a_deterministic_refusal(tmp_path, monkeypatch):
+    """Писатель убит до первого блока: `.pcm` пусты, звука нет, и повтор этого
+    не изменит — немой None без кода и кнопки (out2 DS M4)."""
+    live, rec = _meeting(tmp_path)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm").write_bytes(b"")
+    monkeypatch.setattr(rt, "wait_recording", lambda *_a: None)
+    lines: list[str] = []
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got is None and not isinstance(got, RS)
+    assert "записи каналов пусты или убраны — оставляю живую стенограмму" in lines, lines
+
+
+def test_recordings_removed_as_junk_are_a_deterministic_refusal(tmp_path, monkeypatch):
+    """Оба канала короче 5 с: писатель убрал их `.pcm` без `.wav`, пока шло
+    ожидание. Ждать нечего — немой None, а не «не готово», которое повтор не
+    снимет (out3 DS I1)."""
+    live, rec = _meeting(tmp_path)
+    pcm = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm")
+    pcm.write_bytes(b"\0" * 32)       # до ожидания файл был — иначе «записей нет» раньше
+
+    def wait(*_a):
+        pcm.unlink(missing_ok=True)
+        return None
+
+    monkeypatch.setattr(rt, "wait_recording", wait)
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got is None and not isinstance(got, RS)
+
+
+def test_a_channel_published_while_we_waited_for_the_other_is_used(tmp_path, monkeypatch):
+    """Канал не был готов на своём сроке, но писатель опубликовал его `.wav`,
+    пока ждали второй канал: финал берёт его, а не «не готово» и не «канала
+    не было» (out1 DS I1)."""
+    live, rec = _meeting(tmp_path)
+    pcm = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm")
+    pcm.write_bytes(b"\0" * 32)
+    wav = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "wav")
+
+    def wait(_d, _s, label, _c):
+        if label == "mic":
+            return rt.file_locks.BUSY
+        wav.write_bytes(b"writer")           # писатель mic закончил, пока ждали blackhole
+        pcm.unlink()
+        return None
+
+    class Reached(Exception):
+        pass
+
+    def load(p):
+        raise Reached(p)
+
+    monkeypatch.setattr(rt, "wait_recording", wait)
+    monkeypatch.setattr(rt, "load_wav", load)
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    with pytest.raises(Reached) as got:
+        rt.rebuild(live, {"audio": {"samplerate": 16000}})
+    assert got.value.args[0] == wav
 
 
 def test_only_a_neighbours_files_under_the_minute_is_a_deterministic_refusal(tmp_path, monkeypatch):
@@ -130,6 +264,7 @@ def test_skipped_is_falsy_like_the_old_none():
 
 def test_machine_final_valid_hash(root):
     assert live_sidecar.machine_final(_live(root, {"transcript_sha256": SHA})) is True
+    assert live_sidecar.machine_final(_live(root, {"transcript_sha256": SHA}), unknown=False) is True
 
 
 def test_machine_final_no_hash(root):
@@ -153,6 +288,7 @@ def test_machine_final_unreadable_content_is_unknown(root, raw):
     live = _live(root)
     live.with_name(live.name + ".live.json").write_bytes(raw)
     assert live_sidecar.machine_final(live) is True
+    assert live_sidecar.machine_final(live, unknown=False) is False, "сирота: финал не доказан (№728)"
 
 
 def test_machine_final_is_total(root, monkeypatch):
@@ -164,6 +300,7 @@ def test_machine_final_is_total(root, monkeypatch):
 
     monkeypatch.setattr(live_sidecar.json, "loads", deep)
     assert live_sidecar.machine_final(live) is True
+    assert live_sidecar.machine_final(live, unknown=False) is False
 
 
 def test_machine_final_unknown_leaves_a_trace(root, capsys):
@@ -184,6 +321,7 @@ def test_machine_final_ambiguous_sidecar_is_unknown(root):
         (tdir / f"{bare}{live_sidecar.TAIL}").write_text(json.dumps({"stamp": bare}), encoding="utf-8")
     assert live_sidecar.sidecar_for(live) is None
     assert live_sidecar.machine_final(live) is True
+    assert live_sidecar.machine_final(live, unknown=False) is False
 
 
 def test_machine_final_oserror_is_unknown(root, monkeypatch):

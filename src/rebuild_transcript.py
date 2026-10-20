@@ -34,7 +34,7 @@ import time
 import typing
 import wave
 
-from charoite_paths import code_root, harden_umask, log_path, meeting_log, resolve_root
+from charoite_paths import code_root, durable_replace, harden_umask, log_path, meeting_log, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -66,6 +66,7 @@ import privacy  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
 import speech_gate  # noqa: E402
 import live_gate  # noqa: E402
+import file_locks  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import VETO_BELOW, diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from diarize_live import LIVE_MAX_SPEAKERS  # noqa: E402 — потолок мест канала живого трекера
@@ -126,107 +127,200 @@ def load_wav(p: pathlib.Path) -> tuple[np.ndarray, int]:
     return a.astype(np.float32) / 32768.0, sr
 
 
-def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path:
-    """.pcm → .wav через временное имя, как это делает и сам демон.
+#: Исход двери конвертации, когда `.pcm` нет: снят писателем после публикации
+#: `.wav`, ретеншном или «Забыть» между взглядом и открытием. Остальные отказы —
+#: исходы заявки из `file_locks`: `BUSY` — писатель держит запись, `NO_FLOCK` —
+#: том без flock, судить не по чему. `EMPTY` — `.pcm` нулевой длины: писатель
+#: создал его и ещё не взял заявку (окно `open("xb")` → flock) или убит до
+#: первого блока; конвертировать нечего, трогать — значит снять имя у живого.
+#: `UNREADABLE` — открыть не дали (права, лимит дескрипторов): не «том без
+#: flock», и чинит его человек, а не ожидание.
+GONE = "gone"
+EMPTY = "empty"
+UNREADABLE = "unreadable"
 
-    Прямая запись в целевой .wav означала вот что: обрыв посреди конвертации
-    (kill, полный диск, паника) оставляет усечённый .wav, а `wait_recording`
-    при следующем заходе видит его и принимает за готовый — финальная
-    стенограмма собирается из огрызка, хотя целый .pcm ещё лежал рядом.
-    Час чужой встречи не переснять, поэтому tmp + переименование.
 
-    Имя временного файла с pid: две пересборки одной встречи (спавн
-    восстановления и ручной запуск) не должны писать в один буфер. И оно
-    намеренно НЕ совпадает с голым `.wav.part` демона — тот суффикс означает
-    «идёт штатная финализация», занимать его посторонним писателем нельзя.
-    При этом ретеншн узнаёт его наравне с прочими (`meeting_stamp`): иначе
-    обрыв конвертации оставлял бы на диске полный WAV встречи навсегда.
+#: Кусок чтения `.pcm` при конвертации: канал трёхчасовой встречи — сотни МБ.
+_CHUNK = 1 << 20
+
+
+def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
+    """.pcm → .wav под заявкой на сам `.pcm`; без заявки — ничего не трогаем.
+
+    Заявка — эксклюзивный flock на дескрипторе `.pcm`. Писатель встречи
+    (`AudioHub`) держит её от создания файла до `unlink` после публикации
+    `.wav` (№728), поэтому взятая здесь заявка доказывает: писателя нет — он
+    закончил или убит. Лок встречи для этого не годится: он общий на встречу,
+    после автоперезапуска его держит уже новая встреча, а на томе без flock
+    консоль пишет без него — пересборка конвертировала чужой живой `.pcm` и
+    удаляла его (опыт e2 на 806f67bb: 85 % звука канала потеряно).
+
+    Возвращает путь к `.wav` или исход отказа: `file_locks.BUSY` (писатель
+    жив), `file_locks.NO_FLOCK` (том без flock — не трогаем, восстановление
+    только вручную), `GONE` (файла нет), `EMPTY` (файл пуст), `UNREADABLE`
+    (открыть не дали). Отказ — не потеря канала: решает цикл
+    `wait_recording`. Одна попытка: долгих проб `.pcm` нет ни у кого (держит
+    долго только сама дверь соседней пересборки), ложное «занято» стоит только
+    ещё одного круга ожидания.
+
+    Под заявкой: огрызок `.wav.part` убитого писателя убираем (он производный
+    от `.pcm`, который рядом и целый), конвертируем из того же дескриптора,
+    публикуем `.wav` переименованием, снимаем `.pcm`. Прямая запись в целевой
+    .wav означала бы вот что: обрыв посреди конвертации (kill, полный диск,
+    паника) оставляет усечённый .wav, а `wait_recording` при следующем заходе
+    принимает его за готовый. Час чужой встречи не переснять.
+
+    Имя временного файла с pid и намеренно НЕ голый `.wav.part` писателя — тот
+    суффикс означает «идёт штатная финализация». Ретеншн узнаёт оба имени
+    (`meeting_stamp`): иначе обрыв конвертации оставлял бы полный WAV встречи
+    на диске навсегда.
     """
     out = pcm.with_suffix(".wav")
-    tmp = out.with_name(f"{out.name}.part{os.getpid()}")
     try:
-        with wave.open(str(tmp), "wb") as w, pcm.open("rb") as f:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(sr)
-            while chunk := f.read(1 << 20):
-                w.writeframes(chunk)
-        tmp.replace(out)
-    finally:
-        tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
-    pcm.unlink(missing_ok=True)
+        f = pcm.open("rb")      # не «a»/«w»: заявка не смеет создать .pcm, xb писателя упал бы
+    except FileNotFoundError:
+        return GONE
+    except OSError as e:
+        log(f"{pcm.name}: не открыть ({type(e).__name__}) — не трогаю")
+        return UNREADABLE
+    with f:
+        got = file_locks.acquire_outcome(f, attempts=1)
+        if got != file_locks.TAKEN:
+            return got
+        st = os.fstat(f.fileno())
+        if st.st_nlink == 0:
+            return GONE         # писатель снял имя между open и заявкой: его .wav уже на месте
+        if st.st_size == 0:
+            # out1 Haiku M2: заявку у такого файла писатель берёт следующей строкой.
+            # Снимать пустой .pcm пересборке нельзя и на сроке: писатель без
+            # заявки (NO_FLOCK на старте) неотличим от убитого (opusfix1 DS C1).
+            # Сиротой пустой .pcm не считается (`daemon._has_sound`), убирает ретеншн.
+            return EMPTY
+        stale = pcm.with_suffix(".wav.part")
+        try:
+            stale.unlink()
+            log(f"{stale.name}: огрызок убитого писателя — убрала, .pcm цел")
+        except FileNotFoundError:
+            pass
+        tmp = out.with_name(f"{out.name}.part{os.getpid()}")
+        try:
+            with wave.open(str(tmp), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(sr)
+                while chunk := f.read(_CHUNK):
+                    w.writeframes(chunk)
+            durable = durable_replace(tmp, out)
+        finally:
+            tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
+        if not durable:                   # как база: .wav есть, .pcm цел
+            log(f"{pcm.name}: .wav не подтверждён на носителе — исходник оставила")
+            return out
+        # Полный .wav уже опубликован: после этого вызов не проваливается.
+        # Снять имя под заявкой может тот, кто её не спрашивает («Забыть»), а
+        # сетевой том — отказать (EACCES); остаток заберёт ретеншн (out3 DS M2).
+        try:
+            pcm.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log(f"{pcm.name}: .wav готов, исходник не снят — {type(e).__name__}")
     return out
 
 
-def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pathlib.Path | None:
-    """Ждём финализацию канала писателем встречи; после SIGKILL добиваем .pcm сами.
+#: Пауза между заходами `wait_recording`.
+WAIT_POLL_S = 2.0
 
-    Признак «демон бросил запись» — живой процесс, а не возраст файла.
+def _no_sound(p: pathlib.Path) -> bool:
+    """Звука под этим именем нет и не будет: файла нет (писатель убрал мусор
+    короче 5 с, ретеншн) или он пуст. Сбой stat — «не знаем»: такой канал
+    остаётся устранимым отказом."""
+    try:
+        return p.stat().st_size == 0
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+#: Что значит отказ двери — для строки журнала на сроке.
+_REFUSAL_TEXT = {
+    file_locks.BUSY: "писатель держит запись",
+    file_locks.NO_FLOCK: "том без flock — писателя не видно, запись не трогаю",
+    GONE: "записи канала нет",
+    EMPTY: "запись пуста",
+    UNREADABLE: "запись не открыть — права или лимит дескрипторов",
+}
+
+
+def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
+                   sleep=None, now=None) -> pathlib.Path | str | None:
+    """Ждём `.wav` канала от писателя; писателя нет — конвертируем `.pcm` сами.
+
+    Кто пишет — решает только заявка на `.pcm` (`pcm_to_wav`): взялась —
+    писателя нет, и дверь конвертирует; не взялась — ждём до срока. Лок
+    встречи здесь не читается: e1 на 806f67bb — сирота убитого писателя при
+    чужой встрече держала канал весь срок, и `rebuild` собирал финал из одного
+    канала. Признака по mtime или размеру нет: `rebuild()` сам трогает mtime
+    записей, а живой писатель молчит по размеру до 30 с (рестарт стрима).
+
     Раньше здесь стояло `mtime старше 10 секунд`: у трёхчасовой встречи
-    (345 МБ на канал) демон физически не успевал сконвертировать оба канала
-    за это время, mtime у .pcm замирал в момент stop() — и мы начинали писать
-    в тот же .wav параллельно ему. Два писателя давали кашу из перемежающихся
-    блоков, после чего оба делали unlink исходника: финальная стенограмма
-    собиралась из битого звука, а восстановить было уже нечего.
+    демон не успевал сконвертировать оба канала за это время, и мы писали в
+    тот же .wav параллельно ему — два писателя давали кашу, оба удаляли
+    исходник. Заявка этого не допускает: писатель держит её всю финализацию.
 
-    Обратная сторона того же признака: `.part` от УБИТОГО демона — не работа,
-    а огрызок, и ждать его бессмысленно. Раньше он держал канал вечно (ждём
-    45 секунд, потом отказываемся трогать .pcm «потому что кто-то пишет»), и
-    удалять его было некому: чистка сметала только .pcm и .wav. Итог — звонок
-    без реплик собеседника в финальной стенограмме, а через record_keep_days
-    и .pcm уходил (аудит 0.46.0, P0-3). В цикле решает лок встречи (что он
-    значит — в `_daemon_alive`), по сроку — наличие файлов. Невидимый
-    писатель считается мёртвым: на томе без flock, если рядом есть `.pcm`,
-    `.part` снимается, а `.pcm` конвертируется. `.part` без `.pcm` цикл не
-    убирает; встреча, начатая после ворот, держит чужой осиротевший `.part`
-    до срока. Место всего этого — №728.
+    Исходы: путь к `.wav`; строка отказа двери (`file_locks.BUSY`,
+    `file_locks.NO_FLOCK`, `UNREADABLE`) — `.pcm` есть, но не готов, и `rebuild`
+    не собирает финал без этого канала; None — записи канала нет (или она
+    пуста). На NO_FLOCK дверь зовём один раз — это свойство тома, — а `.wav`
+    писателя ждём до срока (out1 Sonnet I1, out2 Sonnet I1). Конвертации «по
+    сроку» нет: без заявки ничего не удаляется. `.wav` есть — канал готов, и
+    остаток `.pcm` рядом не трогаем: он живёт до срока хранения
+    (`prune_recordings`), а сиротой встречу с финалом не делает
+    `daemon._final_beside_leftovers`. Уборка остатка перекодировала готовый
+    `.wav` из короткого `.pcm`, на чужой частоте и роняла пересборку на полном
+    диске (№728, opusfix11, опыт x19).
+
+    Писатель в обход `AudioHub` (ручной скрипт) заявку не берёт и для
+    пересборки неотличим от убитого — это граница механизма.
+    `sleep`/`now` — швы часов, как у `live_gate.wait_while_live`.
     """
     # stamp уже разрешён ОДИН РАЗ на пару каналов в rebuild(). Делать это
     # здесь по label нельзя: две встречи в одну минуту способны отдать mic
     # одной и blackhole другой, после чего стенограмма смешает два разговора.
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
     name = meeting_stamp.recording_path
     wav, pcm = name(rec_dir, stamp, label, "wav"), name(rec_dir, stamp, label, "pcm")
-    part = name(rec_dir, stamp, label, "wav.part")
-
-    def drop_stale_part() -> None:
-        if part.exists():
-            log(f"{label}: осиротевший {part.name} — лок встречи не держится или не виден, убираю")
-            part.unlink(missing_ok=True)
-
-    deadline = time.time() + WAIT_WAV_S
-    while time.time() < deadline:
+    deadline = now() + WAIT_WAV_S
+    refusal = GONE
+    while True:
         if wav.exists():
             return wav
-        alive = _daemon_alive()
-        if part.exists() and alive:
-            time.sleep(2)          # писатель сейчас конвертирует — не мешаем
-            continue
-        if pcm.exists() and not alive:
-            drop_stale_part()
-            log(f"{label}: лок встречи не держится или не виден, запись не финализирована — конвертирую .pcm сам")
-            return pcm_to_wav(pcm, sr)
-        time.sleep(2)
+        # Том без flock: дверь больше не зовём — заявки там нет ни у кого, —
+        # но .wav писателя ждём весь срок: на штатном стопе пересборка
+        # стартует раньше, чем демон допишет его (out2 Sonnet I1).
+        if pcm.exists() and refusal != file_locks.NO_FLOCK:
+            got = pcm_to_wav(pcm, sr)
+            if isinstance(got, pathlib.Path):
+                log(f"{label}: писателя записи нет — сконвертировал .pcm сам")
+                return got
+            refusal = got
+        if now() >= deadline:
+            break
+        sleep(WAIT_POLL_S)
+    # .pcm — первым: писатель публикует .wav до снятия .pcm, и в таком порядке
+    # гонки нет (out2 DS I1): нет .pcm — значит есть .wav, или писатель убрал
+    # мусор короче 5 с, или канала нет. Решает `wav.exists()` ниже.
+    pcm_left = pcm.exists()
     if wav.exists():
-        return wav
-    # Вышло время. Осиротевший .part рядом с .pcm сюда не доберётся: цикл выше
-    # убирает его на первом же заходе со свободным локом встречи. Значит, если
-    # .part всё ещё на месте — лок держали весь срок, и трогать .pcm нельзя
-    # (.part без .pcm цикл не убирает вовсе — №728).
-    if pcm.exists() and not part.exists():
-        log(f"{label}: ожидание истекло — конвертирую .pcm сам")
-        return pcm_to_wav(pcm, sr)
+        return wav    # писатель опубликовал между последним заходом и сроком
+    if pcm_left and refusal not in (GONE, EMPTY):
+        log(f"{label}: запись не готова — {_REFUSAL_TEXT.get(refusal, refusal)}")
+        return refusal
+    if pcm_left:
+        log(f"{label}: {_REFUSAL_TEXT[refusal]} — канал без записи")
     return None
-
-
-def _daemon_alive() -> bool:
-    """Держит ли кто-то лок встречи — то есть идёт ли встреча, а не пишется ли
-    этот файл. Писатели встречи — демон и консольный v1 — финализируют тем же
-    `AudioHub`, тем же `.wav.part` (выход 5 №725, DS C1); False — и «свободен»,
-    и «не виден» (том без flock, нет прав). Ворота `_yield_to_live("пересборка")` стоят до
-    очереди пересборок без потолка, поэтому держатель здесь — встреча,
-    начатая после ворот, в том числе пока ждали очередь (выход 6, Sonnet I1;
-    место — лок самого `.part`, №728)."""
-    return live_gate.daemon_alive(_root())
 
 
 def _yield_to_live(what: str, cap: float | None = None) -> None:
@@ -1346,11 +1440,37 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
         log("записей нет — оставляю живую стенограмму")
         return None
 
-    mic_p = wait_recording(rec_dir, recording_stamp, "mic", sr_cfg)
-    bh_p = wait_recording(rec_dir, recording_stamp, "blackhole", sr_cfg)
-    if mic_p is None and bh_p is None:
-        log("записи не готовы — оставляю живую стенограмму")
+    got = {lbl: wait_recording(rec_dir, recording_stamp, lbl, sr_cfg) for lbl in ("mic", "blackhole")}
+    # Решение о канале — после ОБОИХ ожиданий: пока ждали второй, писатель мог
+    # опубликовать .wav первого (out1 DS I1). Перепроверяем только «не готов»:
+    # None — на сроке не было .pcm (а значит и .wav не будет) или .pcm пуст.
+    for lbl, g in got.items():
+        wav = meeting_stamp.recording_path(rec_dir, recording_stamp, lbl, "wav")
+        if isinstance(g, str) and wav.exists():
+            got[lbl] = wav
+    refusals = {lbl: g for lbl, g in got.items() if isinstance(g, str)}
+    if file_locks.NO_FLOCK in refusals.values():
+        # Том без flock: .wav писателя не пришёл за весь срок, а сами мы живого
+        # писателя от убитого не отличим — отказ детерминированный, без кнопки
+        # «Пересобрать» (out1 Sonnet I1): после краха она не сработала бы никогда.
+        log("том записей без flock — запись не трогаю, оставляю живую стенограмму; "
+            "восстановление только вручную")
+        return None
+    # Канал с .pcm под своим штампом, но без .wav — не «канала не было», а «не
+    # готов»: финал из одного канала вытеснил бы живую стенограмму, где были
+    # оба (№728, in2 DS C2). Повтор после финализации соберёт оба.
+    if not refusals and all(
+            g is None and _no_sound(meeting_stamp.recording_path(rec_dir, recording_stamp, lbl, "pcm"))
+            for lbl, g in got.items()):
+        # Звука ни в одном канале нет: .pcm пусты (писатель убит до первого
+        # блока) или убраны писателем как мусор короче 5 с — повтор этого не
+        # изменит, без кода и кнопки (out2 DS M4, out3 DS I1).
+        log("записи каналов пусты или убраны — оставляю живую стенограмму")
+        return None
+    if refusals or all(g is None for g in got.values()):
+        log(f"записи не готовы ({', '.join(refusals) or 'нет ни одной'}) — оставляю живую стенограмму")
         return RebuildSkipped(RebuildSkipped.RECORDING_NOT_READY)
+    mic_p, bh_p = got["mic"], got["blackhole"]
 
     # Сырые сегменты каналов: None — канал не размечали (записи нет или она
     # не длиннее MIN_DIARIZE_S; сбой разметки длинного канала отменяет

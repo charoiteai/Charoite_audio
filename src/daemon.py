@@ -530,6 +530,99 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
                          detached="уборка копий импорта живёт, пока идёт встреча")
 
 
+#: Пауза перед второй пробой «том без flock» (`_volume_without_flock`).
+NO_FLOCK_CONFIRM_S = 0.5
+
+
+def _confirm_pause(seconds: float) -> None:
+    """Шов паузы подтверждения: тесты подменяют его, а не общий `time.sleep`."""
+    time.sleep(seconds)
+
+
+def _maybe_exists(path: pathlib.Path) -> bool:
+    """Сбой проверки (EACCES, EIO) — «не знаем», считаем файл на месте: канал
+    тогда не голосует за «том без flock», встреча остаётся под защитой
+    (opusfix5 Haiku I2)."""
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
+def _has_sound(pcm: pathlib.Path) -> bool:
+    """Маркер сироты — непустой `.pcm`. Пустой (писатель убит до первого блока)
+    восстанавливать нечего; маркером он делал встречу сиротой на каждом старте с
+    придержанным ретеншном (финальный Opus I1а). Снимать его не нужно никому:
+    ретеншн уберёт по сроку, а снять пересборкой нельзя — писатель без заявки
+    неотличим от убитого (opusfix1 DS C1). Сбой stat (и файл, пропавший после
+    обхода) — «не знаем», маркер: дальше решает проба."""
+    try:
+        return pcm.stat().st_size > 0
+    except OSError:
+        return True
+
+
+def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
+    """Все непустые `.pcm` встречи без готового `.wav` отвечают NO_FLOCK:
+    пересборка их не сконвертирует (`pcm_to_wav` на NO_FLOCK отказывает), и
+    встреча была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть,
+    восстанавливаем (opusfix2 Haiku C1). Сбой открытия не голосует (opusfix1
+    DS I3). Канал с готовым `.wav` не голосует: финал из него соберётся на любом
+    томе, а остаток `.pcm` рядом живёт до срока хранения и сиротой встречу с
+    финалом не делает (`_final_beside_leftovers`, opusfix4 DS C1). Проба — одна
+    попытка на канал: BUSY (дверь пересборки прежнего демона) не держит старт
+    записи (opusfix3 DS I3). NO_FLOCK `acquire_outcome` не повторяет — ответ
+    подтверждает вторая проба через паузу в `_recover_orphans`."""
+    pcms = [p for label in meeting_stamp.RECORDING_LABELS
+            if _has_sound(p := meeting_stamp.recording_path(rec_dir, stamp, label, "pcm"))
+            and not _maybe_exists(meeting_stamp.recording_path(rec_dir, stamp, label, "wav"))]
+    outcomes = []
+    for pcm in pcms:
+        try:
+            with pcm.open("rb") as f:
+                outcomes.append(file_locks.acquire_outcome(f, attempts=1))
+        except OSError:
+            continue
+    return bool(outcomes) and all(o == file_locks.NO_FLOCK for o in outcomes)
+
+
+def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Path) -> bool:
+    """Финал встречи уже собран, а `.pcm` рядом с `.wav` — остаток, а не
+    сирота: у каждого канала со звуком есть `.wav`, и в сайдкаре стенограммы
+    записан машинный хеш финала (`write_final`; `retitle` и `restamp` ставят
+    его только поверх совпавшего). Остаток остаётся, когда `.wav` не
+    подтверждён на носителе (том без `F_FULLFSYNC` — у каждой встречи) или
+    дверь его не тронула (том без flock): пересборка такой встречи на каждом
+    старте — STT заново, а ретеншн придерживал бы звук сверх срока хранения
+    (№728, опыт x17: финал без темы). Остаток живёт по обычному сроку.
+    Закончена — только по хешу: статус встречи здесь не спрашиваем. `ready`
+    хеша не доказывает: конвейер пишет его после удачного графа и без хеша,
+    а `machine_final` с `unknown=True` решает у него только `rebuild_skipped`
+    — два круга подряд чтение статуса прятало сироту (opusfix13 C1,
+    opusfix14 C1, опыт x26). Цена — встреча без хеша финала и с остатком
+    пересобирается на каждом старте (№615).
+    «Не знаем» — сирота: канал без `.wav`, сбой проверки, неоднозначный
+    сайдкар восстанавливаются, как прежде. Канал без `.pcm` не проверяем:
+    звук либо уже в `.wav` (писатель или дверь сняли исходник), либо его не
+    было — запись без второго устройства. `_has_sound` на пропавшем файле
+    отвечает «звук есть» ради ретеншна, и встреча из одного канала
+    пересобиралась бы на каждом старте."""
+    for label in meeting_stamp.RECORDING_LABELS:
+        try:
+            if meeting_stamp.recording_path(rec_dir, stamp, label, "pcm").stat().st_size == 0:
+                continue
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+        try:
+            if not meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
+                return False
+        except OSError:
+            return False
+    return live_sidecar.machine_final(live, unknown=False)
+
+
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     """Добить встречи, оборванные аварийно. Возвращает штампы, которые
     пересобираются прямо сейчас, — их записи ретеншну трогать нельзя.
@@ -568,24 +661,48 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     # со своим знанием формата — а расхождение формата уже дважды стоило
     # проекту встреч (см. докстринг meeting_stamp).
     stamps = sorted({s for p in rec_dir.glob("*.pcm")
-                     if (s := meeting_stamp.stamp_of_recording(p.name))})
+                     if (s := meeting_stamp.stamp_of_recording(p.name)) and _has_sound(p)})
+    candidates = []
     for stamp in stamps:
         if stamp == current_stamp:
             continue                      # наша встреча, она только началась
         live = tdir / f"{stamp}.md"
-        if not live.exists():
+        # Сбой проверки — «стенограмма на месте»: OSError отсюда уронил бы
+        # старт записи до `hub.start()` (opusfix6 Sonnet I1).
+        if not _maybe_exists(live):
             continue                      # без стенограммы пересобирать нечего
+        if _final_beside_leftovers(rec_dir, stamp, live):
+            continue                      # финал собран, рядом остаток — не сирота
+        candidates.append((stamp, live))
+    # «Том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не
+    # уводит встречу из-под защиты ретеншна (opusfix4 DS I4). Пауза — одна на
+    # старт (opusfix5 DS I1), а вторую пробу после неё проходит каждая
+    # подозреваемая встреча (opusfix6 DS I1, Haiku I-2).
+    suspects = {stamp for stamp, _ in candidates if _volume_without_flock(rec_dir, stamp)}
+    if suspects:
+        _confirm_pause(NO_FLOCK_CONFIRM_S)
+    for stamp, live in candidates:
+        if stamp in suspects and _volume_without_flock(rec_dir, stamp):
+            # Том без flock: пересборка такую запись не тронет (писателя не
+            # видно), и встреча была бы сиротой навсегда — пересборка на каждом
+            # старте, звук придержан сверх record_keep_days. Не защищаем: запись
+            # живёт по сроку хранения, восстановление — вручную (финальный Opus I1б).
+            # Срок мог уже выйти, а пересборка на этом томе откажет и вручную —
+            # называем шаг, который сработает (opusfix1 DS M5, opusfix3 DS M5).
+            emit({"type": "status", "text": f"Встреча {stamp}: том записей без flock, "
+                                            "автовосстановления нет — звук хранится по обычному "
+                                            "сроку; пока он не вышел, для финала перенесите записи "
+                                            "на локальный диск и пересоберите встречу"})
+            continue
         # Помечаем ДО запуска, а не после: даже неудавшийся спавн означает, что
         # встреча ждёт восстановления, и удалять её звук нельзя тем более.
         recovering.add(stamp)
-        # Осиротевшие .wav.part прежнего демона убираем МЫ, а не пересборка.
-        # Пересборка отличает живого писателя от мёртвого по локу демона — но
-        # после автоперезапуска (watchdog поднимает нас за 2 секунды) лок
-        # держим уже мы, и для неё «демон жив», хотя автор .part убит. Она
-        # честно не мешала бы ему до таймаута, а затем отказывалась бы трогать
-        # .pcm — канал терялся бы навсегда, причём его же штамп мы только что
-        # защитили от ретеншна: файлы зависали бессрочно. Мы — единственные,
-        # кто ЗНАЕТ, что прежний писатель мёртв: лок в наших руках.
+        # Осиротевшие .wav.part прежнего демона убираем сразу: мы ЗНАЕМ, что
+        # прежний писатель мёртв — лок встречи в наших руках (взят до вызова),
+        # второго писателя при нём не бывает. Пересборка с №728 и сама убирает
+        # такой .part — под заявкой на .pcm (`rebuild_transcript.pcm_to_wav`),
+        # а не по локу встречи, который после автоперезапуска держим уже мы.
+        # Здесь — без заявки, только потому, что лок встречи у нас.
         for label in meeting_stamp.RECORDING_LABELS:
             stale = meeting_stamp.recording_path(rec_dir, stamp, label, "wav.part")
             try:
