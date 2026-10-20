@@ -208,25 +208,32 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
             tmp.replace(out)
         finally:
             tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
-        # Под заявкой пишущих нет, но снять имя может тот, кто заявку не
-        # спрашивает («Забыть», ручная уборка): полный .wav уже опубликован.
-        pcm.unlink(missing_ok=True)
+        # Полный .wav уже опубликован: после этого вызов не проваливается.
+        # Снять имя под заявкой может тот, кто её не спрашивает («Забыть»), а
+        # сетевой том — отказать (EACCES); остаток заберёт ретеншн (out3 DS M2).
+        try:
+            pcm.unlink()
+        except OSError as e:
+            log(f"{pcm.name}: .wav готов, исходник не снят — {type(e).__name__}")
     return out
 
 
 #: Пауза между заходами `wait_recording`.
 WAIT_POLL_S = 2.0
 
-#: Что значит отказ двери — для строки журнала на сроке.
-def _empty_file(p: pathlib.Path) -> bool:
-    """Файл есть и пуст. Сбой stat — «не знаем», а не «пуст»: такой канал
+def _no_sound(p: pathlib.Path) -> bool:
+    """Звука под этим именем нет и не будет: файла нет (писатель убрал мусор
+    короче 5 с, ретеншн) или он пуст. Сбой stat — «не знаем»: такой канал
     остаётся устранимым отказом."""
     try:
         return p.stat().st_size == 0
+    except FileNotFoundError:
+        return True
     except OSError:
         return False
 
 
+#: Что значит отказ двери — для строки журнала на сроке.
 _REFUSAL_TEXT = {
     file_locks.BUSY: "писатель держит запись",
     file_locks.NO_FLOCK: "том без flock — писателя не видно, запись не трогаю",
@@ -1434,11 +1441,13 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     # Канал с .pcm под своим штампом, но без .wav — не «канала не было», а «не
     # готов»: финал из одного канала вытеснил бы живую стенограмму, где были
     # оба (№728, in2 DS C2). Повтор после финализации соберёт оба.
-    if not refusals and all(g is None for g in got.values()) and any(
-            _empty_file(meeting_stamp.recording_path(rec_dir, recording_stamp, lbl, "pcm")) for lbl in got):
-        # Только пустые .pcm (писатель убит до первого блока): звука нет, и повтор
-        # этого не изменит — без кода и кнопки (out2 DS M4).
-        log("записи каналов пусты — оставляю живую стенограмму")
+    if not refusals and all(
+            g is None and _no_sound(meeting_stamp.recording_path(rec_dir, recording_stamp, lbl, "pcm"))
+            for lbl, g in got.items()):
+        # Звука ни в одном канале нет: .pcm пусты (писатель убит до первого
+        # блока) или убраны писателем как мусор короче 5 с — повтор этого не
+        # изменит, без кода и кнопки (out2 DS M4, out3 DS I1).
+        log("записи каналов пусты или убраны — оставляю живую стенограмму")
         return None
     if refusals or all(g is None for g in got.values()):
         log(f"записи не готовы ({', '.join(refusals) or 'нет ни одной'}) — оставляю живую стенограмму")

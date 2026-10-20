@@ -141,7 +141,28 @@ def test_only_empty_recordings_are_a_deterministic_refusal(tmp_path, monkeypatch
     got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
 
     assert got is None and not isinstance(got, RS)
-    assert "записи каналов пусты — оставляю живую стенограмму" in lines, lines
+    assert "записи каналов пусты или убраны — оставляю живую стенограмму" in lines, lines
+
+
+def test_recordings_removed_as_junk_are_a_deterministic_refusal(tmp_path, monkeypatch):
+    """Оба канала короче 5 с: писатель убрал их `.pcm` без `.wav`, пока шло
+    ожидание. Ждать нечего — немой None, а не «не готово», которое повтор не
+    снимет (out3 DS I1)."""
+    live, rec = _meeting(tmp_path)
+    pcm = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm")
+    pcm.write_bytes(b"\0" * 32)       # до ожидания файл был — иначе «записей нет» раньше
+
+    def wait(*_a):
+        pcm.unlink(missing_ok=True)
+        return None
+
+    monkeypatch.setattr(rt, "wait_recording", wait)
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got is None and not isinstance(got, RS)
 
 
 def test_a_channel_published_while_we_waited_for_the_other_is_used(tmp_path, monkeypatch):

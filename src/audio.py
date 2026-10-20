@@ -723,6 +723,7 @@ class AudioHub:
         # целиком под замком, обход без замка (копия при записи).
         self._frame_listeners: tuple = ()
         self._sinks: dict = {}          # label → открытый .pcm (сырая запись встречи)
+        self._unclaimed: dict[str, str] = {}  # label → почему заявка на .pcm не взялась (№728)
         self._last_frame: dict[str, float] = {}
         # когда канал в последний раз ПЫТАЛИСЬ перезапустить — анти-шторм
         # отдельно от возраста кадров: см. _watch_streams (ревью 21.08)
@@ -1355,6 +1356,7 @@ class AudioHub:
         # файлов — исключение меры выключило бы запись на всю встречу.
         self._warn_disk_headroom()
         try:
+            self._unclaimed = {}
             for c in self.captures:
                 path = meeting_stamp.recording_path(
                     self.record_dir, self.stamp, c.label, "pcm")
@@ -1379,6 +1381,13 @@ class AudioHub:
                 except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
                     pass
             self._sinks = {}
+            if self._unclaimed:
+                # Слой «запись идёт» поставил канал, которого больше нет: снимаем
+                # его тем же откатом, иначе он спорил бы с отказом ниже (out3).
+                self._unclaimed = {}
+                self._say(stt_runtime.Status(
+                    "замок записи больше не нужен — запись выключена",
+                    sticky=False, topic=stt_runtime.TOPIC_RECORDING_CLAIM))
             self._say(stt_runtime.Status(
                 f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить",
                 error=True, topic=stt_runtime.TOPIC_DISK))
@@ -1405,8 +1414,12 @@ class AudioHub:
             _safe_stderr(f"замок записи {label} не взят: {e}")
             got = type(e).__name__
         if got != file_locks.TAKEN:
+            # Слой на тему один: строка называет все каналы без заявки, иначе
+            # второй канал затёр бы первый (out3).
+            self._unclaimed[label] = got
+            which = ", ".join(f"{lbl}: {why}" for lbl, why in self._unclaimed.items())
             self._say(stt_runtime.Status(
-                f"ЗАМОК ЗАПИСИ НЕ ВЗЯТ ({label}: {got}) — запись идёт; после сбоя "
+                f"ЗАМОК ЗАПИСИ НЕ ВЗЯТ ({which}) — запись идёт; после сбоя "
                 "восстановите встречу вручную",
                 error=True, sticky=True, topic=stt_runtime.TOPIC_RECORDING_CLAIM))
 
@@ -1561,6 +1574,7 @@ class AudioHub:
                 p = pathlib.Path(f.name)
                 if p.stat().st_size < self.sr * 2 * 5:  # меньше 5с звука — мусор
                     p.unlink(missing_ok=True)
+                    _safe_stderr(f"запись канала {label} короче 5 с — убрана, .wav не будет")
                     continue
                 # Пишем во временное имя и переименовываем: rebuild_transcript
                 # ждёт готовый .wav и до появления файла считает канал
@@ -1585,9 +1599,12 @@ class AudioHub:
             except Exception as e:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
                 # Не молча: без строки человек ждал бы финала, которого нет до
                 # пересборки (out2, шаг Haiku M1).
+                # Без заявки пересборка .pcm не тронет: обещать её нельзя (out3).
+                after = ("восстановите встречу вручную" if label in self._unclaimed
+                         else "финал соберёт пересборка")
                 self._say(stt_runtime.Status(
                     f"запись канала {label} не сконвертирована ({type(e).__name__}) — "
-                    ".pcm цел, финал соберёт пересборка",
+                    f".pcm цел, {after}",
                     error=True, topic=stt_runtime.TOPIC_DISK))
             finally:
                 try:

@@ -854,3 +854,96 @@ def test_a_failing_unlink_in_the_sink_cleanup_still_closes_the_file(tmp_path, mo
     hub._open_sinks()
 
     assert hub._sinks == {} and len(opened) == 1 and opened[0].closed
+
+
+def test_pcm_to_wav_with_a_pcm_that_cannot_be_removed_still_hands_over_the_wav(rec_dir, monkeypatch):
+    """Полный `.wav` опубликован, а сетевой том отказал снять исходник: вызов не
+    проваливается — иначе готовая конвертация стала бы `failed` (out3 DS M2)."""
+    import rebuild_transcript as rt
+
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    real = rt.pathlib.Path.unlink
+
+    def refuse(self, *a, **kw):
+        if self == pcm:
+            raise PermissionError(13, "EACCES")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(rt.pathlib.Path, "unlink", refuse)
+    lines = []
+    monkeypatch.setattr(rt, "log", lines.append)
+
+    assert rt.pcm_to_wav(pcm, 16000) == rec_dir / "s_mic.wav"
+    assert any("исходник не снят" in m for m in lines), lines
+
+
+def test_a_failed_conversion_without_a_claim_does_not_promise_a_rebuild(tmp_path, monkeypatch):
+    """Канал писал без заявки: пересборка его `.pcm` не тронет, и статус сбоя
+    стопа говорит «вручную», а не «соберёт пересборка» (out3 DS M1, Haiku I1)."""
+    import audio
+    import file_locks
+
+    hub = _hub(tmp_path)
+    hub.stamp = "s"
+    hub.captures = [type("C", (), {"label": "mic"})()]
+    said = []
+    hub._say = said.append
+    monkeypatch.setattr(hub, "prune_recordings", lambda *a, **kw: 0)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
+    hub._open_sinks()
+    hub._sinks["mic"].write(b"\0" * 16000 * 2 * 6)
+
+    def broken(*a, **kw):
+        raise RuntimeError("EIO")
+
+    monkeypatch.setattr(audio.wave, "open", broken)
+    hub._finalize_recordings()
+
+    failed = [m for m in said if m and "не сконвертирована" in m]
+    assert len(failed) == 1 and "вручную" in failed[0] and "пересборка" not in failed[0], said
+
+
+def test_both_unclaimed_channels_are_named_in_one_layer(tmp_path, monkeypatch):
+    """Слой на тему один: вторая строка называет оба канала, а не затирает
+    первый (out3 Sonnet M1, Haiku I2)."""
+    import file_locks
+
+    hub = _hub(tmp_path)
+    hub.stamp = "s"
+    hub.captures = [type("C", (), {"label": "mic"})(), type("C", (), {"label": "blackhole"})()]
+    said = []
+    hub._say = said.append
+    monkeypatch.setattr(hub, "prune_recordings", lambda *a, **kw: 0)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
+    hub._open_sinks()
+    try:
+        claim = [m for m in said if m and "ЗАМОК ЗАПИСИ НЕ ВЗЯТ" in m]
+        assert "mic: " in claim[-1] and "blackhole: " in claim[-1], claim
+    finally:
+        for f in hub._sinks.values():
+            f.close()
+
+
+def test_a_rollback_of_the_sinks_lifts_the_claim_layer(tmp_path, monkeypatch):
+    """Заявка первого канала не взялась, а открыть второй не вышло: запись
+    выключена, и слой «запись идёт» снимается тем же откатом (out3)."""
+    import file_locks
+    import stt_runtime
+
+    hub = _hub(tmp_path)
+    hub.stamp = "s"
+    hub.captures = [type("C", (), {"label": "mic"})(), type("C", (), {"label": "blackhole"})()]
+    said = []
+    hub._say = said.append
+    monkeypatch.setattr(hub, "prune_recordings", lambda *a, **kw: 0)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.BUSY)
+    (tmp_path / "s_blackhole.pcm").write_bytes(b"")          # xb второго канала упадёт
+    hub._open_sinks()
+
+    statuses = [m for m in said if isinstance(m, stt_runtime.Status)]
+    lifts = [m for m in statuses if m.topic == stt_runtime.TOPIC_RECORDING_CLAIM and m.sticky is False]
+    assert len(lifts) == 1, said
+    assert statuses.index(lifts[0]) > statuses.index(
+        next(m for m in statuses if "ЗАМОК ЗАПИСИ НЕ ВЗЯТ" in m)), "слой снят раньше, чем поставлен"
+    assert hub._sinks == {} and hub._unclaimed == {}
