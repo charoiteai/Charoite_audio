@@ -487,6 +487,20 @@ final class LocalVerdictTests: XCTestCase {
         await index.refresh(files: [("README.md", 1, "дожди весь месяц")])
         let out = await ArchiveSearch.localSearchOutcome(query: "каникулы", limit: 3,
                                                          snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertTrue(out.text.isEmpty, out.text)
         XCTAssertEqual(out.verdict, .unverified, out.text)
+
+        // пара: те же два текста под разными именами, оба в индексе, семантика
+        // сравнила оба — «пусто» доказано; разница с первым случаем — знаменатель (out5, DS M2)
+        let named = try makeTestGraph([("a/Дожди.md", "дожди весь месяц"), ("b/Отпуск.md", "отпуск перенесли на август")])
+        defer { try? FileManager.default.removeItem(at: named) }
+        let both = SemanticIndex()
+        await both.useForTests(store: tempIndexStore(),
+                               embedder: { $0.map { $0.contains("снег") ? [1, 0] : [0, 1] } })
+        await both.refresh(files: [("a/Дожди.md", 1, "дожди весь месяц"), ("b/Отпуск.md", 1, "отпуск перенесли на август")])
+        let proven = await ArchiveSearch.localSearchOutcome(query: "снег", limit: 3,
+                                                            snippet: 200, root: named, semanticIndex: both)
+        XCTAssertTrue(proven.text.isEmpty, proven.text)
+        XCTAssertEqual(proven.verdict, .empty)
     }
 }

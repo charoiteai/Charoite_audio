@@ -1957,7 +1957,9 @@ absence formula in the first content line of the answer
 unless they are a refusal themselves); for a question without an answer the
 first two lines count. The count does not yet tell a refusal the verdict's rule
 allows (`weak`, or "no exact answer was found" under `unverified`) from one it
-forbids — read it per verdict.
+forbids; under `unverified` the number is an upper bound — it includes "no exact
+answer was found", which the rule asks for, and only the answer text in the report
+tells them apart.
 
 Search calls an empty or weak result proven only when semantics compared the
 query with at least 80% of the graph files that have text (notes that failed to
