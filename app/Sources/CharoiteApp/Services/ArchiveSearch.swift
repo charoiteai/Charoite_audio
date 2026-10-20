@@ -163,16 +163,38 @@ enum ArchiveSearch {
         var verdict: Verdict
         /// Оговорка поиска словами сервера: что не читали, почему слабо.
         var note: String = ""
+        /// Выдача кусками в порядке текста — окно модели берёт их только
+        /// целиком (`ChatRetrieval.fit`, №743). nil — кусков нет (выдачу
+        /// собрали руками), окно судит текст одним куском.
+        var parts: [Part]? = nil
 
         /// Вердикт обязателен: вывод из текста по умолчанию делал любой новый
         /// ранний `return` доказанным «пусто» (out1, Sonnet C1).
-        init(text: String, rels: [String]?, verdict: Verdict, note: String = "") {
+        init(text: String, rels: [String]?, verdict: Verdict, note: String = "",
+             parts: [Part]? = nil) {
             self.text = text
             self.rels = rels
             self.verdict = verdict
             self.note = note
+            self.parts = parts
         }
     }
+
+    /// Кусок выдачи: блок источника или досье. Окно модели не режет его на
+    /// полуслове, а берёт или выбрасывает целиком (№743): огрызок фрагмента
+    /// путает модель сильнее, чем его отсутствие. `rel` — путь от корня графа
+    /// (чип), nil — у досье и прочего без источника. `rank` — сила в выдаче,
+    /// 0 — лучший: текст идёт «лучший первым, второй — последним», а окно
+    /// выбрасывает сначала слабейший.
+    struct Part: Equatable {
+        let text: String
+        let rel: String?
+        let rank: Int
+    }
+
+    /// Шапка досье в ответе :8100 (`_dossier` в mcp_charoit_server.py): досье
+    /// идут над блоками источников, каждое — отдельный кусок выдачи.
+    static let dossierHead = "📋 ДОСЬЕ"
 
     /// Значения — как у python `graph_search.Verdict`, плюс `unavailable`:
     /// искать было негде (папки графа нет), и «в памяти этого нет» было бы
@@ -273,12 +295,30 @@ enum ArchiveSearch {
                 blocks[blocks.count - 1].lines.append(line)
             }
         }
-        guard !blocks.isEmpty else { return Outcome(text: marked(preamble), rels: nil, verdict: verdict, note: note) }
+        // досье над блоками — по куску на досье, ранги выше блоков: сервер
+        // ставит их первыми (№621)
+        var dossiers: [[Substring]] = []
+        for line in preamble {
+            if line.hasPrefix(dossierHead) || dossiers.isEmpty { dossiers.append([line]) }
+            else { dossiers[dossiers.count - 1].append(line) }
+        }
+        func trimmed(_ lines: [Substring]) -> String {
+            lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let head = dossiers.map(trimmed).filter { !$0.isEmpty }
+            .enumerated().map { Part(text: $0.element, rel: nil, rank: $0.offset) }
+        guard !blocks.isEmpty else {
+            return Outcome(text: marked(preamble), rels: nil, verdict: verdict, note: note, parts: head)
+        }
         let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
         if kept.isEmpty { return nil }
         var seen = Set<String>()
         let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
-        return Outcome(text: marked(preamble + kept.flatMap(\.lines)), rels: rels, verdict: verdict, note: note)
+        let parts = head + kept.enumerated().map {
+            Part(text: trimmed($0.element.lines), rel: graphRel($0.element.rel), rank: head.count + $0.offset)
+        }
+        return Outcome(text: marked(preamble + kept.flatMap(\.lines)), rels: rels, verdict: verdict,
+                       note: note, parts: parts)
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -593,7 +633,7 @@ enum ArchiveSearch {
         }
         shown = linkedContext(shown, documents: byPath.mapValues(\.text), needles: needles,
                               snippet: snippet, limit: limit, enabled: includeLinked)
-        let (body, keptHits) = packContextKept(shown, budget: budget)
+        let (body, keptHits, parts) = packContextKept(shown, budget: budget)
         // Гейт честности: оба сигнала слабые → пометка, синтез не сочиняет.
         // Порог 0.66, а не 0.67: «две иглы из трёх» — это 0.6667, и с прежним
         // числом правило требовало на самом деле три из трёх.
@@ -607,9 +647,9 @@ enum ArchiveSearch {
         }
         if bestSim < 0.47 && bestCov < 0.66 {
             return Outcome(text: lowConfidenceMarker + body, rels: rels,
-                           verdict: proven ? .weak : .unverified)
+                           verdict: proven ? .weak : .unverified, parts: parts)
         }
-        return Outcome(text: body, rels: rels, verdict: .confident)
+        return Outcome(text: body, rels: rels, verdict: .confident, parts: parts)
     }
 
     static func linkedContext(_ original: [Hit], documents: [String: String], needles: [String],
@@ -667,12 +707,18 @@ enum ArchiveSearch {
     /// подмешали» больше не восстанавливаются подстрокой из отрендеренного
     /// блока (круг-2: DS, Codex и GLM сошлись — contains ловил путь-префикс
     /// чужого заголовка и молча ломался о любое будущее форматирование).
-    static func packContextKept(_ hits: [Hit], budget: Int) -> (text: String, kept: [Hit]) {
+    /// `parts` — те же блоки кусками в порядке текста, с рангом до
+    /// перестановки: окно модели выбрасывает слабейший, а не последний (№743).
+    static func packContextKept(_ hits: [Hit], budget: Int) -> (text: String, kept: [Hit], parts: [Part]) {
+        func packed(_ kept: [(block: String, hit: Hit, rank: Int)]) -> (text: String, kept: [Hit], parts: [Part]) {
+            (kept.map(\.block).joined(separator: "\n\n"), kept.map(\.hit),
+             kept.map { Part(text: $0.block, rel: $0.hit.rel, rank: $0.rank) })
+        }
         guard budget > 0 else {
-            return (hits.map(\.block).joined(separator: "\n\n"), hits)
+            return packed(hits.enumerated().map { ($0.element.block, $0.element, $0.offset) })
         }
         let perSource = max(600, budget * 2 / 5)
-        var kept: [(String, Hit)] = []
+        var kept: [(block: String, hit: Hit, rank: Int)] = []
         var spent = 0
         for hit in hits {
             let room = min(perSource, budget - spent)
@@ -680,15 +726,12 @@ enum ArchiveSearch {
             let block = hit.block.count <= room
                 ? hit.block
                 : String(hit.block.prefix(room)) + "…"
-            kept.append((block, hit))
+            kept.append((block, hit, kept.count))
             spent += block.count + 2
         }
-        guard kept.count > 2 else {
-            return (kept.map(\.0).joined(separator: "\n\n"), kept.map(\.1))
-        }
+        guard kept.count > 2 else { return packed(kept) }
         // [1-й, 3-й, 4-й, …, 2-й]
-        let reordered = [kept[0]] + kept.dropFirst(2) + [kept[1]]
-        return (reordered.map(\.0).joined(separator: "\n\n"), reordered.map(\.1))
+        return packed([kept[0]] + kept.dropFirst(2) + [kept[1]])
     }
 
     // MARK: - Ранжирование

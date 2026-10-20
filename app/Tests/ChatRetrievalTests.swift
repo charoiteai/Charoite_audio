@@ -10,7 +10,7 @@ final class ChatRetrievalTests: XCTestCase {
     }
 
     func testПараметрыПоискаКакУЧата() {
-        XCTAssertEqual(ChatRetrieval.Params.chat, ChatRetrieval.Params(limit: 8, snippet: 800, budget: 5000))
+        XCTAssertEqual(ChatRetrieval.Params.chat, ChatRetrieval.Params(limit: 25, snippet: 1000, budget: 25_000))
     }
 
     func testЗапросИзТрёхПоследнихВопросов() {
@@ -220,10 +220,11 @@ final class ChatRetrievalTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/CharoiteApp/Services/LocalChatService.swift"), encoding: .utf8)
         for call in ["ChatRetrieval.baseSystem(", "ChatRetrieval.query(", "ChatRetrieval.Params.chat",
-                     "ChatRetrieval.contextBlock(", "ChatRetrieval.requestBody("] {
+                     "ChatRetrieval.contextBlock(", "ChatRetrieval.requestBody(",
+                     "ChatRetrieval.fit(", "ChatRetrieval.historyWindow("] {
             XCTAssertTrue(src.contains(call), "чат мимо \(call)")
         }
-        for copy in ["\"keep_alive\"", "[ГРАФ ВСТРЕЧ", "limit: 8", "Ты — Чароит"] {
+        for copy in ["\"keep_alive\"", "[ГРАФ ВСТРЕЧ", "limit: 8", "Ты — Чароит", "ChatContextWindow.select("] {
             XCTAssertFalse(src.contains(copy), "своя копия сборки в чате: \(copy)")
         }
     }

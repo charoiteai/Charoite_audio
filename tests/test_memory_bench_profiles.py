@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import types
 
@@ -149,7 +150,14 @@ def test_companion_over_the_chat_deadline_is_out_of_comparison(monkeypatch):
     out = mb.run_companion(DEMO, [{"q": "a", "must": ["Олег"]}, {"q": "b", "must": ["Олег"]}], demo=False)
     assert [q.comparable for q in out] == [True, False]
     assert [q.status for q in out] == ["ok", "weak"]
-    assert seen[0] == {"limit": 8, "snippet": 800, "timeout": 25}
+    assert seen[0] == {"limit": mb.COMPANION_LIMIT, "snippet": mb.COMPANION_SNIPPET, "timeout": 25}
+
+
+def test_companion_limits_follow_the_chat_params():
+    src = (ROOT / "app/Sources/CharoiteApp/Services/ChatRetrieval.swift").read_text(encoding="utf-8")
+    m = re.search(r"static let chat = Params\(limit: (\d+), snippet: (\d+),", src)
+    assert m, "ChatRetrieval.Params.chat не найден"
+    assert (mb.COMPANION_LIMIT, mb.COMPANION_SNIPPET) == (int(m[1]), int(m[2]))
 
 
 def test_percentile_is_nearest_rank():

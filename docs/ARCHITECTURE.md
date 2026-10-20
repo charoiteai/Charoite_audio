@@ -1912,8 +1912,10 @@ private graph or local model must not look like a successful product test.
 
 Without `CHAROITE_BENCH_ANSWERS` it measures only what search delivers;
 with it, the full path through synthesis. The turn is assembled by the same
-code as the chat (`ChatRetrieval`: the chat's query builder over the question, 8×800 with a
-5000-character budget, the chat prompt). Search runs on the local engine over
+code as the chat (`ChatRetrieval`: the chat's query builder over the question, 25×1000
+with a 25 000-character budget, the chat prompt, and the same fit to the model window —
+whole memory blocks dropped from the weakest until system, memory and question fit
+`num_ctx − num_predict`). Search runs on the local engine over
 the graph folder: a chat that goes through a running brain server (:8100) is
 not measured. `CHAROITE_BENCH_ARM=legacy` switches to the former search
 parameters (5×1200) for comparison. A question the model did not answer keeps
@@ -1988,8 +1990,9 @@ if it reached the block's fragments or nodes, never the header; a miss is
 named "cut by budget" when the search found it and the budget dropped it.
 `--stats` with a profile skips the model and is the nightly signal. `live`
 runs without graph nodes, so it is an upper bound for non-confident results.
-`--profile companion` measures the app chat's companion server (owner only,
-questions slower than the chat's 4 s deadline are out of comparison); the
+`--profile companion` measures the app chat's companion server with the chat's
+25×1000 (owner only, questions slower than the chat's 4 s deadline are out of
+comparison; what the server returns, before the chat fits it to the model window); the
 default `raw` keeps the old contour. `--no-dossiers` (daemon profiles only)
 runs the profile without the dossiers axis: topic summaries are not looked up
 at all — neither the "📁" section nor their evidence in the verdict; dossier
