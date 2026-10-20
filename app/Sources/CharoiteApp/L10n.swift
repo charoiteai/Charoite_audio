@@ -13,6 +13,12 @@ enum L {
     static var locale: Locale { Locale(identifier: lang) }
 
     static func t(_ ru: String, _ en: String, _ zh: String) -> String {
+        t(ru, en, zh, lang: lang)
+    }
+
+    /// Язык явным параметром — тестам: все три ветки проверяются в одном
+    /// процессе, а не только та, на которой он запущен.
+    static func t(_ ru: String, _ en: String, _ zh: String, lang: String) -> String {
         switch lang {
         case "en": return en
         case "zh": return zh

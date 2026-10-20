@@ -161,9 +161,17 @@ actor SemanticIndex {
     /// приветствие».
     func similar(to query: String, within paths: Set<String>,
                  limit: Int) async -> [(path: String, score: Double, snippet: String)] {
+        await similarChecked(to: query, within: paths, limit: limit) ?? []
+    }
+
+    /// Как `similar`, но nil — семантика не отработала (индекс пуст или
+    /// эмбеддер не ответил). Пустой массив — проверила, похожего нет:
+    /// поиску чата нужно различать «не нашла» и «не искала» (№634).
+    func similarChecked(to query: String, within paths: Set<String>,
+                        limit: Int) async -> [(path: String, score: Double, snippet: String)]? {
         loadIfNeeded()
         guard !index.isEmpty,
-              let qv = await embedTexts([query])?.first else { return [] }
+              let qv = await embedTexts([query])?.first else { return nil }
         let q = Self.unit(qv)
         var best: [(path: String, score: Double, snippet: String)] = []
         for (path, entry) in index where paths.contains(path) {

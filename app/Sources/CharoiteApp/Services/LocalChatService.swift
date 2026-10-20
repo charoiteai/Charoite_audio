@@ -188,6 +188,22 @@ final class LocalChatService: ObservableObject {
         }
     }
 
+    /// Строка статуса — из вердикта поиска, тем же решением, что и правило
+    /// честности в промпте: «пусто» не пишется там, где поиск был неполным
+    /// или графа нет (№634).
+    nonisolated static func memoryStatus(_ context: ChatRetrieval.Context) -> String {
+        switch context.verdict {
+        case .confident: return L.t("🧠 граф подмешан", "🧠 graph mixed in", "🧠 已加入图谱")
+        case .weak: return L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配")
+        case .unverified:
+            return context.text.isEmpty
+                ? L.t("граф: поиск неполный", "graph: search incomplete", "图谱：检索不完整")
+                : L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配")
+        case .empty: return L.t("в графе пусто по теме", "graph has nothing on the topic", "图谱中无相关内容")
+        case .unavailable: return L.t("граф недоступен", "graph unavailable", "图谱不可用")
+        }
+    }
+
     private func stream(_ prompt: String, into bubbleId: UUID) async {
         // Snapshot the configured endpoint before asynchronous retrieval.
         let inferenceBase = ollamaBase
@@ -212,7 +228,7 @@ final class LocalChatService: ObservableObject {
                 query: topic, limit: params.limit, snippet: params.snippet, budget: params.budget,
                 includeLinked: inferenceIsLocal)
             guard !Task.isCancelled else { return }
-            let context = ChatRetrieval.contextBlock(vault: outcome.text)
+            let context = ChatRetrieval.contextBlock(outcome)
             let vault = context.text
             let lowConf = context.weak
             // Чипы под ответом — точный список хитов поиска (Outcome.rels);
@@ -220,7 +236,7 @@ final class LocalChatService: ObservableObject {
             // (круг-1: DS/Codex/GLM). Brain-ветка структуры не отдаёт —
             // честный запасной разбор текста. Слабые совпадения чипами не
             // выдаём — их нельзя показывать как опору ответа.
-            weakMatches = lowConf
+            weakMatches = lowConf && !vault.isEmpty
             let found = outcome.rels.map { rels in
                 rels.map { MemoryScreenPolicy.Source(rel: $0, kind: MemoryScreenPolicy.kind(of: $0)) }
             } ?? MemoryScreenPolicy.sources(from: vault)
@@ -230,7 +246,9 @@ final class LocalChatService: ObservableObject {
             sourcesInContext = lowConf ? 0 : found.count
             chipSources = lowConf ? [] : found
             system += context.block
-            status = vault.isEmpty ? L.t("в графе пусто по теме", "graph has nothing on the topic", "图谱中无相关内容") : (lowConf ? L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配") : L.t("🧠 граф подмешан", "🧠 graph mixed in", "🧠 已加入图谱"))
+            status = Self.memoryStatus(context)
+        } else {
+            system += ChatRetrieval.memoryOffBlock()
         }
         guard !Task.isCancelled else { return }
         var msgs: [[String: String]] = [["role": "system", "content": system]]

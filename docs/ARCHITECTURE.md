@@ -1921,14 +1921,34 @@ its facts in the total with zero hits, and the run fails with its own message
 rather than as a quality drop. The report lands in
 `$TMPDIR/charoite_bench_<arm>.txt` (the per-user temporary folder, not the
 shared `/tmp`) with the missing facts named, and what search delivered — in
-`$TMPDIR/charoite_bench_<arm>_found.txt`; both are readable by the owner only
-(0600), and a report that could not be written fails the run.
+`$TMPDIR/charoite_bench_<arm>_found.txt`; a run with synthesis writes the same
+files with an `_answers` suffix and does not overwrite the retrieval report.
+Both are readable by the owner only (0600), and a report that could not be
+written fails the run.
+
+Each question in the report carries the search verdict (`confident`, `weak`,
+`unverified`, `empty`, `unavailable`). With synthesis the bench counts
+`FALSE_REFUSAL` — the answer opens with a refusal while a fact was in what
+search delivered — per verdict, and `ВОЗДЕРЖАНИЕ` (abstention) — questions with
+no answer in the graph where the answer was rightly a refusal (names as in
+`scripts/retrieval_compare.py`). The "found / weak / empty" decision is made by
+search (`ArchiveSearch.Outcome.verdict`), and the honesty rule in the prompt is
+picked from it by one table (`ChatRetrieval.honesty`): "that is not in memory"
+is said only where search proved it. An unconditional rule in the base prompt
+produced a refusal over a found fact in 17 answers out of 55 (#634).
 
 The question set stays outside the repository — it is about real meetings.
 Format is deliberately trivial:
 
     - q: "What did we decide about the payment provider?"
       must: ["YuPay", "2.8%"]
+    - q: "When is the office move?"   # no answer in the graph
+      must: []
+      abstain: true
+
+A question with `cat: other_graph` (the answer lives in another graph of the
+owner) counts the same as `abstain`. An empty `must` without `abstain` is an
+error in the set.
 
 **Generation temperature is pinned to zero.** This is not a detail. With the
 default temperature the same code scored 11, then 13, then 11 again out of 14 —

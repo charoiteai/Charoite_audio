@@ -26,25 +26,108 @@ final class ChatRetrievalTests: XCTestCase {
         XCTAssertTrue(q.hasSuffix("КОНЕЦ"))
     }
 
+    private func outcome(_ text: String, _ verdict: ArchiveSearch.Verdict? = nil,
+                         note: String = "") -> ArchiveSearch.Outcome {
+        ArchiveSearch.Outcome(text: text, rels: nil, verdict: verdict, note: note)
+    }
+
     func testБлокГрафаСильный() {
-        let c = ChatRetrieval.contextBlock(vault: "- Встречи/a.md\nтекст")
+        let c = ChatRetrieval.contextBlock(outcome("- Встречи/a.md\nтекст", .confident), lang: "ru")
+        XCTAssertEqual(c.verdict, .confident)
         XCTAssertFalse(c.weak)
         XCTAssertEqual(c.text, "- Встречи/a.md\nтекст")
-        XCTAssertEqual(c.block, "\n\n[ГРАФ ВСТРЕЧ — люди, системы, решения, документация]\n- Встречи/a.md\nтекст")
+        XCTAssertTrue(c.block.hasPrefix("\n\n[ГРАФ ВСТРЕЧ — люди, системы, решения, документация]\nПоиск нашёл совпадения"))
+        XCTAssertTrue(c.block.hasSuffix("\n- Встречи/a.md\nтекст"))
     }
 
     func testБлокГрафаСлабыйСнимаетМаркер() {
-        let c = ChatRetrieval.contextBlock(vault: ArchiveSearch.lowConfidenceMarker + "- Встречи/a.md")
+        let c = ChatRetrieval.contextBlock(outcome(ArchiveSearch.lowConfidenceMarker + "- Встречи/a.md", .weak), lang: "ru")
         XCTAssertTrue(c.weak)
         XCTAssertEqual(c.text, "- Встречи/a.md")
-        XCTAssertEqual(c.block, "\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n- Встречи/a.md")
+        XCTAssertTrue(c.block.hasPrefix("\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n"))
+        XCTAssertFalse(c.block.contains(ArchiveSearch.lowConfidenceMarker))
     }
 
-    func testПустаяВыдачаНеДаётБлока() {
-        XCTAssertEqual(ChatRetrieval.contextBlock(vault: "").block, "")
-        let weakEmpty = ChatRetrieval.contextBlock(vault: ArchiveSearch.lowConfidenceMarker)
-        XCTAssertTrue(weakEmpty.weak)
-        XCTAssertEqual(weakEmpty.block, "")
+    /// Пустая выдача — тоже решение поиска: блок с правилом есть всегда,
+    /// иначе модель решала бы сама по основе промпта.
+    func testПустаяВыдачаДаётБлокСПравилом() {
+        let empty = ChatRetrieval.contextBlock(outcome("", .empty, note: "Ничего не найдено (искали без: архив)"), lang: "ru")
+        XCTAssertEqual(empty.verdict, .empty)
+        XCTAssertTrue(empty.block.contains("в памяти этого нет"))
+        XCTAssertTrue(empty.block.contains("(Ничего не найдено (искали без: архив))"), "оговорка поиска потеряна")
+        // вопросы о разговоре не получают отказа
+        XCTAssertTrue(empty.block.contains("по разговору"))
+        let unverified = ChatRetrieval.contextBlock(outcome("", .unverified), lang: "ru")
+        XCTAssertTrue(unverified.weak)
+        XCTAssertTrue(unverified.block.contains("семантикой не проверено"))
+        // «найдено» без текста не бывает
+        XCTAssertEqual(ChatRetrieval.contextBlock(outcome("", .confident)).verdict, .empty)
+    }
+
+    /// Формула отсутствия — только в правилах вердиктов, где поиск её
+    /// доказал (слабо, пусто), и нигде больше: ни в основе промпта, ни в
+    /// правилах «нашлось», «не проверено», «недоступен» она не велит отвечать
+    /// отказом. Цикл по всем вердиктам и языкам — новое значение без строки
+    /// в таблице тест не пропустит (№634).
+    func testФормулаОтсутствияТолькоУДоказанногоПусто() {
+        let formula = ["ru": "«в памяти этого нет»", "en": "\"that is not in memory\"", "zh": "「记忆中没有这条」"]
+        for (lang, f) in formula {
+            for v in ArchiveSearch.Verdict.allCases {
+                for hasText in [true, false] {
+                    let (head, rule) = ChatRetrieval.honesty(v, hasText: hasText, lang: lang)
+                    XCTAssertFalse(head.isEmpty, "\(v) \(lang): пустая шапка")
+                    XCTAssertFalse(rule.isEmpty, "\(v) \(lang): пустое правило")
+                    let tells = rule.hasPrefix(L.t("Поиск проверил", "The search checked", "检索已查过", lang: lang))
+                        || rule.hasPrefix(L.t("О фактах встреч и людях скажи", "For facts about meetings and people, say", "关于会议和人物的事实，说", lang: lang))
+                    XCTAssertEqual(tells, v == .weak || v == .empty, "\(v) \(lang): отказ велит не тот вердикт")
+                    XCTAssertEqual(rule.contains(f), v != .unverified, "\(v) \(lang): формула в правиле")
+                }
+            }
+            XCTAssertFalse(ChatRetrieval.memoryOffBlock(lang: lang).contains(f), "\(lang): выключенная память")
+        }
+        for local in [true, false] {
+            let base = ChatRetrieval.baseSystem(inferenceIsLocal: local)
+            for f in formula.values { XCTAssertFalse(base.contains(f), "формула отсутствия в основе промпта") }
+        }
+    }
+
+    /// Ответ brain-сервера разбирается в одном месте; срез по первому
+    /// «\n\n» терял строку причины и пустое «не проверено» клал в блок.
+    func testРазборОтветаBrainСервера() throws {
+        let weak = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainBody(
+            "⚠ Похоже, почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n"
+            + "Найдено в vault (1 из 9):\n\n• Граф/Ядра/А.md\n  …текст…"), folder: "Граф"))
+        XCTAssertEqual(weak.verdict, .weak)
+        XCTAssertEqual(weak.note, "Похоже, почти ничего нет (слабые совпадения). Ниже ближайшее найденное:")
+        XCTAssertEqual(weak.text, ArchiveSearch.lowConfidenceMarker + "• Граф/Ядра/А.md\n  …текст…")
+        XCTAssertEqual(weak.rels, ["Ядра/А.md"])
+
+        // досье над «⚠» и шапкой: строка «⚠» уходит в вердикт, досье — в выдачу
+        let dossierFirst = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainBody(
+            "📋 ДОСЬЕ «Тема» (Граф, источников 2)\nсводка\n\n— — — ниже отдельные фрагменты графа — — —\n\n"
+            + "⚠ Похоже, слабые совпадения:\nНайдено в vault (1 из 9):\n\n• Граф/Б.md\n  …б…"), folder: "Граф"))
+        XCTAssertEqual(dossierFirst.verdict, .weak)
+        XCTAssertEqual(dossierFirst.note, "Похоже, слабые совпадения:")
+        XCTAssertTrue(dossierFirst.text.contains("сводка") && dossierFirst.text.contains("…б…"),
+                      "досье до шапки — тоже выдача")
+        XCTAssertFalse(dossierFirst.text.contains("Найдено в vault") || dossierFirst.text.contains("— — —"))
+
+        let unverified = try XCTUnwrap(ArchiveSearch.brainOutcome(
+            "⚠ Найдено по словам, семантикой не проверено (кэш)\n• Граф/В.md\n  …в…", folder: "Граф"))
+        XCTAssertEqual(unverified.verdict, .unverified)
+
+        // «⚠» без выдачи — пусто не доказано: решает локальный поиск
+        XCTAssertNil(ArchiveSearch.brainOutcome(
+            "⚠ По словам ничего не нашлось по «x» в графе, семантикой не проверено (кэш) — не считать доказанным отсутствием", folder: "Граф"))
+    }
+
+    func testСтатусИзВердикта() {
+        guard L.lang == "ru" else { return }
+        let ctx = { (t: String, v: ArchiveSearch.Verdict) in ChatRetrieval.contextBlock(self.outcome(t, v)) }
+        XCTAssertEqual(LocalChatService.memoryStatus(ctx("", .empty)), "в графе пусто по теме")
+        XCTAssertEqual(LocalChatService.memoryStatus(ctx("", .unverified)), "граф: поиск неполный")
+        XCTAssertEqual(LocalChatService.memoryStatus(ctx("", .unavailable)), "граф недоступен")
+        XCTAssertEqual(LocalChatService.memoryStatus(ctx("т", .confident)), "🧠 граф подмешан")
     }
 
     func testТелоЗапросаПоПолям() throws {

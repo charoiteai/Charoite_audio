@@ -330,3 +330,40 @@ final class HiddenFlagTests: XCTestCase {
                        "служебная папка плагина попала в выдачу")
     }
 }
+
+/// Вердикт локального поиска (№634): «пусто» — только когда семантика
+/// проверила граф. Индекс пуст или эмбеддер молчит — «не проверено», и чат
+/// не скажет «в памяти этого нет» про то, чего не искал.
+final class LocalVerdictTests: XCTestCase {
+    func testVerdictSeparatesEmptyFromUnverified() async throws {
+        let index = SemanticIndex()
+        let graph = try makeTestGraph([("Ядра/Погода.md", "дожди весь месяц")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+
+        // Эмбеддер молчит: семантика не отработала.
+        await index.useForTests(store: tempIndexStore()) { _ in nil }
+        let silent = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                            snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(silent.text, "")
+        XCTAssertEqual(silent.verdict, .unverified)
+
+        // Эмбеддер отвечает, похожего нет: пусто проверено.
+        await index.useForTests(store: tempIndexStore(), embedder: { texts in
+            texts.map { $0.contains("бюджет") ? [1, 0] : [0, 1] }
+        })
+        await index.refresh(files: [(path: "Ядра/Погода.md", mtime: 1, text: "дожди весь месяц")])
+        let checked = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                             snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(checked.text, "")
+        XCTAssertEqual(checked.verdict, .empty)
+
+        let missing = await ArchiveSearch.localSearchOutcome(
+            query: "бюджет", root: graph.appendingPathComponent("нет-такой-папки"), semanticIndex: index)
+        XCTAssertEqual(missing.verdict, .unavailable)
+
+        let found = await ArchiveSearch.localSearchOutcome(query: "дожди месяц", limit: 3,
+                                                           snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertFalse(found.text.isEmpty)
+        XCTAssertEqual(found.verdict, .confident)
+    }
+}
