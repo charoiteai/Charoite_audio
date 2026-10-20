@@ -1921,14 +1921,53 @@ its facts in the total with zero hits, and the run fails with its own message
 rather than as a quality drop. The report lands in
 `$TMPDIR/charoite_bench_<arm>.txt` (the per-user temporary folder, not the
 shared `/tmp`) with the missing facts named, and what search delivered — in
-`$TMPDIR/charoite_bench_<arm>_found.txt`; both are readable by the owner only
-(0600), and a report that could not be written fails the run.
+`$TMPDIR/charoite_bench_<arm>_found.txt`; a run with synthesis writes the same
+files with an `_answers` suffix and does not overwrite the retrieval report.
+Both are readable by the owner only (0600), and a report that could not be
+written fails the run.
+
+Each question in the report carries the search verdict (`confident`, `weak`,
+`unverified`, `empty`, `unavailable`). With synthesis the bench counts
+`FALSE_REFUSAL` — the answer opens with a refusal and holds none of the facts
+that were in what search delivered — per verdict, and `ВОЗДЕРЖАНИЕ` (abstention) — questions with
+no answer in the graph where the answer was rightly a refusal (names as in
+`scripts/retrieval_compare.py`). The "found / weak / empty" decision is made by
+search (`ArchiveSearch.Outcome.verdict`), and the honesty rule in the prompt is
+picked from it by one table (`ChatRetrieval.honesty`): "that is not in memory"
+is said only where search proved it. An unconditional rule in the base prompt
+produced a refusal over a found fact in 17 answers out of 55 (#634).
 
 The question set stays outside the repository — it is about real meetings.
 Format is deliberately trivial:
 
     - q: "What did we decide about the payment provider?"
       must: ["YuPay", "2.8%"]
+    - q: "When is the office move?"   # no answer in the graph
+      must: []
+      abstain: true
+
+A question with `cat: other_graph` (the answer lives in another graph of the
+owner) counts the same as `abstain`. An empty `must` without `abstain` is an
+error in the set. Top-level lines `max_false_refusal: N` and `min_abstain: 0.5`
+turn the two counts into thresholds that fail a run with synthesis (without the
+model the report says they were not applied); a malformed threshold and an
+`abstain` other than `true`/`false` are errors in the set. A refusal is the
+absence formula in the first content line of the answer
+(`ChatRetrieval.isAbsence`; a heading and a short "Answer:" label are skipped
+unless they are a refusal themselves); for a question without an answer the
+first two lines count. The count does not yet tell a refusal the verdict's rule
+allows (`weak`, or "no exact answer was found" under `unverified`) from one it
+forbids; under `unverified` the number is an upper bound — it includes "no exact
+answer was found", which the rule asks for, and only the answer text in the report
+tells them apart.
+
+Search calls an empty or weak result proven only when semantics compared the
+query with at least 80% of the graph files that have text (notes that failed to
+open count in the denominator) (`SEM_SHARE_MIN` of
+the python search). Vectors of another embedding model, an index that is not
+fully built, a query of stop words only and notes that could not be opened give
+`unverified`: "that is not in memory" is then forbidden. Source chips disappear
+only under the weak-match marker.
 
 **Generation temperature is pinned to zero.** This is not a detail. With the
 default temperature the same code scored 11, then 13, then 11 again out of 14 —

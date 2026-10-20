@@ -44,10 +44,10 @@ enum ProbeTurn {
 
     /// Ответ модели или nil — модель не ответила (бенч считает такой вопрос
     /// с нулём фактов и падает своим сообщением).
-    static func answer(question: String, vault: String) async -> String? {
+    static func answer(question: String, outcome: ArchiveSearch.Outcome) async -> String? {
         let local = inferenceIsLocal
         let system = ChatRetrieval.baseSystem(inferenceIsLocal: local)
-            + ChatRetrieval.contextBlock(vault: vault).block
+            + ChatRetrieval.contextBlock(outcome).block
         guard let url = URL(string: AppSettings.ollamaURL + "/api/chat") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

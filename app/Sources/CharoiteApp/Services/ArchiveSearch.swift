@@ -123,6 +123,18 @@ enum ArchiveSearch {
     /// плашку, синтез отвечает «в архиве нет», а не сочиняет.
     static let lowConfidenceMarker = "⚠"
 
+    /// Доля графа, которую семантика должна сравнить, чтобы «пусто» и «слабо»
+    /// стали доказанными, — `SEM_SHARE_MIN` python-поиска.
+    static let semShareMin = 0.8
+
+    /// Охват доказан: семантика сравнила запрос хотя бы с `semShareMin`
+    /// файлов графа. Неоткрывшиеся заметки — в знаменателе: их текст не видел
+    /// ни один сигнал (out2, C1 трёх голов: прочитанная половина графа
+    /// «доказывала» пусто про всю).
+    static func covered(compared: Int, withText: Int, unread: Int) -> Bool {
+        Double(compared) >= semShareMin * Double(max(1, withText + unread))
+    }
+
     /// Топ-`limit` файлов графа со сниппетами ~`snippet` знаков.
     /// Сначала пробуем brain (:8100, гибрид с семантикой), иначе — локально.
     /// CHAROITE_GRAPH_DIR (демо/тесты) — строго файловый поиск: brain этой
@@ -144,6 +156,33 @@ enum ArchiveSearch {
     struct Outcome {
         let text: String
         let rels: [String]?
+        /// Решение поиска «нашлось / слабо / не проверено / пусто» — полем, а
+        /// не префиксом «⚠» в тексте (№634): каждый потребитель разбирал
+        /// строку сам, а промпт чата перерешивал за поиск. Маркер в `text`
+        /// остаётся для строкового API (`search`) и человека.
+        var verdict: Verdict
+        /// Оговорка поиска словами сервера: что не читали, почему слабо.
+        var note: String = ""
+
+        /// Вердикт обязателен: вывод из текста по умолчанию делал любой новый
+        /// ранний `return` доказанным «пусто» (out1, Sonnet C1).
+        init(text: String, rels: [String]?, verdict: Verdict, note: String = "") {
+            self.text = text
+            self.rels = rels
+            self.verdict = verdict
+            self.note = note
+        }
+    }
+
+    /// Значения — как у python `graph_search.Verdict`, плюс `unavailable`:
+    /// искать было негде (папки графа нет), и «в памяти этого нет» было бы
+    /// ложью о памяти, а не о поиске.
+    enum Verdict: String, CaseIterable {
+        case confident      // нашлось, и сигналы сильные
+        case weak           // семантика проверила: слабы оба сигнала
+        case unverified     // семантика не отработала — по словам, не проверено
+        case empty          // ничего, и это проверено
+        case unavailable    // графа нет — искать было негде
     }
 
     /// `includeLinked: false` — без соседа по `[[ссылке]]`: он попадает в
@@ -166,18 +205,28 @@ enum ArchiveSearch {
         }
     }
 
-    /// Выбор движка: ответ brain, если после разбора в нём остались источники,
-    /// иначе — локальный поиск (сервер не поднят или отдал одни указатели).
+    /// Выбор движка: ответ brain, если разбор его принял (источники или
+    /// пустой ответ «Ничего не найдено» — `empty`, как до №634); nil разбора —
+    /// локальный поиск (сервер не поднят, отдал одни указатели или «⚠» без выдачи).
+    /// Вердикт идёт с обоих путей полем `Outcome.verdict` (№634).
     static func choose(brain: String?, folder: String,
                        local: () async -> Outcome) async -> Outcome {
         if let brain, let out = brainOutcome(brain, folder: folder) { return out }
         return await local()
     }
 
-    /// Ответ brain-сервера → текст модели и источники из ОДНОГО списка блоков.
-    /// Brain отдаёт блоки «• путь\n  …фрагмент…»: rels берём ТОЛЬКО из строк-
-    /// заголовков — упоминание пути в теле сниппета источником не становится и
-    /// на brain-пути (круг-2, GLM). Ни одного заголовка — текст как есть и
+    /// Ответ brain-сервера (после среза `brainSearch`) → `Outcome` с вердиктом.
+    /// Пустой ответ («Ничего не найдено») — `empty`, как в базе: локальный
+    /// поиск не зовётся (индекс сервера без архива встреч — долг №637).
+    /// Строка «⚠ …» первой —
+    /// решение сервера: «не провер…» в ней — `unverified`, иначе `weak`; сама
+    /// строка уходит в `note`, причину видит модель (№634: прежний срез её
+    /// терял). После неё пусто — nil: отсутствие не доказано, решает локальный
+    /// поиск по своему индексу.
+    ///
+    /// Блоки «• путь\n  …фрагмент…»: rels берём ТОЛЬКО из строк-заголовков —
+    /// упоминание пути в теле сниппета источником не становится и на
+    /// brain-пути (круг-2, GLM). Ни одного заголовка — текст как есть и
     /// rels=nil, честный фолбэк. Блок указателя папки выбрасывается целиком,
     /// и из текста, и из rels (№750, out1: :8100 отдаёт «_ЯДРА», «_КОМАНДЫ»,
     /// «Служебное_*»; фильтр одних чипов оставлял их модели). Пути сервера
@@ -188,17 +237,31 @@ enum ArchiveSearch {
     /// над блоками (out4) и узлы по тем же словам локальный поиск найдёт сам.
     /// Заголовок — «• » в КОЛОНКЕ 0, как разбирает свой ответ сам сервер:
     /// тело блока он пишет одной свёрнутой строкой с отступом, и «• путь.md»
-    /// внутри фрагмента заголовком не становится (out2). Маркер «⚠» brainSearch
-    /// клеит к первому заголовку — снимается до разбора и возвращается.
+    /// внутри фрагмента заголовком не становится (out2).
     static func brainOutcome(_ text: String, folder: String) -> Outcome? {
-        let weak = text.hasPrefix(lowConfidenceMarker)
-        let body = weak ? String(text.dropFirst(lowConfidenceMarker.count)) : text
+        guard !text.isEmpty else { return Outcome(text: "", rels: [], verdict: .empty) }
+        var body = Substring(text)
+        var note = ""
+        var verdict = Verdict.confident
+        if body.hasPrefix(lowConfidenceMarker) {
+            let line = body.prefix(while: { $0 != "\n" })
+            note = line.dropFirst(lowConfidenceMarker.count).trimmingCharacters(in: .whitespaces)
+            body = body.dropFirst(line.count).drop(while: \.isNewline)
+            verdict = note.lowercased().contains("не провер") ? .unverified : .weak
+        }
+        // «⚠ По словам ничего не нашлось…» — пусто, но не доказано: решает локальный
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         func header(_ line: Substring) -> String? {
             guard line.hasPrefix("• ") else { return nil }
             let s = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
             return s.hasSuffix(".md") ? s : nil
         }
         func graphRel(_ path: String) -> String { GraphFolders.graphRelative(path, folder: folder) }
+        // маркер в тексте — для строкового API (`search`), решение — в verdict
+        func marked(_ lines: [Substring]) -> String {
+            let joined = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return verdict == .confident ? joined : lowConfidenceMarker + joined
+        }
         var preamble: [Substring] = []
         var blocks: [(rel: String, lines: [Substring])] = []
         for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -210,13 +273,12 @@ enum ArchiveSearch {
                 blocks[blocks.count - 1].lines.append(line)
             }
         }
-        guard !blocks.isEmpty else { return Outcome(text: text, rels: nil) }
+        guard !blocks.isEmpty else { return Outcome(text: marked(preamble), rels: nil, verdict: verdict, note: note) }
         let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
         if kept.isEmpty { return nil }
-        let lines = preamble + kept.flatMap(\.lines)
         var seen = Set<String>()
         let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
-        return Outcome(text: (weak ? lowConfidenceMarker : "") + lines.joined(separator: "\n"), rels: rels)
+        return Outcome(text: marked(preamble + kept.flatMap(\.lines)), rels: rels, verdict: verdict, note: note)
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -238,15 +300,21 @@ enum ArchiveSearch {
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = obj["text"] as? String, !text.isEmpty else { return nil }
-        if text.hasPrefix("Ничего не найдено") { return "" }
         // граф вне vault brain-сервера (демо, другой диск) — честный фолбэк
         // на локальный поиск, а не сообщение об ошибке в качестве «сырья»
         if text.hasPrefix("Папка не найдена") || text.hasPrefix("Недопустимый путь") { return nil }
-        // тело без строки-шапки «Найдено в vault (N из M):», маркер «⚠» сохраняем
+        return brainSlice(text)
+    }
+
+    /// Ответ :8100 → вход `brainOutcome`: «Ничего не найдено» — пусто, иначе
+    /// тело без строки-шапки «Найдено в vault (N из M):». Строка «⚠ …» —
+    /// первой строкой: из неё brainOutcome берёт вердикт и оговорку (№634).
+    static func brainSlice(_ text: String) -> String {
+        if text.hasPrefix("Ничего не найдено") { return "" }
         let lowConf = text.hasPrefix(lowConfidenceMarker)
         if let range = text.range(of: "\n\n") {
             let body = String(text[range.upperBound...])
-            return lowConf ? lowConfidenceMarker + body : body
+            return lowConf ? String(text.prefix { $0 != "\n" }) + "\n" + body : body
         }
         return text
     }
@@ -277,7 +345,7 @@ enum ArchiveSearch {
                                    semanticIndex: SemanticIndex = .shared) async -> Outcome {
         guard var graph = root ?? AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path)
-        else { return Outcome(text: "", rels: []) }
+        else { return Outcome(text: "", rels: [], verdict: .unavailable) }
         // канонизация: /var/… и /private/var/… — один каталог через симлинк;
         // enumerator отдаёт канонический путь, и строковый срез graph.path
         // иначе оставляет мусорный префикс в rel — ключи индекса расходятся
@@ -289,7 +357,8 @@ enum ArchiveSearch {
             // бесполезно (в тексте такой фразы нет), а в покрытии запроса
             // весит наравне с настоящими словами и портит скоринг.
             .filter { $0.count >= 3 && !stop.contains(norm($0)) && cjkGrams($0).isEmpty }
-        guard !words.isEmpty || !grams.isEmpty else { return Outcome(text: "", rels: []) }
+        // запрос из одних стоп-слов («кто я») — поиска не было, это не «пусто»
+        guard !words.isEmpty || !grams.isEmpty else { return Outcome(text: "", rels: [], verdict: .unverified) }
         var needles: [String] = []
         for w in words.map(stem) where !needles.contains(w) { needles.append(w) }
         for g in grams where !needles.contains(g) { needles.append(g) }
@@ -321,7 +390,7 @@ enum ArchiveSearch {
         // это надёжнее флага, который ставит не пользователь.
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys)
-        else { return Outcome(text: "", rels: []) }
+        else { return Outcome(text: "", rels: [], verdict: .unavailable) }
         // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
         // «Документация/Стенограммы встреч», побайтовая копия — в
         // «Встречи-архив/<дата — название>», чтобы папку можно было открыть
@@ -347,6 +416,7 @@ enum ArchiveSearch {
             }
         var seenContent = Set<Int>()
         var liveKeys = Set<String>()
+        var unread = 0
         for url in urls {
             let canon = url.resolvingSymlinksInPath().path
             let inside = canon.hasPrefix(graph.path + "/")
@@ -371,7 +441,7 @@ enum ArchiveSearch {
             // реплик перечитывал весь граф десять раз.
             guard let cached = await GraphCache.shared.text(at: url, key: rel,
                                                            mtime: mtime, normalize: norm)
-            else { continue }
+            else { unread += 1; continue }
             // Хеш содержимого, а не пути: копия отличается именем и папкой.
             guard seenContent.insert(cached.text.hashValue).inserted else { continue }
             let relBytes = Array(norm(rel).utf8)
@@ -381,7 +451,9 @@ enum ArchiveSearch {
         }
         // Переименованные и удалённые файлы не должны занимать память вечно.
         await GraphCache.shared.retain(keys: liveKeys)
-        guard !all.isEmpty else { return Outcome(text: "", rels: []) }
+        // папка без заметок — пусто; заметки есть, но не открылись (iCloud
+        // выгрузил, нет прав) — не читали, значит не проверено
+        guard !all.isEmpty else { return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty) }
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
         }
@@ -438,8 +510,19 @@ enum ArchiveSearch {
         let byPath = Dictionary(all.map { ($0.rel, (text: $0.text, dateTs: $0.dateTs)) },
                                 uniquingKeysWith: { first, _ in first })
         let allPaths = Set(all.map(\.rel))
-        let sem = await semanticIndex.similar(to: query, within: allPaths,
-                                                     limit: max(limit * 4, 20))
+        // nil — семантика не отработала (индекс пуст, эмбеддер молчит). Пустая
+        // и слабая выдача доказывают отсутствие, только если семантика
+        // сравнила с запросом достаточную долю графа — правило python
+        // `graph_search.verdict` (SEM_SHARE_MIN 0.8; знаменатель — файлы с
+        // текстом и неоткрывшиеся): векторы другой модели, недособранный
+        // индекс и непрочитанные заметки дают «не проверено» (№634).
+        let checked = await semanticIndex.similarChecked(to: query, within: allPaths,
+                                                         limit: max(limit * 4, 20))
+        // по документам, не по rel: симлинки наружу с одним именем делят rel,
+        // а индекс под ним держит текст одного (out4, DS C1)
+        let withText = all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        let proven = checked.map { covered(compared: $0.compared, withText: withText, unread: unread) } ?? false
+        let sem = checked?.hits ?? []
         let bestSim = sem.first?.score ?? 0
         var semHits: [Hit] = []
         for (rel, sim, chunkSnippet) in sem {
@@ -519,10 +602,14 @@ enum ArchiveSearch {
         // источником не является, а подстрочный поиск по телу ловил
         // путь-префикс чужого заголовка (круг-2, Codex).
         let rels = keptHits.map(\.rel)
-        if bestSim < 0.47 && bestCov < 0.66 && !body.isEmpty {
-            return Outcome(text: lowConfidenceMarker + body, rels: rels)
+        if body.isEmpty {
+            return Outcome(text: "", rels: rels, verdict: proven ? .empty : .unverified)
         }
-        return Outcome(text: body, rels: rels)
+        if bestSim < 0.47 && bestCov < 0.66 {
+            return Outcome(text: lowConfidenceMarker + body, rels: rels,
+                           verdict: proven ? .weak : .unverified)
+        }
+        return Outcome(text: body, rels: rels, verdict: .confident)
     }
 
     static func linkedContext(_ original: [Hit], documents: [String: String], needles: [String],
