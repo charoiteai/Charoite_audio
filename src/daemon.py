@@ -530,45 +530,56 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
                          detached="уборка копий импорта живёт, пока идёт встреча")
 
 
-def _settle_dead_recordings(rec_dir: pathlib.Path, stamp: str) -> bool:
-    """Записи встречи прежнего демона перед восстановлением; True — том без flock.
+def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
+    """Встреча на томе без flock: каждый канал, который ещё надо конвертировать
+    (`.pcm` непуст, `.wav` нет), отвечает NO_FLOCK на пробу с ретраями.
+    Пересборка такой канал не тронет (`rebuild` на NO_FLOCK — None), и встреча
+    была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть: разовый
+    NO_FLOCK (`_try_lock` даёт его на любой OSError, ENOLCK сетевого тома) не
+    снимает восстановление и защиту ретеншна (opusfix2 Haiku C1). Сбой stat или
+    открытия не голосует (opusfix1 DS I3). Ничего не удаляет: `.pcm` — маркер
+    сироты, пока её пересборка не запущена (opusfix2 Sonnet I1)."""
+    seen = []
+    for label in meeting_stamp.RECORDING_LABELS:
+        pcm = meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")
+        try:
+            if pcm.stat().st_size == 0:
+                continue
+            if meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
+                continue
+            with pcm.open("rb") as f:
+                seen.append(file_locks.acquire_outcome(f))
+        except OSError:
+            continue
+    return bool(seen) and all(o == file_locks.NO_FLOCK for o in seen)
 
-    Писатель этой встречи мёртв: `.pcm` пишет только `AudioHub` демона, а лок
-    демона у нас. Поэтому без заявки снимаем то, где звука нет или он уже
-    опубликован: пустой `.pcm` (убит до первого блока) и `.pcm` рядом с готовым
+
+def _drop_dead_leftovers(rec_dir: pathlib.Path, stamp: str) -> None:
+    """Перед пересборкой сироты — снять `.pcm`, в котором звука нет или он уже
+    опубликован: пустой (писатель убит до первого блока) и рядом с готовым
     `.wav` (убит между `replace` и `unlink`; `.wav` публикуется только
     переименованием — он полный). Иначе встреча — сирота на каждом старте и
-    ретеншн её придерживает (финальный Opus I1а, I1в). Пересборке это нельзя:
-    она работает и рядом с живым писателем, а писатель без заявки (NO_FLOCK на
-    старте) по свободной заявке неотличим от убитого (opusfix1 DS C1).
-
-    True — канал, который ещё надо конвертировать, лежит на томе без flock:
-    пересборка его не тронет (`rebuild` на любом NO_FLOCK — None). Сбой открытия
-    — «не знаем», вето на вердикт тома не даёт (opusfix1 DS I3)."""
-    no_flock = False
+    ретеншн её придерживает (финальный Opus I1а, I1в). Пересборке пустой `.pcm`
+    снимать нельзя: она работает и рядом с живым писателем без заявки (opusfix1
+    DS C1). Здесь писатель мёртв — лок демона у нас; заявку всё равно
+    спрашиваем: при общем `recordings_dir` двух корней BUSY — чужой живой
+    писатель (opusfix2 DS I1). NO_FLOCK — опора только на лок демона."""
     for label in meeting_stamp.RECORDING_LABELS:
         pcm = meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")
         try:
             empty = pcm.stat().st_size == 0
-        except OSError:
-            continue                      # нет файла или не дали — решает пересборка
-        if empty or meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
-            why = "пуст" if empty else ".wav готов"
-            try:
-                pcm.unlink()
-                print(f"{pcm.name}: {why} — остаток прежнего демона убран", file=sys.stderr, flush=True)
-            except FileNotFoundError:
-                pass
-            except OSError as e:
-                print(f"{pcm.name}: {why}, остаток не снят — {type(e).__name__}", file=sys.stderr, flush=True)
-            continue
-        try:
+            if not empty and not meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
+                continue                  # звук для пересборки
             with pcm.open("rb") as f:
-                if file_locks.acquire_outcome(f, attempts=1) == file_locks.NO_FLOCK:
-                    no_flock = True
-        except OSError:
+                if file_locks.acquire_outcome(f, attempts=1) == file_locks.BUSY:
+                    continue
+                pcm.unlink()
+            why = "пуст" if empty else ".wav готов"
+            print(f"{pcm.name}: {why} — остаток прежнего демона убран", file=sys.stderr, flush=True)
+        except FileNotFoundError:
             continue
-    return no_flock
+        except OSError as e:
+            print(f"{pcm.name}: остаток не снят — {type(e).__name__}", file=sys.stderr, flush=True)
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -616,7 +627,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         live = tdir / f"{stamp}.md"
         if not live.exists():
             continue                      # без стенограммы пересобирать нечего
-        if _settle_dead_recordings(rec_dir, stamp):
+        if _volume_without_flock(rec_dir, stamp):
             # Том без flock: пересборка такую запись не тронет (писателя не
             # видно), и встреча была бы сиротой навсегда — пересборка на каждом
             # старте, звук придержан сверх record_keep_days. Не защищаем: запись
@@ -646,17 +657,18 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
                 pass                      # не смогли убрать — пересборка дождётся таймаута
         pending.append(live)
     if pending:
-        _start_orphan_chain(pending)
+        _start_orphan_chain(pending, rec_dir)
     return recovering
 
 
-def _start_orphan_chain(lives: list[pathlib.Path]) -> None:
+def _start_orphan_chain(lives: list[pathlib.Path], rec_dir: pathlib.Path | None = None) -> None:
     """Фоновый поток цепочки: старт демона не ждёт часовых пересборок."""
-    threads.spawn(_rebuild_orphans_sequentially, args=(lives,), name="orphan-rebuild-chain",
+    threads.spawn(_rebuild_orphans_sequentially, args=(lives, rec_dir), name="orphan-rebuild-chain",
                   role="process", detached="старт демона не ждёт часовых пересборок сирот")
 
 
-def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
+def _rebuild_orphans_sequentially(lives: list[pathlib.Path],
+                                  rec_dir: pathlib.Path | None = None) -> None:
     """Пересборка сирот по одной: следующая стартует после завершения текущей.
 
     Одна пересборка держит модель и память, остальные ждут своей очереди —
@@ -666,7 +678,9 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
     очередь «незавершённых» и запустил бы дубль (гвард running_elsewhere
     его отсёк бы, но и провоцировать гонку незачем). Демон умер посреди
     цепочки — не страшно: .pcm и стенограммы живы, protect-набор уже
-    отработал на этот запуск, следующий старт найдёт хвост заново.
+    отработал на этот запуск, следующий старт найдёт хвост заново. Поэтому
+    остатки `.pcm` снимаются здесь, после статуса, а не на старте: до статуса
+    `.pcm` — единственный маркер сироты (opusfix2 Sonnet I1).
     """
     statuses = MeetingStatusStore(_root())
     for live in lives:
@@ -675,7 +689,10 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
         try:
             statuses.processing(live, "recovering")
         except Exception:  # noqa: BLE001 — статус вспомогателен; запись всё равно восстанавливаем
-            pass
+            pass                          # маркера, кроме .pcm, нет — остатки не трогаем
+        else:
+            if rec_dir is not None:
+                _drop_dead_leftovers(rec_dir, live.stem)
         try:
             # start_new_session: пересборка переживает смерть демона (как и
             # раньше); run вместо Popen — это и есть очередь. Журнал — как у

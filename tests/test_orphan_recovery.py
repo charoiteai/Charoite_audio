@@ -68,7 +68,7 @@ def test_ретеншн_не_съедает_запись_которую_сейч
     import audio
     import daemon
 
-    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: None)
     pcm = _orphan(data_root, "2026-08-07_181500", age_days=3)
 
     protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
@@ -157,7 +157,7 @@ def test_восстановление_запускает_существующи�
 
     chains: list[list[pathlib.Path]] = []
     monkeypatch.setattr(daemon, "_start_orphan_chain",
-                        lambda lives: chains.append(list(lives)))
+                        lambda lives, rec_dir=None: chains.append(list(lives)))
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
 
     daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
@@ -261,7 +261,7 @@ def test_преемник_убирает_осиротевший_part_прежн�
     """
     import daemon
 
-    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: None)
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
     stale = data_root / "recordings" / "2026-08-07_181500_blackhole.wav.part"
     stale.write_bytes(b"")            # огрызок финализации убитого демона
@@ -415,7 +415,7 @@ def test_an_orphan_on_a_volume_without_flock_is_not_held_forever(data_root, monk
     import file_locks
 
     started, said = [], []
-    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: started.append(lives))
     monkeypatch.setattr(daemon, "emit", said.append)
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
     _orphan(data_root, "2026-08-07_181500", age_days=3)
@@ -426,15 +426,20 @@ def test_an_orphan_on_a_volume_without_flock_is_not_held_forever(data_root, monk
     assert any("без flock" in m.get("text", "") for m in said), said
 
 
-def test_an_orphan_with_a_lockable_pcm_is_still_recovered(data_root, monkeypatch):
-    """Проба тома не мешает обычной сироте: заявка взялась — восстанавливаем."""
+@pytest.mark.parametrize("outcomes", [["taken", "taken"], ["no_flock", "taken"], ["no_flock", "busy"]])
+def test_an_orphan_with_a_lockable_pcm_is_still_recovered(data_root, monkeypatch, outcomes):
+    """Один TAKEN или BUSY — flock на томе есть: разовый NO_FLOCK другого канала
+    (ENOLCK — любой OSError у `_try_lock`) не снимает восстановление и защиту
+    ретеншна (opusfix2 Haiku C1)."""
     import daemon
     import file_locks
 
     started = []
-    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
-    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.TAKEN)
-    pcm = _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: started.append(lives))
+    table = {"taken": file_locks.TAKEN, "no_flock": file_locks.NO_FLOCK, "busy": file_locks.BUSY}
+    got = iter([table[o] for o in outcomes])
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: next(got))
+    pcm = _orphan(data_root, "2026-08-07_181500", age_days=3)
     (data_root / "recordings" / "2026-08-07_181500_blackhole.pcm").write_bytes(b"\0" * 4096)
 
     protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
@@ -450,7 +455,7 @@ def test_an_unreadable_channel_does_not_veto_a_volume_without_flock(data_root, m
     import file_locks
 
     started = []
-    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: started.append(lives))
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
     bh = data_root / "recordings" / "2026-08-07_181500_blackhole.pcm"
@@ -470,16 +475,24 @@ def test_an_unreadable_channel_does_not_veto_a_volume_without_flock(data_root, m
     assert started == []
 
 
-def test_dead_recordings_without_sound_left_are_settled_without_a_claim(data_root, monkeypatch):
+def _no_run(monkeypatch):
+    import daemon
+
+    runs = []
+    monkeypatch.setattr(daemon.subprocess, "run", lambda cmd, **kw: runs.append(cmd))
+    return runs
+
+
+def test_dead_recordings_without_sound_left_are_settled_before_their_rebuild(data_root, monkeypatch):
     """Пустой `.pcm` убитого до первого блока и `.pcm` рядом с готовым `.wav`
-    снимает старт демона — и на томе без flock: писатель этой встречи мёртв, лок
-    демона у нас. Иначе встреча — сирота на каждом старте (финальный Opus I1а, I1в;
-    opusfix1 DS I2: остаток с `.wav` не значит «вручную»)."""
+    снимает цепочка перед пересборкой встречи — и на томе без flock: писатель
+    мёртв, лок демона у нас. Иначе встреча — сирота на каждом старте (финальный
+    Opus I1а, I1в; opusfix1 DS I2: остаток с `.wav` не значит «вручную»)."""
     import daemon
     import file_locks
 
-    started = []
-    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    chains = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: chains.append((lives, rec_dir)))
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
     rec = data_root / "recordings"
     mic = _orphan(data_root, "2026-08-07_181500", age_days=0.1)
@@ -489,26 +502,105 @@ def test_dead_recordings_without_sound_left_are_settled_without_a_claim(data_roo
 
     protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
 
-    assert protect == {"2026-08-07_181500"} and len(started) == 1, "финала могло не быть — пересобрать"
+    assert protect == {"2026-08-07_181500"} and len(chains) == 1, "финала могло не быть — пересобрать"
+    assert mic.exists() and bh.exists(), "до запуска пересборки .pcm — маркер сироты"
+    runs = _no_run(monkeypatch)
+    daemon._rebuild_orphans_sequentially(*chains[0])
+    assert len(runs) == 1
     assert not mic.exists() and not bh.exists()
     assert (rec / "2026-08-07_181500_mic.wav").read_bytes() == b"writer"
-    started.clear()
+    chains.clear()
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
-    assert started == [], "на следующем старте встреча уже не сирота"
+    assert chains == [], "на следующем старте встреча уже не сирота"
+
+
+def test_an_orphan_the_chain_did_not_reach_is_found_again(data_root, monkeypatch):
+    """Демон вышел, цепочка до встречи не дошла: её остаток `.pcm` цел, и
+    следующий старт находит её снова (opusfix2 Sonnet I1)."""
+    import daemon
+
+    chains = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: chains.append(lives))
+    rec = data_root / "recordings"
+    for stamp in ("2026-08-07_181500", "2026-08-08_101500"):
+        _orphan(data_root, stamp, age_days=0.1)
+        (rec / f"{stamp}_mic.wav").write_bytes(b"writer")
+
+    first = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+    again = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+
+    assert first == again == {"2026-08-07_181500", "2026-08-08_101500"}
+
+
+def test_a_leftover_under_a_live_claim_is_left_to_its_writer(data_root, monkeypatch):
+    """Общий `recordings_dir` двух корней: пустой `.pcm` под заявкой — живой
+    писатель чужого демона, цепочка его не снимает (opusfix2 DS I1)."""
+    import daemon
+    import file_locks
+
+    rec = data_root / "recordings"
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("черновик", encoding="utf-8")
+    pcm = rec / "2026-08-07_181500_mic.pcm"
+    pcm.write_bytes(b"")
+    _no_run(monkeypatch)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.BUSY)
+
+    daemon._rebuild_orphans_sequentially([live], rec)
+
+    assert pcm.exists()
+
+
+def test_the_chain_keeps_the_sound_it_is_about_to_rebuild(data_root, monkeypatch):
+    """Непустой `.pcm` без `.wav` — звук пересборки: цепочка его не снимает и
+    при свободной заявке."""
+    import daemon
+    import file_locks
+
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("черновик", encoding="utf-8")
+    pcm = data_root / "recordings" / "2026-08-07_181500_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    _no_run(monkeypatch)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.TAKEN)
+
+    daemon._rebuild_orphans_sequentially([live], data_root / "recordings")
+
+    assert pcm.read_bytes() == b"\0" * 4096
+
+
+def test_without_the_recovering_status_the_leftovers_stay(data_root, monkeypatch):
+    """Статус «recovering» не записался — `.pcm` остаётся маркером сироты."""
+    import daemon
+
+    rec = data_root / "recordings"
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("черновик", encoding="utf-8")
+    pcm = rec / "2026-08-07_181500_mic.pcm"
+    pcm.write_bytes(b"")
+    runs = _no_run(monkeypatch)
+
+    def boom(self, *a, **kw):
+        raise OSError("диск")
+
+    monkeypatch.setattr(daemon.MeetingStatusStore, "processing", boom)
+    daemon._rebuild_orphans_sequentially([live], rec)
+
+    assert pcm.exists() and len(runs) == 1, "пересборка идёт, маркер цел"
 
 
 def test_the_current_meetings_empty_pcm_is_not_settled(data_root, monkeypatch):
     """Своя встреча только началась: её пустой `.pcm` — живой писатель."""
     import daemon
 
-    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    chains = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives, rec_dir=None: chains.append(lives))
     pcm = data_root / "recordings" / "2026-08-10_090000_mic.pcm"
     pcm.write_bytes(b"")
     (data_root / "transcripts" / "2026-08-10_090000.md").write_text("идёт", encoding="utf-8")
 
-    daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
-
-    assert pcm.exists()
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
+    assert pcm.exists() and chains == []
 
 
 def test_a_stamp_without_recordings_is_not_a_volume_without_flock(data_root, monkeypatch):
@@ -518,4 +610,4 @@ def test_a_stamp_without_recordings_is_not_a_volume_without_flock(data_root, mon
 
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
 
-    assert daemon._settle_dead_recordings(data_root / "recordings", "2026-08-07_181500") is False
+    assert daemon._volume_without_flock(data_root / "recordings", "2026-08-07_181500") is False
