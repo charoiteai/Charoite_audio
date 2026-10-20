@@ -157,14 +157,21 @@ enum ArchiveSearch {
             !(ProcessInfo.processInfo.environment[name] ?? "")
                 .trimmingCharacters(in: .whitespaces).isEmpty
         }
-        if !graphOverridden,
-           let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet),
-           let out = brainOutcome(viaBrain, folder: AppSettings.graphDir?.lastPathComponent ?? "") {
-            return out
+        let viaBrain = graphOverridden
+            ? nil : await brainSearch(query: query, limit: limit, snippet: snippet)
+        return await choose(brain: viaBrain, folder: AppSettings.graphDir?.lastPathComponent ?? "") {
+            await localSearchOutcome(query: query, limit: limit,
+                                     snippet: snippet, budget: budget,
+                                     includeLinked: includeLinked)
         }
-        return await localSearchOutcome(query: query, limit: limit,
-                                        snippet: snippet, budget: budget,
-                                        includeLinked: includeLinked)
+    }
+
+    /// Выбор движка: ответ brain, если после разбора в нём остались источники,
+    /// иначе — локальный поиск (сервер не поднят или отдал одни указатели).
+    static func choose(brain: String?, folder: String,
+                       local: () async -> Outcome) async -> Outcome {
+        if let brain, let out = brainOutcome(brain, folder: folder) { return out }
+        return await local()
     }
 
     /// Ответ brain-сервера → текст модели и источники из ОДНОГО списка блоков.

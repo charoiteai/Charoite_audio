@@ -83,6 +83,31 @@ final class ServiceFilesTests: XCTestCase {
                        "указатель папки ушёл модели: \(out.text.prefix(200))")
     }
 
+    /// Brain отдал одни указатели — чат идёт в локальный поиск и получает узел;
+    /// с узлом в ответе brain локальный поиск не зовётся (out5, DS I2).
+    func testIndexOnlyBrainAnswerFallsThroughToLocalSearch() async throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-svc-index-\(UUID().uuidString).json")
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let graph = try makeGraph([
+            "Ядра/_ЯДРА.md": "- [[Ядра/Платёжный шлюз]] — провайдер выбран",
+            "Ядра/Платёжный шлюз.md": "# Платёжный шлюз\nПровайдер выбран после теста.",
+        ])
+        let local = { await ArchiveSearch.localSearchOutcome(
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph) }
+        let fell = await ArchiveSearch.choose(brain: "• g/Ядра/_ЯДРА.md\n  …провайдер…",
+                                              folder: "g", local: local)
+        XCTAssertEqual(fell.rels, ["Ядра/Платёжный шлюз.md"])
+        XCTAssertTrue(fell.text.contains("Провайдер выбран"))
+        var called = false
+        let kept = await ArchiveSearch.choose(brain: "• g/Люди/М.md\n  …факт…", folder: "g") {
+            called = true
+            return await local()
+        }
+        XCTAssertEqual(kept.rels, ["Люди/М.md"])
+        XCTAssertFalse(called)
+    }
+
     /// :8100 отдаёт блоки указателей и пути от корня vault (опыт out1:
     /// «ИИ-граф/_MOC.md», «Ядра/_ЯДРА.md», «Служебное_*») — блок указателя
     /// уходит и из текста модели, и из чипов; карта под префиксом папки — карта.
