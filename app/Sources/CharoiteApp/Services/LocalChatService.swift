@@ -145,6 +145,12 @@ final class LocalChatService: ObservableObject {
                          "问题过长：\(prompt.count) 个字符，上限 \(ChatContextWindow.maxPrompt)。请缩短。")
             return false
         }
+        guard ChatRetrieval.estimatedTokens(prompt) <= ChatContextWindow.maxPromptTokens else {
+            status = L.t("Вопрос не помещается в окно модели. Сократите его.",
+                         "The question does not fit the model window. Please shorten it.",
+                         "问题超出模型窗口。请缩短。")
+            return false
+        }
         messages.append(Message(role: "user", text: prompt))
         let assistant = Message(role: "assistant", text: "")
         messages.append(assistant)
@@ -209,14 +215,22 @@ final class LocalChatService: ObservableObject {
         var sourcesInContext = 0
         var weakMatches = false
         var searchIncomplete = false
+        // Окно истории — до памяти: не хвост в N сообщений, а доля окна модели
+        // после системного промпта и вопроса; память режется под историю, а не
+        // наоборот, и не выталкивает вопрос (№743, out1)
+        let currentUserIndex = messages.firstIndex(where: { $0.id == bubbleId })
+            .map { max(0, $0 - 1) } ?? messages.count
+        let history = Self.contextHistory(messages.prefix(currentUserIndex))
+        let window = ChatRetrieval.historyWindow(history, prompt: prompt, system: system)
         if memoryOn {
             let topic = ChatRetrieval.query(from: messages)
             // Сосед по [[ссылке]] без слов запроса — только модели на этом Mac
             // (№695, постфактум-2 по #776).
             let params = ChatRetrieval.Params.chat
-            let outcome = await ArchiveSearch.searchStructured(
+            // Выдача — под окно хода: куски целиком, чипы по оставшимся (№743)
+            let outcome = ChatRetrieval.fit(await ArchiveSearch.searchStructured(
                 query: topic, limit: params.limit, snippet: params.snippet, budget: params.budget,
-                includeLinked: inferenceIsLocal)
+                includeLinked: inferenceIsLocal), system: system, turn: window)
             guard !Task.isCancelled else { return }
             let context = ChatRetrieval.contextBlock(outcome)
             let vault = context.text
@@ -230,8 +244,8 @@ final class LocalChatService: ObservableObject {
             searchIncomplete = context.searchIncomplete
             let found = outcome.rels.map { rels in
                 rels.map { MemoryScreenPolicy.Source(rel: $0, kind: MemoryScreenPolicy.kind(of: $0)) }
-            } ?? MemoryScreenPolicy.sources(from: vault)
-            // Чипы и счёт — ОДИН список: потолок задаёт лимит поиска (8),
+            } ?? MemoryScreenPolicy.sources(from: vault, limit: params.limit)
+            // Чипы и счёт — ОДИН список: потолок задаёт лимит поиска,
             // отдельный потолок чипов давал мете «7 источников» при шести
             // видимых (круг-2, DS).
             sourcesInContext = lowConf ? 0 : found.count
@@ -243,12 +257,6 @@ final class LocalChatService: ObservableObject {
         }
         guard !Task.isCancelled else { return }
         var msgs: [[String: String]] = [["role": "system", "content": system]]
-        // Окно истории: не хвост в N сообщений, а бюджет в знаках — длинные
-        // ответы не выталкивают начало разговора мгновенно
-        let currentUserIndex = messages.firstIndex(where: { $0.id == bubbleId })
-            .map { max(0, $0 - 1) } ?? messages.count
-        let history = Self.contextHistory(messages.prefix(currentUserIndex))
-        let window = ChatContextWindow.select(history: history, prompt: prompt)
         msgs.append(contentsOf: window.map { ["role": $0.role, "content": $0.text] })
 
         // Встреча держит большую модель в очереди Ollama (запросы к одной модели
