@@ -360,9 +360,8 @@ enum ArchiveSearch {
             // остаётся картой (out7, Haiku C1).
             // Папка ссылки — канонически: обход отдаёт «/private/var/…», корень
             // после resolvingSymlinksInPath — «/var/…».
-            let linkInRoot = url.deletingLastPathComponent().resolvingSymlinksInPath().path == graph.path
-            let isMap = inside ? GraphFolders.isMapFile(rel) : linkInRoot && GraphFolders.isMapFile(rel)
-            if GraphFolders.isServiceFile(rel) && !isMap { continue }
+            if GraphFolders.isServiceFile(rel) && !(GraphFolders.isMapFile(rel)
+                && (inside || url.deletingLastPathComponent().resolvingSymlinksInPath().path == graph.path)) { continue }
             let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             let mtime = rv?.contentModificationDate?.timeIntervalSince1970 ?? 0
             liveKeys.insert(rel)

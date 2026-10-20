@@ -196,6 +196,25 @@ final class ServiceFilesTests: XCTestCase {
         let out = await ArchiveSearch.localSearchOutcome(
             query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
         XCTAssertEqual(try XCTUnwrap(out.rels), ["_MOC.md"])
+        // Не в корне — не карта: «Встречи/_MOC.md» наружу отсекается. Свой
+        // граф без корневой карты: у файла вне графа rel — голое имя, обе
+        // ссылки делили бы один слот выдачи (долг №637).
+        let nested = try makeGraph(["Люди/М.md": "# М\nНичего по теме."])
+        try FileManager.default.createDirectory(
+            at: nested.appendingPathComponent("Встречи"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: nested.appendingPathComponent("Встречи/_MOC.md").path,
+            withDestinationPath: outside.appendingPathComponent("_MOC.md").path)
+        let none = await ArchiveSearch.localSearchOutcome(
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: nested)
+        XCTAssertEqual(none.rels, [])
+        // Корень графа сам симлинк — та же выдача.
+        let alias = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graph-alias-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: graph.path)
+        let viaAlias = await ArchiveSearch.localSearchOutcome(
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: alias)
+        XCTAssertEqual(try XCTUnwrap(viaAlias.rels), ["_MOC.md"])
     }
 
     /// Папка графа в пути сервера сравнивается в форме схемы: имя с диска
