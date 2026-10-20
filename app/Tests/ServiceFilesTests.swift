@@ -146,10 +146,10 @@ final class ServiceFilesTests: XCTestCase {
 
     /// Слабая выдача сервера: строка «⚠ …» снимается в оговорку, первый блок
     /// проходит тот же фильтр, маркер остаётся в начале текста (out2 C1;
-    /// с №634 brainSearch отдаёт ответ сервера целиком, без склейки).
+    /// с №634 срез оставляет строку «⚠ …» первой, а не клеит маркер к блоку).
     func testWeakServerAnswerKeepsMarkerAfterFilter() throws {
         let m = ArchiveSearch.lowConfidenceMarker
-        let out = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainBody(
+        let out = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
             m + " Похоже, почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n"
             + "Найдено в vault (2 из 9):\n\n• g/Ядра/_ЯДРА.md\n  …сводка…\n\n• g/Люди/М.md\n  …факт…"), folder: "g"))
         XCTAssertEqual(out.rels, ["Люди/М.md"])

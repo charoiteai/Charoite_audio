@@ -102,7 +102,7 @@ final class ChatRetrievalTests: XCTestCase {
     /// Ответ brain-сервера разбирается в одном месте; срез по первому
     /// «\n\n» терял строку причины и пустое «не проверено» клал в блок.
     func testРазборОтветаBrainСервера() throws {
-        let weak = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainBody(
+        let weak = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
             "⚠ Похоже, почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n"
             + "Найдено в vault (1 из 9):\n\n• Граф/Ядра/А.md\n  …текст…"), folder: "Граф"))
         XCTAssertEqual(weak.verdict, .weak)
@@ -110,23 +110,25 @@ final class ChatRetrievalTests: XCTestCase {
         XCTAssertEqual(weak.text, ArchiveSearch.lowConfidenceMarker + "• Граф/Ядра/А.md\n  …текст…")
         XCTAssertEqual(weak.rels, ["Ядра/А.md"])
 
-        // досье над «⚠» и шапкой: строка «⚠» уходит в вердикт, досье — в выдачу
-        let dossierFirst = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainBody(
-            "📋 ДОСЬЕ «Тема» (Граф, источников 2)\nсводка\n\n— — — ниже отдельные фрагменты графа — — —\n\n"
-            + "⚠ Похоже, слабые совпадения:\nНайдено в vault (1 из 9):\n\n• Граф/Б.md\n  …б…"), folder: "Граф"))
-        XCTAssertEqual(dossierFirst.verdict, .weak)
-        XCTAssertEqual(dossierFirst.note, "Похоже, слабые совпадения:")
-        XCTAssertTrue(dossierFirst.text.contains("сводка") && dossierFirst.text.contains("…б…"),
-                      "досье до шапки — тоже выдача")
-        XCTAssertFalse(dossierFirst.text.contains("Найдено в vault") || dossierFirst.text.contains("— — —"))
+        let confident = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+            "Найдено в vault (1 из 9):\n\n• Граф/Б.md\n  …б…"), folder: "Граф"))
+        XCTAssertEqual(confident.verdict, .confident)
+        XCTAssertEqual(confident.text, "• Граф/Б.md\n  …б…")
 
-        let unverified = try XCTUnwrap(ArchiveSearch.brainOutcome(
-            "⚠ Найдено по словам, семантикой не проверено (кэш)\n• Граф/В.md\n  …в…", folder: "Граф"))
+        let unverified = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+            "⚠ Найдено по словам, семантикой не проверено (кэш)\nНайдено в vault (1 из 9):\n\n• Граф/В.md\n  …в…"),
+            folder: "Граф"))
         XCTAssertEqual(unverified.verdict, .unverified)
+        XCTAssertEqual(unverified.rels, ["В.md"])
 
         // «⚠» без выдачи — пусто не доказано: решает локальный поиск
-        XCTAssertNil(ArchiveSearch.brainOutcome(
-            "⚠ По словам ничего не нашлось по «x» в графе, семантикой не проверено (кэш) — не считать доказанным отсутствием", folder: "Граф"))
+        XCTAssertNil(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+            "⚠ По словам ничего не нашлось по «x» в графе, семантикой не проверено (кэш) — не считать доказанным отсутствием"),
+            folder: "Граф"))
+
+        let empty = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+            "Ничего не найдено по «x» в графе (искали без: архив)"), folder: "Граф"))
+        XCTAssertEqual(empty.verdict, .empty)
     }
 
     func testСтатусИзВердикта() throws {
