@@ -35,7 +35,7 @@ final class AnswerQualityProbe: XCTestCase {
                 report += "(источников нет — модель не спрашиваю)\n"
                 continue
             }
-            let answer = await ProbeTurn.answer(question: q, vault: outcome.text)
+            let answer = await ProbeTurn.answer(question: q, outcome: outcome)
             if answer == nil { unanswered += 1 }
             report += "ОТВЕТ МОДЕЛИ:\n\(answer ?? "(модель не ответила)")\n"
         }

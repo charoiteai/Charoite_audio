@@ -132,8 +132,9 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertTrue(out.text.contains("…обзор…") && out.text.contains("…см. Досье/_ИНДЕКС.md…"))
         // одни указатели — nil: поиск уходит в локальный, а не отвечает
         // «в графе пусто» и не теряет сводку досье над блоками (out4)
+        // строка «⚠ …» первой (так её оставляет brainSearch) — вердикт, не заголовок
         XCTAssertNil(ArchiveSearch.brainOutcome(ArchiveSearch.lowConfidenceMarker
-                                                + "• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g"))
+                                                + " Похоже, почти ничего нет.\n• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g"))
         XCTAssertNil(ArchiveSearch.brainOutcome("📋 ДОСЬЕ «Тема» (g, источников 3)\nсводка\n\n"
                                                 + "Найдено в vault (1 из 1):\n\n• g/Ядра/_ЯДРА.md\n  …", folder: "g"))
         let none = ArchiveSearch.brainOutcome("текст без заголовков, Ядра/Тема.md", folder: "g")
@@ -143,15 +144,19 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertNil(ArchiveSearch.brainOutcome("• g/Встречи/_MOC.md\n  …", folder: "g"))
     }
 
-    /// Маркер слабой выдачи brainSearch клеит к первому заголовку («⚠• путь»):
-    /// первый блок проходит тот же фильтр, маркер остаётся в начале (out2 C1).
-    func testWeakMarkerGluedToTheFirstHeader() throws {
+    /// Слабая выдача сервера: строка «⚠ …» снимается в оговорку, первый блок
+    /// проходит тот же фильтр, маркер остаётся в начале текста (out2 C1;
+    /// с №634 срез оставляет строку «⚠ …» первой, а не клеит маркер к блоку).
+    func testWeakServerAnswerKeepsMarkerAfterFilter() throws {
         let m = ArchiveSearch.lowConfidenceMarker
-        let out = try XCTUnwrap(ArchiveSearch.brainOutcome(
-            m + "• g/Ядра/_ЯДРА.md\n  …сводка…\n\n• g/Люди/М.md\n  …факт…", folder: "g"))
+        let out = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+            m + " Похоже, почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n"
+            + "Найдено в vault (2 из 9):\n\n• g/Ядра/_ЯДРА.md\n  …сводка…\n\n• g/Люди/М.md\n  …факт…"), folder: "g"))
         XCTAssertEqual(out.rels, ["Люди/М.md"])
+        XCTAssertEqual(out.verdict, .weak)
         XCTAssertTrue(out.text.hasPrefix(m))
-        XCTAssertFalse(out.text.contains("сводка"))
+        XCTAssertFalse(out.text.contains("сводка") || out.text.contains("Найдено в vault"))
+        XCTAssertTrue(out.note.contains("слабые совпадения"))
         XCTAssertTrue(out.text.contains("…факт…"))
     }
 

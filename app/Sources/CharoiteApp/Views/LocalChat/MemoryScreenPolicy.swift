@@ -169,7 +169,7 @@ enum MemoryScreenPolicy {
     /// подвале (круг-1, DS Critical + GLM).
     static func metaLine(model: String, seconds: Int, meetingsInContext: Int,
                          sourcesInContext: Int = 0,
-                         memoryOn: Bool, weakMatches: Bool,
+                         memoryOn: Bool, weakMatches: Bool, searchIncomplete: Bool = false,
                          inferenceIsLocal: Bool) -> String {
         let location = inferenceIsLocal
             ? L.t("локально", "local", "本地")
@@ -180,14 +180,20 @@ enum MemoryScreenPolicy {
             parts.append(L.t("память выключена", "memory off", "记忆已关闭"))
         } else if weakMatches {
             parts.append(L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配"))
-        } else if meetingsInContext > 0 {
-            parts.append(LibraryScreenPolicy.meetings(meetingsInContext) +
-                         L.t(" в контексте", " in context", " 在上下文中"))
-        } else if sourcesInContext > 0 {
-            parts.append(sourcesLabel(sourcesInContext) +
-                         L.t(" в контексте", " in context", " 在上下文中"))
         } else {
-            parts.append(L.t("граф не в контексте", "graph not in context", "图谱不在上下文中"))
+            if meetingsInContext > 0 {
+                parts.append(LibraryScreenPolicy.meetings(meetingsInContext) +
+                             L.t(" в контексте", " in context", " 在上下文中"))
+            } else if sourcesInContext > 0 {
+                parts.append(sourcesLabel(sourcesInContext) +
+                             L.t(" в контексте", " in context", " 在上下文中"))
+            } else if !searchIncomplete {
+                parts.append(L.t("граф не в контексте", "graph not in context", "图谱不在上下文中"))
+            }
+            // рядом со счётом, не вместо: число в подвале равно чипам (out5, DS I1)
+            if searchIncomplete {
+                parts.append(L.t("граф: поиск неполный", "graph: search incomplete", "图谱：检索不完整"))
+            }
         }
         return parts.joined(separator: " · ")
     }

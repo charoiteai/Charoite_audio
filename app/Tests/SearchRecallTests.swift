@@ -330,3 +330,176 @@ final class HiddenFlagTests: XCTestCase {
                        "служебная папка плагина попала в выдачу")
     }
 }
+
+/// Вердикт локального поиска (№634): «пусто» — только когда семантика
+/// проверила граф. Индекс пуст или эмбеддер молчит — «не проверено», и чат
+/// не скажет «в памяти этого нет» про то, чего не искал.
+final class LocalVerdictTests: XCTestCase {
+    func testVerdictSeparatesEmptyFromUnverified() async throws {
+        let index = SemanticIndex()
+        let graph = try makeTestGraph([("Ядра/Погода.md", "дожди весь месяц")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+
+        // Эмбеддер молчит: семантика не отработала.
+        await index.useForTests(store: tempIndexStore()) { _ in nil }
+        let silent = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                            snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(silent.text, "")
+        XCTAssertEqual(silent.verdict, .unverified)
+        // сильная лексика без семантики — `confident`, как в базе (долг №637)
+        let wordsOnly = await ArchiveSearch.localSearchOutcome(query: "дожди месяц", limit: 3,
+                                                               snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertFalse(wordsOnly.text.isEmpty)
+        XCTAssertFalse(wordsOnly.text.hasPrefix(ArchiveSearch.lowConfidenceMarker))
+        XCTAssertEqual(wordsOnly.verdict, .confident)
+
+        // Эмбеддер отвечает, похожего нет: пусто проверено.
+        await index.useForTests(store: tempIndexStore(), embedder: { texts in
+            texts.map { $0.contains("бюджет") ? [1, 0] : [0, 1] }
+        })
+        await index.refresh(files: [(path: "Ядра/Погода.md", mtime: 1, text: "дожди весь месяц")])
+        let checked = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                             snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(checked.text, "")
+        XCTAssertEqual(checked.verdict, .empty)
+
+        let missing = await ArchiveSearch.localSearchOutcome(
+            query: "бюджет", root: graph.appendingPathComponent("нет-такой-папки"), semanticIndex: index)
+        XCTAssertEqual(missing.verdict, .unavailable)
+
+        let found = await ArchiveSearch.localSearchOutcome(query: "дожди месяц", limit: 3,
+                                                           snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertFalse(found.text.isEmpty)
+        XCTAssertEqual(found.verdict, .confident)
+    }
+
+    /// Индекс полон, а эмбеддер лёг к запросу — тоже «не проверено»: прежний
+    /// тест ловил nil пустого индекса и до молчания эмбеддера не доходил
+    /// (out1, Haiku M1).
+    func testSilentEmbedderOverFilledIndexIsUnverified() async throws {
+        let index = SemanticIndex()
+        let graph = try makeTestGraph([("Ядра/Погода.md", "дожди весь месяц")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+        let store = tempIndexStore()
+        await index.useForTests(store: store, embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [(path: "Ядра/Погода.md", mtime: 1, text: "дожди весь месяц")])
+        await index.useForTests(store: store, loadStore: true) { _ in nil }
+        let kept = await index.count()
+        XCTAssertEqual(kept, 1, "индекс должен остаться полным")
+        let out = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                         snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(out.text, "")
+        XCTAssertEqual(out.verdict, .unverified)
+    }
+
+    /// Поиск, который не прошёл граф, «пусто» не доказывает (out1, Sonnet C1,
+    /// DS I1): запрос без игл, непрочитанные файлы, векторы другой модели,
+    /// индекс, собранный не весь.
+    func testSearchThatDidNotCoverTheGraphIsUnverified() async throws {
+        // свой индекс на каждый случай: поиск ставит фоновый refresh, и
+        // поздний refresh прошлого случая дособрал бы индекс следующего (№534)
+        var index = SemanticIndex()
+        let graph = try makeTestGraph([("Ядра/Погода.md", "дожди весь месяц"),
+                                       ("Встречи/2026-01-01.md", "обсудили отпуск")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+        let files: [(path: String, mtime: Double, text: String)] = [
+            ("Ядра/Погода.md", 1, "дожди весь месяц"), ("Встречи/2026-01-01.md", 1, "обсудили отпуск")]
+
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: files)
+        let noNeedles = await ArchiveSearch.localSearchOutcome(query: "кто я", limit: 3,
+                                                               snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(noNeedles.verdict, .unverified, "запрос без игл — поиска не было")
+
+        // векторы индекса другой размерности: ни один блок не сравнился
+        index = SemanticIndex()
+        let store = tempIndexStore()
+        await index.useForTests(store: store, embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: files)
+        await index.useForTests(store: store, loadStore: true, embedder: { $0.map { $0.contains("бюджет") ? [1, 0, 0] : [0, 1, 0] } })
+        let otherModel = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                                snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(otherModel.verdict, .unverified, "векторы другой модели — семантика не проверила")
+
+        // в индексе один файл из двух: проверена половина графа
+        index = SemanticIndex()
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [files[0]])
+        let partial = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                             snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(partial.verdict, .unverified, "индекс собран не весь")
+
+        // файлы есть, но ни один не прочитался; свой граф — кэш текстов
+        // помнит прочитанное выше
+        let shut = try makeTestGraph([("Ядра/Закрыто.md", "дожди весь месяц"),
+                                      ("Встречи/2026-01-02.md", "обсудили отпуск")])
+        defer { try? FileManager.default.removeItem(at: shut) }
+        let locked = shut.appendingPathComponent("Ядра/Закрыто.md")
+        let other = shut.appendingPathComponent("Встречи/2026-01-02.md")
+        index = SemanticIndex()
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: other.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: locked.path)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: other.path)
+        }
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [("Ядра/Закрыто.md", 1, "дожди весь месяц"),
+                                    ("Встречи/2026-01-02.md", 1, "обсудили отпуск")])
+        let unread = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                            snippet: 200, root: shut, semanticIndex: index)
+        XCTAssertEqual(unread.verdict, .unverified, "ни один файл не прочитан: \(unread.text)")
+
+        // прочитана половина графа: неоткрывшаяся заметка в знаменателе охвата
+        // (out2, C1 трёх голов: 1 из 1 прочитанного «доказывал» пусто)
+        let half = try makeTestGraph([("Ядра/Половина.md", "дожди весь месяц"),
+                                      ("Встречи/2026-01-03.md", "обсудили отпуск")])
+        defer { try? FileManager.default.removeItem(at: half) }
+        let shutHalf = half.appendingPathComponent("Встречи/2026-01-03.md")
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: shutHalf.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: shutHalf.path) }
+        index = SemanticIndex()
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [("Ядра/Половина.md", 1, "дожди весь месяц"),
+                                    ("Встречи/2026-01-03.md", 1, "обсудили отпуск")])
+        let halfRead = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                              snippet: 200, root: half, semanticIndex: index)
+        XCTAssertEqual(halfRead.verdict, .unverified, "половина графа не прочитана: \(halfRead.text)")
+    }
+
+    /// Две ссылки наружу графа с одним именем схлопываются в одну rel, а
+    /// индекс под этим ключом держит текст одной заметки: охват считается по
+    /// документам, и непроверенная вторая не даёт «пусто» (out4, DS C1 —
+    /// откат out3 M7).
+    func testCollapsedRelDoesNotProveCoverage() async throws {
+        let outside = try makeTestGraph([("a/README.md", "дожди весь месяц"), ("b/README.md", "отпуск перенесли на август")])
+        let graph = try makeTestGraph([])
+        defer { try? FileManager.default.removeItem(at: outside); try? FileManager.default.removeItem(at: graph) }
+        for sub in ["a", "b"] {
+            let link = graph.appendingPathComponent("\(sub)/README.md")
+            try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside.appendingPathComponent("\(sub)/README.md"))
+        }
+        let index = SemanticIndex()
+        let embed: ([String]) -> [[Float]] = { $0.map { $0.contains("каникулы") || $0.contains("отпуск") ? [1, 0] : [0, 1] } }
+        await index.useForTests(store: tempIndexStore(), embedder: { embed($0) })
+        await index.refresh(files: [("README.md", 1, "дожди весь месяц")])
+        let out = await ArchiveSearch.localSearchOutcome(query: "каникулы", limit: 3,
+                                                         snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertTrue(out.text.isEmpty, out.text)
+        XCTAssertEqual(out.verdict, .unverified, out.text)
+
+        // пара: те же два текста под разными именами, оба в индексе, семантика
+        // сравнила оба — «пусто» доказано; разница с первым случаем — знаменатель (out5, DS M2)
+        let named = try makeTestGraph([("a/Дожди.md", "дожди весь месяц"), ("b/Отпуск.md", "отпуск перенесли на август")])
+        defer { try? FileManager.default.removeItem(at: named) }
+        let both = SemanticIndex()
+        await both.useForTests(store: tempIndexStore(),
+                               embedder: { $0.map { $0.contains("снег") ? [1, 0] : [0, 1] } })
+        await both.refresh(files: [("a/Дожди.md", 1, "дожди весь месяц"), ("b/Отпуск.md", 1, "отпуск перенесли на август")])
+        let proven = await ArchiveSearch.localSearchOutcome(query: "снег", limit: 3,
+                                                            snippet: 200, root: named, semanticIndex: both)
+        XCTAssertTrue(proven.text.isEmpty, proven.text)
+        XCTAssertEqual(proven.verdict, .empty)
+    }
+}

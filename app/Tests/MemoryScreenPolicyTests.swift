@@ -63,6 +63,15 @@ final class MemoryScreenPolicyTests: XCTestCase {
         XCTAssertTrue(MemoryScreenPolicy.metaLine(model: "m", seconds: 3, meetingsInContext: 0,
                                                   memoryOn: true, weakMatches: true, inferenceIsLocal: true)
             .hasSuffix("граф: слабые совпадения"))
+        // фрагменты без чипов при неполном поиске — не «граф не в контексте» (№634, out3)
+        XCTAssertTrue(MemoryScreenPolicy.metaLine(model: "m", seconds: 3, meetingsInContext: 0, memoryOn: true,
+                                                  weakMatches: false, searchIncomplete: true, inferenceIsLocal: true)
+            .hasSuffix("граф: поиск неполный"))
+        // при видимых чипах счёт остаётся (out5, DS I1)
+        XCTAssertEqual(MemoryScreenPolicy.metaLine(model: "m", seconds: 3, meetingsInContext: 3, sourcesInContext: 3,
+                                                   memoryOn: true, weakMatches: false, searchIncomplete: true,
+                                                   inferenceIsLocal: true),
+                       "локально · m · 3 с · 3 встречи в контексте · граф: поиск неполный")
         XCTAssertTrue(MemoryScreenPolicy.metaLine(model: "m", seconds: 3, meetingsInContext: 0,
                                                   memoryOn: true, weakMatches: false, inferenceIsLocal: true)
             .hasSuffix("граф не в контексте"))

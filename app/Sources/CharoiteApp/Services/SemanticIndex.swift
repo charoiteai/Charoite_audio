@@ -161,27 +161,47 @@ actor SemanticIndex {
     /// приветствие».
     func similar(to query: String, within paths: Set<String>,
                  limit: Int) async -> [(path: String, score: Double, snippet: String)] {
+        await similarChecked(to: query, within: paths, limit: limit)?.hits ?? []
+    }
+
+    /// Что семантика проверила: попадания и сколько файлов из `within`
+    /// реально сравнено с запросом (есть блок с вектором той же модели).
+    struct Checked {
+        let hits: [(path: String, score: Double, snippet: String)]
+        let compared: Int
+    }
+
+    /// Как `similar`, но nil — семантика не отработала (индекс пуст или
+    /// эмбеддер не ответил); `compared` — охват: векторы другой модели и
+    /// непроиндексированные файлы не сравнивались. Поиску чата нужно
+    /// различать «не нашла» и «не искала» (№634).
+    func similarChecked(to query: String, within paths: Set<String>,
+                        limit: Int) async -> Checked? {
         loadIfNeeded()
         guard !index.isEmpty,
-              let qv = await embedTexts([query])?.first else { return [] }
+              let qv = await embedTexts([query])?.first else { return nil }
         let q = Self.unit(qv)
         var best: [(path: String, score: Double, snippet: String)] = []
+        var compared = 0
         for (path, entry) in index where paths.contains(path) {
             var top = 0.0
             var snippet = ""
+            var any = false
             for chunk in entry.chunks {
                 // Разная размерность = сменилась модель эмбеддингов. Считать
                 // косинус по общему префиксу нельзя: получаются тихо
                 // заниженные похожести и случайный порядок выдачи.
                 guard chunk.vec.count == q.count else { continue }
+                any = true
                 var s = 0.0
                 for i in 0..<q.count { s += Double(q[i]) * Double(chunk.vec[i]) }
                 if s > top { top = s; snippet = chunk.preview }
             }
+            if any { compared += 1 }
             if top >= 0.35 { best.append((path, top, snippet)) }
         }
         best.sort { $0.score > $1.score }
-        return Array(best.prefix(limit))
+        return Checked(hits: Array(best.prefix(limit)), compared: compared)
     }
 
     /// Сколько файлов в индексе — для строки статуса в Настройках.
