@@ -177,7 +177,7 @@ final class ChatRetrievalTests: XCTestCase {
                        "Ответ:\nВ графе этого нет.", "I don't have information about that.", "That isn't in memory… no, it is not in memory.",
                        "没有找到相关内容。", "That is not in memory.",
                        // метка и заголовок, которые сами отказ, не пропускаются (out2, Sonnet I5)
-                       "Нет в памяти:\nпереезд не обсуждали, обсуждали ремонт.", "## В графе этого нет\nЕсть про ремонт."] {
+                       "Нет в памяти:\nпереезд не обсуждали, обсуждали ремонт.", "Не удалось найти информацию о переезде.", "## В графе этого нет\nЕсть про ремонт."] {
             XCTAssertTrue(ChatRetrieval.isAbsence(answer), answer)
         }
         // вопрос без ответа: найденное первой строкой, отказ второй — воздержание

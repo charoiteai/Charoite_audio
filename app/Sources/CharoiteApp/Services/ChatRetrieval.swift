@@ -226,7 +226,7 @@ enum ChatRetrieval {
     static let absencePhrases = absenceClaims + [
         "в предоставленных данных нет", "в предоставленных блоках нет",
         "в блоках нет", "информации об этом нет", "точного ответа нет", "точного ответа не нашлось",
-        "найти не удалось", "ничего не нашлось", "ничего не найдено", "no information about", "no information on",
+        "найти не удалось", "не удалось найти", "ничего не нашлось", "ничего не найдено", "no information about", "no information on",
         "don't have information", "do not have information", "no exact answer", "no record of",
         "could not be found", "couldn't find",
         "nothing was found", "未能找到", "没有找到", "没有相关", "没有确切答案",
