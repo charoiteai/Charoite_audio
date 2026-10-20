@@ -638,9 +638,10 @@ def test_an_empty_pcm_at_the_deadline_is_no_channel(rec_dir, monkeypatch):
     (rec_dir / "s_mic.pcm").write_bytes(b"")
 
     assert rt.wait_recording(rec_dir, "s", "mic", 16000) is None
-    # Свободный пустой .pcm на сроке — писатель убит до первого блока: снят,
-    # иначе встреча — сирота навсегда (финальный Opus I1а; база его снимала).
-    assert not (rec_dir / "s_mic.pcm").exists()
+    # Свободный пустой .pcm на сроке пересборка не снимает: писатель без заявки
+    # (NO_FLOCK на старте) неотличим от убитого (opusfix1 DS C1). Остаток убитого
+    # демона убирает `_recover_orphans` — тест в test_orphan_recovery.
+    assert (rec_dir / "s_mic.pcm").exists()
     # срок включительно: на 4-й секунде уже не спим (мутант `>` дал бы третий сон)
     assert clock.slept == [2.0, 2.0], "пустой файл живого писателя ждут ровно до срока"
 

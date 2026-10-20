@@ -530,22 +530,45 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
                          detached="уборка копий импорта живёт, пока идёт встреча")
 
 
-def _no_flock_volume(rec_dir: pathlib.Path, stamp: str) -> bool:
-    """Все `.pcm` встречи на томе без flock (одна проба заявки на файл).
-    Сбой открытия — «не знаем»: такую встречу восстанавливаем как прежде."""
-    seen = False
+def _settle_dead_recordings(rec_dir: pathlib.Path, stamp: str) -> bool:
+    """Записи встречи прежнего демона перед восстановлением; True — том без flock.
+
+    Писатель этой встречи мёртв: `.pcm` пишет только `AudioHub` демона, а лок
+    демона у нас. Поэтому без заявки снимаем то, где звука нет или он уже
+    опубликован: пустой `.pcm` (убит до первого блока) и `.pcm` рядом с готовым
+    `.wav` (убит между `replace` и `unlink`; `.wav` публикуется только
+    переименованием — он полный). Иначе встреча — сирота на каждом старте и
+    ретеншн её придерживает (финальный Opus I1а, I1в). Пересборке это нельзя:
+    она работает и рядом с живым писателем, а писатель без заявки (NO_FLOCK на
+    старте) по свободной заявке неотличим от убитого (opusfix1 DS C1).
+
+    True — канал, который ещё надо конвертировать, лежит на томе без flock:
+    пересборка его не тронет (`rebuild` на любом NO_FLOCK — None). Сбой открытия
+    — «не знаем», вето на вердикт тома не даёт (opusfix1 DS I3)."""
+    no_flock = False
     for label in meeting_stamp.RECORDING_LABELS:
         pcm = meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")
         try:
-            with pcm.open("rb") as f:
-                if file_locks.acquire_outcome(f, attempts=1) != file_locks.NO_FLOCK:
-                    return False
-        except FileNotFoundError:
-            continue
+            empty = pcm.stat().st_size == 0
         except OSError:
-            return False
-        seen = True
-    return seen
+            continue                      # нет файла или не дали — решает пересборка
+        if empty or meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
+            why = "пуст" if empty else ".wav готов"
+            try:
+                pcm.unlink()
+                print(f"{pcm.name}: {why} — остаток прежнего демона убран", file=sys.stderr, flush=True)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                print(f"{pcm.name}: {why}, остаток не снят — {type(e).__name__}", file=sys.stderr, flush=True)
+            continue
+        try:
+            with pcm.open("rb") as f:
+                if file_locks.acquire_outcome(f, attempts=1) == file_locks.NO_FLOCK:
+                    no_flock = True
+        except OSError:
+            continue
+    return no_flock
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -593,13 +616,15 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         live = tdir / f"{stamp}.md"
         if not live.exists():
             continue                      # без стенограммы пересобирать нечего
-        if _no_flock_volume(rec_dir, stamp):
+        if _settle_dead_recordings(rec_dir, stamp):
             # Том без flock: пересборка такую запись не тронет (писателя не
             # видно), и встреча была бы сиротой навсегда — пересборка на каждом
             # старте, звук придержан сверх record_keep_days. Не защищаем: запись
             # живёт по сроку хранения, восстановление — вручную (финальный Opus I1б).
-            emit({"type": "status", "text": f"Встреча {stamp}: том записей без flock — "
-                                            "восстановите её вручную до срока хранения"})
+            # Срок мог уже выйти — обещать «успеете» нельзя (opusfix1 DS M5).
+            emit({"type": "status", "text": f"Встреча {stamp}: том записей без flock, "
+                                            "автовосстановления нет — звук хранится по "
+                                            "обычному сроку, восстановите встречу вручную"})
             continue
         # Помечаем ДО запуска, а не после: даже неудавшийся спавн означает, что
         # встреча ждёт восстановления, и удалять её звук нельзя тем более.

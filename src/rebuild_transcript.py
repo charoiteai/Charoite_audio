@@ -144,7 +144,7 @@ UNREADABLE = "unreadable"
 _CHUNK = 1 << 20
 
 
-def pcm_to_wav(pcm: pathlib.Path, sr: int, *, drop_empty: bool = False) -> pathlib.Path | str:
+def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
     """.pcm → .wav под заявкой на сам `.pcm`; без заявки — ничего не трогаем.
 
     Заявка — эксклюзивный flock на дескрипторе `.pcm`. Писатель встречи
@@ -159,8 +159,9 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int, *, drop_empty: bool = False) -> pathl
     жив), `file_locks.NO_FLOCK` (том без flock — не трогаем, восстановление
     только вручную), `GONE` (файла нет), `EMPTY` (файл пуст), `UNREADABLE`
     (открыть не дали). Отказ — не потеря канала: решает цикл
-    `wait_recording`. Одна попытка: долгих проб `.pcm` нет ни у кого, ложное
-    «занято» стоит только ещё одного круга ожидания.
+    `wait_recording`. Одна попытка: долгих проб `.pcm` нет ни у кого (держит
+    долго только сама дверь соседней пересборки), ложное «занято» стоит только
+    ещё одного круга ожидания.
 
     Под заявкой: огрызок `.wav.part` убитого писателя убираем (он производный
     от `.pcm`, который рядом и целый), конвертируем из того же дескриптора,
@@ -190,15 +191,11 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int, *, drop_empty: bool = False) -> pathl
         if st.st_nlink == 0:
             return GONE         # писатель снял имя между open и заявкой: его .wav уже на месте
         if st.st_size == 0:
-            if not drop_empty:
-                return EMPTY    # out1 Haiku M2: заявку у такого файла писатель берёт следующей строкой
-            # На сроке: окно «xb → заявка» давно прошло, свободный пустой .pcm —
-            # писатель убит до первого блока. Не снять его — встреча останется
-            # сиротой навсегда: пересборка на каждом старте и ретеншн придержан
-            # (финальный Opus I1а; база конвертировала и снимала такой файл).
-            pcm.unlink()
-            log(f"{pcm.name}: пуст, писателя нет — убрала")
-            return GONE
+            # out1 Haiku M2: заявку у такого файла писатель берёт следующей строкой.
+            # Снимать пустой .pcm пересборке нельзя и на сроке: писатель без
+            # заявки (NO_FLOCK на старте) неотличим от убитого (opusfix1 DS C1).
+            # Пустые остатки убитого демона убирает `daemon._recover_orphans`.
+            return EMPTY
         stale = pcm.with_suffix(".wav.part")
         try:
             stale.unlink()
@@ -240,8 +237,10 @@ def _drop_leftover(pcm: pathlib.Path) -> None:
             if file_locks.acquire_outcome(f, attempts=1) == file_locks.TAKEN:
                 pcm.unlink()
                 log(f"{pcm.name}: .wav готов — остаток .pcm убрала")
-    except OSError:
-        pass                    # нет файла или не дали: следующий прогон попробует снова
+    except FileNotFoundError:
+        pass
+    except OSError as e:        # не дали: след в журнале, следующий прогон попробует снова
+        log(f"{pcm.name}: остаток .pcm не снят — {type(e).__name__}")
 
 
 #: Пауза между заходами `wait_recording`.
@@ -331,8 +330,6 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
         return refusal
     if pcm_left:
         log(f"{label}: {_REFUSAL_TEXT[refusal]} — канал без записи")
-        if refusal == EMPTY:
-            pcm_to_wav(pcm, sr, drop_empty=True)
     return None
 
 
