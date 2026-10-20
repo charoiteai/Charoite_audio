@@ -972,13 +972,17 @@ def test_an_empty_pcm_held_by_its_writer_at_the_deadline_stays(rec_dir, monkeypa
     assert pcm.exists()
 
 
-def test_a_leftover_pcm_next_to_a_published_wav_is_removed(rec_dir, monkeypatch):
+@pytest.mark.parametrize("volume", ["flock", "no_flock"])
+def test_a_leftover_pcm_next_to_a_published_wav_is_removed(rec_dir, monkeypatch, volume):
     """Писатель упал между `replace` и `unlink`: `.wav` полон, `.pcm` рядом.
     Остаток снимаем под заявкой — иначе встреча пересобирается на каждом
-    старте и ретеншн её придерживает (финальный Opus I1в)."""
+    старте и ретеншн её придерживает (финальный Opus I1в). На томе без flock
+    — тоже: `.wav` публикует только дочитавший писатель (opusfix4 DS C1)."""
     import rebuild_transcript as rt
 
     monkeypatch.setattr(rt, "time", _Clock())
+    if volume == "no_flock":
+        monkeypatch.setattr(rt.file_locks, "acquire_outcome", lambda f, **kw: rt.file_locks.NO_FLOCK)
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
     wav = rec_dir / "s_mic.wav"
@@ -1071,3 +1075,55 @@ def test_the_claim_state_of_a_past_meeting_does_not_leak_into_the_next(tmp_path,
     hub._open_sinks()
 
     assert hub._unclaimed == {}
+
+
+def test_empty_channels_are_dropped_before_the_first_wav_is_published(tmp_path):
+    """Крах между `.wav` одного канала и уборкой пустого другого оставлял
+    встречу без маркера сироты: финал не собирался (opusfix4 DS C2). Пустой
+    и мусорный каналы снимаются до публикации первого `.wav`."""
+    import audio
+
+    hub = _hub(tmp_path)
+    mic, bh = tmp_path / "s_mic.pcm", tmp_path / "s_blackhole.pcm"
+    sinks = {"mic": mic.open("xb"), "blackhole": bh.open("xb")}
+    sinks["mic"].write(b"\0" * 16000 * 2 * 6)
+    hub._sinks = sinks                           # mic первым, как в боевом порядке
+    seen = []
+    real = audio.pathlib.Path.replace
+
+    def watching(self, target):
+        seen.append(bh.exists())
+        return real(self, target)
+
+    audio.pathlib.Path.replace = watching
+    try:
+        hub._finalize_recordings()
+    finally:
+        audio.pathlib.Path.replace = real
+
+    assert seen == [False], "пустой .pcm пережил публикацию .wav соседнего канала"
+    assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
+
+
+def test_a_pcm_taken_away_after_publication_is_no_failure_line(tmp_path, monkeypatch, capsys):
+    """`.wav` опубликован, остаток `.pcm` уже сняла пересборка (`_drop_leftover`):
+    это не отказ unlink — строки «не снят» нет."""
+    import audio
+
+    hub = _hub(tmp_path)
+    pcm = tmp_path / "s_mic.pcm"
+    f = pcm.open("xb")
+    f.write(b"\0" * 16000 * 2 * 6)
+    hub._sinks = {"mic": f}
+    real = audio.pathlib.Path.replace
+
+    def and_drop(self, target):
+        got = real(self, target)
+        pcm.unlink()
+        return got
+
+    monkeypatch.setattr(audio.pathlib.Path, "replace", and_drop)
+    hub._finalize_recordings()
+
+    assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
+    assert "не снят" not in capsys.readouterr().err

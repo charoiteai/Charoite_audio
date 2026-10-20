@@ -407,6 +407,13 @@ def test_пустой_свежий_каталог_сессии_не_удаляе
     assert not stale_dir.exists(), "давно пустой каталог должен уйти"
 
 
+@pytest.fixture(autouse=True)
+def _no_confirm_pause(monkeypatch):
+    import daemon
+
+    monkeypatch.setattr(daemon, "NO_FLOCK_CONFIRM_S", 0)
+
+
 def test_an_orphan_on_a_volume_without_flock_is_not_held_forever(data_root, monkeypatch):
     """Том без flock: пересборка такую запись не тронет, и защита сделала бы
     встречу вечной сиротой — пересборка на каждом старте, звук сверх срока.
@@ -460,21 +467,24 @@ def test_a_busy_channel_does_not_hold_the_start_of_recording(data_root, monkeypa
         calls.append(kw)
         return file_locks.BUSY
 
+    naps = []
     monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
     monkeypatch.setattr(file_locks, "acquire_outcome", probe)
+    monkeypatch.setattr(daemon.time, "sleep", naps.append)
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
-    assert calls == [{"attempts": 1}], calls
+    assert calls == [{"attempts": 1}] and naps == [], (calls, naps)
 
 
-def test_a_volume_without_flock_is_confirmed_with_retries(data_root, monkeypatch):
-    """«Том без flock» снимает защиту ретеншна — вывод подтверждаем пробой с
-    ретраями: разовый ENOLCK на первой пробе встречу не уводит (opusfix2 Haiku C1)."""
+def test_a_volume_without_flock_is_confirmed_after_a_pause(data_root, monkeypatch):
+    """«Том без flock» снимает защиту ретеншна. NO_FLOCK `acquire_outcome` не
+    повторяет, поэтому вывод подтверждает вторая проба через паузу: разовый
+    ENOLCK встречу не уводит (opusfix2 Haiku C1, opusfix4 DS I4)."""
     import daemon
     import file_locks
 
-    calls = []
+    calls, naps = [], []
 
     def probe(f, **kw):
         calls.append(kw)
@@ -482,10 +492,36 @@ def test_a_volume_without_flock_is_confirmed_with_retries(data_root, monkeypatch
 
     monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
     monkeypatch.setattr(file_locks, "acquire_outcome", probe)
+    monkeypatch.setattr(daemon.time, "sleep", naps.append)
+    monkeypatch.setattr(daemon, "NO_FLOCK_CONFIRM_S", 0.5)   # снятую фикстурой паузу — назад
     _orphan(data_root, "2026-08-07_181500", age_days=3)
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
-    assert calls == [{"attempts": 1}, {}], calls
+    assert calls == [{"attempts": 1}, {"attempts": 1}], calls
+    assert naps == [0.5], naps
+
+
+def test_a_stat_failure_keeps_the_orphan_marker(data_root, monkeypatch):
+    """Сбой stat у `.pcm` — «не знаем»: встреча остаётся сиротой под защитой
+    ретеншна, решает проба (`_has_sound`)."""
+    import daemon
+    import file_locks
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.TAKEN)
+    pcm = _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    real = pathlib.Path.stat
+
+    def fail(self, *a, **kw):
+        if self == pcm:
+            raise PermissionError(13, "EACCES")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "stat", fail)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+    assert len(started) == 1
 
 
 def test_an_unreadable_channel_does_not_veto_a_volume_without_flock(data_root, monkeypatch):
@@ -543,20 +579,21 @@ def test_an_empty_pcm_is_no_orphan_marker(data_root, monkeypatch, wav):
     assert not pcm.exists(), "ретеншн обязан убрать пустой .pcm по сроку"
 
 
-def test_a_leftover_next_to_its_wav_on_a_volume_without_flock_is_no_perpetual_orphan(data_root, monkeypatch):
-    """Том без flock, `.wav` готов, `.pcm` рядом: `_drop_leftover` на NO_FLOCK
-    остаток не снимет — защита сделала бы встречу сиротой навсегда (Opus I1б, I1в)."""
+def test_a_channel_with_its_wav_does_not_vote_for_a_volume_without_flock(data_root, monkeypatch):
+    """Том без flock, `.wav` готов, `.pcm` рядом (крах между `replace` и
+    `unlink`): финал из `.wav` соберётся на любом томе, остаток снимет
+    `_drop_leftover` — встречу восстанавливаем (opusfix4 DS C1)."""
     import daemon
     import file_locks
 
     started = []
     monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
-    _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    _orphan(data_root, "2026-08-07_181500", age_days=3)
     (data_root / "recordings" / "2026-08-07_181500_mic.wav").write_bytes(b"RIFF")
 
-    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
-    assert started == []
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+    assert len(started) == 1
 
 
 def test_a_stamp_without_recordings_is_not_a_volume_without_flock(data_root, monkeypatch):

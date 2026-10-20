@@ -230,11 +230,14 @@ def _drop_leftover(pcm: pathlib.Path) -> None:
     `replace` и `unlink`, отказ unlink): снять остаток под заявкой. Без этого
     `_recover_orphans` находит `.pcm` и пересобирает встречу на каждом старте,
     а ретеншн её придерживает (финальный Opus I1в). Заявка занята — это
-    писатель посреди своего unlink, оставляем ему."""
+    писатель посреди своего unlink, оставляем ему. Тому без flock (NO_FLOCK)
+    остаток тоже снимаем: `.wav` публикует только писатель, дочитав `.pcm`
+    (дверь на NO_FLOCK не конвертирует), — записи в этот файл больше не будет
+    (opusfix4 DS C1)."""
     try:
         with pcm.open("rb") as f:
             # Снятое под нами имя проверять не нужно: unlink даст FileNotFoundError.
-            if file_locks.acquire_outcome(f, attempts=1) == file_locks.TAKEN:
+            if file_locks.acquire_outcome(f, attempts=1) != file_locks.BUSY:
                 pcm.unlink()
                 log(f"{pcm.name}: .wav готов — остаток .pcm убрала")
     except FileNotFoundError:

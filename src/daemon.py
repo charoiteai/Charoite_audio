@@ -530,6 +530,10 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
                          detached="уборка копий импорта живёт, пока идёт встреча")
 
 
+#: Пауза перед второй пробой «том без flock» (`_volume_without_flock`).
+NO_FLOCK_CONFIRM_S = 0.5
+
+
 def _has_sound(pcm: pathlib.Path) -> bool:
     """Маркер сироты — непустой `.pcm`. Пустой (писатель убит до первого блока)
     восстанавливать нечего; маркером он делал встречу сиротой на каждом старте с
@@ -544,30 +548,34 @@ def _has_sound(pcm: pathlib.Path) -> bool:
 
 
 def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
-    """Все непустые `.pcm` встречи отвечают NO_FLOCK: пересборка их не тронет
-    (`rebuild` на NO_FLOCK — None, `_drop_leftover` на нём не снимает остаток), и
+    """Все непустые `.pcm` встречи без готового `.wav` отвечают NO_FLOCK:
+    пересборка их не сконвертирует (`pcm_to_wav` на NO_FLOCK отказывает), и
     встреча была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть,
     восстанавливаем (opusfix2 Haiku C1). Сбой открытия не голосует (opusfix1
-    DS I3). Первая проба — одна попытка: BUSY (дверь пересборки прежнего
-    демона) не держит старт записи (opusfix3 DS I3); подтверждение «том без
-    flock» — с ретраями `acquire_outcome`, разовый ENOLCK не уводит встречу из-под
-    защиты ретеншна."""
+    DS I3). Канал с готовым `.wav` не голосует: финал из него соберётся на любом
+    томе, а остаток `.pcm` рядом пересборка снимет (opusfix4 DS C1). Проба — одна
+    попытка на канал: BUSY (дверь пересборки прежнего демона) не держит старт
+    записи (opusfix3 DS I3). NO_FLOCK `acquire_outcome` не повторяет, поэтому
+    «том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не
+    уводит встречу из-под защиты ретеншна (opusfix4 DS I4)."""
     pcms = [p for label in meeting_stamp.RECORDING_LABELS
-            if _has_sound(p := meeting_stamp.recording_path(rec_dir, stamp, label, "pcm"))]
+            if _has_sound(p := meeting_stamp.recording_path(rec_dir, stamp, label, "pcm"))
+            and not meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists()]
 
-    def all_no_flock(**retry) -> bool:
-        seen = False
+    def all_no_flock() -> bool:
+        outcomes = []
         for pcm in pcms:
             try:
                 with pcm.open("rb") as f:
-                    if file_locks.acquire_outcome(f, **retry) != file_locks.NO_FLOCK:
-                        return False
+                    outcomes.append(file_locks.acquire_outcome(f, attempts=1))
             except OSError:
                 continue
-            seen = True
-        return seen
+        return bool(outcomes) and all(o == file_locks.NO_FLOCK for o in outcomes)
 
-    return all_no_flock(attempts=1) and all_no_flock()
+    if not all_no_flock():
+        return False
+    time.sleep(NO_FLOCK_CONFIRM_S)
+    return all_no_flock()
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -624,8 +632,8 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
             # называем шаг, который сработает (opusfix1 DS M5, opusfix3 DS M5).
             emit({"type": "status", "text": f"Встреча {stamp}: том записей без flock, "
                                             "автовосстановления нет — звук хранится по обычному "
-                                            "сроку; для финала перенесите записи на локальный "
-                                            "диск и пересоберите встречу"})
+                                            "сроку; пока он не вышел, для финала перенесите записи "
+                                            "на локальный диск и пересоберите встречу"})
             continue
         # Помечаем ДО запуска, а не после: даже неудавшийся спавн означает, что
         # встреча ждёт восстановления, и удалять её звук нельзя тем более.
