@@ -390,7 +390,9 @@ final class LocalVerdictTests: XCTestCase {
     /// DS I1): запрос без игл, непрочитанные файлы, векторы другой модели,
     /// индекс, собранный не весь.
     func testSearchThatDidNotCoverTheGraphIsUnverified() async throws {
-        let index = SemanticIndex()
+        // свой индекс на каждый случай: поиск ставит фоновый refresh, и
+        // поздний refresh прошлого случая дособрал бы индекс следующего (№534)
+        var index = SemanticIndex()
         let graph = try makeTestGraph([("Ядра/Погода.md", "дожди весь месяц"),
                                        ("Встречи/2026-01-01.md", "обсудили отпуск")])
         defer { try? FileManager.default.removeItem(at: graph) }
@@ -404,6 +406,7 @@ final class LocalVerdictTests: XCTestCase {
         XCTAssertEqual(noNeedles.verdict, .unverified, "запрос без игл — поиска не было")
 
         // векторы индекса другой размерности: ни один блок не сравнился
+        index = SemanticIndex()
         let store = tempIndexStore()
         await index.useForTests(store: store, embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
         await index.refresh(files: files)
@@ -413,6 +416,7 @@ final class LocalVerdictTests: XCTestCase {
         XCTAssertEqual(otherModel.verdict, .unverified, "векторы другой модели — семантика не проверила")
 
         // в индексе один файл из двух: проверена половина графа
+        index = SemanticIndex()
         await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
         await index.refresh(files: [files[0]])
         let partial = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
@@ -426,6 +430,7 @@ final class LocalVerdictTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: shut) }
         let locked = shut.appendingPathComponent("Ядра/Закрыто.md")
         let other = shut.appendingPathComponent("Встречи/2026-01-02.md")
+        index = SemanticIndex()
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: other.path)
         defer {
