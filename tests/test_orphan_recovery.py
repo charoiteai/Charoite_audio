@@ -673,12 +673,17 @@ def test_leftovers_beside_a_machine_final_are_no_orphan(data_root, monkeypatch):
     (json.dumps({"transcript_sha256": SHA}), ("blackhole",)),
 ], ids=["no_final", "unreadable_sidecar", "blackhole_without_wav", "mic_without_wav"])
 def test_leftovers_without_a_proven_final_are_recovered(data_root, monkeypatch, sidecar, wav_labels):
-    """Финал не доказан или у канала со звуком нет `.wav` — сирота, как прежде."""
+    """Финал не доказан или у канала со звуком нет `.wav` — сирота, как прежде.
+    Ответ — `False`, а не просто ложное: контракт `-> bool` (мутанты
+    `return False → return None` выживали догон --only-critical)."""
     import daemon
 
     started = []
     monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
     _leftovers_beside_a_final(data_root, "2026-08-07_181500", sidecar=sidecar, wav_labels=wav_labels)
+
+    assert daemon._final_beside_leftovers(data_root / "recordings", "2026-08-07_181500",
+                                          data_root / "transcripts" / "2026-08-07_181500.md") is False
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
     assert len(started) == 1
@@ -862,8 +867,8 @@ def test_a_leftover_whose_stat_fails_is_still_an_orphan(data_root, monkeypatch, 
 
     monkeypatch.setattr(pathlib.Path, "stat", stat)
 
-    assert not daemon._final_beside_leftovers(data_root / "recordings", stamp,
-                                              data_root / "transcripts" / f"{stamp}.md")
+    assert daemon._final_beside_leftovers(data_root / "recordings", stamp,
+                                          data_root / "transcripts" / f"{stamp}.md") is False
 
 
 @pytest.mark.parametrize("label", ["mic", "blackhole"])
@@ -884,8 +889,8 @@ def test_a_wav_whose_check_fails_keeps_the_meeting_an_orphan(data_root, monkeypa
 
     monkeypatch.setattr(pathlib.Path, "exists", exists)
 
-    assert not daemon._final_beside_leftovers(data_root / "recordings", stamp,
-                                              data_root / "transcripts" / f"{stamp}.md")
+    assert daemon._final_beside_leftovers(data_root / "recordings", stamp,
+                                          data_root / "transcripts" / f"{stamp}.md") is False
 
 
 def test_a_fresh_leftover_beside_a_final_waits_for_its_term(data_root, monkeypatch):
