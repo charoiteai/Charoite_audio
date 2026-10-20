@@ -443,5 +443,21 @@ final class LocalVerdictTests: XCTestCase {
         let unread = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
                                                             snippet: 200, root: shut, semanticIndex: index)
         XCTAssertEqual(unread.verdict, .unverified, "ни один файл не прочитан: \(unread.text)")
+
+        // прочитана половина графа: неоткрывшаяся заметка в знаменателе охвата
+        // (out2, C1 трёх голов: 1 из 1 прочитанного «доказывал» пусто)
+        let half = try makeTestGraph([("Ядра/Половина.md", "дожди весь месяц"),
+                                      ("Встречи/2026-01-03.md", "обсудили отпуск")])
+        defer { try? FileManager.default.removeItem(at: half) }
+        let shutHalf = half.appendingPathComponent("Встречи/2026-01-03.md")
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: shutHalf.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: shutHalf.path) }
+        index = SemanticIndex()
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [("Ядра/Половина.md", 1, "дожди весь месяц"),
+                                    ("Встречи/2026-01-03.md", 1, "обсудили отпуск")])
+        let halfRead = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                              snippet: 200, root: half, semanticIndex: index)
+        XCTAssertEqual(halfRead.verdict, .unverified, "половина графа не прочитана: \(halfRead.text)")
     }
 }

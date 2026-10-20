@@ -29,10 +29,11 @@ enum ChatRetrieval {
         /// Готовый блок для системного промпта: шапка, правило, выдача.
         /// Есть при любом вердикте — правило отсутствия живёт только здесь.
         let block: String
-        /// Поиск проверил граф и опоры не нашёл: чипов нет. Не проверенное
-        /// семантикой (`unverified`) сюда не входит: правило велит отвечать
-        /// по этим фрагментам и называть их (out1, DS I).
-        var weak: Bool { verdict == .weak }
+        /// Опоры нет или она не доказана: чипов нет, подвал «слабые
+        /// совпадения». Выдача `unverified` — это фрагменты, не прошедшие гейт
+        /// (локально) или помеченные сервером «⚠», чипы им не положены, как и
+        /// до №634 (out2, Sonnet I3). Строка статуса — по `verdict` отдельно.
+        var weak: Bool { verdict == .weak || verdict == .unverified && !text.isEmpty }
     }
 
     /// Запрос к поиску из разговора. Поиск по одной последней реплике
@@ -202,26 +203,29 @@ enum ChatRetrieval {
         "в памяти этого нет", "в памяти нет", "этого нет в памяти", "нет в памяти",
         "в графе этого нет", "в графе нет", "в предоставленных данных нет", "в предоставленных блоках нет",
         "в блоках нет", "информации об этом нет", "точного ответа нет", "точного ответа не нашлось",
-        "найти не удалось", "не нашлось", "ничего не найдено",
-        "not in memory", "not in the memory", "no information", "don't have information",
-        "do not have information", "no exact answer", "no record", "could not be found", "couldn't find",
+        "найти не удалось", "ничего не нашлось", "ничего не найдено",
+        "not in memory", "not in the memory", "no information about", "no information on",
+        "don't have information", "do not have information", "no exact answer", "no record of",
+        "could not be found", "couldn't find",
         "nothing was found", "记忆中没有", "未能找到", "没有找到", "没有相关", "没有确切答案",
     ]
 
     static func isAbsence(_ answer: String, lines: Int = 1) -> Bool {
         let marks = CharacterSet(charactersIn: "#*>_-`").union(.whitespaces)
+        func says(_ t: String) -> Bool { absencePhrases.contains { t.contains($0) } }
         let content = answer.split(whereSeparator: \.isNewline)
-            .filter { raw in
-                let t = raw.trimmingCharacters(in: marks)
-                // заголовок и короткая метка «Ответ:» — не содержание
-                return !t.isEmpty && !raw.trimmingCharacters(in: .whitespaces).hasPrefix("#")
-                    && !(t.hasSuffix(":") && t.count <= 30)
+            .compactMap { raw -> (text: String, says: Bool)? in
+                let t = String(raw.trimmingCharacters(in: marks).prefix(200)).lowercased()
+                    .replacingOccurrences(of: "ё", with: "е").replacingOccurrences(of: "’", with: "'")
+                guard !t.isEmpty else { return nil }
+                // заголовок и короткая метка «Ответ:» — не содержание, если
+                // сами не отказ: «Нет в памяти:» — отказ (out2, Sonnet I5)
+                let label = raw.trimmingCharacters(in: .whitespaces).hasPrefix("#")
+                    || (t.hasSuffix(":") && t.count <= 30)
+                return label && !says(t) ? nil : (t, says(t))
             }
             .prefix(lines)
-            .map { String($0.trimmingCharacters(in: marks).prefix(200)) }
-        let head = content.joined(separator: " ").lowercased().replacingOccurrences(of: "ё", with: "е")
-            .replacingOccurrences(of: "’", with: "'")
-        return absencePhrases.contains { head.contains($0) }
+        return content.contains { $0.says }
     }
 
     /// Тело запроса `/api/chat`. `stream: false` и температура 0 — для проб:

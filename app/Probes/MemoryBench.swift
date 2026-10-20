@@ -51,7 +51,7 @@ final class MemoryBench: XCTestCase {
         // false_refusal — отказ при факте в выдаче, false_answer — ответ на
         // вопрос без ответа в графе. Счёт — по вердикту поиска.
         var falseRefusal: [ArchiveSearch.Verdict: Int] = [:]
-        var abstainOK = 0, abstainTotal = 0, abstainUnproven = 0
+        var abstainOK = 0, abstainTotal = 0
         for c in cases {
             let outcome = try await ProbeTurn.search(c.q, params: params, root: graph)
             let found = outcome.text
@@ -77,7 +77,6 @@ final class MemoryBench: XCTestCase {
                     // лёгший эмбеддер (unverified) успехом не считается (out1, Sonnet M2)
                     let ok = ChatRetrieval.honesty(outcome.verdict, hasText: true).allowsAbsence
                     if ok { abstainOK += 1 }
-                    if outcome.verdict == .unverified || outcome.verdict == .unavailable { abstainUnproven += 1 }
                     report += "\n· \(c.q)\n  без ответа в графе: \(ok ? "поиск не нашёл" : "поиск не доказал"), \(verdictLine)"
                 }
                 continue
@@ -113,7 +112,9 @@ final class MemoryBench: XCTestCase {
             report += ", \(verdictLine)"
             if withModel {
                 let inFound = c.must.filter { norm(found).contains(norm($0)) }.count
-                if ChatRetrieval.isAbsence(subject) && inFound > 0 {
+                // отказ первой строкой и ни одного факта в ответе: оговорка
+                // «точной даты нет» перед найденным фактом — не отказ (out2, DS I2)
+                if ChatRetrieval.isAbsence(subject) && inFound > 0 && hits.isEmpty {
                     falseRefusal[outcome.verdict, default: 0] += 1
                     report += "\n  false_refusal: отказ при \(inFound)/\(c.must.count) фактах в выдаче"
                 }
@@ -134,7 +135,12 @@ final class MemoryBench: XCTestCase {
         }
         if abstainTotal > 0 {
             report += "\nВОЗДЕРЖАНИЕ: \(abstainOK)/\(abstainTotal) вопросов без ответа в графе "
-                + (withModel ? "(ответ — отказ)" : "(поиск не нашёл; не доказал — \(abstainUnproven))")
+                + (withModel ? "(ответ — отказ)" : "(поиск доказал «нет»)")
+        }
+        // без модели отказа нет — пороги отказа и воздержания не судятся;
+        // молча пропущенный порог читался бы как пройденный (out2)
+        if !withModel && (gate.maxFalseRefusal != nil || gate.minAbstain != nil) {
+            report += "\nПОРОГИ НАБОРА НЕ ПРИМЕНЕНЫ: прогон без модели (CHAROITE_BENCH_ANSWERS=1)"
         }
         report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов \(withModel ? "в ответе" : "в выдаче поиска") "
                 + "(\(Int(ratio * 100))%)\n"
@@ -175,7 +181,7 @@ final class MemoryBench: XCTestCase {
         if withModel, let cap = gate.maxFalseRefusal {
             XCTAssertLessThanOrEqual(refusals, cap, "отказ при факте в выдаче: \(refusals) — смотри \(reportPath)")
         }
-        if let floor = gate.minAbstain, abstainTotal > 0 {
+        if withModel, let floor = gate.minAbstain, abstainTotal > 0 {
             XCTAssertGreaterThanOrEqual(Double(abstainOK) / Double(abstainTotal), floor,
                                         "воздержание \(abstainOK)/\(abstainTotal) ниже порога — смотри \(reportPath)")
         }
@@ -220,26 +226,42 @@ final class MemoryBench: XCTestCase {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if raw.hasPrefix("max_false_refusal:") || raw.hasPrefix("min_abstain:") {
                 let (key, value) = (line.prefix(while: { $0 != ":" }),
-                                    line.drop(while: { $0 != ":" }).dropFirst().trimmingCharacters(in: .whitespaces))
+                                    scalar(line.drop(while: { $0 != ":" }).dropFirst()))
                 // кривой порог молча снял бы гейт
                 if key == "max_false_refusal", let n = Int(value) { gate.maxFalseRefusal = n }
                 else if key == "min_abstain", let x = Double(value) { gate.minAbstain = x }
                 else { throw ProbeTurn.SetupError(description: "порог набора не разобрался: \(line)") }
             } else if line.hasPrefix("- q:") {
                 try flush()
-                q = unquote(String(line.dropFirst(4)))
+                q = scalar(line.dropFirst(4))
             } else if line.hasPrefix("must:"), q != nil {
                 let inside = line.drop(while: { $0 != "[" }).dropFirst().prefix(while: { $0 != "]" })
                 must = inside.split(separator: ",").map { unquote(String($0)) }
                     .filter { !$0.isEmpty }
             } else if line.hasPrefix("cat:"), q != nil {
-                otherGraph = unquote(String(line.dropFirst("cat:".count))) == "other_graph"
+                otherGraph = scalar(line.dropFirst("cat:".count)) == "other_graph"
             } else if line.hasPrefix("abstain:"), q != nil {
-                abstain = line.dropFirst("abstain:".count).trimmingCharacters(in: .whitespaces) == "true"
+                // «True», «yes» молча снимали бы вопрос с воздержания (out2, DS I6)
+                switch scalar(line.dropFirst("abstain:".count)) {
+                case "true": abstain = true
+                case "false": abstain = false
+                default: throw ProbeTurn.SetupError(description: "abstain — только true или false: \(line)")
+                }
             }
         }
         try flush()
         return (out, gate)
+    }
+
+    /// Значение поля: строка в кавычках — до закрывающей, иначе до « #»
+    /// (комментарий YAML уходил в текст вопроса, out2, Sonnet I2).
+    private func scalar(_ s: Substring) -> String {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        if let q = t.first, q == "\"" || q == "'" {
+            return String(t.dropFirst().prefix(while: { $0 != q }))
+        }
+        let bare = t.range(of: " #").map { String(t[..<$0.lowerBound]) } ?? t
+        return bare.trimmingCharacters(in: .whitespaces)
     }
 
     private func unquote(_ s: String) -> String {

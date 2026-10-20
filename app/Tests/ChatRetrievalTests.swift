@@ -60,8 +60,12 @@ final class ChatRetrievalTests: XCTestCase {
         XCTAssertTrue(empty.block.contains("где не искали"), "пропуск поиска модель не назовёт")
         let unverified = ChatRetrieval.contextBlock(outcome("", .unverified), lang: "ru")
         XCTAssertTrue(unverified.block.contains("поиск неполный"))
-        // фрагменты без семантики правило велит называть — чипы не гасим
-        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified)).weak)
+        // фрагменты не прошли гейт и охват не доказан: чипов нет, как до №634,
+        // а строка статуса — «поиск неполный», не «слабые совпадения» (out2)
+        let unverifiedText = ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified), lang: "ru")
+        XCTAssertTrue(unverifiedText.weak)
+        if L.lang == "ru" { XCTAssertEqual(LocalChatService.memoryStatus(unverifiedText), "граф: поиск неполный") }
+        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .confident)).weak)
         XCTAssertTrue(ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak)).weak)
         // оговорка сервера доходит до модели и при непустой выдаче
         let noted = ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak, note: "почти ничего нет"), lang: "ru")
@@ -147,12 +151,17 @@ final class ChatRetrievalTests: XCTestCase {
     func testДетекторОтказа() {
         for answer in ["В предоставленных блоках сказано: решили перенести релиз на август.",
                        "Нет информации о сроках, но решили перенести релиз.",
-                       "Решили перенести релиз.\nВ памяти этого нет: даты пока не назвали.\nИсточник: a.md"] {
+                       "Решили перенести релиз.\nВ памяти этого нет: даты пока не назвали.\nИсточник: a.md",
+                       // общие подстроки не отказ (out2, Sonnet I6)
+                       "Расхождений в цифрах не нашлось, релиз в августе.", "No information gaps: the release is in August.",
+                       "No records were lost; the release is in August."] {
             XCTAssertFalse(ChatRetrieval.isAbsence(answer), answer)
         }
         for answer in ["В памяти этого нет.", "## Ответ\n\nВ памяти этого нет.", "**Этого нет в памяти**: переезд не обсуждался.",
                        "Ответ:\nВ графе этого нет.", "I don't have information about that.", "That isn't in memory… no, it is not in memory.",
-                       "没有找到相关内容。", "That is not in memory."] {
+                       "没有找到相关内容。", "That is not in memory.",
+                       // метка и заголовок, которые сами отказ, не пропускаются (out2, Sonnet I5)
+                       "Нет в памяти:\nпереезд не обсуждали, обсуждали ремонт.", "## В графе этого нет\nЕсть про ремонт."] {
             XCTAssertTrue(ChatRetrieval.isAbsence(answer), answer)
         }
         // вопрос без ответа: найденное первой строкой, отказ второй — воздержание

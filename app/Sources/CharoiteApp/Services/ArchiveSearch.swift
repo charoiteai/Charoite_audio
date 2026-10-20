@@ -127,6 +127,14 @@ enum ArchiveSearch {
     /// стали доказанными, — `SEM_SHARE_MIN` python-поиска.
     static let semShareMin = 0.8
 
+    /// Охват доказан: семантика сравнила запрос хотя бы с `semShareMin`
+    /// файлов графа. Неоткрывшиеся заметки — в знаменателе: их текст не видел
+    /// ни один сигнал (out2, C1 трёх голов: прочитанная половина графа
+    /// «доказывала» пусто про всю).
+    static func covered(compared: Int, withText: Int, unread: Int) -> Bool {
+        Double(compared) >= semShareMin * Double(max(1, withText + unread))
+    }
+
     /// Топ-`limit` файлов графа со сниппетами ~`snippet` знаков.
     /// Сначала пробуем brain (:8100, гибрид с семантикой), иначе — локально.
     /// CHAROITE_GRAPH_DIR (демо/тесты) — строго файловый поиск: brain этой
@@ -503,12 +511,12 @@ enum ArchiveSearch {
         // и слабая выдача доказывают отсутствие, только если семантика
         // сравнила с запросом достаточную долю графа — правило python
         // `graph_search.verdict` (SEM_SHARE_MIN 0.8; знаменатель — файлы с
-        // текстом): векторы другой модели и недособранный индекс дают «не
-        // проверено» (№634, out1).
+        // текстом и неоткрывшиеся): векторы другой модели, недособранный
+        // индекс и непрочитанные заметки дают «не проверено» (№634).
         let checked = await semanticIndex.similarChecked(to: query, within: allPaths,
                                                          limit: max(limit * 4, 20))
         let withText = all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
-        let proven = checked.map { Double($0.compared) >= semShareMin * Double(max(1, withText)) } ?? false
+        let proven = checked.map { covered(compared: $0.compared, withText: withText, unread: unread) } ?? false
         let sem = checked?.hits ?? []
         let bestSim = sem.first?.score ?? 0
         var semHits: [Hit] = []
