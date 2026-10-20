@@ -5,6 +5,26 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.97.0](https://github.com/charoiteai/Charoite_audio/compare/v0.96.0...v0.97.0) (2026-10-20)
+
+
+### Features
+
+* **chat:** one turn builder for chat, probes and the memory bench ([#818](https://github.com/charoiteai/Charoite_audio/issues/818)) ([0aef0e2](https://github.com/charoiteai/Charoite_audio/commit/0aef0e292774f282a31de68b1c7d128ef0ddb760))
+* **dossier:** one queue across graphs and a time budget ([#819](https://github.com/charoiteai/Charoite_audio/issues/819)) ([1faef06](https://github.com/charoiteai/Charoite_audio/commit/1faef0690c6ccf2ab704b1d16174105f9bb0064c))
+* **nightly:** evening slots with a gate, so a closed laptop does not lose the night ([#817](https://github.com/charoiteai/Charoite_audio/issues/817)) ([744b668](https://github.com/charoiteai/Charoite_audio/commit/744b668ff71bef54f8b2b4f01c238d6b05c73b02))
+
+
+### Bug Fixes
+
+* **app:** judge daemon death only after its stdout is drained ([#822](https://github.com/charoiteai/Charoite_audio/issues/822)) ([4fe6453](https://github.com/charoiteai/Charoite_audio/commit/4fe6453825e5fa42d39209e88ecdebe8882ee918))
+* **app:** take the app binary from SwiftPM's bin path, so Swift 6.4 builds a bundle ([#821](https://github.com/charoiteai/Charoite_audio/issues/821)) ([15ae603](https://github.com/charoiteai/Charoite_audio/commit/15ae60334c2d70866d474909d9f52183a522602c))
+* **chat:** folder indexes leave the chat, the map stays with its own chip ([#828](https://github.com/charoiteai/Charoite_audio/issues/828)) ([9ec191c](https://github.com/charoiteai/Charoite_audio/commit/9ec191c305df217b7f0d94ed42e4f991af57c5b8))
+* **dossier:** Sunday full rebuild gets a budget and leaves the night tail its time ([#820](https://github.com/charoiteai/Charoite_audio/issues/820)) ([b78559f](https://github.com/charoiteai/Charoite_audio/commit/b78559fd629042201a2aebe31a70831787e770a5))
+* **minutes:** one entry for post-model minutes steps on all four paths ([#815](https://github.com/charoiteai/Charoite_audio/issues/815)) ([09635d5](https://github.com/charoiteai/Charoite_audio/commit/09635d5e75581fd7b731a388316dbe176dc905aa))
+* **models:** one download per target under a lock ([#823](https://github.com/charoiteai/Charoite_audio/issues/823)) ([246402a](https://github.com/charoiteai/Charoite_audio/commit/246402a94add82a6847e7d1809f2987de40e8027))
+* **mutate:** slow green baseline is no longer read as a red one ([#824](https://github.com/charoiteai/Charoite_audio/issues/824)) ([806f67b](https://github.com/charoiteai/Charoite_audio/commit/806f67bb04f526da28153d5fbe91501c626b766d))
+
 ## [0.96.0](https://github.com/charoiteai/Charoite_audio/compare/v0.95.0...v0.96.0) (2026-10-17)
 
 
