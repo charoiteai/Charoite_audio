@@ -651,12 +651,12 @@ def test_a_failing_transcript_check_does_not_stop_the_start(data_root, monkeypat
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
 
 
-@pytest.mark.parametrize("wav_bytes", [4096 + 44, 4095 + 44])
-def test_a_leftover_next_to_any_wav_is_an_orphan_only_once(data_root, monkeypatch, wav_bytes):
-    """`.wav` и непустой `.pcm` рядом: первый старт пересобирает встречу,
-    пересборка снимает остаток, второй старт сироты не видит. Полноту `.wav`
-    не судим: оставленный рядом с коротким `.wav` `.pcm` никто не читал, а
-    встреча становилась сиротой на каждом старте (opusfix6 C1)."""
+@pytest.mark.parametrize("wav_bytes,removed", [(4096 + 44, True), (4095 + 44, False)])
+def test_a_leftover_is_removed_only_next_to_a_full_wav(data_root, monkeypatch, wav_bytes, removed):
+    """`.wav` и непустой `.pcm` рядом: первый старт пересобирает встречу. Рядом
+    с полным `.wav` пересборка снимает остаток, и второй старт сироты не видит;
+    рядом с коротким — `.pcm` цел, встреча остаётся сиротой, как в базе всегда
+    (opusfix6 C1 понижен опытом x10; fsync публикации — долг №572)."""
     import daemon
     import file_locks
     import rebuild_transcript as rt
@@ -670,8 +670,9 @@ def test_a_leftover_next_to_any_wav_is_an_orphan_only_once(data_root, monkeypatc
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {stamp}
     assert rt.wait_recording(data_root / "recordings", stamp, "mic", 16000) == wav
-    assert not pcm.exists()
-    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
+    assert pcm.exists() is not removed
+    again = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+    assert again == (set() if removed else {stamp})
 
 
 def test_the_confirmation_pause_is_paid_once_per_start(data_root, monkeypatch):

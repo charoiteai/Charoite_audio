@@ -225,6 +225,10 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
     return out
 
 
+#: Заголовок PCM-`.wav` модуля `wave` — столько байт `.wav` длиннее своего `.pcm`.
+WAV_HEADER_BYTES = 44
+
+
 def _drop_leftover(pcm: pathlib.Path) -> None:
     """`.wav` канала готов, а `.pcm` рядом остался (крах писателя между
     `replace` и `unlink`, отказ unlink): снять остаток под заявкой. Без этого
@@ -233,14 +237,19 @@ def _drop_leftover(pcm: pathlib.Path) -> None:
     писатель посреди своего unlink, оставляем ему. Тому без flock (NO_FLOCK)
     остаток тоже снимаем: `.wav` публикует только писатель, дочитав `.pcm`
     (дверь на NO_FLOCK не конвертирует), — записи в этот файл больше не будет
-    (opusfix4 DS C1). Полноту `.wav` здесь не сверяем: оставленный рядом с
-    усечённым `.wav` `.pcm` никто не читал — финал шёл из `.wav`, а встреча
-    становилась вечной сиротой (opusfix6 C1). Усечение после краха питания
-    закрывает fsync публикации в обеих дверях, а не уборка остатка (долг №572)."""
+    (opusfix4 DS C1). `.wav` короче исходника (публикация без fsync, крах
+    питания) остаток не снимает: база `.pcm` не удаляла никогда, и полную копию
+    звука уборка не трогает (opusfix5 Sonnet I1, DS I3). Встреча тогда остаётся
+    сиротой, как в базе всегда (opusfix6 C1 понижен опытом x10); закрывает это
+    fsync публикации в обеих дверях (долг №572)."""
     try:
         with pcm.open("rb") as f:
             # Снятое под нами имя проверять не нужно: unlink даст FileNotFoundError.
             if file_locks.acquire_outcome(f, attempts=1) == file_locks.BUSY:
+                return
+            # Обе двери пишут байты `.pcm` за заголовком `wave`.
+            if pcm.with_suffix(".wav").stat().st_size < WAV_HEADER_BYTES + os.fstat(f.fileno()).st_size:
+                log(f"{pcm.name}: .wav короче исходника — остаток .pcm оставила")
                 return
             pcm.unlink()
             log(f"{pcm.name}: .wav готов — остаток .pcm убрала")
