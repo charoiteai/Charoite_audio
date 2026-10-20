@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import pathlib
 import dataclasses
 import queue
@@ -14,13 +15,14 @@ from collections import abc
 import numpy as np
 import sounddevice as sd
 
+import file_locks
 import meeting_stamp
 import channel_labels
 import speech_gate
 import stt_runtime
 import threads
 
-from charoite_paths import free_bytes, resolve_root
+from charoite_paths import durable_replace, free_bytes, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -526,6 +528,16 @@ def _safe_stderr(msg: str) -> None:
         pass
 
 
+def _release(claim: int | None) -> None:
+    """Снять заявку писателя (`os.dup` дескриптора `.pcm`); сбой close не роняет
+    соседний канал (out2)."""
+    if claim is not None:
+        try:
+            os.close(claim)
+        except OSError:
+            pass
+
+
 @dataclasses.dataclass(frozen=True)
 class Discovery:
     """Итог обнаружения устройств: каналы, их человеческие имена и
@@ -721,6 +733,7 @@ class AudioHub:
         # целиком под замком, обход без замка (копия при записи).
         self._frame_listeners: tuple = ()
         self._sinks: dict = {}          # label → открытый .pcm (сырая запись встречи)
+        self._unclaimed: dict[str, str] = {}  # label → почему заявка на .pcm не взялась (№728)
         self._last_frame: dict[str, float] = {}
         # когда канал в последний раз ПЫТАЛИСЬ перезапустить — анти-шторм
         # отдельно от возраста кадров: см. _watch_streams (ревью 21.08)
@@ -1328,6 +1341,7 @@ class AudioHub:
         # один try: файл, исчезнувший между iterdir() и stat(), или строка вместо
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
+        self._unclaimed = {}    # до любого раннего выхода: прошлая встреча не говорит за эту
         try:
             # Свой try: сигнал о бессрочном хранении не смеет ни выключить запись
             # встречи (DS, круг 2), ни отменить уборку при верном сроке (Sonnet, круг 3)
@@ -1358,21 +1372,67 @@ class AudioHub:
                     self.record_dir, self.stamp, c.label, "pcm")
                 # "xb", а не "wb": коллизия штампов должна быть видимой ошибкой,
                 # а не молчаливым обнулением чужой записи.
-                self._sinks[c.label] = path.open("xb")
+                f = self._sinks[c.label] = path.open("xb")
+                self._claim_sink(c.label, f)
         except Exception as e:  # noqa: BLE001 — захват важнее записи, но не молча
             # Уже открытые файлы соседних каналов — закрыть и убрать: кадров в них
             # нет, а без этого .pcm-заготовка висела бы до ретеншна, не попадая ни
             # в finalized, ни в уборку (аудит 13.09, DS M4).
+            # Имя снимаем до close: close отпускает заявку, и пустая заготовка
+            # без неё досталась бы пересборке (out1 DS M1).
+            # Свои try: сбой снятия имени не оставляет дескриптор открытым (out2).
             for f in self._sinks.values():
                 try:
-                    f.close()
                     pathlib.Path(f.name).unlink(missing_ok=True)
                 except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
                     pass
+                try:
+                    f.close()
+                except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
+                    pass
             self._sinks = {}
+            if self._unclaimed:
+                # Слой «запись идёт» поставил канал, которого больше нет: снимаем
+                # его тем же откатом, иначе он спорил бы с отказом ниже (out3).
+                self._unclaimed = {}
+                self._say(stt_runtime.Status(
+                    "заявка на запись снята — запись выключена",
+                    sticky=False, topic=stt_runtime.TOPIC_RECORDING_CLAIM))
             self._say(stt_runtime.Status(
                 f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить",
                 error=True, topic=stt_runtime.TOPIC_DISK))
+
+    def _claim_sink(self, label: str, f) -> None:
+        """Заявка писателя на свой `.pcm`: эксклюзивный flock от создания до
+        `unlink` в `_finalize_recordings` (№728). По ней пересборка отличает
+        живого писателя от убитого — лок встречи для этого не годится: после
+        автоперезапуска его держит уже новая встреча, а консоль на томе без
+        flock пишет без него. Ретраи — умолчания `acquire_outcome` (окно ~0,8 с):
+        чужая проба держит файл микросекунды, одна попытка ложно отказывала бы.
+        Чужие EX на `.pcm` — дверь `pcm_to_wav` (на время конвертации
+        непустого файла, пустой она не трогает) и одиночные пробы старта
+        демона (микросекунды) (out1, опыт x2).
+
+        Не взялась — запись всё равно идёт (отказ записи — потеря встречи), но
+        громко и на всю встречу (`sticky`): пересборка после сбоя такую запись
+        сама не тронет, если том без flock, а при чужом держателе может принять
+        за брошенную."""
+        try:
+            got = file_locks.acquire_outcome(f)
+            if got == file_locks.TAKEN and os.fstat(f.fileno()).st_nlink == 0:
+                got = "имя файла снято"     # заявка на снятом inode ничего не защищает
+        except Exception as e:  # noqa: BLE001 — заявка не смеет выключить запись встречи
+            _safe_stderr(f"замок записи {label} не взят: {e}")
+            got = type(e).__name__
+        if got != file_locks.TAKEN:
+            # Слой на тему один: строка называет все каналы без заявки, иначе
+            # второй канал затёр бы первый (out3).
+            self._unclaimed[label] = got
+            which = ", ".join(f"{lbl}: {why}" for lbl, why in self._unclaimed.items())
+            self._say(stt_runtime.Status(
+                f"ЗАМОК ЗАПИСИ НЕ ВЗЯТ ({which}) — запись идёт; после сбоя "
+                "восстановите встречу вручную",
+                error=True, sticky=True, topic=stt_runtime.TOPIC_RECORDING_CLAIM))
 
     @staticmethod
     def prune_recordings(record_dir: pathlib.Path, keep_days,
@@ -1504,17 +1564,50 @@ class AudioHub:
         # (круг 3, GLM)
         with self._lock:
             sinks, self._sinks = dict(self._sinks), {}
+        # Два прохода: сначала все каналы закрыты и мусор снят, потом
+        # публикуются `.wav`. Крах между `.wav` одного канала и уборкой мусора
+        # другого оставлял встречу без маркера сироты — финал не собирался
+        # (opusfix4 DS C2, окно x8 — 1,3 мс; порядком по размеру не закрыть —
+        # буфер sink, opusfix5 DS I2).
+        ready = []                       # (label, .pcm, заявка) — каналы со звуком
         for label, f in sinks.items():
+            # Заявка писателя (`_claim_sink`) живёт до снятия имени `.pcm`:
+            # пока она держится, пересборка файл не трогает; отпусти её раньше —
+            # пересборка сочла бы нас брошенными посреди конвертации (№728).
+            # Читаем вторым дескриптором: flock принадлежит описанию открытого
+            # файла, свой лок чтение не блокирует.
+            claim = None
             try:
-                f.close()
+                # Заявку держит копия дескриптора (flock — на описании файла,
+                # dup делит его), а сам sink закрываем до чтения: блок, который
+                # застрявший _consume допишет позже, упадёт на закрытом файле
+                # громко, а не уйдёт молча в снятый .pcm (out1 Haiku C1).
+                f.flush()
+                claim = os.dup(f.fileno())
+                try:
+                    f.close()
+                except Exception:  # noqa: BLE001 — заявку держит claim, канал не теряем
+                    pass
                 p = pathlib.Path(f.name)
                 if p.stat().st_size < self.sr * 2 * 5:  # меньше 5с звука — мусор
                     p.unlink(missing_ok=True)
+                    _safe_stderr(f"запись канала {label} короче 5 с — убрана, .wav не будет")
                     continue
+                ready.append((label, p, claim))
+                claim = None             # заявку несёт второй проход
+            except Exception as e:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
+                self._channel_not_finalized(label, e)
+            finally:
+                try:
+                    f.close()             # сбой flush/dup выше — sink ещё открыт
+                except Exception:  # noqa: BLE001 — сбой close не роняет соседний канал
+                    pass
+                _release(claim)
+        for label, p, claim in ready:
+            try:
                 # Пишем во временное имя и переименовываем: rebuild_transcript
                 # ждёт готовый .wav и до появления файла считает канал
-                # незавершённым — иначе он видел полупустой .wav и начинал
-                # конвертировать тот же .pcm параллельно нам.
+                # незавершённым.
                 wav = p.with_suffix(".wav")
                 tmp = p.with_suffix(".wav.part")
                 with wave.open(str(tmp), "wb") as w, p.open("rb") as src:
@@ -1523,11 +1616,46 @@ class AudioHub:
                     w.setframerate(self.sr)
                     while chunk := src.read(1 << 20):
                         w.writeframes(chunk)
-                tmp.replace(wav)
-                p.unlink(missing_ok=True)
+                durable = durable_replace(tmp, wav)
                 self.finalized[label] = wav
-            except Exception:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
-                pass
+                if not durable:
+                    # Как база: .wav есть, .pcm рядом — копия звука до сброса на
+                    # носитель. Остаток снимет пересборка, если сброс у неё пройдёт.
+                    _safe_stderr(f"запись канала {label}: .wav не подтверждён на носителе — .pcm оставлен")
+                    continue
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError as e:
+                    # .wav уже опубликован: это не сбой конвертации (финальный
+                    # Opus M1). Остаток снимет пересборка под заявкой.
+                    _safe_stderr(f"запись канала {label}: .wav готов, .pcm не снят — {type(e).__name__}")
+            except Exception as e:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
+                self._channel_not_finalized(label, e)
+            finally:
+                _release(claim)          # снимает заявку — после снятия имени
+
+    def _channel_not_finalized(self, label: str, e: Exception) -> None:
+        """Строка о канале, который финализация не довела до `.wav`."""
+        if isinstance(e, FileNotFoundError):
+            # .pcm сняли из-под записи («Забыть», чужая уборка): звук канала
+            # потерян — молчать нельзя (out1, шаг Haiku I3).
+            self._say(stt_runtime.Status(
+                f"ЗАПИСЬ КАНАЛА {label} ПРОПАЛА С ДИСКА до конца встречи — финала по ней не будет",
+                error=True, topic=stt_runtime.TOPIC_DISK))
+            return
+        # Не молча: без строки человек ждал бы финала, которого нет до
+        # пересборки (out2, шаг Haiku M1).
+        # Без заявки пересборка .pcm не тронет: обещать её нельзя (out3).
+        # BUSY/исключение на старте — заявку держал чужой (дверь), а не
+        # мы; после нашего выхода дверь её возьмёт. Не возьмёт только
+        # том без flock (out4 Sonnet M2, opusfix1 Sonnet m3).
+        after = ("восстановите встречу вручную"
+                 if self._unclaimed.get(label) == file_locks.NO_FLOCK
+                 else "финал соберёт пересборка")
+        self._say(stt_runtime.Status(
+            f"запись канала {label} не сконвертирована ({type(e).__name__}) — "
+            f".pcm цел, {after}",
+            error=True, topic=stt_runtime.TOPIC_DISK))
 
     #: не чаще этого репортёр говорит об одном типе сбоя прохода: сторож идёт
     #: раз в 5 с, и без окна устойчивый баг дал бы строку каждые пять секунд
@@ -1655,7 +1783,15 @@ class AudioHub:
                 # середине итерации роняла бы сам STT RuntimeError'ом
                 # (ревью 21.08, Gemini + локальная).
                 with self._lock:
-                    self._sinks.pop(c.label, None)
+                    mine = self._sinks.pop(c.label, None) is sink
+                # Закрыть явно: заявка на .pcm снимается сразу, а не когда
+                # отпустят ссылку — файл больше никто не допишет (№728). Не наш
+                # (уже в снимке финализации) — закроет она (out1 Sonnet M1).
+                if mine:
+                    try:
+                        sink.close()
+                    except Exception:  # noqa: BLE001 — диск уже отказал, close тоже может
+                        pass
                 written = False
                 sink_error = e
         dropped, start = self._append_at(c.label, part)
