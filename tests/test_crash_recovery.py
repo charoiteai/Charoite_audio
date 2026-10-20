@@ -279,74 +279,184 @@ def test_durable_replace_flushes_data_before_the_name_and_the_dir_after(tmp_path
     tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
     tmp.write_bytes(b"RIFF")
 
-    charoite_paths.durable_replace(tmp, target)
-
+    assert charoite_paths.durable_replace(tmp, target) is True
     assert events == [("flush", tmp), ("replace", tmp), ("flush", tmp_path)], events
     assert target.read_bytes() == b"RIFF" and not tmp.exists()
 
 
-def test_durable_replace_falls_back_to_fsync_where_full_sync_is_missing(tmp_path, monkeypatch):
-    """Нет `F_FULLFSYNC` (не macOS) или том его не умеет — обычный `fsync`."""
+def test_durable_replace_uses_fsync_where_full_sync_is_missing(tmp_path, monkeypatch):
+    """Нет `F_FULLFSYNC` (не macOS) — обычный `fsync`, данные до имени."""
     import charoite_paths
 
     events = _durable_trace(monkeypatch)
-    for refuse in (None, OSError(45, "ENOTSUP")):
-        events.clear()
-        if refuse is None:
-            monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
-        else:
-            monkeypatch.setattr(charoite_paths.fcntl, "F_FULLFSYNC", 51, raising=False)
+    monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
+    tmp, target = tmp_path / "a.part", tmp_path / "a.wav"
+    tmp.write_bytes(b"RIFF")
 
-            def deny(fd, op, exc=refuse):
-                raise exc
-
-            monkeypatch.setattr(charoite_paths.fcntl, "fcntl", deny)
-        tmp, target = tmp_path / "a.part", tmp_path / "a.wav"
-        tmp.write_bytes(b"RIFF")
-
-        charoite_paths.durable_replace(tmp, target)
-
-        assert events == [("fsync", tmp), ("replace", tmp), ("fsync", tmp_path)], (refuse, events)
+    assert charoite_paths.durable_replace(tmp, target) is True
+    assert events == [("fsync", tmp), ("replace", tmp), ("fsync", tmp_path)], events
 
 
-def test_a_failed_data_flush_publishes_nothing(tmp_path, monkeypatch):
-    """Сброс данных не удался (EIO) — исключение, имя `.wav` не занято:
-    вызывающий не снимет `.pcm` за непрочным `.wav`."""
+def _refuse_flush(monkeypatch, full_sync: bool, errno_: int, where: str = "any"):
+    """Сброс на носитель отказывает с `errno_`: через `F_FULLFSYNC` или, где его
+    нет, через `os.fsync`; `where` — у данных, у каталога или у любого."""
+    import stat
+
     import charoite_paths
 
-    monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
+    def refused(fd):
+        is_dir = stat.S_ISDIR(os.fstat(fd).st_mode)
+        return where == "any" or (where == "dir") == is_dir
 
-    def eio(fd):
-        raise OSError(5, "EIO")
+    if full_sync:
+        monkeypatch.setattr(charoite_paths.fcntl, "F_FULLFSYNC", 51, raising=False)
+        real = charoite_paths.fcntl.fcntl
 
-    monkeypatch.setattr(charoite_paths.os, "fsync", eio)
+        def full(fd, op, *a):
+            if op == 51 and refused(fd):
+                raise OSError(errno_, os.strerror(errno_))
+            return 0 if op == 51 else real(fd, op, *a)
+
+        monkeypatch.setattr(charoite_paths.fcntl, "fcntl", full)
+    else:
+        monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
+        real_fsync = charoite_paths.os.fsync
+
+        def fsync(fd):
+            if refused(fd):
+                raise OSError(errno_, os.strerror(errno_))
+            real_fsync(fd)
+
+        monkeypatch.setattr(charoite_paths.os, "fsync", fsync)
+
+
+_REFUSALS = [(full, e) for full in (True, False) for e in (45, 5)]   # ENOTSUP, EIO
+
+
+@pytest.mark.parametrize("where", ["data", "dir"])
+@pytest.mark.parametrize("full_sync,errno_", _REFUSALS)
+def test_a_refused_flush_still_publishes_and_says_not_durable(tmp_path, monkeypatch, full_sync, errno_, where):
+    """Том не умеет сброс (ENOTSUP) или сброс не удался (EIO), у данных или
+    у каталога: `.wav` опубликован, как в базе, но «на носителе» — False, и
+    вызывающий не снимет `.pcm` (opusfix9 C1, I1)."""
+    import charoite_paths
+
+    _refuse_flush(monkeypatch, full_sync, errno_, where)
     tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
     tmp.write_bytes(b"RIFF")
 
-    with pytest.raises(OSError):
+    assert charoite_paths.durable_replace(tmp, target) is False
+    assert target.read_bytes() == b"RIFF" and not tmp.exists()
+
+
+def test_a_file_that_cannot_be_opened_for_the_flush_is_not_durable(tmp_path, monkeypatch):
+    """Открыть `tmp` для сброса не дали (EMFILE) — имя публикуется, но
+    «на носителе» — False: сброса не было."""
+    import charoite_paths
+
+    real = charoite_paths.os.open
+    tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
+
+    def opened(path, flags, *a):
+        if pathlib.Path(path) == tmp:
+            raise OSError(24, "EMFILE")
+        return real(path, flags, *a)
+
+    monkeypatch.setattr(charoite_paths.os, "open", opened)
+    tmp.write_bytes(b"RIFF")
+
+    assert charoite_paths.durable_replace(tmp, target) is False
+    assert target.read_bytes() == b"RIFF"
+
+
+def test_a_failed_replace_still_raises(tmp_path, monkeypatch):
+    """Ошибка самого `replace` — исключение, как раньше: имени нет."""
+    import charoite_paths
+
+    def denied(src, dst):
+        raise PermissionError(13, "EACCES")
+
+    monkeypatch.setattr(charoite_paths.os, "replace", denied)
+    tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
+    tmp.write_bytes(b"RIFF")
+
+    with pytest.raises(PermissionError):
         charoite_paths.durable_replace(tmp, target)
     assert tmp.exists() and not target.exists()
 
 
-def test_a_failed_dir_flush_keeps_the_publication(tmp_path, monkeypatch):
-    """Каталог не сбрасывается (сетевой том) — имя уже заменено, это не сбой."""
+def test_a_failing_close_after_the_flush_is_no_failure(tmp_path, monkeypatch):
+    """`close` дескриптора сброса отказал уже после `replace` — публикация
+    не становится исключением (opusfix9 M1)."""
     import charoite_paths
 
-    monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
-    real = charoite_paths.os.fsync
+    real = charoite_paths.os.close
 
-    def no_dir(fd):
-        if pathlib.Path(f"/dev/fd/{fd}").is_dir():
-            raise OSError(22, "EINVAL")
+    def close(fd):
         real(fd)
+        raise OSError(5, "EIO")
 
-    monkeypatch.setattr(charoite_paths.os, "fsync", no_dir)
+    monkeypatch.setattr(charoite_paths.os, "close", close)
     tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
     tmp.write_bytes(b"RIFF")
 
     charoite_paths.durable_replace(tmp, target)
+    monkeypatch.undo()
 
     assert target.read_bytes() == b"RIFF"
+
+
+@pytest.mark.parametrize("full_sync,errno_", _REFUSALS)
+def test_the_writer_keeps_the_pcm_next_to_a_wav_not_on_the_medium(tmp_path, monkeypatch, capsys, full_sync, errno_):
+    """Писатель: сброс отказал — `.wav` есть, `.pcm` цел, одна строка в журнал."""
+    hub = _hub(tmp_path)
+    pcm = tmp_path / "s_mic.pcm"
+    f = pcm.open("xb")
+    f.write(b"\0" * 16000 * 2 * 6)
+    hub._sinks = {"mic": f}
+    _refuse_flush(monkeypatch, full_sync, errno_)
+
+    hub._finalize_recordings()
+
+    assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
+    assert pcm.stat().st_size == 16000 * 2 * 6
+    assert (tmp_path / "s_mic.wav").stat().st_size == 44 + 16000 * 2 * 6
+    assert capsys.readouterr().err.count("не подтверждён на носителе") == 1
+
+
+@pytest.mark.parametrize("full_sync,errno_", _REFUSALS)
+def test_the_rebuild_door_keeps_the_pcm_next_to_a_wav_not_on_the_medium(rec_dir, monkeypatch, full_sync, errno_):
+    """Дверь пересборки: сброс отказал — `.wav` есть, `.pcm` цел."""
+    import rebuild_transcript as rt
+
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    lines = []
+    monkeypatch.setattr(rt, "log", lines.append)
+    _refuse_flush(monkeypatch, full_sync, errno_)
+
+    assert rt.pcm_to_wav(pcm, 16000) == rec_dir / "s_mic.wav"
+    assert sorted(p.name for p in rec_dir.iterdir()) == ["s_mic.pcm", "s_mic.wav"]
+    assert sum("не подтверждён на носителе" in m for m in lines) == 1
+
+
+@pytest.mark.parametrize("full_sync,errno_", _REFUSALS)
+def test_a_leftover_stays_next_to_a_full_wav_not_on_the_medium(rec_dir, monkeypatch, full_sync, errno_):
+    """Уборка остатка: `.wav` полной длины, но сброс отказал — нули той же
+    длины после краха неотличимы, `.pcm` не снимаем."""
+    import rebuild_transcript as rt
+
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\1" * 4096)
+    (rec_dir / "s_mic.wav").write_bytes(b"\0" * (rt.WAV_HEADER_BYTES + 4096))
+    lines = []
+    monkeypatch.setattr(rt, "log", lines.append)
+    _refuse_flush(monkeypatch, full_sync, errno_)
+
+    rt._drop_leftover(pcm)
+
+    assert pcm.exists()
+    assert any("не подтверждён на носителе" in m for m in lines)
 
 
 def test_both_doors_publish_through_durable_replace(tmp_path, monkeypatch):
@@ -360,7 +470,7 @@ def test_both_doors_publish_through_durable_replace(tmp_path, monkeypatch):
         real = mod.durable_replace
         monkeypatch.setattr(mod, "durable_replace",
                             lambda tmp, target, real=real, mod=mod: (calls.append((mod.__name__, target.name)),
-                                                                     real(tmp, target)))
+                                                                     real(tmp, target))[1])
     hub = audio.AudioHub({"audio": {"samplerate": 16000, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
                                     "vad_energy_db": -45.0, "record": False, "device": "auto"},
                           "log": {"recordings_dir": str(tmp_path)}, "sufler": {"user_name": "Владелец"}})
@@ -875,8 +985,9 @@ def test_pcm_to_wav_survives_the_pcm_removed_after_publishing(rec_dir, monkeypat
     real = rt.durable_replace
 
     def replace_then_forget(tmp, target):
-        real(tmp, target)
+        durable = real(tmp, target)
         pcm.unlink()
+        return durable
 
     monkeypatch.setattr(rt, "durable_replace", replace_then_forget)
 
@@ -963,6 +1074,7 @@ def test_a_failing_release_of_the_claim_does_not_skip_the_next_channel(tmp_path,
         real(fd)
         if fd not in claims:
             return                       # дескрипторы `durable_replace` — не заявки
+        claims.discard(fd)               # номер займёт следующий open (opusfix9 m1)
         closes.append(fd)
         if len(closes) == 1:
             raise OSError("EIO")
@@ -1314,8 +1426,9 @@ def test_a_pcm_taken_away_after_publication_is_no_failure_line(tmp_path, monkeyp
     real = audio.durable_replace
 
     def and_drop(tmp, target):
-        real(tmp, target)
+        durable = real(tmp, target)
         pcm.unlink()
+        return durable
 
     monkeypatch.setattr(audio, "durable_replace", and_drop)
     hub._finalize_recordings()

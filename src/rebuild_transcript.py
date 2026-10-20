@@ -34,7 +34,7 @@ import time
 import typing
 import wave
 
-from charoite_paths import code_root, durable_replace, harden_umask, log_path, meeting_log, resolve_root
+from charoite_paths import code_root, durable_replace, flush_file, harden_umask, log_path, meeting_log, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -210,9 +210,12 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
                 w.setframerate(sr)
                 while chunk := f.read(_CHUNK):
                     w.writeframes(chunk)
-            durable_replace(tmp, out)     # .pcm снимаем ниже — только за полным .wav на носителе
+            durable = durable_replace(tmp, out)
         finally:
             tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
+        if not durable:                   # как база: .wav есть, .pcm цел
+            log(f"{pcm.name}: .wav не подтверждён на носителе — исходник оставила")
+            return out
         # Полный .wav уже опубликован: после этого вызов не проваливается.
         # Снять имя под заявкой может тот, кто её не спрашивает («Забыть»), а
         # сетевой том — отказать (EACCES); остаток заберёт ретеншн (out3 DS M2).
@@ -241,8 +244,9 @@ def _drop_leftover(pcm: pathlib.Path) -> None:
     питания) остаток не снимает: база `.pcm` не удаляла никогда, и полную копию
     звука уборка не трогает (opusfix5 Sonnet I1, DS I3). Встреча тогда остаётся
     сиротой, как в базе всегда (opusfix6 C1 понижен опытом x10). Обе двери
-    публикуют через `durable_replace`: короткий `.wav` рядом с `.pcm` остаётся
-    от записей до этой правки и от тома, где сброс на носитель не держит (opusfix8)."""
+    публикуют через `durable_replace` и снимают `.pcm` только за `.wav` на
+    носителе; остаток — так же, после сброса `.wav` здесь (opusfix9). Короткий
+    `.wav` рядом с `.pcm` остаётся от записей до этой правки (opusfix8)."""
     try:
         with pcm.open("rb") as f:
             # Снятое под нами имя проверять не нужно: unlink даст FileNotFoundError.
@@ -251,6 +255,11 @@ def _drop_leftover(pcm: pathlib.Path) -> None:
             # Обе двери пишут байты `.pcm` за заголовком `wave`.
             if pcm.with_suffix(".wav").stat().st_size < WAV_HEADER_BYTES + os.fstat(f.fileno()).st_size:
                 log(f"{pcm.name}: .wav короче исходника — остаток .pcm оставила")
+                return
+            # Писатель оставляет `.pcm` и за `.wav`, не подтверждённым на
+            # носителе: полной длины мало — нули той же длины после краха.
+            if not flush_file(pcm.with_suffix(".wav")):
+                log(f"{pcm.name}: .wav не подтверждён на носителе — остаток .pcm оставила")
                 return
             pcm.unlink()
             log(f"{pcm.name}: .wav готов — остаток .pcm убрала")

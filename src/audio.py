@@ -1616,8 +1616,13 @@ class AudioHub:
                     w.setframerate(self.sr)
                     while chunk := src.read(1 << 20):
                         w.writeframes(chunk)
-                durable_replace(tmp, wav)   # .pcm снимаем ниже — только за полным .wav на носителе
+                durable = durable_replace(tmp, wav)
                 self.finalized[label] = wav
+                if not durable:
+                    # Как база: .wav есть, .pcm рядом — копия звука до сброса на
+                    # носитель. Остаток снимет пересборка, если сброс у неё пройдёт.
+                    _safe_stderr(f"запись канала {label}: .wav не подтверждён на носителе — .pcm оставлен")
+                    continue
                 try:
                     p.unlink(missing_ok=True)
                 except OSError as e:
