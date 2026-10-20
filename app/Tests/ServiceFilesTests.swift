@@ -86,7 +86,7 @@ final class ServiceFilesTests: XCTestCase {
     /// :8100 отдаёт блоки указателей и пути от корня vault (опыт out1:
     /// «ИИ-граф/_MOC.md», «Ядра/_ЯДРА.md», «Служебное_*») — блок указателя
     /// уходит и из текста модели, и из чипов; карта под префиксом папки — карта.
-    func testBrainBlocksOfFolderIndexesLeaveTextAndChips() {
+    func testBrainBlocksOfFolderIndexesLeaveTextAndChips() throws {
         let text = """
         • g/Ядра/_ЯДРА.md
           …сводка статусов…
@@ -96,7 +96,7 @@ final class ServiceFilesTests: XCTestCase {
         • g/_MOC.md
           …обзор…
         """
-        let out = ArchiveSearch.brainOutcome(text, folder: "g")
+        let out = try XCTUnwrap(ArchiveSearch.brainOutcome(text, folder: "g"))
         // rels — от корня графа, как у локальной ветки: вид чипа и «Карта графа»
         XCTAssertEqual(out.rels, ["Люди/Мария Соколова.md", "_MOC.md"])
         XCTAssertEqual(MemoryScreenPolicy.Source(rel: "_MOC.md", kind: MemoryScreenPolicy.kind(of: "_MOC.md")).title,
@@ -105,25 +105,25 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertFalse(out.text.contains("_ЯДРА") || out.text.contains("сводка статусов"),
                        "блок указателя ушёл модели: \(out.text)")
         XCTAssertTrue(out.text.contains("…обзор…") && out.text.contains("…см. Досье/_ИНДЕКС.md…"))
-        // одни указатели — пустой список и текст без блоков, а не nil: фолбэк
-        // по телам сниппетов собрал бы чипы из упоминаний
-        let only = ArchiveSearch.brainOutcome(ArchiveSearch.lowConfidenceMarker
-                                              + "• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g")
-        XCTAssertEqual(only.rels, [])
-        XCTAssertEqual(only.text, "", "выброшено всё — ни блоков, ни маркера «слабо»")
+        // одни указатели — nil: поиск уходит в локальный, а не отвечает
+        // «в графе пусто» и не теряет сводку досье над блоками (out4)
+        XCTAssertNil(ArchiveSearch.brainOutcome(ArchiveSearch.lowConfidenceMarker
+                                                + "• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g"))
+        XCTAssertNil(ArchiveSearch.brainOutcome("📋 ДОСЬЕ «Тема» (g, источников 3)\nсводка\n\n"
+                                                + "Найдено в vault (1 из 1):\n\n• g/Ядра/_ЯДРА.md\n  …", folder: "g"))
         let none = ArchiveSearch.brainOutcome("текст без заголовков, Ядра/Тема.md", folder: "g")
-        XCTAssertNil(none.rels)
-        XCTAssertEqual(none.text, "текст без заголовков, Ядра/Тема.md")
+        XCTAssertNil(none?.rels)
+        XCTAssertEqual(none?.text, "текст без заголовков, Ядра/Тема.md")
         // карта не в корне графа — указатель
-        XCTAssertEqual(ArchiveSearch.brainOutcome("• g/Встречи/_MOC.md\n  …", folder: "g").rels, [])
+        XCTAssertNil(ArchiveSearch.brainOutcome("• g/Встречи/_MOC.md\n  …", folder: "g"))
     }
 
     /// Маркер слабой выдачи brainSearch клеит к первому заголовку («⚠• путь»):
     /// первый блок проходит тот же фильтр, маркер остаётся в начале (out2 C1).
-    func testWeakMarkerGluedToTheFirstHeader() {
+    func testWeakMarkerGluedToTheFirstHeader() throws {
         let m = ArchiveSearch.lowConfidenceMarker
-        let out = ArchiveSearch.brainOutcome(m + "• g/Ядра/_ЯДРА.md\n  …сводка…\n\n• g/Люди/М.md\n  …факт…",
-                                             folder: "g")
+        let out = try XCTUnwrap(ArchiveSearch.brainOutcome(
+            m + "• g/Ядра/_ЯДРА.md\n  …сводка…\n\n• g/Люди/М.md\n  …факт…", folder: "g"))
         XCTAssertEqual(out.rels, ["Люди/М.md"])
         XCTAssertTrue(out.text.hasPrefix(m))
         XCTAssertFalse(out.text.contains("сводка"))
@@ -132,9 +132,9 @@ final class ServiceFilesTests: XCTestCase {
 
     /// Заголовок — только «• » в колонке 0, как разбирает ответ сам сервер:
     /// строка тела с отступом блок не режет и источником не становится (out2).
-    func testIndentedBulletInABodyIsNotAHeader() {
-        let out = ArchiveSearch.brainOutcome("• g/Люди/М.md\n  …\n  • Ядра/_ЯДРА.md\n  важный факт",
-                                             folder: "g")
+    func testIndentedBulletInABodyIsNotAHeader() throws {
+        let out = try XCTUnwrap(ArchiveSearch.brainOutcome(
+            "• g/Люди/М.md\n  …\n  • Ядра/_ЯДРА.md\n  важный факт", folder: "g"))
         XCTAssertEqual(out.rels, ["Люди/М.md"])
         XCTAssertTrue(out.text.contains("важный факт"))
     }

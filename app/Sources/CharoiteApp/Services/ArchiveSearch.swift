@@ -158,8 +158,9 @@ enum ArchiveSearch {
                 .trimmingCharacters(in: .whitespaces).isEmpty
         }
         if !graphOverridden,
-           let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
-            return brainOutcome(viaBrain, folder: AppSettings.graphDir?.lastPathComponent ?? "")
+           let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet),
+           let out = brainOutcome(viaBrain, folder: AppSettings.graphDir?.lastPathComponent ?? "") {
+            return out
         }
         return await localSearchOutcome(query: query, limit: limit,
                                         snippet: snippet, budget: budget,
@@ -175,13 +176,14 @@ enum ArchiveSearch {
     /// «Служебное_*»; фильтр одних чипов оставлял их модели). Пути сервера
     /// идут от корня vault («<папка графа>/_MOC.md») — правило судит путь от
     /// корня графа, и rels отдаются от корня графа — как у локальной ветки
-    /// (вид чипа, «Карта графа», открытие файла). Все блоки выброшены — пустой
-    /// список, не nil: иначе фолбэк собрал бы чипы из упоминаний.
+    /// (вид чипа, «Карта графа», открытие файла). Все блоки выброшены — nil,
+    /// и поиск уходит в локальный: brain отдал слоты указателям, а сводки досье
+    /// над блоками (out4) и узлы по тем же словам локальный поиск найдёт сам.
     /// Заголовок — «• » в КОЛОНКЕ 0, как разбирает свой ответ сам сервер:
     /// тело блока он пишет одной свёрнутой строкой с отступом, и «• путь.md»
     /// внутри фрагмента заголовком не становится (out2). Маркер «⚠» brainSearch
     /// клеит к первому заголовку — снимается до разбора и возвращается.
-    static func brainOutcome(_ text: String, folder: String) -> Outcome {
+    static func brainOutcome(_ text: String, folder: String) -> Outcome? {
         let weak = text.hasPrefix(lowConfidenceMarker)
         let body = weak ? String(text.dropFirst(lowConfidenceMarker.count)) : text
         func header(_ line: Substring) -> String? {
@@ -203,9 +205,7 @@ enum ArchiveSearch {
         }
         guard !blocks.isEmpty else { return Outcome(text: text, rels: nil) }
         let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
-        // выброшено всё — пустой контекст, без шапки и маркера «слабо»:
-        // иначе чат показал бы «слабые совпадения» над пустотой (out3)
-        if kept.isEmpty { return Outcome(text: "", rels: []) }
+        if kept.isEmpty { return nil }
         let lines = preamble + kept.flatMap(\.lines)
         var seen = Set<String>()
         let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
