@@ -199,6 +199,32 @@ final class SemanticSlotTests: XCTestCase {
         XCTAssertTrue(out.contains("Скрытое ядро"),
             "сильная семантическая находка (cos 1.0) не пробилась сквозь лексический поток: \(out.prefix(150))")
     }
+
+    /// Слот семантики стоит в выдаче последним, но держит вердикт: окно
+    /// модели не должно выбросить его первым (№743 out1, Sonnet I2).
+    func testSemanticSlotIsStrongestPieceForTheWindow() async throws {
+        var corpus: [(String, String)] = (1...6).map {
+            ("Ядра/Лексика \($0).md", "здесь упоминается контракт номер \($0)")
+        }
+        corpus.append(("Ядра/Скрытое ядро.md", "суть договорённости другими словами"))
+        let graph = try makeTestGraph(corpus)
+        defer { try? FileManager.default.removeItem(at: graph) }
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            texts.map { t -> [Float] in
+                (t.contains("договорённости") || t == "контракт номер") ? [1, 0] : [0, 1]
+            }
+        }
+        await SemanticIndex.shared.refresh(files: corpus.map {
+            (path: $0.0, mtime: 1.0, text: $0.1)
+        })
+        let out = await ArchiveSearch.localSearchOutcome(query: "контракт номер", limit: 5, snippet: 200,
+                                                         budget: 25_000, root: graph)
+        let parts = try XCTUnwrap(out.parts)
+        let slot = try XCTUnwrap(parts.first { $0.rel == "Ядра/Скрытое ядро.md" })
+        // слот гейта — сильнейший кусок: окно выбрасывает по убыванию ранга
+        XCTAssertTrue(parts.allSatisfy { $0.rel == slot.rel || $0.rank > slot.rank },
+                      "\(parts.map { ($0.rel ?? "", $0.rank) })")
+    }
 }
 
 /// Стем не должен зависеть от формы, в которой человек набрал слово.

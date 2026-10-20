@@ -227,5 +227,11 @@ final class ChatRetrievalTests: XCTestCase {
         for copy in ["\"keep_alive\"", "[ГРАФ ВСТРЕЧ", "limit: 8", "Ты — Чароит", "ChatContextWindow.select("] {
             XCTAssertFalse(src.contains(copy), "своя копия сборки в чате: \(copy)")
         }
+        // окно истории выбрано до памяти, и память режется под него (out1);
+        // проверка по исходнику — до чистой функции сборки хода (№637)
+        let history = try XCTUnwrap(src.range(of: "ChatRetrieval.historyWindow("))
+        let fit = try XCTUnwrap(src.range(of: "ChatRetrieval.fit("))
+        XCTAssertLessThan(history.lowerBound, fit.lowerBound, "история выбирается после памяти")
+        XCTAssertTrue(src[fit.lowerBound...].prefix(400).contains("turn: window"), "память режется мимо хода")
     }
 }

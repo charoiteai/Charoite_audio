@@ -32,9 +32,9 @@ enum ChatRetrieval {
     enum Window {
         static let context = 32_768
         static let answer = 2_048
-        /// Разметка чата (роли, служебные токены) и промах оценки на цифрах
-        /// и эмодзи (оценка/факт 0,94–0,97).
-        static let reserve = 512
+        /// Разметка чата (роли, служебные токены) — 512; ещё 1 024 — на текст,
+        /// где оценка ниже факта: base64 и хэши 0,82 (out1, DS C1).
+        static let reserve = 1_536
         static let perMessage = 8
         /// Потолок истории — прежние 12 000 знаков кириллицы: длинный
         /// разговор не вытесняет память целиком.
@@ -42,24 +42,55 @@ enum ChatRetrieval {
         static var input: Int { context - answer - reserve }
     }
 
-    /// Оценка токенов сверху, по длине знака в UTF-8. Замер токенизатором
-    /// Qwen3.6-35B (20.10): кириллица 2,6 знака на токен, en 4,7, zh 1,8,
-    /// ja 2,1, ko 2,4; цифра — всегда токен, редкий иероглиф (4 байта) —
-    /// 3,5 токена. Правило ниже даёт оценку/факт 0,94–2,1: кириллицу — с
-    /// запасом ~1,5, редкие иероглифы не занижает. «Знак = токен для CJK»
-    /// занижал редкие иероглифы в 3,5 раза.
+    /// Оценка токенов сверху — по правилам претокенизатора модели, а не по
+    /// длине текста. Цифра — всегда токен, пробел перед цифрой или знаком —
+    /// свой токен, перевод строки — токен, у буквенного прогона — не меньше
+    /// токена; внутри прогона латиница по ⅓, смешанный регистр внутри слова
+    /// (base64, хэши) — по ½, кириллица ½, иероглиф BMP 1, 4 байта UTF-8 — 4.
+    /// Замер токенизатором Qwen3.6-35B (20.10): по 11 097 заметкам графа
+    /// оценка/факт не ниже 1,18 (медиана 1,59), кроме вырожденного повтора
+    /// одной буквы; цифры через пробел 1,00, лог 1,04, hex 1,00, base64 0,82.
+    /// Прежнее правило «по длине знака в UTF-8» давало цифрам через пробел
+    /// 0,67 и base64 0,64 — не верхняя граница (out1, DS C1).
     static func estimatedTokens(_ text: String) -> Int {
         var sixths = 0          // в шестых долях токена: целые числа, без дробей
-        for scalar in text.unicodeScalars {
-            switch scalar.utf8.count {
-            case 1:                 // буква и пробел — ⅓, цифра и знак — токен
-                let ascii = Character(scalar)
-                sixths += ascii.isLetter || ascii.isWhitespace ? 2 : 6
-            case 2: sixths += 3     // кириллица, латиница с диакритикой — ½
-            case 3: sixths += 6     // иероглифы BMP, каны, хангыль, «—», «…», «•»
-            default: sixths += 24   // редкие иероглифы и эмодзи — 4
+        var run = 0, runSixths = 0, mixedCase = false, prevLower = false
+        func closeRun() {
+            if run > 0 { sixths += max(6, mixedCase ? 3 * run : runSixths) }
+            run = 0; runSixths = 0; mixedCase = false; prevLower = false
+        }
+        let scalars = Array(text.unicodeScalars)
+        for (i, scalar) in scalars.enumerated() {
+            let bytes = scalar.utf8.count
+            if scalar.properties.isAlphabetic {
+                if bytes == 1 {
+                    if scalar.properties.isUppercase && prevLower { mixedCase = true }
+                    prevLower = scalar.properties.isLowercase
+                    runSixths += 2
+                } else {
+                    prevLower = false
+                    runSixths += bytes == 2 ? 3 : bytes == 3 ? 6 : 24
+                }
+                run += 1
+                continue
+            }
+            closeRun()
+            switch bytes {
+            case 1:
+                if scalar.properties.isWhitespace && scalar != "\n" {
+                    // пробел липнет к следующему слову; перед цифрой, знаком
+                    // и другим пробелом — отдельный токен
+                    let next = i + 1 < scalars.count ? scalars[i + 1] : nil
+                    sixths += next?.properties.isAlphabetic == true ? 2 : 6
+                } else {
+                    sixths += 6     // цифра, знак, перевод строки
+                }
+            case 2: sixths += 3
+            case 3: sixths += 6     // «—», «…», «•», знаки CJK
+            default: sixths += 24   // эмодзи
             }
         }
+        closeRun()
         return (sixths + 5) / 6
     }
 
@@ -67,12 +98,14 @@ enum ChatRetrieval {
 
     /// Выдача поиска под окно хода: куски (`Outcome.parts`) выбрасываются
     /// целиком, начиная со слабейшего, пока блок графа не уместится рядом с
-    /// системным промптем и вопросом; чипы (`rels`) — по оставшимся. Не
-    /// уместился ни один кусок — выдачи нет, а вердикт «поиск неполный»:
-    /// «в памяти этого нет» было бы ложью о памяти.
-    static func fit(_ outcome: ArchiveSearch.Outcome, system: String, prompt: String,
+    /// системным промптом и уже выбранным ходом (`turn` — история и вопрос:
+    /// окно истории считается раньше памяти, `historyWindow`). Чипы (`rels`) —
+    /// по оставшимся, а модель узнаёт о срезе строкой в блоке. Не уместился ни
+    /// один кусок — выдачи нет, а вердикт «поиск неполный»: «в памяти этого
+    /// нет» было бы ложью о памяти.
+    static func fit(_ outcome: ArchiveSearch.Outcome, system: String, turn: [ChatContextWindow.Entry],
                     lang: String = L.lang) -> ArchiveSearch.Outcome {
-        let room = Window.input - messageTokens(system) - messageTokens(prompt)
+        let room = Window.input - messageTokens(system) - turn.reduce(0) { $0 + messageTokens($1.text) }
         func fits(_ o: ArchiveSearch.Outcome) -> Bool {
             estimatedTokens(contextBlock(o, lang: lang).block) <= room
         }
@@ -80,15 +113,29 @@ enum ChatRetrieval {
         let marker = outcome.text.hasPrefix(ArchiveSearch.lowConfidenceMarker)
             ? ArchiveSearch.lowConfidenceMarker : ""
         var parts = outcome.parts ?? [.init(text: outcome.text, rel: nil, rank: 0)]
+        let total = parts.count
+        func trimmed(_ kept: [ArchiveSearch.Part]) -> ArchiveSearch.Outcome {
+            var seen = Set<String>()
+            let rels = outcome.rels.map { _ in kept.compactMap(\.rel).filter { seen.insert($0).inserted } }
+            let cut = L.t("показаны \(kept.count) из \(total) кусков выдачи, остальное не поместилось в окно модели",
+                          "\(kept.count) of \(total) result pieces shown, the rest did not fit the model window",
+                          "仅显示 \(kept.count)/\(total) 段检索结果，其余超出模型窗口", lang: lang)
+            return ArchiveSearch.Outcome(
+                text: marker + kept.map(\.text).joined(separator: "\n\n"), rels: rels,
+                verdict: outcome.verdict, note: outcome.note.isEmpty ? cut : outcome.note + "; " + cut,
+                parts: kept)
+        }
+        // цена куска считается один раз: пересборка блока на каждом выбросе
+        // гоняла оценку по всей выдаче на главном акторе (out1, Sonnet M2)
+        var costs = parts.map { estimatedTokens($0.text) + 2 }
+        var spent = costs.reduce(0, +)
+        let frame = estimatedTokens(contextBlock(trimmed([]), lang: lang).block)
         while let weakest = parts.indices.max(by: { parts[$0].rank < parts[$1].rank }) {
             parts.remove(at: weakest)
+            spent -= costs.remove(at: weakest)
             guard !parts.isEmpty else { break }
-            var seen = Set<String>()
-            let rels = outcome.rels.map { _ in parts.compactMap(\.rel).filter { seen.insert($0).inserted } }
-            let candidate = ArchiveSearch.Outcome(
-                text: marker + parts.map(\.text).joined(separator: "\n\n"), rels: rels,
-                verdict: outcome.verdict, note: outcome.note, parts: parts)
-            if fits(candidate) { return candidate }
+            // сумма цен — прикидка; решает оценка собранного блока
+            if frame + spent <= room, fits(trimmed(parts)) { return trimmed(parts) }
         }
         let overflow = L.t("выдача не поместилась в окно модели", "the results did not fit the model window",
                            "检索结果超出模型窗口", lang: lang)
@@ -97,12 +144,21 @@ enum ChatRetrieval {
                                      parts: [])
     }
 
-    /// История под окно: остаток после системного промпта (с блоком графа) и
-    /// вопроса, но не больше `Window.history`; целыми ходами, как и раньше.
+    /// Ход из одного вопроса — для проб и тестов.
+    static func fit(_ outcome: ArchiveSearch.Outcome, system: String, prompt: String,
+                    lang: String = L.lang) -> ArchiveSearch.Outcome {
+        fit(outcome, system: system, turn: [.init(role: "user", text: prompt)], lang: lang)
+    }
+
+    /// История под окно — ДО памяти: не больше `Window.history` и не больше
+    /// четверти того, что осталось после системного промпта и вопроса; целыми
+    /// ходами, вопрос — последним. При «истории — остаток» полная выдача
+    /// оставляла диалогу 0–1,5 тыс. токенов, и второй вопрос терял первый
+    /// (out1: Sonnet I1, DS I3, Haiku I-1).
     static func historyWindow(_ history: [ChatContextWindow.Entry], prompt: String,
                               system: String) -> [ChatContextWindow.Entry] {
         let free = Window.input - messageTokens(system) - messageTokens(prompt)
-        let room = min(Window.history, max(0, free))
+        let room = min(Window.history, max(0, free / 4))
         return ChatContextWindow.select(history: history, prompt: prompt,
                                         budget: room + messageTokens(prompt), cost: messageTokens)
     }

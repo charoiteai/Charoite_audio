@@ -625,15 +625,23 @@ enum ArchiveSearch {
         // (≥ порога гейта) — показывается всегда; заодно честен и сам гейт:
         // bestSim, снявший пометку «⚠», виден пользователю, а не лежит
         // где-то в графе невидимым оправданием.
+        var gateRel: String?
         if let top = sem.first, top.score >= 0.47,
            !shown.contains(where: { $0.rel == top.path }),
            let topHit = semHits.first(where: { $0.rel == top.path }) {
             if shown.count >= limit { shown.removeLast() }
             shown.append(topHit)
+            gateRel = topHit.rel
         }
         shown = linkedContext(shown, documents: byPath.mapValues(\.text), needles: needles,
                               snippet: snippet, limit: limit, enabled: includeLinked)
-        let (body, keptHits, parts) = packContextKept(shown, budget: budget)
+        let (body, keptHits, packed) = packContextKept(shown, budget: budget)
+        var parts = packed
+        // Слот семантики стоит в выдаче последним, но держит вердикт: окно
+        // модели выбрасывает его последним, а не первым (out1, Sonnet I2)
+        if let gateRel {
+            parts = parts.map { $0.rel == gateRel ? Part(text: $0.text, rel: $0.rel, rank: -1) : $0 }
+        }
         // Гейт честности: оба сигнала слабые → пометка, синтез не сочиняет.
         // Порог 0.66, а не 0.67: «две иглы из трёх» — это 0.6667, и с прежним
         // числом правило требовало на самом деле три из трёх.
@@ -677,10 +685,12 @@ enum ArchiveSearch {
 
     // MARK: - Бюджет контекста
 
-    /// Сколько знаков выдачи уходит модели по умолчанию.
+    /// Сколько знаков выдачи уходит модели по умолчанию — у строкового
+    /// `search` и инструментов. Чат берёт свой бюджет (`ChatRetrieval.Params.chat`,
+    /// 25 000 по бенчу №743) и режется под окно модели `ChatRetrieval.fit`.
     ///
-    /// Окно локальной модели (num_ctx 32768 ≈ 100 000 знаков) — не цель, в
-    /// которую надо целиться. При заполнении больше половины окна модель
+    /// Окно локальной модели (num_ctx 32768, ~85 000 знаков кириллицы) — не
+    /// цель, в которую надо целиться. При заполнении больше половины окна модель
     /// начинает терять начало контекста, а лишний найденный файл вредит
     /// сильнее, чем помогает: дистракторы бьют по точности нелинейно. Плюс
     /// у MoE-модели активны единицы миллиардов параметров, и длинный шумный

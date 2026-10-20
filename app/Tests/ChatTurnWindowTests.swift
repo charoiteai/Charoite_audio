@@ -23,15 +23,25 @@ final class ChatTurnWindowTests: XCTestCase {
         "• \(rel)\n  …" + String(repeating: letter, count: chars) + "…"
     }
 
-    func testОценкаПоДлинеЗнакаВUTF8() {
+    /// Значения — те же, что у прототипа на Python, сверенного с токенизатором
+    /// Qwen3.6-35B по 11 097 заметкам графа (оценка/факт ≥ 1,18).
+    func testОценкаПоПравиламПретокенизатора() {
         XCTAssertEqual(ChatRetrieval.estimatedTokens(""), 0)
-        XCTAssertEqual(ChatRetrieval.estimatedTokens("abc"), 1)          // ⅓ на букву
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("abc"), 1)          // латиница ⅓, прогон — не меньше токена
         XCTAssertEqual(ChatRetrieval.estimatedTokens("2026"), 4)         // цифра — токен
         XCTAssertEqual(ChatRetrieval.estimatedTokens("абвг"), 2)         // кириллица ½
         XCTAssertEqual(ChatRetrieval.estimatedTokens("支付服务"), 4)      // BMP-иероглиф — 1
         XCTAssertEqual(ChatRetrieval.estimatedTokens("𠀀𠀁"), 8)          // редкий иероглиф — 4
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("1 2 3"), 5)        // пробел перед цифрой — свой токен (факт 5)
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("и в к"), 4)        // однобуквенное слово — токен (факт 3)
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("QmFzZTY0"), 5)     // смешанный регистр в слове — ½
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("a\n\nb"), 4)       // перевод строки — токен
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("📋"), 4)
         // замер токенизатором: редкий иероглиф 3,5 токена, «знак = токен» занижал
         XCTAssertGreaterThanOrEqual(ChatRetrieval.estimatedTokens(String(repeating: "𠀀", count: 100)), 350)
+        // цифры через пробел: прежнее правило давало 0,67 от факта (out1, DS C1)
+        let digits = (0..<3_000).map { String($0 % 10) }.joined(separator: " ")
+        XCTAssertGreaterThanOrEqual(ChatRetrieval.estimatedTokens(digits), 5_999)
     }
 
     func testВыдачаВОкнеНеМеняется() {
@@ -77,15 +87,36 @@ final class ChatTurnWindowTests: XCTestCase {
     func testCJKВопросИПамятьНеПереполняютОкно() {
         let prompt = String(repeating: "会", count: ChatContextWindow.maxPrompt)
         let parts = (0..<10).map { Part(text: block("Встречи/\($0).md", 2_500, "议"), rel: "Встречи/\($0).md", rank: $0) }
-        let fitted = ChatRetrieval.fit(outcome(parts), system: system, prompt: prompt)
-        let memory = ChatRetrieval.contextBlock(fitted).block
         let history = ChatRetrieval.historyWindow([.init(role: "user", text: String(repeating: "历", count: 9_000)),
                                                    .init(role: "assistant", text: "答")],
-                                                  prompt: prompt, system: system + block)
+                                                  prompt: prompt, system: system)
         XCTAssertEqual(history.last?.text, prompt)
+        let fitted = ChatRetrieval.fit(outcome(parts), system: system, turn: history)
+        let memory = ChatRetrieval.contextBlock(fitted).block
         XCTAssertLessThanOrEqual(turnTokens(system: system, block: memory, history: history),
                                  ChatRetrieval.Window.input)
         XCTAssertFalse(fitted.parts?.isEmpty ?? true, "вопрос в окне — хоть один кусок памяти должен остаться")
+    }
+
+    /// Полная выдача не съедает диалог: история считается до памяти, память
+    /// режется под неё (out1: Sonnet I1, DS I3, Haiku I-1 — при «истории —
+    /// остаток» второму вопросу оставалось 0–1,5 тыс. токенов).
+    func testПолнаяВыдачаОставляетИсторию() {
+        let turns = (0..<40).flatMap { i -> [ChatContextWindow.Entry] in
+            [.init(role: "user", text: "вопрос \(i) " + String(repeating: "к", count: 600)),
+             .init(role: "assistant", text: "ответ \(i) " + String(repeating: "о", count: 600))]
+        }
+        let window = ChatRetrieval.historyWindow(turns, prompt: "а по второму пункту?", system: system)
+        let spent = window.dropLast().reduce(0) { $0 + ChatRetrieval.messageTokens($1.text) }
+        XCTAssertGreaterThan(spent, 5_000, "истории досталось \(spent) токенов")
+        let parts = (0..<40).map { Part(text: block("Встречи/\($0).md", 3_000), rel: "Встречи/\($0).md", rank: $0) }
+        let fitted = ChatRetrieval.fit(outcome(parts), system: system, turn: window)
+        let memory = ChatRetrieval.contextBlock(fitted).block
+        XCTAssertFalse(fitted.parts?.isEmpty ?? true)
+        XCTAssertLessThanOrEqual(turnTokens(system: system, block: memory, history: window), ChatRetrieval.Window.input)
+        // модель знает, что видит не всё
+        XCTAssertTrue(fitted.note.contains("из 40 кусков"), fitted.note)
+        XCTAssertTrue(memory.contains("из 40 кусков"))
     }
 
     /// DS C1 = Sonnet I2 (in2): brain-путь бюджета не знает — 25×1000 отдаёт
@@ -152,6 +183,14 @@ final class ChatTurnWindowTests: XCTestCase {
         // система съела окно — истории нет, вопрос есть
         let full = system + String(repeating: "п", count: 2 * ChatRetrieval.Window.input)
         XCTAssertEqual(ChatRetrieval.historyWindow(turns, prompt: "дальше", system: full).map(\.text), ["дальше"])
+        // длинный вопрос: истории — четверть остатка, три четверти — памяти
+        let long = String(repeating: "д", count: 40_000)
+        let free = ChatRetrieval.Window.input - ChatRetrieval.messageTokens(system) - ChatRetrieval.messageTokens(long)
+        XCTAssertLessThan(free / 4, ChatRetrieval.Window.history)
+        let tight = ChatRetrieval.historyWindow(turns, prompt: long, system: system)
+        let tightSpent = tight.dropLast().reduce(0) { $0 + ChatRetrieval.messageTokens($1.text) }
+        XCTAssertGreaterThan(tightSpent, 0)
+        XCTAssertLessThanOrEqual(tightSpent, free / 4)
     }
 
     func testPackContextОтдаётКускиСРангомДоПерестановки() {
