@@ -59,8 +59,8 @@ final class ChatTurnWindowTests: XCTestCase {
         XCTAssertEqual(fitted.text, kept.map(\.text).joined(separator: "\n\n"))
         XCTAssertEqual(fitted.rels, kept.compactMap(\.rel))
         XCTAssertEqual(fitted.verdict, .confident)
-        let block = ChatRetrieval.contextBlock(fitted).block
-        XCTAssertLessThanOrEqual(turnTokens(system: system, block: block, history: [])
+        let memory = ChatRetrieval.contextBlock(fitted).block
+        XCTAssertLessThanOrEqual(turnTokens(system: system, block: memory, history: [])
                                  + ChatRetrieval.messageTokens("что решили"), ChatRetrieval.Window.input)
     }
 
@@ -78,12 +78,12 @@ final class ChatTurnWindowTests: XCTestCase {
         let prompt = String(repeating: "会", count: ChatContextWindow.maxPrompt)
         let parts = (0..<10).map { Part(text: block("Встречи/\($0).md", 2_500, "议"), rel: "Встречи/\($0).md", rank: $0) }
         let fitted = ChatRetrieval.fit(outcome(parts), system: system, prompt: prompt)
-        let block = ChatRetrieval.contextBlock(fitted).block
+        let memory = ChatRetrieval.contextBlock(fitted).block
         let history = ChatRetrieval.historyWindow([.init(role: "user", text: String(repeating: "历", count: 9_000)),
                                                    .init(role: "assistant", text: "答")],
                                                   prompt: prompt, system: system + block)
         XCTAssertEqual(history.last?.text, prompt)
-        XCTAssertLessThanOrEqual(turnTokens(system: system, block: block, history: history),
+        XCTAssertLessThanOrEqual(turnTokens(system: system, block: memory, history: history),
                                  ChatRetrieval.Window.input)
         XCTAssertFalse(fitted.parts?.isEmpty ?? true, "вопрос в окне — хоть один кусок памяти должен остаться")
     }
@@ -110,8 +110,8 @@ final class ChatTurnWindowTests: XCTestCase {
         XCTAssertTrue(kept[0].text.hasPrefix(ArchiveSearch.dossierHead), "досье сильнее блоков")
         XCTAssertEqual(fitted.rels, kept.compactMap(\.rel))
         XCTAssertEqual(fitted.rels?.first, "Встречи/2026-10-01_1000.md")
-        let block = ChatRetrieval.contextBlock(fitted).block
-        XCTAssertLessThanOrEqual(turnTokens(system: system, block: block, history: [])
+        let memory = ChatRetrieval.contextBlock(fitted).block
+        XCTAssertLessThanOrEqual(turnTokens(system: system, block: memory, history: [])
                                  + ChatRetrieval.messageTokens("что решили по пилоту"), ChatRetrieval.Window.input)
     }
 
