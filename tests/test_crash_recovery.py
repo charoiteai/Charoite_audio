@@ -639,7 +639,8 @@ def test_an_empty_pcm_at_the_deadline_is_no_channel(rec_dir, monkeypatch):
 
     assert rt.wait_recording(rec_dir, "s", "mic", 16000) is None
     assert (rec_dir / "s_mic.pcm").exists()
-    assert clock.slept, "пустой файл живого писателя ждут до срока"
+    # срок включительно: на 4-й секунде уже не спим (мутант `>` дал бы третий сон)
+    assert clock.slept == [2.0, 2.0], "пустой файл живого писателя ждут ровно до срока"
 
 
 def test_pcm_to_wav_on_an_unreadable_pcm_is_not_a_volume_without_flock(rec_dir):

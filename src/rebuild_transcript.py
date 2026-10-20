@@ -140,6 +140,10 @@ EMPTY = "empty"
 UNREADABLE = "unreadable"
 
 
+#: Кусок чтения `.pcm` при конвертации: канал трёхчасовой встречи — сотни МБ.
+_CHUNK = 1 << 20
+
+
 def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
     """.pcm → .wav под заявкой на сам `.pcm`; без заявки — ничего не трогаем.
 
@@ -188,21 +192,23 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
         if st.st_size == 0:
             return EMPTY        # out1 Haiku M2: заявку у такого файла писатель берёт следующей строкой
         stale = pcm.with_suffix(".wav.part")
-        if stale.exists():
-            log(f"{stale.name}: огрызок убитого писателя — убираю, .pcm цел")
-            stale.unlink(missing_ok=True)
+        try:
+            stale.unlink()
+            log(f"{stale.name}: огрызок убитого писателя — убрала, .pcm цел")
+        except FileNotFoundError:
+            pass
         tmp = out.with_name(f"{out.name}.part{os.getpid()}")
         try:
             with wave.open(str(tmp), "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)
                 w.setframerate(sr)
-                while chunk := f.read(1 << 20):
+                while chunk := f.read(_CHUNK):
                     w.writeframes(chunk)
             tmp.replace(out)
         finally:
             tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
-        pcm.unlink(missing_ok=True)       # под заявкой: имя — наше, пишущих нет
+        pcm.unlink()                      # под заявкой: имя — наше, пишущих нет
     return out
 
 
