@@ -1368,9 +1368,13 @@ class AudioHub:
             # в finalized, ни в уборку (аудит 13.09, DS M4).
             # Имя снимаем до close: close отпускает заявку, и пустая заготовка
             # без неё досталась бы пересборке (out1 DS M1).
+            # Свои try: сбой снятия имени не оставляет дескриптор открытым (out2).
             for f in self._sinks.values():
                 try:
                     pathlib.Path(f.name).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
+                    pass
+                try:
                     f.close()
                 except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
                     pass
@@ -1404,7 +1408,7 @@ class AudioHub:
             self._say(stt_runtime.Status(
                 f"ЗАМОК ЗАПИСИ НЕ ВЗЯТ ({label}: {got}) — запись идёт; после сбоя "
                 "восстановите встречу вручную",
-                error=True, sticky=True, topic=stt_runtime.TOPIC_DISK))
+                error=True, sticky=True, topic=stt_runtime.TOPIC_RECORDING_CLAIM))
 
     @staticmethod
     def prune_recordings(record_dir: pathlib.Path, keep_days,
@@ -1578,15 +1582,23 @@ class AudioHub:
                 self._say(stt_runtime.Status(
                     f"ЗАПИСЬ КАНАЛА {label} ПРОПАЛА С ДИСКА до конца встречи — финала по ней не будет",
                     error=True, topic=stt_runtime.TOPIC_DISK))
-            except Exception:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
-                pass
+            except Exception as e:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
+                # Не молча: без строки человек ждал бы финала, которого нет до
+                # пересборки (out2, шаг Haiku M1).
+                self._say(stt_runtime.Status(
+                    f"запись канала {label} не сконвертирована ({type(e).__name__}) — "
+                    ".pcm цел, финал соберёт пересборка",
+                    error=True, topic=stt_runtime.TOPIC_DISK))
             finally:
                 try:
                     f.close()             # сбой flush/dup выше — sink ещё открыт
                 except Exception:  # noqa: BLE001 — сбой close не роняет соседний канал
                     pass
                 if claim is not None:
-                    os.close(claim)       # снимает заявку — после снятия имени
+                    try:
+                        os.close(claim)   # снимает заявку — после снятия имени
+                    except OSError:       # сбой close не роняет соседний канал (out2)
+                        pass
 
     #: не чаще этого репортёр говорит об одном типе сбоя прохода: сторож идёт
     #: раз в 5 с, и без окна устойчивый баг дал бы строку каждые пять секунд

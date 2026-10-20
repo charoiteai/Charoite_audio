@@ -208,7 +208,9 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
             tmp.replace(out)
         finally:
             tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
-        pcm.unlink()                      # под заявкой: имя — наше, пишущих нет
+        # Под заявкой пишущих нет, но снять имя может тот, кто заявку не
+        # спрашивает («Забыть», ручная уборка): полный .wav уже опубликован.
+        pcm.unlink(missing_ok=True)
     return out
 
 
@@ -216,12 +218,21 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
 WAIT_POLL_S = 2.0
 
 #: Что значит отказ двери — для строки журнала на сроке.
+def _empty_file(p: pathlib.Path) -> bool:
+    """Файл есть и пуст. Сбой stat — «не знаем», а не «пуст»: такой канал
+    остаётся устранимым отказом."""
+    try:
+        return p.stat().st_size == 0
+    except OSError:
+        return False
+
+
 _REFUSAL_TEXT = {
     file_locks.BUSY: "писатель держит запись",
     file_locks.NO_FLOCK: "том без flock — писателя не видно, запись не трогаю",
     GONE: "записи канала нет",
     EMPTY: "запись пуста",
-    UNREADABLE: "запись не открыть — проверьте права",
+    UNREADABLE: "запись не открыть — права или лимит дескрипторов",
 }
 
 
@@ -244,9 +255,9 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     Исходы: путь к `.wav`; строка отказа двери (`file_locks.BUSY`,
     `file_locks.NO_FLOCK`, `UNREADABLE`) — `.pcm` есть, но не готов, и `rebuild`
     не собирает финал без этого канала; None — записи канала нет (или она
-    пуста). NO_FLOCK — свойство тома, а не встречи: ждать его нечего, выходим
-    сразу (out1 Sonnet I1). Конвертации «по сроку» нет: без заявки ничего
-    не удаляется. Писатель в обход `AudioHub` (ручной скрипт) заявку не берёт
+    пуста). На NO_FLOCK дверь зовём один раз — это свойство тома, — а `.wav`
+    писателя ждём до срока (out1 Sonnet I1, out2 Sonnet I1). Конвертации «по
+    сроку» нет: без заявки ничего не удаляется. Писатель в обход `AudioHub` (ручной скрипт) заявку не берёт
     и для пересборки неотличим от убитого — это граница механизма.
     `sleep`/`now` — швы часов, как у `live_gate.wait_while_live`.
     """
@@ -262,23 +273,27 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     while True:
         if wav.exists():
             return wav
-        if pcm.exists():
+        # Том без flock: дверь больше не зовём — заявки там нет ни у кого, —
+        # но .wav писателя ждём весь срок: на штатном стопе пересборка
+        # стартует раньше, чем демон допишет его (out2 Sonnet I1).
+        if pcm.exists() and refusal != file_locks.NO_FLOCK:
             got = pcm_to_wav(pcm, sr)
             if isinstance(got, pathlib.Path):
                 log(f"{label}: писателя записи нет — сконвертировал .pcm сам")
                 return got
             refusal = got
-            if got == file_locks.NO_FLOCK:
-                break
         if now() >= deadline:
             break
         sleep(WAIT_POLL_S)
+    # .pcm — первым: писатель публикует .wav до снятия .pcm, и в таком порядке
+    # гонки нет — нет .pcm значит есть .wav или канала нет (out2 DS I1).
+    pcm_left = pcm.exists()
     if wav.exists():
         return wav    # писатель опубликовал между последним заходом и сроком
-    if pcm.exists() and refusal not in (GONE, EMPTY):
+    if pcm_left and refusal not in (GONE, EMPTY):
         log(f"{label}: запись не готова — {_REFUSAL_TEXT.get(refusal, refusal)}")
         return refusal
-    if pcm.exists():
+    if pcm_left:
         log(f"{label}: {_REFUSAL_TEXT[refusal]} — канал без записи")
     return None
 
@@ -1403,21 +1418,28 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     got = {lbl: wait_recording(rec_dir, recording_stamp, lbl, sr_cfg) for lbl in ("mic", "blackhole")}
     # Решение о канале — после ОБОИХ ожиданий: пока ждали второй, писатель мог
     # опубликовать .wav первого (out1 DS I1). Перепроверяем только «не готов»:
-    # у None не было и .pcm, .wav без него не появится.
+    # None — на сроке не было .pcm (а значит и .wav не будет) или .pcm пуст.
     for lbl, g in got.items():
         wav = meeting_stamp.recording_path(rec_dir, recording_stamp, lbl, "wav")
         if isinstance(g, str) and wav.exists():
             got[lbl] = wav
     refusals = {lbl: g for lbl, g in got.items() if isinstance(g, str)}
     if file_locks.NO_FLOCK in refusals.values():
-        # Том без flock: писателя не видно, и повтор этого не изменит — отказ
-        # детерминированный, без кнопки «Пересобрать» (out1 Sonnet I1).
+        # Том без flock: .wav писателя не пришёл за весь срок, а сами мы живого
+        # писателя от убитого не отличим — отказ детерминированный, без кнопки
+        # «Пересобрать» (out1 Sonnet I1): после краха она не сработала бы никогда.
         log("том записей без flock — запись не трогаю, оставляю живую стенограмму; "
             "восстановление только вручную")
         return None
     # Канал с .pcm под своим штампом, но без .wav — не «канала не было», а «не
     # готов»: финал из одного канала вытеснил бы живую стенограмму, где были
     # оба (№728, in2 DS C2). Повтор после финализации соберёт оба.
+    if not refusals and all(g is None for g in got.values()) and any(
+            _empty_file(meeting_stamp.recording_path(rec_dir, recording_stamp, lbl, "pcm")) for lbl in got):
+        # Только пустые .pcm (писатель убит до первого блока): звука нет, и повтор
+        # этого не изменит — без кода и кнопки (out2 DS M4).
+        log("записи каналов пусты — оставляю живую стенограмму")
+        return None
     if refusals or all(g is None for g in got.values()):
         log(f"записи не готовы ({', '.join(refusals) or 'нет ни одной'}) — оставляю живую стенограмму")
         return RebuildSkipped(RebuildSkipped.RECORDING_NOT_READY)

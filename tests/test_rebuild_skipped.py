@@ -128,6 +128,22 @@ def test_a_volume_without_flock_is_a_deterministic_refusal(tmp_path, monkeypatch
     assert any("без flock" in m for m in lines), lines
 
 
+def test_only_empty_recordings_are_a_deterministic_refusal(tmp_path, monkeypatch):
+    """Писатель убит до первого блока: `.pcm` пусты, звука нет, и повтор этого
+    не изменит — немой None без кода и кнопки (out2 DS M4)."""
+    live, rec = _meeting(tmp_path)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm").write_bytes(b"")
+    monkeypatch.setattr(rt, "wait_recording", lambda *_a: None)
+    lines: list[str] = []
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got is None and not isinstance(got, RS)
+    assert "записи каналов пусты — оставляю живую стенограмму" in lines, lines
+
+
 def test_a_channel_published_while_we_waited_for_the_other_is_used(tmp_path, monkeypatch):
     """Канал не был готов на своём сроке, но писатель опубликовал его `.wav`,
     пока ждали второй канал: финал берёт его, а не «не готово» и не «канала

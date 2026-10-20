@@ -206,7 +206,7 @@ def test_pcm_to_wav_on_a_volume_without_flock_touches_nothing(rec_dir, monkeypat
     clock = _Clock()
     monkeypatch.setattr(rt, "time", clock)
     assert rt.wait_recording(rec_dir, "s", "mic", 16000) == file_locks.NO_FLOCK
-    assert clock.slept == [], "том без flock — свойство тома, ждать его нечего (out1 Sonnet I1)"
+    assert clock.slept == [2.0], "том без flock: .wav писателя ждут до срока, не дольше"
     assert sorted(p.name for p in rec_dir.iterdir()) == ["s_mic.pcm", "s_mic.wav.part"]
     assert fcntl.flock is no_flock
 
@@ -501,7 +501,7 @@ def test_a_writer_without_its_claim_says_so_for_the_whole_meeting(tmp_path, monk
     assert "mic" in hub._sinks, "без заявки писатель выключил запись"
     claim = [m for m in said if m and "ЗАМОК ЗАПИСИ НЕ ВЗЯТ" in m]
     assert len(claim) == 1, said
-    assert claim[0].sticky is True and claim[0].topic == stt_runtime.TOPIC_DISK and claim[0].error
+    assert claim[0].sticky is True and claim[0].topic == stt_runtime.TOPIC_RECORDING_CLAIM and claim[0].error
     hub._sinks["mic"].close()
 
 
@@ -695,3 +695,162 @@ def test_a_wav_published_right_before_the_deadline_is_taken(rec_dir, monkeypatch
     monkeypatch.setattr(rt, "pcm_to_wav", writer_publishes)
 
     assert rt.wait_recording(rec_dir, "s", "mic", 16000) == wav
+
+
+def test_on_a_volume_without_flock_the_writers_wav_is_still_awaited(rec_dir, monkeypatch):
+    """Том без flock: дверь зовём один раз, но `.wav` писателя ждём весь срок —
+    на штатном стопе пересборка стартует раньше, чем демон допишет его
+    (out2 Sonnet I1)."""
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 10)
+    clock = _Clock()
+    monkeypatch.setattr(rt, "time", clock)
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    wav = rec_dir / "s_mic.wav"
+    calls = []
+
+    def door(p, sr):
+        calls.append(p)
+        return rt.file_locks.NO_FLOCK
+
+    def sleep(s):
+        clock.sleep(s)
+        if len(clock.slept) == 2:           # писатель опубликовал .wav и снял .pcm
+            wav.write_bytes(b"writer")
+            pcm.unlink()
+
+    monkeypatch.setattr(rt, "pcm_to_wav", door)
+
+    assert rt.wait_recording(rec_dir, "s", "mic", 16000, sleep=sleep) == wav
+    assert calls == [pcm], "на томе без flock дверь звали повторно"
+
+
+def test_pcm_to_wav_survives_the_pcm_removed_after_publishing(rec_dir, monkeypatch):
+    """Под заявкой `.pcm` снял тот, кто её не спрашивает («Забыть»): полный
+    `.wav` уже опубликован — это успех, а не исключение (out2)."""
+    import rebuild_transcript as rt
+
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    real = rt.pathlib.Path.replace
+
+    def replace_then_forget(self, target):
+        out = real(self, target)
+        pcm.unlink()
+        return out
+
+    monkeypatch.setattr(rt.pathlib.Path, "replace", replace_then_forget)
+
+    assert rt.pcm_to_wav(pcm, 16000) == rec_dir / "s_mic.wav"
+    assert sorted(p.name for p in rec_dir.iterdir()) == ["s_mic.wav"]
+
+
+def test_a_writer_publishing_at_the_deadline_is_not_a_missing_channel(rec_dir, monkeypatch):
+    """Писатель делает replace и снимает `.pcm` между проверками эпилога:
+    эпилог смотрит `.pcm` до `.wav`, и канал не уходит в «записи нет»
+    (out2 DS I1)."""
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 0)
+    monkeypatch.setattr(rt, "time", _Clock())
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    wav = rec_dir / "s_mic.wav"
+    monkeypatch.setattr(rt, "pcm_to_wav", lambda p, sr: rt.file_locks.BUSY)
+    real = rt.pathlib.Path.exists
+    wav_checks = []
+
+    def exists(self, *a, **k):
+        got = real(self, *a, **k)
+        if self == wav:
+            wav_checks.append(got)
+            if len(wav_checks) == 2:          # писатель закончил сразу после проверки
+                wav.write_bytes(b"writer")
+                pcm.unlink()
+        return got
+
+    monkeypatch.setattr(rt.pathlib.Path, "exists", exists)
+
+    assert rt.wait_recording(rec_dir, "s", "mic", 16000) == rt.file_locks.BUSY
+
+
+def test_a_failed_conversion_at_stop_is_reported(tmp_path, monkeypatch):
+    """Финализация упала посреди конвертации: `.pcm` цел, а человек видит, что
+    финала до пересборки не будет (out2, шаг Haiku M1)."""
+    import audio
+
+    hub = _hub(tmp_path)
+    said = []
+    hub._say = said.append
+    pcm = tmp_path / "s_mic.pcm"
+    f = pcm.open("xb")
+    f.write(b"\0" * 16000 * 2 * 6)
+    hub._sinks = {"mic": f}
+
+    def broken(*a, **kw):
+        raise RuntimeError("EIO")
+
+    monkeypatch.setattr(audio.wave, "open", broken)
+    hub._finalize_recordings()
+
+    failed = [m for m in said if m and "не сконвертирована" in m]
+    assert len(failed) == 1 and failed[0].error and "RuntimeError" in failed[0], said
+    assert pcm.exists() and f.closed
+
+
+def test_a_failing_release_of_the_claim_does_not_skip_the_next_channel(tmp_path, monkeypatch):
+    """Сбой `os.close` заявки первого канала не роняет финализацию второго (out2)."""
+    import audio
+
+    hub = _hub(tmp_path)
+    sinks = {}
+    for label in ("mic", "blackhole"):
+        f = (tmp_path / f"s_{label}.pcm").open("xb")
+        f.write(b"\0" * 16000 * 2 * 6)
+        sinks[label] = f
+    hub._sinks = sinks
+    real = audio.os.close
+    closes = []
+
+    def close(fd):
+        real(fd)
+        closes.append(fd)
+        if len(closes) == 1:
+            raise OSError("EIO")
+
+    monkeypatch.setattr(audio.os, "close", close)
+    hub._finalize_recordings()
+
+    assert sorted(hub.finalized) == ["blackhole", "mic"]
+    assert len(closes) == 2
+
+
+def test_a_failing_unlink_in_the_sink_cleanup_still_closes_the_file(tmp_path, monkeypatch):
+    """Открытие второго канала упало, а снять имя первого не вышло: дескриптор
+    первого всё равно закрыт — иначе заявка висела бы до конца процесса (out2)."""
+    import audio
+
+    hub = _hub(tmp_path)
+    hub.stamp = "s"
+    hub.captures = [type("C", (), {"label": "mic"})(), type("C", (), {"label": "blackhole"})()]
+    hub._say = lambda _m: None
+    monkeypatch.setattr(hub, "prune_recordings", lambda *a, **kw: 0)
+    (tmp_path / "s_blackhole.pcm").write_bytes(b"")          # xb второго канала упадёт
+    opened = []
+    real_claim = hub._claim_sink
+
+    def claim(label, f):
+        opened.append(f)
+        real_claim(label, f)
+
+    monkeypatch.setattr(hub, "_claim_sink", claim)
+
+    def no_unlink(self, *a, **kw):
+        raise PermissionError(13, "EACCES")
+
+    monkeypatch.setattr(audio.pathlib.Path, "unlink", no_unlink)
+    hub._open_sinks()
+
+    assert hub._sinks == {} and len(opened) == 1 and opened[0].closed
