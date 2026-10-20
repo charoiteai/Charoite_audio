@@ -562,7 +562,7 @@ def _has_sound(pcm: pathlib.Path) -> bool:
         return True
 
 
-def _volume_without_flock(rec_dir: pathlib.Path, stamp: str, pause: float) -> bool:
+def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
     """Все непустые `.pcm` встречи без готового `.wav` отвечают NO_FLOCK:
     пересборка их не сконвертирует (`pcm_to_wav` на NO_FLOCK отказывает), и
     встреча была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть,
@@ -570,29 +570,19 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str, pause: float) -> bo
     DS I3). Канал с готовым `.wav` не голосует: финал из него соберётся на любом
     томе, а остаток `.pcm` рядом пересборка снимет (opusfix4 DS C1). Проба — одна
     попытка на канал: BUSY (дверь пересборки прежнего демона) не держит старт
-    записи (opusfix3 DS I3). NO_FLOCK `acquire_outcome` не повторяет, поэтому
-    «том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не
-    уводит встречу из-под защиты ретеншна (opusfix4 DS I4). Пауза — свойство
-    тома, не встречи: `_recover_orphans` платит её один раз за старт (opusfix5 DS I1)."""
+    записи (opusfix3 DS I3). NO_FLOCK `acquire_outcome` не повторяет — ответ
+    подтверждает вторая проба через паузу в `_recover_orphans`."""
     pcms = [p for label in meeting_stamp.RECORDING_LABELS
             if _has_sound(p := meeting_stamp.recording_path(rec_dir, stamp, label, "pcm"))
             and not _maybe_exists(meeting_stamp.recording_path(rec_dir, stamp, label, "wav"))]
-
-    def all_no_flock() -> bool:
-        outcomes = []
-        for pcm in pcms:
-            try:
-                with pcm.open("rb") as f:
-                    outcomes.append(file_locks.acquire_outcome(f, attempts=1))
-            except OSError:
-                continue
-        return bool(outcomes) and all(o == file_locks.NO_FLOCK for o in outcomes)
-
-    if not all_no_flock():
-        return False
-    if pause:
-        _confirm_pause(pause)
-    return all_no_flock()
+    outcomes = []
+    for pcm in pcms:
+        try:
+            with pcm.open("rb") as f:
+                outcomes.append(file_locks.acquire_outcome(f, attempts=1))
+        except OSError:
+            continue
+    return bool(outcomes) and all(o == file_locks.NO_FLOCK for o in outcomes)
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -632,17 +622,27 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     # Формат имени знает meeting_stamp: rsplit здесь был бы четвёртым местом
     # со своим знанием формата — а расхождение формата уже дважды стоило
     # проекту встреч (см. докстринг meeting_stamp).
-    pause = NO_FLOCK_CONFIRM_S
     stamps = sorted({s for p in rec_dir.glob("*.pcm")
                      if (s := meeting_stamp.stamp_of_recording(p.name)) and _has_sound(p)})
+    candidates = []
     for stamp in stamps:
         if stamp == current_stamp:
             continue                      # наша встреча, она только началась
         live = tdir / f"{stamp}.md"
-        if not live.exists():
+        # Сбой проверки — «стенограмма на месте»: OSError отсюда уронил бы
+        # старт записи до `hub.start()` (opusfix6 Sonnet I1).
+        if not _maybe_exists(live):
             continue                      # без стенограммы пересобирать нечего
-        if _volume_without_flock(rec_dir, stamp, pause):
-            pause = 0.0                   # том подтверждён — дальше без паузы
+        candidates.append((stamp, live))
+    # «Том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не
+    # уводит встречу из-под защиты ретеншна (opusfix4 DS I4). Пауза — одна на
+    # старт (opusfix5 DS I1), а вторую пробу после неё проходит каждая
+    # подозреваемая встреча (opusfix6 DS I1, Haiku I-2).
+    suspects = {stamp for stamp, _ in candidates if _volume_without_flock(rec_dir, stamp)}
+    if suspects:
+        _confirm_pause(NO_FLOCK_CONFIRM_S)
+    for stamp, live in candidates:
+        if stamp in suspects and _volume_without_flock(rec_dir, stamp):
             # Том без flock: пересборка такую запись не тронет (писателя не
             # видно), и встреча была бы сиротой навсегда — пересборка на каждом
             # старте, звук придержан сверх record_keep_days. Не защищаем: запись

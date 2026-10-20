@@ -986,30 +986,10 @@ def test_a_leftover_pcm_next_to_a_published_wav_is_removed(rec_dir, monkeypatch,
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
     wav = rec_dir / "s_mic.wav"
-    wav.write_bytes(b"w" * (rt.WAV_HEADER_BYTES + 4096))
+    wav.write_bytes(b"RIFF")
 
     assert rt.wait_recording(rec_dir, "s", "mic", 16000) == wav
-    assert not pcm.exists() and wav.read_bytes() == b"w" * (rt.WAV_HEADER_BYTES + 4096)
-
-
-@pytest.mark.parametrize("volume", ["flock", "no_flock"])
-def test_a_leftover_pcm_next_to_a_truncated_wav_is_kept(rec_dir, monkeypatch, volume):
-    """`.wav` без fsync после краха питания усечён: исходник — единственная
-    полная копия, не снимаем (opusfix5 Sonnet I1, DS I3)."""
-    import rebuild_transcript as rt
-
-    monkeypatch.setattr(rt, "time", _Clock())
-    if volume == "no_flock":
-        monkeypatch.setattr(rt.file_locks, "acquire_outcome", lambda f, **kw: rt.file_locks.NO_FLOCK)
-    lines = []
-    monkeypatch.setattr(rt, "log", lines.append)
-    pcm = rec_dir / "s_mic.pcm"
-    pcm.write_bytes(b"\0" * 4096)
-    (rec_dir / "s_mic.wav").write_bytes(b"w" * (rt.WAV_HEADER_BYTES + 4095))
-
-    rt.wait_recording(rec_dir, "s", "mic", 16000)
-
-    assert pcm.exists() and any("короче исходника" in m for m in lines), lines
+    assert not pcm.exists() and wav.read_bytes() == b"RIFF"
 
 
 def test_a_leftover_pcm_under_its_writers_claim_is_left_to_it(rec_dir, monkeypatch):

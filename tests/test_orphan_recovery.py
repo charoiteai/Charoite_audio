@@ -602,7 +602,76 @@ def test_a_stamp_without_recordings_is_not_a_volume_without_flock(data_root, mon
 
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
 
-    assert daemon._volume_without_flock(data_root / "recordings", "2026-08-07_181500", 0.0) is False
+    assert daemon._volume_without_flock(data_root / "recordings", "2026-08-07_181500") is False
+
+
+def test_every_suspect_meeting_is_probed_again_after_the_pause(data_root, monkeypatch):
+    """Пауза одна на старт, но вторую пробу после неё проходит каждая
+    подозреваемая встреча: разовый сбой, живущий меньше паузы, не уводит
+    вторую сироту из-под защиты (opusfix6 DS I1, Haiku I-2)."""
+    import daemon
+    import file_locks
+
+    naps = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    monkeypatch.setattr(daemon, "_confirm_pause", naps.append)
+    flaky = _orphan(data_root, "2026-08-06_181500", age_days=0.1)
+    _orphan(data_root, "2026-08-05_181500", age_days=0.1)
+
+    def probe(f, **kw):
+        if naps and pathlib.Path(f.name) == flaky:
+            return file_locks.TAKEN       # сбой прошёл за паузу
+        return file_locks.NO_FLOCK
+
+    monkeypatch.setattr(file_locks, "acquire_outcome", probe)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-06_181500"}
+    assert naps == [daemon.NO_FLOCK_CONFIRM_S], naps
+
+
+def test_a_failing_transcript_check_does_not_stop_the_start(data_root, monkeypatch):
+    """Проверка стенограммы упала (EACCES) — «не знаем», встреча под защитой:
+    OSError отсюда уронил бы старт записи до `hub.start()` (opusfix6 Sonnet I1)."""
+    import daemon
+    import file_locks
+
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.TAKEN)
+    _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    real = pathlib.Path.exists
+
+    def fail(self, *a, **kw):
+        if self == live:
+            raise PermissionError(13, "EACCES")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "exists", fail)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+
+
+@pytest.mark.parametrize("wav_bytes", [4096 + 44, 4095 + 44])
+def test_a_leftover_next_to_any_wav_is_an_orphan_only_once(data_root, monkeypatch, wav_bytes):
+    """`.wav` и непустой `.pcm` рядом: первый старт пересобирает встречу,
+    пересборка снимает остаток, второй старт сироты не видит. Полноту `.wav`
+    не судим: оставленный рядом с коротким `.wav` `.pcm` никто не читал, а
+    встреча становилась сиротой на каждом старте (opusfix6 C1)."""
+    import daemon
+    import file_locks
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.TAKEN)
+    stamp = "2026-08-07_181500"
+    pcm = _orphan(data_root, stamp, age_days=0.1)
+    wav = pcm.with_suffix(".wav")
+    wav.write_bytes(b"w" * wav_bytes)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {stamp}
+    assert rt.wait_recording(data_root / "recordings", stamp, "mic", 16000) == wav
+    assert not pcm.exists()
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
 
 
 def test_the_confirmation_pause_is_paid_once_per_start(data_root, monkeypatch):
