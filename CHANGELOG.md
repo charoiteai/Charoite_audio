@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.98.0](https://github.com/charoiteai/Charoite_audio/compare/v0.97.0...v0.98.0) (2026-10-20)
+
+
+### Features
+
+* **chat:** one model-window budget for the turn, search at 25×1000 ([#832](https://github.com/charoiteai/Charoite_audio/issues/832)) ([7aeb56d](https://github.com/charoiteai/Charoite_audio/commit/7aeb56d938fbdf7656eb2f481b92d5faa9df23bc))
+
+
+### Bug Fixes
+
+* **chat:** search decides "not in memory", the answer no longer contradicts itself ([#830](https://github.com/charoiteai/Charoite_audio/issues/830)) ([aa9bdf4](https://github.com/charoiteai/Charoite_audio/commit/aa9bdf4f7f4f79aa3db7b90a2332abfa2ba57827))
+* **rebuild:** judge a recording by its writer's claim on the .pcm, not by the meeting lock ([#825](https://github.com/charoiteai/Charoite_audio/issues/825)) ([adf6d69](https://github.com/charoiteai/Charoite_audio/commit/adf6d6938400d6b3def924e7c3d7ffd7cf2b7462))
+
 ## [0.97.0](https://github.com/charoiteai/Charoite_audio/compare/v0.96.0...v0.97.0) (2026-10-20)
 
 
