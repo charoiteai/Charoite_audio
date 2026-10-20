@@ -872,14 +872,13 @@ def test_pcm_to_wav_survives_the_pcm_removed_after_publishing(rec_dir, monkeypat
 
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
-    real = rt.pathlib.Path.replace
+    real = rt.durable_replace
 
-    def replace_then_forget(self, target):
-        out = real(self, target)
+    def replace_then_forget(tmp, target):
+        real(tmp, target)
         pcm.unlink()
-        return out
 
-    monkeypatch.setattr(rt.pathlib.Path, "replace", replace_then_forget)
+    monkeypatch.setattr(rt, "durable_replace", replace_then_forget)
 
     lines = []
     monkeypatch.setattr(rt, "log", lines.append)
@@ -1312,14 +1311,13 @@ def test_a_pcm_taken_away_after_publication_is_no_failure_line(tmp_path, monkeyp
     f = pcm.open("xb")
     f.write(b"\0" * 16000 * 2 * 6)
     hub._sinks = {"mic": f}
-    real = audio.pathlib.Path.replace
+    real = audio.durable_replace
 
-    def and_drop(self, target):
-        got = real(self, target)
+    def and_drop(tmp, target):
+        real(tmp, target)
         pcm.unlink()
-        return got
 
-    monkeypatch.setattr(audio.pathlib.Path, "replace", and_drop)
+    monkeypatch.setattr(audio, "durable_replace", and_drop)
     hub._finalize_recordings()
 
     assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
