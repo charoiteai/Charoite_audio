@@ -16,8 +16,160 @@ enum ChatRetrieval {
         let budget: Int
 
         /// Как у чата: бюджет задаётся поиску, а не срезается по хвосту —
-        /// prefix(5000) резал последний источник на полуслове.
-        static let chat = Params(limit: 8, snippet: 800, budget: 5000)
+        /// prefix(5000) резал последний источник на полуслове. 25×1000 вместо
+        /// 8×800/5000 — бенч №743 на 65 фактах: в ответе 37 против 28, в выдаче
+        /// 55 против 43; синтез медиана 15 с против 4 с. Только вместе с окном
+        /// хода (`fit`): brain-путь бюджета не знает и отдаёт 76–88 тыс. знаков.
+        static let chat = Params(limit: 25, snippet: 1000, budget: 25_000)
+    }
+
+    /// Окно модели в токенах — один бюджет на весь ход (№743): системный
+    /// промпт, блок графа, история и вопрос вместе не длиннее
+    /// `num_ctx − num_predict`. Раньше было три бюджета в знаках, сумму не
+    /// видел никто: brain-путь отдавал 18–26 тыс. знаков при «бюджете» 5000,
+    /// и при переполнении Ollama молча срезает НАЧАЛО промпта — системный
+    /// промпт с правилом честности.
+    enum Window {
+        static let context = 32_768
+        static let answer = 2_048
+        /// Разметка чата (роли, служебные токены) — 512; ещё 1 024 — на
+        /// неточность оценки на обычном тексте. Случайный текст (base64,
+        /// случайные буквы) оценка занижает на 20–40 % — запас его не покрывает;
+        /// мерила в ходе пока нет, обратная связь по `prompt_eval_count` ответа —
+        /// №637 (out2, DS I1; out3, Haiku I-3).
+        static let reserve = 1_536
+        static let perMessage = 8
+        /// Потолок истории — прежние 12 000 знаков кириллицы: длинный
+        /// разговор не вытесняет память целиком.
+        static let history = 6_000
+        static var input: Int { context - answer - reserve }
+    }
+
+    /// Оценка токенов сверху НА ТЕКСТЕ ГРАФА — по правилам претокенизатора, а не по
+    /// длине текста. Цифра — всегда токен, пробел перед цифрой или знаком —
+    /// свой токен, перевод строки — токен, у буквенного прогона — не меньше
+    /// токена; внутри прогона латиница по ⅓, смешанный регистр внутри слова
+    /// (base64, хэши) — по ½, кириллица ½, иероглиф BMP и прочий не-ASCII знак 1,
+    /// 4 байта UTF-8 — 4.
+    /// Замер токенизатором Qwen3.6-35B (20.10): по 11 097 заметкам графа
+    /// оценка/факт не ниже 1,18 (медиана 1,59), кроме вырожденного повтора
+    /// одной буквы; цифры через пробел 1,00, лог 1,04, hex 1,00, base64 0,82.
+    /// Прежнее правило «по длине знака в UTF-8» давало цифрам через пробел
+    /// 0,67 и base64 0,64 (out1, DS C1). Ниже факта остаётся случайный текст:
+    /// base64 0,81, случайные латинские буквы 0,63, кириллица 0,61–0,68 —
+    /// у BPE слияния зависят от частоты пары, правилом их не поймать.
+    static func estimatedTokens(_ text: String) -> Int {
+        var sixths = 0          // в шестых долях токена: целые числа, без дробей
+        var run = 0, runSixths = 0, asciiLetters = 0, mixedCase = false, prevLower = false
+        func closeRun() {
+            // смешанный регистр дорожает только у ASCII-букв: ⅓ → ½ (out2, Haiku I2)
+            if run > 0 { sixths += max(6, runSixths + (mixedCase ? asciiLetters : 0)) }
+            run = 0; runSixths = 0; asciiLetters = 0; mixedCase = false; prevLower = false
+        }
+        let scalars = Array(text.unicodeScalars)
+        for (i, scalar) in scalars.enumerated() {
+            let bytes = scalar.utf8.count
+            if scalar.properties.isAlphabetic {
+                if bytes == 1 {
+                    if scalar.properties.isUppercase && prevLower { mixedCase = true }
+                    prevLower = scalar.properties.isLowercase
+                    runSixths += 2; asciiLetters += 1
+                } else {
+                    prevLower = false
+                    runSixths += bytes == 2 ? 3 : bytes == 3 ? 6 : 24
+                }
+                run += 1
+                continue
+            }
+            // комбинирующий знак — часть буквы: прогон не рвёт и не стоит ничего (out3, DS M4)
+            let category = scalar.properties.generalCategory
+            if category == .nonspacingMark || category == .spacingMark || category == .enclosingMark { continue }
+            closeRun()
+            switch bytes {
+            case 1:
+                if scalar.properties.isWhitespace && scalar != "\n" {
+                    // пробел липнет к следующему слову; перед цифрой, знаком
+                    // и другим пробелом — отдельный токен
+                    let next = i + 1 < scalars.count ? scalars[i + 1] : nil
+                    sixths += next?.properties.isAlphabetic == true ? 2 : 6
+                } else {
+                    sixths += 6     // цифра, знак, перевод строки
+                }
+            case 2, 3: sixths += 6  // «», ×, °, неразрывный пробел; «—», «…», знаки CJK (out2, Sonnet M3)
+            default: sixths += 24   // эмодзи
+            }
+        }
+        closeRun()
+        return (sixths + 5) / 6
+    }
+
+    static func messageTokens(_ text: String) -> Int { estimatedTokens(text) + Window.perMessage }
+
+    /// Выдача поиска под окно хода: куски (`Outcome.parts`) выбрасываются
+    /// целиком, начиная со слабейшего, пока блок графа не уместится рядом с
+    /// системным промптом и уже выбранным ходом (`turn` — история и вопрос:
+    /// окно истории считается раньше памяти, `historyWindow`). Чипы (`rels`) —
+    /// по оставшимся, а модель узнаёт о срезе строкой в блоке. Не уместился ни
+    /// один кусок — выдачи нет, а вердикт «поиск неполный»: «в памяти этого
+    /// нет» было бы ложью о памяти.
+    static func fit(_ outcome: ArchiveSearch.Outcome, system: String, turn: [ChatContextWindow.Entry],
+                    lang: String = L.lang) -> ArchiveSearch.Outcome {
+        let room = Window.input - messageTokens(system) - turn.reduce(0) { $0 + messageTokens($1.text) }
+        func fits(_ o: ArchiveSearch.Outcome) -> Bool {
+            estimatedTokens(contextBlock(o, lang: lang).block) <= room
+        }
+        guard !fits(outcome) else { return outcome }
+        let marker = outcome.text.hasPrefix(ArchiveSearch.lowConfidenceMarker)
+            ? ArchiveSearch.lowConfidenceMarker : ""
+        var parts = outcome.parts ?? [.init(text: outcome.text, rel: nil, rank: 0)]
+        let total = parts.count
+        func trimmed(_ kept: [ArchiveSearch.Part]) -> ArchiveSearch.Outcome {
+            var seen = Set<String>()
+            let rels = outcome.rels.map { _ in kept.compactMap(\.rel).filter { seen.insert($0).inserted } }
+            let cut = L.t("показаны \(kept.count) из \(total) кусков выдачи, остальное не поместилось в окно модели",
+                          "\(kept.count) of \(total) result pieces shown, the rest did not fit the model window",
+                          "仅显示 \(kept.count)/\(total) 段检索结果，其余超出模型窗口", lang: lang)
+            return ArchiveSearch.Outcome(
+                text: marker + kept.map(\.text).joined(separator: "\n\n"), rels: rels,
+                verdict: outcome.verdict, note: outcome.note.isEmpty ? cut : outcome.note + "; " + cut,
+                parts: kept)
+        }
+        // цена куска считается один раз: пересборка блока на каждом выбросе
+        // гоняла оценку по всей выдаче на главном акторе (out1, Sonnet M2)
+        var costs = parts.map { estimatedTokens($0.text) + 2 }
+        var spent = costs.reduce(0, +)
+        let frame = estimatedTokens(contextBlock(trimmed([]), lang: lang).block)
+        while let weakest = parts.indices.max(by: { parts[$0].rank < parts[$1].rank }) {
+            parts.remove(at: weakest)
+            spent -= costs.remove(at: weakest)
+            guard !parts.isEmpty else { break }
+            // сумма цен — прикидка; решает оценка собранного блока
+            if frame + spent <= room, fits(trimmed(parts)) { return trimmed(parts) }
+        }
+        let overflow = L.t("выдача не поместилась в окно модели", "the results did not fit the model window",
+                           "检索结果超出模型窗口", lang: lang)
+        return ArchiveSearch.Outcome(text: "", rels: outcome.rels.map { _ in [] }, verdict: .unverified,
+                                     note: outcome.note.isEmpty ? overflow : outcome.note + "; " + overflow,
+                                     parts: [])
+    }
+
+    /// Ход из одного вопроса — для проб и тестов.
+    static func fit(_ outcome: ArchiveSearch.Outcome, system: String, prompt: String,
+                    lang: String = L.lang) -> ArchiveSearch.Outcome {
+        fit(outcome, system: system, turn: [.init(role: "user", text: prompt)], lang: lang)
+    }
+
+    /// История под окно — ДО памяти: не больше `Window.history` и не больше
+    /// четверти того, что осталось после системного промпта и вопроса; целыми
+    /// ходами, вопрос — последним. При «истории — остаток» полная выдача
+    /// оставляла диалогу 0–1,5 тыс. токенов, и второй вопрос терял первый
+    /// (out1: Sonnet I1, DS I3, Haiku I-1).
+    static func historyWindow(_ history: [ChatContextWindow.Entry], prompt: String,
+                              system: String) -> [ChatContextWindow.Entry] {
+        let free = Window.input - messageTokens(system) - messageTokens(prompt)
+        let room = min(Window.history, max(0, free / 4))
+        return ChatContextWindow.select(history: history, prompt: prompt,
+                                        budget: room + messageTokens(prompt), cost: messageTokens)
     }
 
     /// Блок графа для системного промпта и что из него нужно экрану.
@@ -258,10 +410,10 @@ enum ChatRetrieval {
             "keep_alive": "30m",
             // num_ctx задан явно: без него Modelfile-дефолт 262144 →
             // перезагрузка 23GB модели при переключении чатов и пустой 2-й ответ.
-            // 32768 — потолок для 32 ГБ машины (KV-кэш ~3-5 ГБ при 23 ГБ модели):
-            // система+граф (5К) + история (12К) + ответ дышат свободно. 64К на
+            // 32768 — потолок для 32 ГБ машины (KV-кэш ~3-5 ГБ при 23 ГБ модели);
+            // ход под него собирают `fit` и `historyWindow` (№743). 64К на
             // 32 ГБ уходит в своп — не поднимать без 64 ГБ RAM.
-            "options": ["temperature": temperature, "num_ctx": 32768, "num_predict": 2048],
+            "options": ["temperature": temperature, "num_ctx": Window.context, "num_predict": Window.answer],
         ]
     }
 }

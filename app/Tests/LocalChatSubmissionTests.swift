@@ -92,6 +92,23 @@ final class LocalChatSubmissionTests: XCTestCase {
         }
     }
 
+    /// Редкий иероглиф — 3,5 токена: 6 000 знаков в пределе по знакам,
+    /// но не в окне модели (№743).
+    func testQuestionOverTokenWindowIsRefusedAndDraftKept() throws {
+        try withHistory { service, url, bytes in
+            let before = service.messages
+            var draft = String(repeating: "𠀀", count: 6_000)
+            XCTAssertLessThanOrEqual(draft.count, ChatContextWindow.maxPrompt)
+            let original = draft
+            LocalChatView.submitDraft(&draft, using: service)
+            XCTAssertEqual(draft, original)
+            XCTAssertEqual(service.messages, before)
+            XCTAssertFalse(service.isStreaming)
+            XCTAssertFalse(service.status.isEmpty)
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+    }
+
     func testStopBeforeFirstTokenLeavesScreenEqualToFile() throws {
         try withHistory { service, url, _ in
             service.messages.append(.init(role: "user", text: "Вопрос"))

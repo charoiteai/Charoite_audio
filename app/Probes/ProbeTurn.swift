@@ -37,9 +37,11 @@ enum ProbeTurn {
         guard await SemanticIndex.shared.usesTestStore else {
             throw SetupError(description: "индекс приложения не подменён — сначала ProbeTurn.isolateIndex")
         }
-        return await ArchiveSearch.localSearchOutcome(
+        // под окно хода, как в чате: бенч мерит то, что получит модель (№743)
+        return ChatRetrieval.fit(await ArchiveSearch.localSearchOutcome(
             query: ChatRetrieval.query(from: [.init(role: "user", text: query)]), limit: params.limit, snippet: params.snippet, budget: params.budget,
-            root: root, includeLinked: inferenceIsLocal)
+            root: root, includeLinked: inferenceIsLocal),
+            system: ChatRetrieval.baseSystem(inferenceIsLocal: inferenceIsLocal), prompt: query)
     }
 
     /// Ответ модели или nil — модель не ответила (бенч считает такой вопрос

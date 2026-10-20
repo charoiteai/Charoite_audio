@@ -199,8 +199,9 @@ BRAIN_ALIVE = "alive"
 # дольше порога в сравнение не берёт — в продукте ответ дал бы другой поиск
 COMPANION_DEADLINE_S = 4.0
 # limit/snippet как у чата (ChatRetrieval.Params.chat в app/); бюджета у
-# протокола companion нет — 5000 чата сюда не переносится (№632)
-COMPANION_LIMIT, COMPANION_SNIPPET = 8, 800
+# протокола companion нет, и подгонка под окно модели (ChatRetrieval.fit, №743)
+# здесь не повторяется — бенч мерит выдачу сервера до среза
+COMPANION_LIMIT, COMPANION_SNIPPET = 25, 1000
 
 
 class BrainHit(NamedTuple):

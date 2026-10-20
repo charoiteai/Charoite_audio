@@ -199,6 +199,107 @@ final class SemanticSlotTests: XCTestCase {
         XCTAssertTrue(out.contains("Скрытое ядро"),
             "сильная семантическая находка (cos 1.0) не пробилась сквозь лексический поток: \(out.prefix(150))")
     }
+
+    /// Слот семантики стоит в выдаче последним, но держит вердикт: окно
+    /// модели не должно выбросить его первым (№743 out1, Sonnet I2).
+    func testSemanticSlotIsStrongestPieceForTheWindow() async throws {
+        var corpus: [(String, String)] = (1...6).map {
+            ("Ядра/Лексика \($0).md", "здесь упоминается контракт номер \($0)")
+        }
+        corpus.append(("Ядра/Скрытое ядро.md", "суть договорённости другими словами"))
+        let graph = try makeTestGraph(corpus)
+        defer { try? FileManager.default.removeItem(at: graph) }
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            texts.map { t -> [Float] in
+                (t.contains("договорённости") || t == "контракт номер") ? [1, 0] : [0, 1]
+            }
+        }
+        await SemanticIndex.shared.refresh(files: corpus.map {
+            (path: $0.0, mtime: 1.0, text: $0.1)
+        })
+        let out = await ArchiveSearch.localSearchOutcome(query: "контракт номер", limit: 5, snippet: 200,
+                                                         budget: 25_000, root: graph)
+        let parts = try XCTUnwrap(out.parts)
+        let slot = try XCTUnwrap(parts.first { $0.rel == "Ядра/Скрытое ядро.md" })
+        // слот гейта — сильнейший кусок: окно выбрасывает по убыванию ранга
+        XCTAssertTrue(parts.allSatisfy { $0.rel == slot.rel || $0.rank > slot.rank },
+                      "\(parts.map { ($0.rel ?? "", $0.rank) })")
+    }
+
+    /// Выдача длиннее бюджета знаков (у чата 25×1000 при 25 000): бюджет упаковщика кончается
+    /// раньше выдачи, и слот, стоявший последним, выбрасывался ещё до окна
+    /// модели — а вердикт держался на его bestSim (out2, DS C1).
+    func testSemanticSlotSurvivesThePackerBudget() async throws {
+        var corpus: [(String, String)] = (1...30).map {
+            ("Ядра/Лексика \($0).md", "здесь упоминается контракт номер \($0)")
+        }
+        corpus.append(("Ядра/Скрытое ядро.md", "суть договорённости другими словами"))
+        let graph = try makeTestGraph(corpus)
+        defer { try? FileManager.default.removeItem(at: graph) }
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            texts.map { t -> [Float] in
+                (t.contains("договорённости") || t == "контракт номер") ? [1, 0] : [0, 1]
+            }
+        }
+        await SemanticIndex.shared.refresh(files: corpus.map {
+            (path: $0.0, mtime: 1.0, text: $0.1)
+        })
+        let out = await ArchiveSearch.localSearchOutcome(query: "контракт номер", limit: 25, snippet: 200,
+                                                         budget: 1_200, root: graph)
+        let parts = try XCTUnwrap(out.parts)
+        XCTAssertLessThan(parts.count, 25, "бюджет упаковщика не выбран — тест ничего не проверяет")
+        XCTAssertEqual(parts.first { $0.rel == "Ядра/Скрытое ядро.md" }?.rank, -1,
+                       "слот гейта выброшен бюджетом выдачи: \(parts.map { $0.rel ?? "" })")
+        XCTAssertTrue(out.rels?.contains("Ядра/Скрытое ядро.md") ?? false)
+        // срез бюджетом выдачи виден модели, как и срез окном
+        XCTAssertTrue(out.note.contains("25"), out.note)
+    }
+
+    /// Сильный семантический хит, который и так попал в выдачу, держит вердикт
+    /// так же, как добавленный слотом: окно выбрасывает его последним (out3, Sonnet I1).
+    func testSemanticTopAlreadyShownIsProtectedToo() async throws {
+        var corpus: [(String, String)] = (1...30).map {
+            ("Ядра/Лексика \($0).md", "здесь упоминается контракт номер \($0)")
+        }
+        corpus[6].1 += " и суть договорённости"
+        let graph = try makeTestGraph(corpus)
+        defer { try? FileManager.default.removeItem(at: graph) }
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            texts.map { t -> [Float] in
+                (t.contains("договорённости") || t == "контракт номер") ? [1, 0] : [0, 1]
+            }
+        }
+        await SemanticIndex.shared.refresh(files: corpus.map {
+            (path: $0.0, mtime: 1.0, text: $0.1)
+        })
+        let out = await ArchiveSearch.localSearchOutcome(query: "контракт номер", limit: 25, snippet: 200,
+                                                         budget: 25_000, root: graph)
+        let parts = try XCTUnwrap(out.parts)
+        XCTAssertEqual(parts.first { $0.rel == "Ядра/Лексика 7.md" }?.rank, -1,
+                       "\(parts.map { ($0.rel ?? "", $0.rank) })")
+    }
+
+    /// Бюджет не взял ни одного куска — это «не проверено» с заметкой, а не
+    /// «в памяти нет» (out3, DS M2).
+    func testBudgetBelowOnePieceIsNotEmptyMemory() async throws {
+        let corpus: [(String, String)] = (1...3).map {
+            ("Ядра/Лексика \($0).md", "здесь упоминается контракт номер \($0)")
+        }
+        let graph = try makeTestGraph(corpus)
+        defer { try? FileManager.default.removeItem(at: graph) }
+        // семантика сравнила весь граф — без правки это доказанное «пусто»
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            texts.map { $0 == "контракт номер" ? [1, 0] : [0, 1] }
+        }
+        await SemanticIndex.shared.refresh(files: corpus.map {
+            (path: $0.0, mtime: 1.0, text: $0.1)
+        })
+        let out = await ArchiveSearch.localSearchOutcome(query: "контракт номер", limit: 5, snippet: 200,
+                                                         budget: 250, root: graph)
+        XCTAssertEqual(out.text, "")
+        XCTAssertNotEqual(out.verdict, .empty)
+        XCTAssertFalse(out.note.isEmpty)
+    }
 }
 
 /// Стем не должен зависеть от формы, в которой человек набрал слово.
