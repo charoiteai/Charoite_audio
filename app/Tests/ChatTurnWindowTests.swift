@@ -37,11 +37,15 @@ final class ChatTurnWindowTests: XCTestCase {
         XCTAssertEqual(ChatRetrieval.estimatedTokens("QmFzZTY0"), 5)     // смешанный регистр в слове — ½
         XCTAssertEqual(ChatRetrieval.estimatedTokens("a\n\nb"), 4)       // перевод строки — токен
         XCTAssertEqual(ChatRetrieval.estimatedTokens("📋"), 4)
-        // смешанный регистр дорожает только у латиницы, иероглифы в прогоне — по 1 (факт 8; out2, Haiku I2)
+        // смешанный регистр дорожает только у латиницы, иероглифы в прогоне — по 1: оценка 14 при факте 8 —
+        // цена верхней границы на смешанном CJK (out2, Haiku I2; out3, DS M3)
         XCTAssertEqual(ChatRetrieval.estimatedTokens("这个版本在macOS上运行得很好"), 14)
         // двухбайтный знак — токен: «», ×, неразрывный пробел (факт 6 и 3; out2, Sonnet M3)
         XCTAssertEqual(ChatRetrieval.estimatedTokens("«да» × 2"), 7)
         XCTAssertEqual(ChatRetrieval.estimatedTokens("a\u{00A0}b"), 3)
+        // комбинирующий знак — часть буквы: разложенная «й» стоит как собранная (out3, DS M4)
+        XCTAssertEqual(ChatRetrieval.estimatedTokens(String(repeating: "и\u{0306}", count: 3)),
+                       ChatRetrieval.estimatedTokens("ййй"))
         // замер токенизатором: редкий иероглиф 3,5 токена, «знак = токен» занижал
         XCTAssertGreaterThanOrEqual(ChatRetrieval.estimatedTokens(String(repeating: "𠀀", count: 100)), 350)
         // цифры через пробел: прежнее правило давало 0,67 от факта (out1, DS C1)
@@ -196,6 +200,20 @@ final class ChatTurnWindowTests: XCTestCase {
         let tightSpent = tight.dropLast().reduce(0) { $0 + ChatRetrieval.messageTokens($1.text) }
         XCTAssertGreaterThan(tightSpent, 0)
         XCTAssertLessThanOrEqual(tightSpent, free / 4)
+    }
+
+    /// Заметка о срезе бюджетом считает совпадения: сосед по ссылке (score 0)
+    /// в хвосте — не «не вошедшее найденное» (out3, DS I1).
+    func testЗаметкаСрезаСчитаетТолькоСовпадения() {
+        let body = String(repeating: "к", count: 440)
+        let hit = { (rel: String, score: Double) in ArchiveSearch.Hit(score: score, rel: rel, block: "• \(rel)\n  \(body)") }
+        let neighbor = ArchiveSearch.packWithGateSlot([hit("a.md", 2), hit("b.md", 1), hit("n.md", 0)],
+                                                      gateRel: nil, budget: 1_000)
+        XCTAssertEqual(neighbor.kept.map(\.rel), ["a.md", "b.md"])
+        XCTAssertEqual(neighbor.note, "")
+        let real = ArchiveSearch.packWithGateSlot([hit("a.md", 3), hit("b.md", 2), hit("c.md", 1)],
+                                                  gateRel: nil, budget: 1_000)
+        XCTAssertTrue(real.note.contains("2") && real.note.contains("3"), real.note)
     }
 
     func testPackContextОтдаётКускиСРангомДоПерестановки() {

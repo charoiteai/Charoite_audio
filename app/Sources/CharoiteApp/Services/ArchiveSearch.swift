@@ -632,6 +632,9 @@ enum ArchiveSearch {
             if shown.count >= limit { shown.removeLast() }
             shown.append(topHit)
             gateRel = topHit.rel
+        } else if let top = sem.first, top.score >= 0.47, shown.contains(where: { $0.rel == top.path }) {
+            // сильный семантический хит уже в выдаче — держит вердикт так же
+            gateRel = top.path      // (out3, Sonnet I1)
         }
         shown = linkedContext(shown, documents: byPath.mapValues(\.text), needles: needles,
                               snippet: snippet, limit: limit, enabled: includeLinked)
@@ -645,7 +648,9 @@ enum ArchiveSearch {
         // путь-префикс чужого заголовка (круг-2, Codex).
         let rels = keptHits.map(\.rel)
         if body.isEmpty {
-            return Outcome(text: "", rels: rels, verdict: proven ? .empty : .unverified)
+            // совпадения были, но бюджет не взял ни одного — это не «в памяти нет» (out3, DS M2)
+            return Outcome(text: "", rels: rels, verdict: proven && shown.isEmpty ? .empty : .unverified,
+                           note: note)
         }
         if bestSim < 0.47 && bestCov < 0.66 {
             return Outcome(text: lowConfidenceMarker + body, rels: rels,
@@ -655,10 +660,11 @@ enum ArchiveSearch {
     }
 
     /// Упаковка выдачи со слотом семантики гейта. Слот держит вердикт, поэтому
-    /// в упаковку он идёт вторым: упаковщик ставит второй последним в текст, где
-    /// слот и стоял, а бюджет выдачи режет хвост — лексику, а не слот (out2,
-    /// DS C1). Окно модели выбрасывает его последним (ранг −1, out1, Sonnet I2).
-    /// Срез бюджетом выдачи модель видит так же, как срез окном (out2, DS I2).
+    /// в упаковку он идёт вторым: бюджет выдачи режет хвост — лексику, а не слот
+    /// (out2, DS C1); упаковщик ставит второй последним в текст (раньше слот
+    /// стоял предпоследним, out3, DS M1). Окно модели выбрасывает его последним
+    /// (ранг −1, out1, Sonnet I2). Срез бюджетом выдачи модель видит так же, как
+    /// срез окном (out2, DS I2) — по совпадениям, без соседа по ссылке (score 0).
     static func packWithGateSlot(_ shown: [Hit], gateRel: String?, budget: Int)
         -> (text: String, kept: [Hit], parts: [Part], note: String) {
         var packOrder = shown
@@ -670,10 +676,13 @@ enum ArchiveSearch {
         if let gateRel {
             parts = parts.map { $0.rel == gateRel ? Part(text: $0.text, rel: $0.rel, rank: -1) : $0 }
         }
-        let note = keptHits.count < packOrder.count
-            ? L.t("в выдачу вошли \(keptHits.count) из \(packOrder.count) найденных, остальное сверх бюджета выдачи",
-                  "\(keptHits.count) of \(packOrder.count) hits included, the rest exceeded the result budget",
-                  "仅收录 \(keptHits.count)/\(packOrder.count) 条结果，其余超出结果预算")
+        let keptRels = Set(keptHits.map(\.rel))
+        let matches = packOrder.filter { $0.score > 0 }
+        let keptMatches = matches.filter { keptRels.contains($0.rel) }.count
+        let note = keptMatches < matches.count
+            ? L.t("в выдачу вошли \(keptMatches) из \(matches.count) отобранных совпадений, остальное сверх бюджета выдачи",
+                  "\(keptMatches) of \(matches.count) selected hits included, the rest exceeded the result budget",
+                  "仅收录 \(keptMatches)/\(matches.count) 条入选结果，其余超出结果预算")
             : ""
         return (body, keptHits, parts, note)
     }

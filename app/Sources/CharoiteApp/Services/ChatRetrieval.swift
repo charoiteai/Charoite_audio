@@ -34,8 +34,9 @@ enum ChatRetrieval {
         static let answer = 2_048
         /// Разметка чата (роли, служебные токены) — 512; ещё 1 024 — на
         /// неточность оценки на обычном тексте. Случайный текст (base64,
-        /// случайные буквы) оценка занижает на 20–40 % — запас его не покрывает,
-        /// мерило там только `prompt_eval_count` ответа (№637; out2, DS I1).
+        /// случайные буквы) оценка занижает на 20–40 % — запас его не покрывает;
+        /// мерила в ходе пока нет, обратная связь по `prompt_eval_count` ответа —
+        /// №637 (out2, DS I1; out3, Haiku I-3).
         static let reserve = 1_536
         static let perMessage = 8
         /// Потолок истории — прежние 12 000 знаков кириллицы: длинный
@@ -80,6 +81,9 @@ enum ChatRetrieval {
                 run += 1
                 continue
             }
+            // комбинирующий знак — часть буквы: прогон не рвёт и не стоит ничего (out3, DS M4)
+            let category = scalar.properties.generalCategory
+            if category == .nonspacingMark || category == .spacingMark || category == .enclosingMark { continue }
             closeRun()
             switch bytes {
             case 1:
