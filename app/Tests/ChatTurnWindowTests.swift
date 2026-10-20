@@ -37,6 +37,11 @@ final class ChatTurnWindowTests: XCTestCase {
         XCTAssertEqual(ChatRetrieval.estimatedTokens("QmFzZTY0"), 5)     // смешанный регистр в слове — ½
         XCTAssertEqual(ChatRetrieval.estimatedTokens("a\n\nb"), 4)       // перевод строки — токен
         XCTAssertEqual(ChatRetrieval.estimatedTokens("📋"), 4)
+        // смешанный регистр дорожает только у латиницы, иероглифы в прогоне — по 1 (факт 8; out2, Haiku I2)
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("这个版本在macOS上运行得很好"), 14)
+        // двухбайтный знак — токен: «», ×, неразрывный пробел (факт 6 и 3; out2, Sonnet M3)
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("«да» × 2"), 7)
+        XCTAssertEqual(ChatRetrieval.estimatedTokens("a\u{00A0}b"), 3)
         // замер токенизатором: редкий иероглиф 3,5 токена, «знак = токен» занижал
         XCTAssertGreaterThanOrEqual(ChatRetrieval.estimatedTokens(String(repeating: "𠀀", count: 100)), 350)
         // цифры через пробел: прежнее правило давало 0,67 от факта (out1, DS C1)

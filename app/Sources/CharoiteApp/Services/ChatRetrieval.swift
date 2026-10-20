@@ -32,8 +32,10 @@ enum ChatRetrieval {
     enum Window {
         static let context = 32_768
         static let answer = 2_048
-        /// Разметка чата (роли, служебные токены) — 512; ещё 1 024 — на текст,
-        /// где оценка ниже факта: base64 и хэши 0,82 (out1, DS C1).
+        /// Разметка чата (роли, служебные токены) — 512; ещё 1 024 — на
+        /// неточность оценки на обычном тексте. Случайный текст (base64,
+        /// случайные буквы) оценка занижает на 20–40 % — запас его не покрывает,
+        /// мерило там только `prompt_eval_count` ответа (№637; out2, DS I1).
         static let reserve = 1_536
         static let perMessage = 8
         /// Потолок истории — прежние 12 000 знаков кириллицы: длинный
@@ -42,22 +44,26 @@ enum ChatRetrieval {
         static var input: Int { context - answer - reserve }
     }
 
-    /// Оценка токенов сверху — по правилам претокенизатора модели, а не по
+    /// Оценка токенов сверху НА ТЕКСТЕ ГРАФА — по правилам претокенизатора, а не по
     /// длине текста. Цифра — всегда токен, пробел перед цифрой или знаком —
     /// свой токен, перевод строки — токен, у буквенного прогона — не меньше
     /// токена; внутри прогона латиница по ⅓, смешанный регистр внутри слова
-    /// (base64, хэши) — по ½, кириллица ½, иероглиф BMP 1, 4 байта UTF-8 — 4.
+    /// (base64, хэши) — по ½, кириллица ½, иероглиф BMP и прочий не-ASCII знак 1,
+    /// 4 байта UTF-8 — 4.
     /// Замер токенизатором Qwen3.6-35B (20.10): по 11 097 заметкам графа
     /// оценка/факт не ниже 1,18 (медиана 1,59), кроме вырожденного повтора
     /// одной буквы; цифры через пробел 1,00, лог 1,04, hex 1,00, base64 0,82.
     /// Прежнее правило «по длине знака в UTF-8» давало цифрам через пробел
-    /// 0,67 и base64 0,64 — не верхняя граница (out1, DS C1).
+    /// 0,67 и base64 0,64 (out1, DS C1). Ниже факта остаётся случайный текст:
+    /// base64 0,81, случайные латинские буквы 0,63, кириллица 0,61–0,68 —
+    /// у BPE слияния зависят от частоты пары, правилом их не поймать.
     static func estimatedTokens(_ text: String) -> Int {
         var sixths = 0          // в шестых долях токена: целые числа, без дробей
-        var run = 0, runSixths = 0, mixedCase = false, prevLower = false
+        var run = 0, runSixths = 0, asciiLetters = 0, mixedCase = false, prevLower = false
         func closeRun() {
-            if run > 0 { sixths += max(6, mixedCase ? 3 * run : runSixths) }
-            run = 0; runSixths = 0; mixedCase = false; prevLower = false
+            // смешанный регистр дорожает только у ASCII-букв: ⅓ → ½ (out2, Haiku I2)
+            if run > 0 { sixths += max(6, runSixths + (mixedCase ? asciiLetters : 0)) }
+            run = 0; runSixths = 0; asciiLetters = 0; mixedCase = false; prevLower = false
         }
         let scalars = Array(text.unicodeScalars)
         for (i, scalar) in scalars.enumerated() {
@@ -66,7 +72,7 @@ enum ChatRetrieval {
                 if bytes == 1 {
                     if scalar.properties.isUppercase && prevLower { mixedCase = true }
                     prevLower = scalar.properties.isLowercase
-                    runSixths += 2
+                    runSixths += 2; asciiLetters += 1
                 } else {
                     prevLower = false
                     runSixths += bytes == 2 ? 3 : bytes == 3 ? 6 : 24
@@ -85,8 +91,7 @@ enum ChatRetrieval {
                 } else {
                     sixths += 6     // цифра, знак, перевод строки
                 }
-            case 2: sixths += 3
-            case 3: sixths += 6     // «—», «…», «•», знаки CJK
+            case 2, 3: sixths += 6  // «», ×, °, неразрывный пробел; «—», «…», знаки CJK (out2, Sonnet M3)
             default: sixths += 24   // эмодзи
             }
         }

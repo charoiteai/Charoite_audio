@@ -635,13 +635,7 @@ enum ArchiveSearch {
         }
         shown = linkedContext(shown, documents: byPath.mapValues(\.text), needles: needles,
                               snippet: snippet, limit: limit, enabled: includeLinked)
-        let (body, keptHits, packed) = packContextKept(shown, budget: budget)
-        var parts = packed
-        // Слот семантики стоит в выдаче последним, но держит вердикт: окно
-        // модели выбрасывает его последним, а не первым (out1, Sonnet I2)
-        if let gateRel {
-            parts = parts.map { $0.rel == gateRel ? Part(text: $0.text, rel: $0.rel, rank: -1) : $0 }
-        }
+        let (body, keptHits, parts, note) = packWithGateSlot(shown, gateRel: gateRel, budget: budget)
         // Гейт честности: оба сигнала слабые → пометка, синтез не сочиняет.
         // Порог 0.66, а не 0.67: «две иглы из трёх» — это 0.6667, и с прежним
         // числом правило требовало на самом деле три из трёх.
@@ -655,9 +649,33 @@ enum ArchiveSearch {
         }
         if bestSim < 0.47 && bestCov < 0.66 {
             return Outcome(text: lowConfidenceMarker + body, rels: rels,
-                           verdict: proven ? .weak : .unverified, parts: parts)
+                           verdict: proven ? .weak : .unverified, note: note, parts: parts)
         }
-        return Outcome(text: body, rels: rels, verdict: .confident, parts: parts)
+        return Outcome(text: body, rels: rels, verdict: .confident, note: note, parts: parts)
+    }
+
+    /// Упаковка выдачи со слотом семантики гейта. Слот держит вердикт, поэтому
+    /// в упаковку он идёт вторым: упаковщик ставит второй последним в текст, где
+    /// слот и стоял, а бюджет выдачи режет хвост — лексику, а не слот (out2,
+    /// DS C1). Окно модели выбрасывает его последним (ранг −1, out1, Sonnet I2).
+    /// Срез бюджетом выдачи модель видит так же, как срез окном (out2, DS I2).
+    static func packWithGateSlot(_ shown: [Hit], gateRel: String?, budget: Int)
+        -> (text: String, kept: [Hit], parts: [Part], note: String) {
+        var packOrder = shown
+        if let gateRel, let at = packOrder.firstIndex(where: { $0.rel == gateRel }), at > 1 {
+            packOrder.insert(packOrder.remove(at: at), at: 1)
+        }
+        let (body, keptHits, packed) = packContextKept(packOrder, budget: budget)
+        var parts = packed
+        if let gateRel {
+            parts = parts.map { $0.rel == gateRel ? Part(text: $0.text, rel: $0.rel, rank: -1) : $0 }
+        }
+        let note = keptHits.count < packOrder.count
+            ? L.t("в выдачу вошли \(keptHits.count) из \(packOrder.count) найденных, остальное сверх бюджета выдачи",
+                  "\(keptHits.count) of \(packOrder.count) hits included, the rest exceeded the result budget",
+                  "仅收录 \(keptHits.count)/\(packOrder.count) 条结果，其余超出结果预算")
+            : ""
+        return (body, keptHits, parts, note)
     }
 
     static func linkedContext(_ original: [Hit], documents: [String: String], needles: [String],
