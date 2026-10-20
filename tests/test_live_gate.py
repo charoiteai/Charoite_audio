@@ -409,15 +409,6 @@ def test_daemon_refusal_names_the_console_reason(tmp_path):
         "причина демона неизвестна приложению — три перезапуска вместо рецепта (выход 13, Haiku C1)")
 
 
-def test_rebuild_no_longer_reads_the_meeting_lock():
-    """Пересборка судит о записи по заявке на сам `.pcm`, а не по локу встречи
-    (№728): после автоперезапуска лок держит новая встреча, а консоль на томе
-    без flock пишет без него. Прежний мост `_daemon_alive` снят."""
-    import rebuild_transcript as rt
-
-    assert not hasattr(rt, "_daemon_alive")
-
-
 def test_console_mark_survives_a_reader_probe(tmp_path):
     """Признак берётся с ретраями, как лок встречи: SH-проба читателя в миг захвата
     не отнимает его на всю встречу (выход 5 №725, Sonnet I1)."""

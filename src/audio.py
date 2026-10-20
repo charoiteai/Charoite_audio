@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import pathlib
 import dataclasses
 import queue
@@ -1365,10 +1366,12 @@ class AudioHub:
             # Уже открытые файлы соседних каналов — закрыть и убрать: кадров в них
             # нет, а без этого .pcm-заготовка висела бы до ретеншна, не попадая ни
             # в finalized, ни в уборку (аудит 13.09, DS M4).
+            # Имя снимаем до close: close отпускает заявку, и пустая заготовка
+            # без неё досталась бы пересборке (out1 DS M1).
             for f in self._sinks.values():
                 try:
-                    f.close()
                     pathlib.Path(f.name).unlink(missing_ok=True)
+                    f.close()
                 except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
                     pass
             self._sinks = {}
@@ -1381,21 +1384,27 @@ class AudioHub:
         `unlink` в `_finalize_recordings` (№728). По ней пересборка отличает
         живого писателя от убитого — лок встречи для этого не годится: после
         автоперезапуска его держит уже новая встреча, а консоль на томе без
-        flock пишет без него. Ретраи — умолчания `acquire_outcome`: чужая проба
-        держит файл микросекунды, одна попытка ложно отказывала бы.
+        flock пишет без него. Ретраи — умолчания `acquire_outcome` (окно ~0,8 с):
+        чужая проба держит файл микросекунды, одна попытка ложно отказывала бы.
+        Других держателей EX на `.pcm`, кроме двери `pcm_to_wav`, в продукте
+        нет, а пустой `.pcm` дверь не трогает (out1, опыт x2).
 
         Не взялась — запись всё равно идёт (отказ записи — потеря встречи), но
-        громко: пересборка после сбоя такую запись сама не тронет, если том без
-        flock, а при чужом держателе может принять за брошенную."""
+        громко и на всю встречу (`sticky`): пересборка после сбоя такую запись
+        сама не тронет, если том без flock, а при чужом держателе может принять
+        за брошенную."""
         try:
             got = file_locks.acquire_outcome(f)
-            if got != file_locks.TAKEN:
-                self._say(stt_runtime.Status(
-                    f"ЗАМОК ЗАПИСИ НЕ ВЗЯТ ({label}: {got}) — запись идёт; после сбоя "
-                    "восстановите встречу вручную",
-                    error=True, topic=stt_runtime.TOPIC_DISK))
+            if got == file_locks.TAKEN and os.fstat(f.fileno()).st_nlink == 0:
+                got = "имя файла снято"     # заявка на снятом inode ничего не защищает
         except Exception as e:  # noqa: BLE001 — заявка не смеет выключить запись встречи
             _safe_stderr(f"замок записи {label} не взят: {e}")
+            got = type(e).__name__
+        if got != file_locks.TAKEN:
+            self._say(stt_runtime.Status(
+                f"ЗАМОК ЗАПИСИ НЕ ВЗЯТ ({label}: {got}) — запись идёт; после сбоя "
+                "восстановите встречу вручную",
+                error=True, sticky=True, topic=stt_runtime.TOPIC_DISK))
 
     @staticmethod
     def prune_recordings(record_dir: pathlib.Path, keep_days,
@@ -1528,13 +1537,23 @@ class AudioHub:
         with self._lock:
             sinks, self._sinks = dict(self._sinks), {}
         for label, f in sinks.items():
-            # Файл закрываем последним: на его дескрипторе — заявка писателя
-            # (`_claim_sink`), и пока она держится, пересборка .pcm не трогает.
-            # Закрыть раньше — пересборка сочла бы нас брошенными посреди
-            # конвертации (№728). Читаем вторым дескриптором: flock принадлежит
-            # описанию открытого файла, свой лок чтение не блокирует.
+            # Заявка писателя (`_claim_sink`) живёт до снятия имени `.pcm`:
+            # пока она держится, пересборка файл не трогает; отпусти её раньше —
+            # пересборка сочла бы нас брошенными посреди конвертации (№728).
+            # Читаем вторым дескриптором: flock принадлежит описанию открытого
+            # файла, свой лок чтение не блокирует.
+            claim = None
             try:
-                f.flush()                 # раньше это делал close() в начале
+                # Заявку держит копия дескриптора (flock — на описании файла,
+                # dup делит его), а сам sink закрываем до чтения: блок, который
+                # застрявший _consume допишет позже, упадёт на закрытом файле
+                # громко, а не уйдёт молча в снятый .pcm (out1 Haiku C1).
+                f.flush()
+                claim = os.dup(f.fileno())
+                try:
+                    f.close()
+                except Exception:  # noqa: BLE001 — заявку держит claim, канал не теряем
+                    pass
                 p = pathlib.Path(f.name)
                 if p.stat().st_size < self.sr * 2 * 5:  # меньше 5с звука — мусор
                     p.unlink(missing_ok=True)
@@ -1553,13 +1572,21 @@ class AudioHub:
                 tmp.replace(wav)
                 p.unlink(missing_ok=True)
                 self.finalized[label] = wav
+            except FileNotFoundError:
+                # .pcm сняли из-под записи («Забыть», чужая уборка): звук канала
+                # потерян — молчать нельзя (out1, шаг Haiku I3).
+                self._say(stt_runtime.Status(
+                    f"ЗАПИСЬ КАНАЛА {label} ПРОПАЛА С ДИСКА до конца встречи — финала по ней не будет",
+                    error=True, topic=stt_runtime.TOPIC_DISK))
             except Exception:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
                 pass
             finally:
                 try:
-                    f.close()             # снимает заявку; сбой close не роняет соседний канал
-                except Exception:  # noqa: BLE001
+                    f.close()             # сбой flush/dup выше — sink ещё открыт
+                except Exception:  # noqa: BLE001 — сбой close не роняет соседний канал
                     pass
+                if claim is not None:
+                    os.close(claim)       # снимает заявку — после снятия имени
 
     #: не чаще этого репортёр говорит об одном типе сбоя прохода: сторож идёт
     #: раз в 5 с, и без окна устойчивый баг дал бы строку каждые пять секунд
@@ -1687,13 +1714,15 @@ class AudioHub:
                 # середине итерации роняла бы сам STT RuntimeError'ом
                 # (ревью 21.08, Gemini + локальная).
                 with self._lock:
-                    self._sinks.pop(c.label, None)
+                    mine = self._sinks.pop(c.label, None) is sink
                 # Закрыть явно: заявка на .pcm снимается сразу, а не когда
-                # отпустят ссылку — файл больше никто не допишет (№728).
-                try:
-                    sink.close()
-                except Exception:  # noqa: BLE001 — диск уже отказал, close тоже может
-                    pass
+                # отпустят ссылку — файл больше никто не допишет (№728). Не наш
+                # (уже в снимке финализации) — закроет она (out1 Sonnet M1).
+                if mine:
+                    try:
+                        sink.close()
+                    except Exception:  # noqa: BLE001 — диск уже отказал, close тоже может
+                        pass
                 written = False
                 sink_error = e
         dropped, start = self._append_at(c.label, part)

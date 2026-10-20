@@ -60,7 +60,7 @@ def test_records_not_ready_is_a_skipped_outcome(tmp_path, monkeypatch):
     got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
 
     assert got == RS(RS.RECORDING_NOT_READY) and isinstance(got, RS)
-    assert "записи не готовы — оставляю живую стенограмму" in lines, lines
+    assert "записи не готовы (нет ни одной) — оставляю живую стенограмму" in lines, lines
 
 
 def test_one_channel_not_ready_keeps_the_live_transcript(tmp_path, monkeypatch):
@@ -77,14 +77,87 @@ def test_one_channel_not_ready_keeps_the_live_transcript(tmp_path, monkeypatch):
     mic.write_bytes(b"\0" * 32)
     meeting_stamp.recording_path(rec, "2026-08-04_120314", "blackhole", "pcm").write_bytes(b"\0" * 32)
     lines: list[str] = []
-    monkeypatch.setattr(rt, "wait_recording", lambda _d, _s, label, _c: mic if label == "mic" else None)
+    monkeypatch.setattr(rt, "wait_recording",
+                        lambda _d, _s, label, _c: mic if label == "mic" else rt.file_locks.BUSY)
     monkeypatch.setattr(rt, "log", lines.append)
     monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
 
     got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
 
     assert got == RS(RS.RECORDING_NOT_READY) and isinstance(got, RS)
-    assert "blackhole: запись не готова — оставляю живую стенограмму" in lines, lines
+    assert "записи не готовы (blackhole) — оставляю живую стенограмму" in lines, lines
+
+
+def _meeting(tmp_path):
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    return live, rec
+
+
+def test_a_not_ready_mic_also_keeps_the_live_transcript(tmp_path, monkeypatch):
+    """То же для микрофона: гейт судит оба канала, а не один (out1 Sonnet M2)."""
+    live, rec = _meeting(tmp_path)
+    bh = meeting_stamp.recording_path(rec, "2026-08-04_120314", "blackhole", "wav")
+    bh.write_bytes(b"\0" * 32)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm").write_bytes(b"\0" * 32)
+    monkeypatch.setattr(rt, "wait_recording",
+                        lambda _d, _s, label, _c: bh if label == "blackhole" else rt.file_locks.BUSY)
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) == RS(RS.RECORDING_NOT_READY)
+
+
+def test_a_volume_without_flock_is_a_deterministic_refusal(tmp_path, monkeypatch):
+    """Том без flock: повтор даст то же — немой None без кода и кнопки
+    «Пересобрать», а не вечное «записи ещё не готовы» (out1 Sonnet I1)."""
+    live, rec = _meeting(tmp_path)
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm").write_bytes(b"\0" * 32)
+    monkeypatch.setattr(rt, "wait_recording", lambda *_a: rt.file_locks.NO_FLOCK)
+    lines: list[str] = []
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got is None and not isinstance(got, RS)
+    assert any("без flock" in m for m in lines), lines
+
+
+def test_a_channel_published_while_we_waited_for_the_other_is_used(tmp_path, monkeypatch):
+    """Канал не был готов на своём сроке, но писатель опубликовал его `.wav`,
+    пока ждали второй канал: финал берёт его, а не «не готово» и не «канала
+    не было» (out1 DS I1)."""
+    live, rec = _meeting(tmp_path)
+    pcm = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm")
+    pcm.write_bytes(b"\0" * 32)
+    wav = meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "wav")
+
+    def wait(_d, _s, label, _c):
+        if label == "mic":
+            return rt.file_locks.BUSY
+        wav.write_bytes(b"writer")           # писатель mic закончил, пока ждали blackhole
+        pcm.unlink()
+        return None
+
+    class Reached(Exception):
+        pass
+
+    def load(p):
+        raise Reached(p)
+
+    monkeypatch.setattr(rt, "wait_recording", wait)
+    monkeypatch.setattr(rt, "load_wav", load)
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    with pytest.raises(Reached) as got:
+        rt.rebuild(live, {"audio": {"samplerate": 16000}})
+    assert got.value.args[0] == wav
 
 
 def test_only_a_neighbours_files_under_the_minute_is_a_deterministic_refusal(tmp_path, monkeypatch):
