@@ -240,6 +240,141 @@ def test_pcm_to_wav_without_a_file_is_gone(rec_dir):
     assert not (rec_dir / "s_mic.pcm").exists(), "дверь создала .pcm — xb писателя упал бы"
 
 
+def _durable_trace(monkeypatch):
+    """События `durable_replace`: сброс на носитель (чей дескриптор) и `replace`."""
+    import charoite_paths
+
+    events = []
+    names = {}
+    real_open, real_replace = charoite_paths.os.open, charoite_paths.os.replace
+
+    def opened(path, flags, *a):
+        fd = real_open(path, flags, *a)
+        names[fd] = pathlib.Path(path)
+        return fd
+
+    def full(fd, op):
+        events.append(("flush", names[fd]))
+        return 0
+
+    def replaced(src, dst):
+        events.append(("replace", pathlib.Path(src)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(charoite_paths.os, "open", opened)
+    monkeypatch.setattr(charoite_paths.fcntl, "fcntl", full)
+    monkeypatch.setattr(charoite_paths.os, "fsync", lambda fd: events.append(("fsync", names[fd])))
+    monkeypatch.setattr(charoite_paths.os, "replace", replaced)
+    return events
+
+
+def test_durable_replace_flushes_data_before_the_name_and_the_dir_after(tmp_path, monkeypatch):
+    """Данные `tmp` — на носитель до `replace`, каталог — после: иначе после
+    краха питания под именем `.wav` лежит усечённый файл или нули, а `.pcm`
+    уже снят (№728 opusfix8). На macOS — `F_FULLFSYNC`, не `os.fsync`."""
+    import charoite_paths
+
+    events = _durable_trace(monkeypatch)
+    monkeypatch.setattr(charoite_paths.fcntl, "F_FULLFSYNC", 51, raising=False)
+    tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
+    tmp.write_bytes(b"RIFF")
+
+    charoite_paths.durable_replace(tmp, target)
+
+    assert events == [("flush", tmp), ("replace", tmp), ("flush", tmp_path)], events
+    assert target.read_bytes() == b"RIFF" and not tmp.exists()
+
+
+def test_durable_replace_falls_back_to_fsync_where_full_sync_is_missing(tmp_path, monkeypatch):
+    """Нет `F_FULLFSYNC` (не macOS) или том его не умеет — обычный `fsync`."""
+    import charoite_paths
+
+    events = _durable_trace(monkeypatch)
+    for refuse in (None, OSError(45, "ENOTSUP")):
+        events.clear()
+        if refuse is None:
+            monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
+        else:
+            monkeypatch.setattr(charoite_paths.fcntl, "F_FULLFSYNC", 51, raising=False)
+
+            def deny(fd, op, exc=refuse):
+                raise exc
+
+            monkeypatch.setattr(charoite_paths.fcntl, "fcntl", deny)
+        tmp, target = tmp_path / "a.part", tmp_path / "a.wav"
+        tmp.write_bytes(b"RIFF")
+
+        charoite_paths.durable_replace(tmp, target)
+
+        assert events == [("fsync", tmp), ("replace", tmp), ("fsync", tmp_path)], (refuse, events)
+
+
+def test_a_failed_data_flush_publishes_nothing(tmp_path, monkeypatch):
+    """Сброс данных не удался (EIO) — исключение, имя `.wav` не занято:
+    вызывающий не снимет `.pcm` за непрочным `.wav`."""
+    import charoite_paths
+
+    monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
+
+    def eio(fd):
+        raise OSError(5, "EIO")
+
+    monkeypatch.setattr(charoite_paths.os, "fsync", eio)
+    tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
+    tmp.write_bytes(b"RIFF")
+
+    with pytest.raises(OSError):
+        charoite_paths.durable_replace(tmp, target)
+    assert tmp.exists() and not target.exists()
+
+
+def test_a_failed_dir_flush_keeps_the_publication(tmp_path, monkeypatch):
+    """Каталог не сбрасывается (сетевой том) — имя уже заменено, это не сбой."""
+    import charoite_paths
+
+    monkeypatch.delattr(charoite_paths.fcntl, "F_FULLFSYNC", raising=False)
+    real = charoite_paths.os.fsync
+
+    def no_dir(fd):
+        if pathlib.Path(f"/dev/fd/{fd}").is_dir():
+            raise OSError(22, "EINVAL")
+        real(fd)
+
+    monkeypatch.setattr(charoite_paths.os, "fsync", no_dir)
+    tmp, target = tmp_path / "s_mic.wav.part", tmp_path / "s_mic.wav"
+    tmp.write_bytes(b"RIFF")
+
+    charoite_paths.durable_replace(tmp, target)
+
+    assert target.read_bytes() == b"RIFF"
+
+
+def test_both_doors_publish_through_durable_replace(tmp_path, monkeypatch):
+    """Писатель и дверь пересборки публикуют `.wav` только через
+    `durable_replace`: `.pcm` снимается за полным `.wav` на носителе."""
+    import audio
+    import rebuild_transcript as rt
+
+    calls = []
+    for mod in (audio, rt):
+        real = mod.durable_replace
+        monkeypatch.setattr(mod, "durable_replace",
+                            lambda tmp, target, real=real, mod=mod: (calls.append((mod.__name__, target.name)),
+                                                                     real(tmp, target)))
+    hub = audio.AudioHub({"audio": {"samplerate": 16000, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                                    "vad_energy_db": -45.0, "record": False, "device": "auto"},
+                          "log": {"recordings_dir": str(tmp_path)}, "sufler": {"user_name": "Владелец"}})
+    pcm = tmp_path / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * (16000 * 2 * 6))
+    hub._sinks = {"mic": pcm.open("ab")}
+    hub._finalize_recordings()
+    door = tmp_path / "d_mic.pcm"
+    door.write_bytes(b"\0" * 4096)
+
+    assert rt.pcm_to_wav(door, 16000) == tmp_path / "d_mic.wav"
+    assert calls == [("audio", "s_mic.wav"), ("rebuild_transcript", "d_mic.wav")], calls
+
+
 def test_finalize_publishes_wav_atomically(tmp_path):
     """Готовый .wav появляется одним движением, а не растёт на глазах у чтеца."""
     import audio
@@ -670,10 +805,10 @@ def test_pcm_to_wav_broken_mid_conversion_leaves_no_partial(rec_dir, monkeypatch
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
 
-    def broken(self, target):
+    def broken(tmp, target):
         raise OSError("EIO")
 
-    monkeypatch.setattr(rt.pathlib.Path, "replace", broken)
+    monkeypatch.setattr(rt, "durable_replace", broken)
     with pytest.raises(OSError):
         rt.pcm_to_wav(pcm, 16000)
 
@@ -818,15 +953,22 @@ def test_a_failing_release_of_the_claim_does_not_skip_the_next_channel(tmp_path,
         f.write(b"\0" * 16000 * 2 * 6)
         sinks[label] = f
     hub._sinks = sinks
-    real = audio.os.close
-    closes = []
+    real, real_dup = audio.os.close, audio.os.dup
+    claims, closes = set(), []
+
+    def dup(fd):
+        claims.add(new := real_dup(fd))
+        return new
 
     def close(fd):
         real(fd)
+        if fd not in claims:
+            return                       # дескрипторы `durable_replace` — не заявки
         closes.append(fd)
         if len(closes) == 1:
             raise OSError("EIO")
 
+    monkeypatch.setattr(audio.os, "dup", dup)
     monkeypatch.setattr(audio.os, "close", close)
     hub._finalize_recordings()
 
@@ -1116,17 +1258,17 @@ def test_junk_larger_on_disk_than_a_buffered_live_channel_still_goes_first(tmp_p
     assert mic.stat().st_size < bh.stat().st_size
     hub._sinks = sinks
     seen = []
-    real = audio.pathlib.Path.replace
+    real = audio.durable_replace
 
-    def watching(self, target):
+    def watching(tmp, target):
         seen.append(bh.exists())
-        return real(self, target)
+        return real(tmp, target)
 
-    audio.pathlib.Path.replace = watching
+    audio.durable_replace = watching
     try:
         hub._finalize_recordings()
     finally:
-        audio.pathlib.Path.replace = real
+        audio.durable_replace = real
 
     assert seen == [False], "мусорный .pcm пережил публикацию .wav соседнего канала"
     assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
@@ -1144,17 +1286,17 @@ def test_empty_channels_are_dropped_before_the_first_wav_is_published(tmp_path):
     sinks["mic"].write(b"\0" * 16000 * 2 * 6)
     hub._sinks = sinks                           # mic первым, как в боевом порядке
     seen = []
-    real = audio.pathlib.Path.replace
+    real = audio.durable_replace
 
-    def watching(self, target):
+    def watching(tmp, target):
         seen.append(bh.exists())
-        return real(self, target)
+        return real(tmp, target)
 
-    audio.pathlib.Path.replace = watching
+    audio.durable_replace = watching
     try:
         hub._finalize_recordings()
     finally:
-        audio.pathlib.Path.replace = real
+        audio.durable_replace = real
 
     assert seen == [False], "пустой .pcm пережил публикацию .wav соседнего канала"
     assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}

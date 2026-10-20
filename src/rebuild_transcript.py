@@ -34,7 +34,7 @@ import time
 import typing
 import wave
 
-from charoite_paths import code_root, harden_umask, log_path, meeting_log, resolve_root
+from charoite_paths import code_root, durable_replace, harden_umask, log_path, meeting_log, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -210,7 +210,7 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
                 w.setframerate(sr)
                 while chunk := f.read(_CHUNK):
                     w.writeframes(chunk)
-            tmp.replace(out)
+            durable_replace(tmp, out)     # .pcm снимаем ниже — только за полным .wav на носителе
         finally:
             tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
         # Полный .wav уже опубликован: после этого вызов не проваливается.
@@ -240,8 +240,9 @@ def _drop_leftover(pcm: pathlib.Path) -> None:
     (opusfix4 DS C1). `.wav` короче исходника (публикация без fsync, крах
     питания) остаток не снимает: база `.pcm` не удаляла никогда, и полную копию
     звука уборка не трогает (opusfix5 Sonnet I1, DS I3). Встреча тогда остаётся
-    сиротой, как в базе всегда (opusfix6 C1 понижен опытом x10); закрывает это
-    fsync публикации в обеих дверях (долг №572)."""
+    сиротой, как в базе всегда (opusfix6 C1 понижен опытом x10). Обе двери
+    публикуют через `durable_replace`: короткий `.wav` рядом с `.pcm` остаётся
+    от записей до этой правки и от тома, где сброс на носитель не держит (opusfix8)."""
     try:
         with pcm.open("rb") as f:
             # Снятое под нами имя проверять не нужно: unlink даст FileNotFoundError.

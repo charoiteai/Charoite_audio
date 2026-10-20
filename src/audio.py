@@ -22,7 +22,7 @@ import speech_gate
 import stt_runtime
 import threads
 
-from charoite_paths import free_bytes, resolve_root
+from charoite_paths import durable_replace, free_bytes, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -1616,7 +1616,7 @@ class AudioHub:
                     w.setframerate(self.sr)
                     while chunk := src.read(1 << 20):
                         w.writeframes(chunk)
-                tmp.replace(wav)
+                durable_replace(tmp, wav)   # .pcm снимаем ниже — только за полным .wav на носителе
                 self.finalized[label] = wav
                 try:
                     p.unlink(missing_ok=True)

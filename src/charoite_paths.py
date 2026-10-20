@@ -35,6 +35,7 @@
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import pathlib
@@ -709,3 +710,44 @@ def free_bytes(path) -> int:
     """
     return int(shutil.disk_usage(path).free)
 
+
+def _flush_to_disk(fd: int) -> None:
+    """Данные дескриптора — на носитель. На macOS `os.fsync` отдаёт их только
+    диску, а его кэш при пропаже питания теряется: нужен `F_FULLFSYNC`. Том,
+    который его не умеет (сетевой, FAT), получает обычный `fsync`."""
+    full = getattr(fcntl, "F_FULLFSYNC", None)
+    if full is not None:
+        try:
+            fcntl.fcntl(fd, full)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
+
+
+def durable_replace(tmp: pathlib.Path, target: pathlib.Path) -> None:
+    """Опубликовать готовый `tmp` под именем `target` так, чтобы после краха
+    питания под `target` лежал полный файл: данные — на носитель, затем
+    `replace`, затем каталог (образец — `MeetingStatusStore._write_path`).
+
+    Без этого `.wav` записи после краха бывал усечён или из нулей, а `.pcm`
+    рядом уже снят (№728 opusfix8). Сбой сброса данных — исключение: `tmp`
+    не опубликован, исходник вызывающий не трогает. Сброс каталога — по
+    возможности: имя уже заменено, а том без `fsync` каталога (сетевой)
+    публиковать иначе не умеет."""
+    fd = os.open(tmp, os.O_RDONLY)
+    try:
+        _flush_to_disk(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, target)
+    try:
+        dfd = os.open(target.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        _flush_to_disk(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
