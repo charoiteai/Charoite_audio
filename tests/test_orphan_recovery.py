@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import hashlib
 import json
 import os
@@ -539,8 +540,11 @@ def test_an_unreadable_channel_does_not_veto_a_volume_without_flock(data_root, m
     bh.write_bytes(b"\0" * 4096)
     real_open = pathlib.Path.open
 
+    denied = []
+
     def deny(self, *a, **kw):
         if self == bh:
+            denied.append(self)
             raise PermissionError(self)
         return real_open(self, *a, **kw)
 
@@ -549,30 +553,44 @@ def test_an_unreadable_channel_does_not_veto_a_volume_without_flock(data_root, m
         monkeypatch.setattr(daemon.meeting_stamp, "RECORDING_LABELS", labels)
         assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set(), labels
     assert started == []
+    assert denied, "отказ открытия blackhole не случился — тест прошёл другим путём"
 
 
-def test_a_meeting_whose_channels_all_fail_to_open_stays_protected(data_root, monkeypatch):
-    """Ни один `.pcm` встречи не открылся (EACCES, EMFILE на старте) — голосов
-    «том без flock» нет: встреча остаётся сиротой под защитой ретеншна, а не
-    уходит в «вручную» (финальный Opus I2)."""
+@pytest.mark.parametrize("err", [errno.EACCES, errno.EMFILE], ids=["eacces", "emfile"])
+def test_a_meeting_whose_channels_all_fail_to_open_stays_protected(data_root, monkeypatch, err):
+    """Ни один `.pcm` встречи не открылся (права, лимит дескрипторов на
+    старте) — голосов «том без flock» нет: встреча остаётся сиротой под
+    защитой ретеншна, а не уходит в «вручную» (финальный Opus I2). Тест
+    сам проверяет, что отказ открытия случился и до пробы заявки дело не
+    дошло: иначе смена способа открытия оставила бы его зелёным
+    (круг по правкам Opus, DS I1)."""
     import daemon
+    import file_locks
 
     started = []
     monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
-    bh = data_root / "recordings" / "2026-08-07_181500_blackhole.pcm"
-    bh.write_bytes(b"\0" * 4096)
+    rec = data_root / "recordings"
+    (rec / "2026-08-07_181500_blackhole.pcm").write_bytes(b"\0" * 4096)
+    pcms = {rec / "2026-08-07_181500_mic.pcm", rec / "2026-08-07_181500_blackhole.pcm"}
     real_open = pathlib.Path.open
+    denied = []
 
     def deny(self, *a, **kw):
-        if self.suffix == ".pcm":
-            raise PermissionError(self)
+        if self in pcms:
+            denied.append(self)
+            raise OSError(err, os.strerror(err), str(self))
         return real_open(self, *a, **kw)
 
+    def no_probe(f, **kw):
+        pytest.fail(f"проба заявки на неоткрытом файле: {f}")
+
     monkeypatch.setattr(pathlib.Path, "open", deny)
+    monkeypatch.setattr(file_locks, "acquire_outcome", no_probe)
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
     assert len(started) == 1
+    assert sorted(denied) == sorted(pcms), "отказ открытия не случился — тест прошёл другим путём"
 
 
 @pytest.mark.parametrize("wav", [False, True])
