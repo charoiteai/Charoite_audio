@@ -1331,6 +1331,7 @@ class AudioHub:
         # один try: файл, исчезнувший между iterdir() и stat(), или строка вместо
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
+        self._unclaimed = {}    # до любого раннего выхода: прошлая встреча не говорит за эту
         try:
             # Свой try: сигнал о бессрочном хранении не смеет ни выключить запись
             # встречи (DS, круг 2), ни отменить уборку при верном сроке (Sonnet, круг 3)
@@ -1356,7 +1357,6 @@ class AudioHub:
         # файлов — исключение меры выключило бы запись на всю встречу.
         self._warn_disk_headroom()
         try:
-            self._unclaimed = {}
             for c in self.captures:
                 path = meeting_stamp.recording_path(
                     self.record_dir, self.stamp, c.label, "pcm")
@@ -1386,7 +1386,7 @@ class AudioHub:
                 # его тем же откатом, иначе он спорил бы с отказом ниже (out3).
                 self._unclaimed = {}
                 self._say(stt_runtime.Status(
-                    "замок записи больше не нужен — запись выключена",
+                    "заявка на запись снята — запись выключена",
                     sticky=False, topic=stt_runtime.TOPIC_RECORDING_CLAIM))
             self._say(stt_runtime.Status(
                 f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить",
@@ -1588,8 +1588,13 @@ class AudioHub:
                     while chunk := src.read(1 << 20):
                         w.writeframes(chunk)
                 tmp.replace(wav)
-                p.unlink(missing_ok=True)
                 self.finalized[label] = wav
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError as e:
+                    # .wav уже опубликован: это не сбой конвертации (финальный
+                    # Opus M1). Остаток снимет пересборка под заявкой.
+                    _safe_stderr(f"запись канала {label}: .wav готов, .pcm не снят — {type(e).__name__}")
             except FileNotFoundError:
                 # .pcm сняли из-под записи («Забыть», чужая уборка): звук канала
                 # потерян — молчать нельзя (out1, шаг Haiku I3).
@@ -1600,7 +1605,10 @@ class AudioHub:
                 # Не молча: без строки человек ждал бы финала, которого нет до
                 # пересборки (out2, шаг Haiku M1).
                 # Без заявки пересборка .pcm не тронет: обещать её нельзя (out3).
-                after = ("восстановите встречу вручную" if label in self._unclaimed
+                # BUSY/исключение заявки — писатель жив, но после его выхода
+                # дверь заявку возьмёт; не возьмёт только том без flock (out4 Sonnet M2).
+                after = ("восстановите встречу вручную"
+                         if self._unclaimed.get(label) == file_locks.NO_FLOCK
                          else "финал соберёт пересборка")
                 self._say(stt_runtime.Status(
                     f"запись канала {label} не сконвертирована ({type(e).__name__}) — "

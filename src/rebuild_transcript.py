@@ -144,7 +144,7 @@ UNREADABLE = "unreadable"
 _CHUNK = 1 << 20
 
 
-def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
+def pcm_to_wav(pcm: pathlib.Path, sr: int, *, drop_empty: bool = False) -> pathlib.Path | str:
     """.pcm → .wav под заявкой на сам `.pcm`; без заявки — ничего не трогаем.
 
     Заявка — эксклюзивный flock на дескрипторе `.pcm`. Писатель встречи
@@ -190,7 +190,15 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
         if st.st_nlink == 0:
             return GONE         # писатель снял имя между open и заявкой: его .wav уже на месте
         if st.st_size == 0:
-            return EMPTY        # out1 Haiku M2: заявку у такого файла писатель берёт следующей строкой
+            if not drop_empty:
+                return EMPTY    # out1 Haiku M2: заявку у такого файла писатель берёт следующей строкой
+            # На сроке: окно «xb → заявка» давно прошло, свободный пустой .pcm —
+            # писатель убит до первого блока. Не снять его — встреча останется
+            # сиротой навсегда: пересборка на каждом старте и ретеншн придержан
+            # (финальный Opus I1а; база конвертировала и снимала такой файл).
+            pcm.unlink()
+            log(f"{pcm.name}: пуст, писателя нет — убрала")
+            return GONE
         stale = pcm.with_suffix(".wav.part")
         try:
             stale.unlink()
@@ -213,9 +221,27 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
         # сетевой том — отказать (EACCES); остаток заберёт ретеншн (out3 DS M2).
         try:
             pcm.unlink()
+        except FileNotFoundError:
+            pass
         except OSError as e:
             log(f"{pcm.name}: .wav готов, исходник не снят — {type(e).__name__}")
     return out
+
+
+def _drop_leftover(pcm: pathlib.Path) -> None:
+    """`.wav` канала готов, а `.pcm` рядом остался (крах писателя между
+    `replace` и `unlink`, отказ unlink): снять остаток под заявкой. Без этого
+    `_recover_orphans` находит `.pcm` и пересобирает встречу на каждом старте,
+    а ретеншн её придерживает (финальный Opus I1в). Заявка занята — это
+    писатель посреди своего unlink, оставляем ему."""
+    try:
+        with pcm.open("rb") as f:
+            # Снятое под нами имя проверять не нужно: unlink даст FileNotFoundError.
+            if file_locks.acquire_outcome(f, attempts=1) == file_locks.TAKEN:
+                pcm.unlink()
+                log(f"{pcm.name}: .wav готов — остаток .pcm убрала")
+    except OSError:
+        pass                    # нет файла или не дали: следующий прогон попробует снова
 
 
 #: Пауза между заходами `wait_recording`.
@@ -279,6 +305,7 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     refusal = GONE
     while True:
         if wav.exists():
+            _drop_leftover(pcm)
             return wav
         # Том без flock: дверь больше не зовём — заявки там нет ни у кого, —
         # но .wav писателя ждём весь срок: на штатном стопе пересборка
@@ -293,15 +320,19 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
             break
         sleep(WAIT_POLL_S)
     # .pcm — первым: писатель публикует .wav до снятия .pcm, и в таком порядке
-    # гонки нет — нет .pcm значит есть .wav или канала нет (out2 DS I1).
+    # гонки нет (out2 DS I1): нет .pcm — значит есть .wav, или писатель убрал
+    # мусор короче 5 с, или канала нет. Решает `wav.exists()` ниже.
     pcm_left = pcm.exists()
     if wav.exists():
+        _drop_leftover(pcm)
         return wav    # писатель опубликовал между последним заходом и сроком
     if pcm_left and refusal not in (GONE, EMPTY):
         log(f"{label}: запись не готова — {_REFUSAL_TEXT.get(refusal, refusal)}")
         return refusal
     if pcm_left:
         log(f"{label}: {_REFUSAL_TEXT[refusal]} — канал без записи")
+        if refusal == EMPTY:
+            pcm_to_wav(pcm, sr, drop_empty=True)
     return None
 
 

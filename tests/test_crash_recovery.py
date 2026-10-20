@@ -638,7 +638,9 @@ def test_an_empty_pcm_at_the_deadline_is_no_channel(rec_dir, monkeypatch):
     (rec_dir / "s_mic.pcm").write_bytes(b"")
 
     assert rt.wait_recording(rec_dir, "s", "mic", 16000) is None
-    assert (rec_dir / "s_mic.pcm").exists()
+    # Свободный пустой .pcm на сроке — писатель убит до первого блока: снят,
+    # иначе встреча — сирота навсегда (финальный Opus I1а; база его снимала).
+    assert not (rec_dir / "s_mic.pcm").exists()
     # срок включительно: на 4-й секунде уже не спим (мутант `>` дал бы третий сон)
     assert clock.slept == [2.0, 2.0], "пустой файл живого писателя ждут ровно до срока"
 
@@ -743,8 +745,12 @@ def test_pcm_to_wav_survives_the_pcm_removed_after_publishing(rec_dir, monkeypat
 
     monkeypatch.setattr(rt.pathlib.Path, "replace", replace_then_forget)
 
+    lines = []
+    monkeypatch.setattr(rt, "log", lines.append)
+
     assert rt.pcm_to_wav(pcm, 16000) == rec_dir / "s_mic.wav"
     assert sorted(p.name for p in rec_dir.iterdir()) == ["s_mic.wav"]
+    assert not any("не снят" in m for m in lines), "снятый другим исходник назван неснятым (out4)"
 
 
 def test_a_writer_publishing_at_the_deadline_is_not_a_missing_channel(rec_dir, monkeypatch):
@@ -947,3 +953,120 @@ def test_a_rollback_of_the_sinks_lifts_the_claim_layer(tmp_path, monkeypatch):
     assert statuses.index(lifts[0]) > statuses.index(
         next(m for m in statuses if "ЗАМОК ЗАПИСИ НЕ ВЗЯТ" in m)), "слой снят раньше, чем поставлен"
     assert hub._sinks == {} and hub._unclaimed == {}
+
+
+def test_an_empty_pcm_held_by_its_writer_at_the_deadline_stays(rec_dir, monkeypatch):
+    """Пустой `.pcm` под заявкой на сроке — писатель жив (канал молчит): не наш."""
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 0)
+    monkeypatch.setattr(rt, "time", _Clock())
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"")
+    holder = _writer(pcm)
+    try:
+        assert rt.wait_recording(rec_dir, "s", "mic", 16000) == rt.file_locks.BUSY
+    finally:
+        holder.close()
+    assert pcm.exists()
+
+
+def test_a_leftover_pcm_next_to_a_published_wav_is_removed(rec_dir, monkeypatch):
+    """Писатель упал между `replace` и `unlink`: `.wav` полон, `.pcm` рядом.
+    Остаток снимаем под заявкой — иначе встреча пересобирается на каждом
+    старте и ретеншн её придерживает (финальный Opus I1в)."""
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(rt, "time", _Clock())
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    wav = rec_dir / "s_mic.wav"
+    wav.write_bytes(b"writer")
+
+    assert rt.wait_recording(rec_dir, "s", "mic", 16000) == wav
+    assert not pcm.exists() and wav.read_bytes() == b"writer"
+
+
+def test_a_leftover_pcm_under_its_writers_claim_is_left_to_it(rec_dir, monkeypatch):
+    """`.wav` опубликован, писатель ещё держит заявку (снимает имя сам): не трогаем."""
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(rt, "time", _Clock())
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    (rec_dir / "s_mic.wav").write_bytes(b"writer")
+    holder = _writer(pcm)
+    try:
+        assert rt.wait_recording(rec_dir, "s", "mic", 16000) == rec_dir / "s_mic.wav"
+        assert pcm.exists()
+    finally:
+        holder.close()
+
+
+def test_a_failing_unlink_after_the_writer_published_is_not_a_failed_conversion(tmp_path, monkeypatch):
+    """`.wav` писателя опубликован, а снять `.pcm` не дали: канал финализирован,
+    статуса «не сконвертирована» нет (финальный Opus M1, out4 Sonnet M1)."""
+    import audio
+
+    hub = _hub(tmp_path)
+    said = []
+    hub._say = said.append
+    pcm = tmp_path / "s_mic.pcm"
+    f = pcm.open("xb")
+    f.write(b"\0" * 16000 * 2 * 6)
+    hub._sinks = {"mic": f}
+    real = audio.pathlib.Path.unlink
+
+    def refuse(self, *a, **kw):
+        if self == pcm:
+            raise PermissionError(13, "EACCES")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(audio.pathlib.Path, "unlink", refuse)
+    hub._finalize_recordings()
+
+    assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
+    assert not [m for m in said if m and "не сконвертирована" in m], said
+
+
+def test_a_failed_conversion_with_a_busy_claim_still_promises_the_rebuild(tmp_path, monkeypatch):
+    """Заявку заняли на старте, но писатель жив: после его выхода дверь её
+    возьмёт — «вручную» только для тома без flock (out4 Sonnet M2)."""
+    import audio
+    import file_locks
+
+    hub = _hub(tmp_path)
+    hub.stamp = "s"
+    hub.captures = [type("C", (), {"label": "mic"})()]
+    said = []
+    hub._say = said.append
+    monkeypatch.setattr(hub, "prune_recordings", lambda *a, **kw: 0)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.BUSY)
+    hub._open_sinks()
+    hub._sinks["mic"].write(b"\0" * 16000 * 2 * 6)
+
+    def broken(*a, **kw):
+        raise RuntimeError("EIO")
+
+    monkeypatch.setattr(audio.wave, "open", broken)
+    hub._finalize_recordings()
+
+    failed = [m for m in said if m and "не сконвертирована" in m]
+    assert len(failed) == 1 and "пересборка" in failed[0], said
+
+
+def test_the_claim_state_of_a_past_meeting_does_not_leak_into_the_next(tmp_path, monkeypatch):
+    """`_unclaimed` сбрасывается в начале `_open_sinks`, даже если запись этой
+    встречи выключилась раньше открытия файлов (out4 DS M3)."""
+    hub = _hub(tmp_path)
+    hub._unclaimed = {"mic": "no-flock"}
+    hub._say = lambda _m: None
+    monkeypatch.setattr(hub, "prune_recordings", lambda *a, **kw: 0)
+
+    def no_dir(*a, **kw):
+        raise PermissionError(13, "EACCES")
+
+    monkeypatch.setattr(hub.record_dir.__class__, "mkdir", no_dir)
+    hub._open_sinks()
+
+    assert hub._unclaimed == {}

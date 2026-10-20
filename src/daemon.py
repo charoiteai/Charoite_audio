@@ -530,6 +530,24 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
                          detached="уборка копий импорта живёт, пока идёт встреча")
 
 
+def _no_flock_volume(rec_dir: pathlib.Path, stamp: str) -> bool:
+    """Все `.pcm` встречи на томе без flock (одна проба заявки на файл).
+    Сбой открытия — «не знаем»: такую встречу восстанавливаем как прежде."""
+    seen = False
+    for label in meeting_stamp.RECORDING_LABELS:
+        pcm = meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")
+        try:
+            with pcm.open("rb") as f:
+                if file_locks.acquire_outcome(f, attempts=1) != file_locks.NO_FLOCK:
+                    return False
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+        seen = True
+    return seen
+
+
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     """Добить встречи, оборванные аварийно. Возвращает штампы, которые
     пересобираются прямо сейчас, — их записи ретеншну трогать нельзя.
@@ -575,6 +593,14 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         live = tdir / f"{stamp}.md"
         if not live.exists():
             continue                      # без стенограммы пересобирать нечего
+        if _no_flock_volume(rec_dir, stamp):
+            # Том без flock: пересборка такую запись не тронет (писателя не
+            # видно), и встреча была бы сиротой навсегда — пересборка на каждом
+            # старте, звук придержан сверх record_keep_days. Не защищаем: запись
+            # живёт по сроку хранения, восстановление — вручную (финальный Opus I1б).
+            emit({"type": "status", "text": f"Встреча {stamp}: том записей без flock — "
+                                            "восстановите её вручную до срока хранения"})
+            continue
         # Помечаем ДО запуска, а не после: даже неудавшийся спавн означает, что
         # встреча ждёт восстановления, и удалять её звук нельзя тем более.
         recovering.add(stamp)

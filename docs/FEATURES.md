@@ -96,8 +96,9 @@
   the meeting is `ready`, but the status gets a `rebuild_skipped` key with a
   code: `recording_not_ready` (the recording channels were not ready within
   the wait — a long meeting the daemon is still converting, or its writer still
-  holds a channel's recording; a recordings volume without flock or channel recordings that are all
-  empty (or removed as under-5-second junk) are not this case: there the rebuild leaves the recording alone and no code is written), `failed` (the
+  holds a channel's recording; a recordings volume without flock or no channel recordings at all
+  (empty, removed as under-5-second junk, or never written) are not this case: there the rebuild leaves the recording alone and no code is written;
+  after a crash a meeting on a volume without flock is recovered by hand, and its recording lives by the retention period), `failed` (the
   rebuild raised an error — the rebuild log says whether a retry can help)
   and `channel_lost` (reserved for the lost-channel gate). The key is written
   only while this transcript never had a machine final (no valid

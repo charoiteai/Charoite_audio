@@ -405,3 +405,49 @@ def test_пустой_свежий_каталог_сессии_не_удаляе
 
     assert fresh_dir.exists(), "каталог только что стартовавшей сессии удалён"
     assert not stale_dir.exists(), "давно пустой каталог должен уйти"
+
+
+def test_an_orphan_on_a_volume_without_flock_is_not_held_forever(data_root, monkeypatch):
+    """Том без flock: пересборка такую запись не тронет, и защита сделала бы
+    встречу вечной сиротой — пересборка на каждом старте, звук сверх срока.
+    Не защищаем и не пересобираем; человеку — строка «вручную» (финальный Opus I1б)."""
+    import daemon
+    import file_locks
+
+    started, said = [], []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    monkeypatch.setattr(daemon, "emit", said.append)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
+    _orphan(data_root, "2026-08-07_181500", age_days=3)
+
+    protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+
+    assert protect == set() and started == []
+    assert any("без flock" in m.get("text", "") for m in said), said
+
+
+def test_an_orphan_with_a_lockable_pcm_is_still_recovered(data_root, monkeypatch):
+    """Проба тома не мешает обычной сироте: один канал с flock — восстанавливаем."""
+    import daemon
+    import file_locks
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    outcomes = iter([file_locks.NO_FLOCK, file_locks.TAKEN])
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: next(outcomes))
+    _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    (data_root / "recordings" / "2026-08-07_181500_blackhole.pcm").write_bytes(b"\0" * 4096)
+
+    protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+
+    assert protect == {"2026-08-07_181500"} and len(started) == 1
+
+
+def test_a_stamp_without_recordings_is_not_a_volume_without_flock(data_root, monkeypatch):
+    """Записи пропали между обходом и пробой: «том без flock» не выводится из пустоты."""
+    import daemon
+    import file_locks
+
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
+
+    assert daemon._no_flock_volume(data_root / "recordings", "2026-08-07_181500") is False
