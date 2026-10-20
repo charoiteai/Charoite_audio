@@ -173,13 +173,20 @@ enum ArchiveSearch {
     /// и из текста, и из rels (№750, out1: :8100 отдаёт «_ЯДРА», «_КОМАНДЫ»,
     /// «Служебное_*»; фильтр одних чипов оставлял их модели). Пути сервера
     /// идут от корня vault («<папка графа>/_MOC.md») — правило судит путь от
-    /// корня графа. Все блоки выброшены — пустой список, не nil: иначе фолбэк
-    /// собрал бы чипы из упоминаний.
+    /// корня графа, и rels отдаются от корня графа — как у локальной ветки
+    /// (вид чипа, «Карта графа», открытие файла). Все блоки выброшены — пустой
+    /// список, не nil: иначе фолбэк собрал бы чипы из упоминаний.
+    /// Заголовок — «• » в КОЛОНКЕ 0, как разбирает свой ответ сам сервер:
+    /// тело блока он пишет одной свёрнутой строкой с отступом, и «• путь.md»
+    /// внутри фрагмента заголовком не становится (out2). Маркер «⚠» brainSearch
+    /// клеит к первому заголовку — снимается до разбора и возвращается.
     static func brainOutcome(_ text: String, folder: String) -> Outcome {
+        let weak = text.hasPrefix(lowConfidenceMarker)
+        let body = weak ? String(text.dropFirst(lowConfidenceMarker.count)) : text
         func header(_ line: Substring) -> String? {
-            let s = line.trimmingCharacters(in: .whitespaces)
-            guard s.hasPrefix("• "), s.hasSuffix(".md") else { return nil }
-            return String(s.dropFirst(2))
+            guard line.hasPrefix("• ") else { return nil }
+            let s = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            return s.hasSuffix(".md") ? s : nil
         }
         func graphRel(_ path: String) -> String {
             let head = folder + "/"
@@ -187,7 +194,7 @@ enum ArchiveSearch {
         }
         var preamble: [Substring] = []
         var blocks: [(rel: String, lines: [Substring])] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
             if let h = header(line) {
                 blocks.append((h, [line]))
             } else if blocks.isEmpty {
@@ -199,7 +206,9 @@ enum ArchiveSearch {
         guard !blocks.isEmpty else { return Outcome(text: text, rels: nil) }
         let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
         let lines = preamble + kept.flatMap(\.lines)
-        return Outcome(text: lines.joined(separator: "\n"), rels: kept.map(\.rel))
+        var seen = Set<String>()
+        let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
+        return Outcome(text: (weak ? lowConfidenceMarker : "") + lines.joined(separator: "\n"), rels: rels)
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.

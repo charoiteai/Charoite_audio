@@ -88,7 +88,6 @@ final class ServiceFilesTests: XCTestCase {
     /// уходит и из текста модели, и из чипов; карта под префиксом папки — карта.
     func testBrainBlocksOfFolderIndexesLeaveTextAndChips() {
         let text = """
-        ⚠ слабые совпадения
         • g/Ядра/_ЯДРА.md
           …сводка статусов…
 
@@ -98,10 +97,13 @@ final class ServiceFilesTests: XCTestCase {
           …обзор…
         """
         let out = ArchiveSearch.brainOutcome(text, folder: "g")
-        XCTAssertEqual(out.rels, ["g/Люди/Мария Соколова.md", "g/_MOC.md"])
+        // rels — от корня графа, как у локальной ветки: вид чипа и «Карта графа»
+        XCTAssertEqual(out.rels, ["Люди/Мария Соколова.md", "_MOC.md"])
+        XCTAssertEqual(MemoryScreenPolicy.Source(rel: "_MOC.md", kind: MemoryScreenPolicy.kind(of: "_MOC.md")).title,
+                       "Карта графа")
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "Люди/Мария Соколова.md"), .node)
         XCTAssertFalse(out.text.contains("_ЯДРА") || out.text.contains("сводка статусов"),
                        "блок указателя ушёл модели: \(out.text)")
-        XCTAssertTrue(out.text.hasPrefix("⚠ слабые совпадения"))
         XCTAssertTrue(out.text.contains("…обзор…") && out.text.contains("…см. Досье/_ИНДЕКС.md…"))
         // одни указатели — пустой список и текст без блоков, а не nil: фолбэк
         // по телам сниппетов собрал бы чипы из упоминаний
@@ -113,6 +115,27 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertEqual(none.text, "текст без заголовков, Ядра/Тема.md")
         // карта не в корне графа — указатель
         XCTAssertEqual(ArchiveSearch.brainOutcome("• g/Встречи/_MOC.md\n  …", folder: "g").rels, [])
+    }
+
+    /// Маркер слабой выдачи brainSearch клеит к первому заголовку («⚠• путь»):
+    /// первый блок проходит тот же фильтр, маркер остаётся в начале (out2 C1).
+    func testWeakMarkerGluedToTheFirstHeader() {
+        let m = ArchiveSearch.lowConfidenceMarker
+        let out = ArchiveSearch.brainOutcome(m + "• g/Ядра/_ЯДРА.md\n  …сводка…\n\n• g/Люди/М.md\n  …факт…",
+                                             folder: "g")
+        XCTAssertEqual(out.rels, ["Люди/М.md"])
+        XCTAssertTrue(out.text.hasPrefix(m))
+        XCTAssertFalse(out.text.contains("сводка"))
+        XCTAssertTrue(out.text.contains("…факт…"))
+    }
+
+    /// Заголовок — только «• » в колонке 0, как разбирает ответ сам сервер:
+    /// строка тела с отступом блок не режет и источником не становится (out2).
+    func testIndentedBulletInABodyIsNotAHeader() {
+        let out = ArchiveSearch.brainOutcome("• g/Люди/М.md\n  …\n  • Ядра/_ЯДРА.md\n  важный факт",
+                                             folder: "g")
+        XCTAssertEqual(out.rels, ["Люди/М.md"])
+        XCTAssertTrue(out.text.contains("важный факт"))
     }
 
     /// Гейт обхода судит каноническую rel: симлинк с обычным именем на
