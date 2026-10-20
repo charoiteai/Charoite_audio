@@ -530,56 +530,44 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
                          detached="уборка копий импорта живёт, пока идёт встреча")
 
 
+def _has_sound(pcm: pathlib.Path) -> bool:
+    """Маркер сироты — непустой `.pcm`. Пустой (писатель убит до первого блока)
+    восстанавливать нечего; маркером он делал встречу сиротой на каждом старте с
+    придержанным ретеншном (финальный Opus I1а). Снимать его не нужно никому:
+    ретеншн уберёт по сроку, а снять пересборкой нельзя — писатель без заявки
+    неотличим от убитого (opusfix1 DS C1). Сбой stat (и файл, пропавший после
+    обхода) — «не знаем», маркер: дальше решает проба."""
+    try:
+        return pcm.stat().st_size > 0
+    except OSError:
+        return True
+
+
 def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
-    """Встреча на томе без flock: каждый канал, который ещё надо конвертировать
-    (`.pcm` непуст, `.wav` нет), отвечает NO_FLOCK на пробу с ретраями.
-    Пересборка такой канал не тронет (`rebuild` на NO_FLOCK — None), и встреча
-    была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть: разовый
-    NO_FLOCK (`_try_lock` даёт его на любой OSError, ENOLCK сетевого тома) не
-    снимает восстановление и защиту ретеншна (opusfix2 Haiku C1). Сбой stat или
-    открытия не голосует (opusfix1 DS I3). Ничего не удаляет: `.pcm` — маркер
-    сироты, пока её пересборка не запущена (opusfix2 Sonnet I1)."""
-    seen = []
-    for label in meeting_stamp.RECORDING_LABELS:
-        pcm = meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")
-        try:
-            if pcm.stat().st_size == 0:
-                continue
-            if meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
-                continue
-            with pcm.open("rb") as f:
-                seen.append(file_locks.acquire_outcome(f))
-        except OSError:
-            continue
-    return bool(seen) and all(o == file_locks.NO_FLOCK for o in seen)
+    """Все непустые `.pcm` встречи отвечают NO_FLOCK: пересборка их не тронет
+    (`rebuild` на NO_FLOCK — None, `_drop_leftover` на нём не снимает остаток), и
+    встреча была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть,
+    восстанавливаем (opusfix2 Haiku C1). Сбой открытия не голосует (opusfix1
+    DS I3). Первая проба — одна попытка: BUSY (дверь пересборки прежнего
+    демона) не держит старт записи (opusfix3 DS I3); подтверждение «том без
+    flock» — с ретраями `acquire_outcome`, разовый ENOLCK не уводит встречу из-под
+    защиты ретеншна."""
+    pcms = [p for label in meeting_stamp.RECORDING_LABELS
+            if _has_sound(p := meeting_stamp.recording_path(rec_dir, stamp, label, "pcm"))]
 
+    def all_no_flock(**retry) -> bool:
+        seen = False
+        for pcm in pcms:
+            try:
+                with pcm.open("rb") as f:
+                    if file_locks.acquire_outcome(f, **retry) != file_locks.NO_FLOCK:
+                        return False
+            except OSError:
+                continue
+            seen = True
+        return seen
 
-def _drop_dead_leftovers(rec_dir: pathlib.Path, stamp: str) -> None:
-    """Перед пересборкой сироты — снять `.pcm`, в котором звука нет или он уже
-    опубликован: пустой (писатель убит до первого блока) и рядом с готовым
-    `.wav` (убит между `replace` и `unlink`; `.wav` публикуется только
-    переименованием — он полный). Иначе встреча — сирота на каждом старте и
-    ретеншн её придерживает (финальный Opus I1а, I1в). Пересборке пустой `.pcm`
-    снимать нельзя: она работает и рядом с живым писателем без заявки (opusfix1
-    DS C1). Здесь писатель мёртв — лок демона у нас; заявку всё равно
-    спрашиваем: при общем `recordings_dir` двух корней BUSY — чужой живой
-    писатель (opusfix2 DS I1). NO_FLOCK — опора только на лок демона."""
-    for label in meeting_stamp.RECORDING_LABELS:
-        pcm = meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")
-        try:
-            empty = pcm.stat().st_size == 0
-            if not empty and not meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
-                continue                  # звук для пересборки
-            with pcm.open("rb") as f:
-                if file_locks.acquire_outcome(f, attempts=1) == file_locks.BUSY:
-                    continue
-                pcm.unlink()
-            why = "пуст" if empty else ".wav готов"
-            print(f"{pcm.name}: {why} — остаток прежнего демона убран", file=sys.stderr, flush=True)
-        except FileNotFoundError:
-            continue
-        except OSError as e:
-            print(f"{pcm.name}: остаток не снят — {type(e).__name__}", file=sys.stderr, flush=True)
+    return all_no_flock(attempts=1) and all_no_flock()
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -620,7 +608,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     # со своим знанием формата — а расхождение формата уже дважды стоило
     # проекту встреч (см. докстринг meeting_stamp).
     stamps = sorted({s for p in rec_dir.glob("*.pcm")
-                     if (s := meeting_stamp.stamp_of_recording(p.name))})
+                     if (s := meeting_stamp.stamp_of_recording(p.name)) and _has_sound(p)})
     for stamp in stamps:
         if stamp == current_stamp:
             continue                      # наша встреча, она только началась
@@ -632,10 +620,12 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
             # видно), и встреча была бы сиротой навсегда — пересборка на каждом
             # старте, звук придержан сверх record_keep_days. Не защищаем: запись
             # живёт по сроку хранения, восстановление — вручную (финальный Opus I1б).
-            # Срок мог уже выйти — обещать «успеете» нельзя (opusfix1 DS M5).
+            # Срок мог уже выйти, а пересборка на этом томе откажет и вручную —
+            # называем шаг, который сработает (opusfix1 DS M5, opusfix3 DS M5).
             emit({"type": "status", "text": f"Встреча {stamp}: том записей без flock, "
-                                            "автовосстановления нет — звук хранится по "
-                                            "обычному сроку, восстановите встречу вручную"})
+                                            "автовосстановления нет — звук хранится по обычному "
+                                            "сроку; для финала перенесите записи на локальный "
+                                            "диск и пересоберите встречу"})
             continue
         # Помечаем ДО запуска, а не после: даже неудавшийся спавн означает, что
         # встреча ждёт восстановления, и удалять её звук нельзя тем более.
@@ -657,18 +647,17 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
                 pass                      # не смогли убрать — пересборка дождётся таймаута
         pending.append(live)
     if pending:
-        _start_orphan_chain(pending, rec_dir)
+        _start_orphan_chain(pending)
     return recovering
 
 
-def _start_orphan_chain(lives: list[pathlib.Path], rec_dir: pathlib.Path | None = None) -> None:
+def _start_orphan_chain(lives: list[pathlib.Path]) -> None:
     """Фоновый поток цепочки: старт демона не ждёт часовых пересборок."""
-    threads.spawn(_rebuild_orphans_sequentially, args=(lives, rec_dir), name="orphan-rebuild-chain",
+    threads.spawn(_rebuild_orphans_sequentially, args=(lives,), name="orphan-rebuild-chain",
                   role="process", detached="старт демона не ждёт часовых пересборок сирот")
 
 
-def _rebuild_orphans_sequentially(lives: list[pathlib.Path],
-                                  rec_dir: pathlib.Path | None = None) -> None:
+def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
     """Пересборка сирот по одной: следующая стартует после завершения текущей.
 
     Одна пересборка держит модель и память, остальные ждут своей очереди —
@@ -678,9 +667,7 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path],
     очередь «незавершённых» и запустил бы дубль (гвард running_elsewhere
     его отсёк бы, но и провоцировать гонку незачем). Демон умер посреди
     цепочки — не страшно: .pcm и стенограммы живы, protect-набор уже
-    отработал на этот запуск, следующий старт найдёт хвост заново. Поэтому
-    остатки `.pcm` снимаются здесь, после статуса, а не на старте: до статуса
-    `.pcm` — единственный маркер сироты (opusfix2 Sonnet I1).
+    отработал на этот запуск, следующий старт найдёт хвост заново.
     """
     statuses = MeetingStatusStore(_root())
     for live in lives:
@@ -689,10 +676,7 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path],
         try:
             statuses.processing(live, "recovering")
         except Exception:  # noqa: BLE001 — статус вспомогателен; запись всё равно восстанавливаем
-            pass                          # маркера, кроме .pcm, нет — остатки не трогаем
-        else:
-            if rec_dir is not None:
-                _drop_dead_leftovers(rec_dir, live.stem)
+            pass
         try:
             # start_new_session: пересборка переживает смерть демона (как и
             # раньше); run вместо Popen — это и есть очередь. Журнал — как у

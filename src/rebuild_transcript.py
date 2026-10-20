@@ -194,7 +194,7 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
             # out1 Haiku M2: заявку у такого файла писатель берёт следующей строкой.
             # Снимать пустой .pcm пересборке нельзя и на сроке: писатель без
             # заявки (NO_FLOCK на старте) неотличим от убитого (opusfix1 DS C1).
-            # Пустые остатки убитого демона убирает `daemon._recover_orphans`.
+            # Сиротой пустой .pcm не считается (`daemon._has_sound`), убирает ретеншн.
             return EMPTY
         stale = pcm.with_suffix(".wav.part")
         try:
