@@ -195,10 +195,9 @@ final class LocalChatService: ObservableObject {
         switch context.verdict {
         case .confident: return L.t("🧠 граф подмешан", "🧠 graph mixed in", "🧠 已加入图谱")
         case .weak: return L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配")
-        case .unverified:
-            return context.text.isEmpty
-                ? L.t("граф: поиск неполный", "graph: search incomplete", "图谱：检索不完整")
-                : L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配")
+        // «слабые совпадения» — слова проверенного поиска; здесь поиск
+        // неполный при любой выдаче (out1, DS I)
+        case .unverified: return L.t("граф: поиск неполный", "graph: search incomplete", "图谱：检索不完整")
         case .empty: return L.t("в графе пусто по теме", "graph has nothing on the topic", "图谱中无相关内容")
         case .unavailable: return L.t("граф недоступен", "graph unavailable", "图谱不可用")
         }

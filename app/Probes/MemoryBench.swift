@@ -17,28 +17,17 @@ final class MemoryBench: XCTestCase {
     /// такие вопросы прежний разбор выбрасывал, и воздержание бенч не мерил (№634).
     private struct Case { let q: String; let must: [String]; let abstain: Bool }
 
-    /// Начало ответа-отказа на трёх языках — тем же словам велит правило
-    /// честности (`ChatRetrieval.honesty`) и отвечала модель в бенче №743.
-    static let absencePhrases = [
-        "в памяти этого нет", "в памяти нет", "в предоставленных данных нет", "в предоставленных блоках",
-        "нет информации", "информации нет", "найти не удалось", "не нашлось",
-        "not in memory", "no information", "could not be found", "记忆中没有", "未能找到",
-    ]
-
-    /// Ответ — отказ: формула отсутствия в первой строке (не дальше 200 знаков).
-    /// Формула в середине ответа после найденного — не отказ.
-    static func isAbsence(_ answer: String) -> Bool {
-        let head = String(answer.prefix(while: { $0 != "\n" }).prefix(200))
-            .lowercased().replacingOccurrences(of: "ё", with: "е")
-        return absencePhrases.contains { head.contains($0) }
-    }
+    /// Пороги нового счёта — в наборе, не в коде пробы: строки верхнего
+    /// уровня `max_false_refusal: N` и `min_abstain: 0.5` (out1, Sonnet I4,
+    /// DS I). Нет строки — счёт только в отчёте.
+    private struct Gate { var maxFalseRefusal: Int?; var minAbstain: Double? }
 
     func testRecallOfExpectedFacts() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let benchPath = env["CHAROITE_BENCH"], !benchPath.isEmpty else { throw XCTSkip("бенч не задан") }
         // Бенч запрошен — дальше любой недостающий вход валит прогон, а не пропускает его.
         let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
-        let cases = try parse(URL(fileURLWithPath: (benchPath as NSString).expandingTildeInPath))
+        let (cases, gate) = try parse(URL(fileURLWithPath: (benchPath as NSString).expandingTildeInPath))
         // пустой набор — диагноз парсера, а не графа: страж пустой выдачи ниже соврал бы
         guard !cases.isEmpty else { XCTFail("вопросы не разобрались: \(benchPath)"); return }
 
@@ -62,7 +51,7 @@ final class MemoryBench: XCTestCase {
         // false_refusal — отказ при факте в выдаче, false_answer — ответ на
         // вопрос без ответа в графе. Счёт — по вердикту поиска.
         var falseRefusal: [ArchiveSearch.Verdict: Int] = [:]
-        var abstainOK = 0, abstainTotal = 0
+        var abstainOK = 0, abstainTotal = 0, abstainUnproven = 0
         for c in cases {
             let outcome = try await ProbeTurn.search(c.q, params: params, root: graph)
             let found = outcome.text
@@ -79,14 +68,17 @@ final class MemoryBench: XCTestCase {
                         unanswered.append(c.q)
                         continue
                     }
-                    let ok = Self.isAbsence(answer)
+                    let ok = ChatRetrieval.isAbsence(answer, lines: 2)
                     if ok { abstainOK += 1 }
                     report += "\n· \(c.q)\n  без ответа в графе: \(ok ? "воздержался" : "false_answer"), \(verdictLine)"
                     report += "\n  ответ: " + answer.replacingOccurrences(of: "\n", with: "\n  ")
                 } else {
-                    let ok = outcome.verdict != .confident
+                    // воздержание без модели — только проверенное «пусто/слабо»:
+                    // лёгший эмбеддер (unverified) успехом не считается (out1, Sonnet M2)
+                    let ok = ChatRetrieval.honesty(outcome.verdict, hasText: true).allowsAbsence
                     if ok { abstainOK += 1 }
-                    report += "\n· \(c.q)\n  без ответа в графе: \(ok ? "поиск не уверен" : "поиск уверен"), \(verdictLine)"
+                    if outcome.verdict == .unverified || outcome.verdict == .unavailable { abstainUnproven += 1 }
+                    report += "\n· \(c.q)\n  без ответа в графе: \(ok ? "поиск не нашёл" : "поиск не доказал"), \(verdictLine)"
                 }
                 continue
             }
@@ -121,7 +113,7 @@ final class MemoryBench: XCTestCase {
             report += ", \(verdictLine)"
             if withModel {
                 let inFound = c.must.filter { norm(found).contains(norm($0)) }.count
-                if Self.isAbsence(subject) && inFound > 0 {
+                if ChatRetrieval.isAbsence(subject) && inFound > 0 {
                     falseRefusal[outcome.verdict, default: 0] += 1
                     report += "\n  false_refusal: отказ при \(inFound)/\(c.must.count) фактах в выдаче"
                 }
@@ -142,7 +134,7 @@ final class MemoryBench: XCTestCase {
         }
         if abstainTotal > 0 {
             report += "\nВОЗДЕРЖАНИЕ: \(abstainOK)/\(abstainTotal) вопросов без ответа в графе "
-                + (withModel ? "(ответ — отказ)" : "(поиск не уверен)")
+                + (withModel ? "(ответ — отказ)" : "(поиск не нашёл; не доказал — \(abstainUnproven))")
         }
         report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов \(withModel ? "в ответе" : "в выдаче поиска") "
                 + "(\(Int(ratio * 100))%)\n"
@@ -158,7 +150,9 @@ final class MemoryBench: XCTestCase {
         }
         print("отчёт: \(reportPath)\nвыдача: \(foundPath)")
         // Пустая выдача по всем вопросам — не тот граф: модель ответила бы из весов (круг 6).
-        guard emptyFound < cases.filter({ !$0.abstain }).count else {
+        // набор из одних вопросов без ответа этот страж не судит (out1, DS M3)
+        let answerable = cases.filter { !$0.abstain }.count
+        guard answerable == 0 || emptyFound < answerable else {
             XCTFail("поиск пуст по всем вопросам — проверь граф: \(graph.path)")
             return
         }
@@ -172,9 +166,19 @@ final class MemoryBench: XCTestCase {
         // 8/14 прошло бы незамеченным, а это уже другой продукт. Запас нужен,
         // потому что граф живой — вопросы про его содержимое естественно
         // дрейфуют, и краснеть от этого бенч не должен.
-        XCTAssertGreaterThan(ratio, 0.75,
-                             "качество памяти просело: \(hitTotal)/\(mustTotal) — "
-                             + "смотри \(reportPath), там видно, какие факты потерялись")
+        if answerable > 0 {
+            XCTAssertGreaterThan(ratio, 0.75,
+                                 "качество памяти просело: \(hitTotal)/\(mustTotal) — "
+                                 + "смотри \(reportPath), там видно, какие факты потерялись")
+        }
+        let refusals = falseRefusal.values.reduce(0, +)
+        if withModel, let cap = gate.maxFalseRefusal {
+            XCTAssertLessThanOrEqual(refusals, cap, "отказ при факте в выдаче: \(refusals) — смотри \(reportPath)")
+        }
+        if let floor = gate.minAbstain, abstainTotal > 0 {
+            XCTAssertGreaterThanOrEqual(Double(abstainOK) / Double(abstainTotal), floor,
+                                        "воздержание \(abstainOK)/\(abstainTotal) ниже порога — смотри \(reportPath)")
+        }
     }
 
     private func norm(_ s: String) -> String {
@@ -186,9 +190,10 @@ final class MemoryBench: XCTestCase {
     /// поле после «must:» прежде терялось. Пустой `must` без `abstain` и
     /// `abstain` с фактами — ошибка набора, а не тихий пропуск.
     /// Полноценный YAML-парсер сюда тянуть незачем.
-    private func parse(_ url: URL) throws -> [Case] {
+    private func parse(_ url: URL) throws -> ([Case], Gate) {
         let text = try String(contentsOf: url, encoding: .utf8)
         var out: [Case] = []
+        var gate = Gate()
         var q: String?
         var must: [String]?
         var abstain = false
@@ -213,7 +218,14 @@ final class MemoryBench: XCTestCase {
         }
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("- q:") {
+            if raw.hasPrefix("max_false_refusal:") || raw.hasPrefix("min_abstain:") {
+                let (key, value) = (line.prefix(while: { $0 != ":" }),
+                                    line.drop(while: { $0 != ":" }).dropFirst().trimmingCharacters(in: .whitespaces))
+                // кривой порог молча снял бы гейт
+                if key == "max_false_refusal", let n = Int(value) { gate.maxFalseRefusal = n }
+                else if key == "min_abstain", let x = Double(value) { gate.minAbstain = x }
+                else { throw ProbeTurn.SetupError(description: "порог набора не разобрался: \(line)") }
+            } else if line.hasPrefix("- q:") {
                 try flush()
                 q = unquote(String(line.dropFirst(4)))
             } else if line.hasPrefix("must:"), q != nil {
@@ -227,7 +239,7 @@ final class MemoryBench: XCTestCase {
             }
         }
         try flush()
-        return out
+        return (out, gate)
     }
 
     private func unquote(_ s: String) -> String {

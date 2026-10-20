@@ -123,6 +123,10 @@ enum ArchiveSearch {
     /// плашку, синтез отвечает «в архиве нет», а не сочиняет.
     static let lowConfidenceMarker = "⚠"
 
+    /// Доля графа, которую семантика должна сравнить, чтобы «пусто» и «слабо»
+    /// стали доказанными, — `SEM_SHARE_MIN` python-поиска.
+    static let semShareMin = 0.8
+
     /// Топ-`limit` файлов графа со сниппетами ~`snippet` знаков.
     /// Сначала пробуем brain (:8100, гибрид с семантикой), иначе — локально.
     /// CHAROITE_GRAPH_DIR (демо/тесты) — строго файловый поиск: brain этой
@@ -152,13 +156,12 @@ enum ArchiveSearch {
         /// Оговорка поиска словами сервера: что не читали, почему слабо.
         var note: String = ""
 
-        init(text: String, rels: [String]?, verdict: Verdict? = nil, note: String = "") {
+        /// Вердикт обязателен: вывод из текста по умолчанию делал любой новый
+        /// ранний `return` доказанным «пусто» (out1, Sonnet C1).
+        init(text: String, rels: [String]?, verdict: Verdict, note: String = "") {
             self.text = text
             self.rels = rels
-            // Без явного вердикта — прежнее толкование текста: так ведут себя
-            // места, где решения поиска нет (тестовые подмены, фолбэки).
-            self.verdict = verdict ?? (text.isEmpty ? .empty
-                : text.hasPrefix(ArchiveSearch.lowConfidenceMarker) ? .weak : .confident)
+            self.verdict = verdict
             self.note = note
         }
     }
@@ -338,7 +341,8 @@ enum ArchiveSearch {
             // бесполезно (в тексте такой фразы нет), а в покрытии запроса
             // весит наравне с настоящими словами и портит скоринг.
             .filter { $0.count >= 3 && !stop.contains(norm($0)) && cjkGrams($0).isEmpty }
-        guard !words.isEmpty || !grams.isEmpty else { return Outcome(text: "", rels: []) }
+        // запрос из одних стоп-слов («кто я») — поиска не было, это не «пусто»
+        guard !words.isEmpty || !grams.isEmpty else { return Outcome(text: "", rels: [], verdict: .unverified) }
         var needles: [String] = []
         for w in words.map(stem) where !needles.contains(w) { needles.append(w) }
         for g in grams where !needles.contains(g) { needles.append(g) }
@@ -396,6 +400,7 @@ enum ArchiveSearch {
             }
         var seenContent = Set<Int>()
         var liveKeys = Set<String>()
+        var unread = 0
         for url in urls {
             let canon = url.resolvingSymlinksInPath().path
             let inside = canon.hasPrefix(graph.path + "/")
@@ -420,7 +425,7 @@ enum ArchiveSearch {
             // реплик перечитывал весь граф десять раз.
             guard let cached = await GraphCache.shared.text(at: url, key: rel,
                                                            mtime: mtime, normalize: norm)
-            else { continue }
+            else { unread += 1; continue }
             // Хеш содержимого, а не пути: копия отличается именем и папкой.
             guard seenContent.insert(cached.text.hashValue).inserted else { continue }
             let relBytes = Array(norm(rel).utf8)
@@ -430,7 +435,9 @@ enum ArchiveSearch {
         }
         // Переименованные и удалённые файлы не должны занимать память вечно.
         await GraphCache.shared.retain(keys: liveKeys)
-        guard !all.isEmpty else { return Outcome(text: "", rels: []) }
+        // папка без заметок — пусто; заметки есть, но не открылись (iCloud
+        // выгрузил, нет прав) — не читали, значит не проверено
+        guard !all.isEmpty else { return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty) }
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
         }
@@ -487,11 +494,17 @@ enum ArchiveSearch {
         let byPath = Dictionary(all.map { ($0.rel, (text: $0.text, dateTs: $0.dateTs)) },
                                 uniquingKeysWith: { first, _ in first })
         let allPaths = Set(all.map(\.rel))
-        // nil — семантика не отработала (индекс пуст, эмбеддер молчит): пустая
-        // выдача тогда «не проверено», а не доказанное отсутствие (№634).
+        // nil — семантика не отработала (индекс пуст, эмбеддер молчит). Пустая
+        // и слабая выдача доказывают отсутствие, только если семантика
+        // сравнила с запросом достаточную долю графа — правило python
+        // `graph_search.verdict` (SEM_SHARE_MIN 0.8; знаменатель — файлы с
+        // текстом): векторы другой модели и недособранный индекс дают «не
+        // проверено» (№634, out1).
         let checked = await semanticIndex.similarChecked(to: query, within: allPaths,
                                                          limit: max(limit * 4, 20))
-        let sem = checked ?? []
+        let withText = all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        let proven = checked.map { Double($0.compared) >= semShareMin * Double(max(1, withText)) } ?? false
+        let sem = checked?.hits ?? []
         let bestSim = sem.first?.score ?? 0
         var semHits: [Hit] = []
         for (rel, sim, chunkSnippet) in sem {
@@ -572,11 +585,11 @@ enum ArchiveSearch {
         // путь-префикс чужого заголовка (круг-2, Codex).
         let rels = keptHits.map(\.rel)
         if body.isEmpty {
-            return Outcome(text: "", rels: rels, verdict: checked == nil ? .unverified : .empty)
+            return Outcome(text: "", rels: rels, verdict: proven ? .empty : .unverified)
         }
         if bestSim < 0.47 && bestCov < 0.66 {
             return Outcome(text: lowConfidenceMarker + body, rels: rels,
-                           verdict: checked == nil ? .unverified : .weak)
+                           verdict: proven ? .weak : .unverified)
         }
         return Outcome(text: body, rels: rels, verdict: .confident)
     }

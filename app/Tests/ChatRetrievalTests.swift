@@ -26,7 +26,7 @@ final class ChatRetrievalTests: XCTestCase {
         XCTAssertTrue(q.hasSuffix("КОНЕЦ"))
     }
 
-    private func outcome(_ text: String, _ verdict: ArchiveSearch.Verdict? = nil,
+    private func outcome(_ text: String, _ verdict: ArchiveSearch.Verdict,
                          note: String = "") -> ArchiveSearch.Outcome {
         ArchiveSearch.Outcome(text: text, rels: nil, verdict: verdict, note: note)
     }
@@ -57,9 +57,15 @@ final class ChatRetrievalTests: XCTestCase {
         XCTAssertTrue(empty.block.contains("(Ничего не найдено (искали без: архив))"), "оговорка поиска потеряна")
         // вопросы о разговоре не получают отказа
         XCTAssertTrue(empty.block.contains("по разговору"))
+        XCTAssertTrue(empty.block.contains("где не искали"), "пропуск поиска модель не назовёт")
         let unverified = ChatRetrieval.contextBlock(outcome("", .unverified), lang: "ru")
-        XCTAssertTrue(unverified.weak)
-        XCTAssertTrue(unverified.block.contains("семантикой не проверено"))
+        XCTAssertTrue(unverified.block.contains("поиск неполный"))
+        // фрагменты без семантики правило велит называть — чипы не гасим
+        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified)).weak)
+        XCTAssertTrue(ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak)).weak)
+        // оговорка сервера доходит до модели и при непустой выдаче
+        let noted = ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak, note: "почти ничего нет"), lang: "ru")
+        XCTAssertTrue(noted.block.contains("(почти ничего нет)"))
         // «найдено» без текста не бывает
         XCTAssertEqual(ChatRetrieval.contextBlock(outcome("", .confident)).verdict, .empty)
     }
@@ -70,17 +76,19 @@ final class ChatRetrievalTests: XCTestCase {
     /// отказом. Цикл по всем вердиктам и языкам — новое значение без строки
     /// в таблице тест не пропустит (№634).
     func testФормулаОтсутствияТолькоУДоказанногоПусто() {
-        let formula = ["ru": "«в памяти этого нет»", "en": "\"that is not in memory\"", "zh": "「记忆中没有这条」"]
+        // право на отказ — у проверенного «пусто» и «слабо», полем; формула
+        // в тексте правила — ровно там, где поле велит
+        let formula = Dictionary(uniqueKeysWithValues: ["ru", "en", "zh"].map {
+            ($0, ChatRetrieval.absenceFormula(lang: $0)) })
+        XCTAssertEqual(formula["ru"], "«в памяти этого нет»")
         for (lang, f) in formula {
             for v in ArchiveSearch.Verdict.allCases {
                 for hasText in [true, false] {
-                    let (head, rule) = ChatRetrieval.honesty(v, hasText: hasText, lang: lang)
-                    XCTAssertFalse(head.isEmpty, "\(v) \(lang): пустая шапка")
-                    XCTAssertFalse(rule.isEmpty, "\(v) \(lang): пустое правило")
-                    let tells = rule.hasPrefix(L.t("Поиск проверил", "The search checked", "检索已查过", lang: lang))
-                        || rule.hasPrefix(L.t("О фактах встреч и людях скажи", "For facts about meetings and people, say", "关于会议和人物的事实，说", lang: lang))
-                    XCTAssertEqual(tells, v == .weak || v == .empty, "\(v) \(lang): отказ велит не тот вердикт")
-                    XCTAssertEqual(rule.contains(f), v != .unverified, "\(v) \(lang): формула в правиле")
+                    let h = ChatRetrieval.honesty(v, hasText: hasText, lang: lang)
+                    XCTAssertFalse(h.head.isEmpty, "\(v) \(lang): пустая шапка")
+                    XCTAssertFalse(h.rule.isEmpty, "\(v) \(lang): пустое правило")
+                    XCTAssertEqual(h.allowsAbsence, v == .weak || v == .empty, "\(v) \(lang): отказ велит не тот вердикт")
+                    XCTAssertEqual(h.rule.contains(f), h.allowsAbsence, "\(v) \(lang): формула в правиле")
                 }
             }
             XCTAssertFalse(ChatRetrieval.memoryOffBlock(lang: lang).contains(f), "\(lang): выключенная память")
@@ -121,13 +129,32 @@ final class ChatRetrievalTests: XCTestCase {
             "⚠ По словам ничего не нашлось по «x» в графе, семантикой не проверено (кэш) — не считать доказанным отсутствием", folder: "Граф"))
     }
 
-    func testСтатусИзВердикта() {
-        guard L.lang == "ru" else { return }
+    func testСтатусИзВердикта() throws {
+        guard L.lang == "ru" else { throw XCTSkip("строки статуса — на языке интерфейса, проверяем русские") }
         let ctx = { (t: String, v: ArchiveSearch.Verdict) in ChatRetrieval.contextBlock(self.outcome(t, v)) }
         XCTAssertEqual(LocalChatService.memoryStatus(ctx("", .empty)), "в графе пусто по теме")
         XCTAssertEqual(LocalChatService.memoryStatus(ctx("", .unverified)), "граф: поиск неполный")
+        XCTAssertEqual(LocalChatService.memoryStatus(ctx("т", .unverified)), "граф: поиск неполный")
         XCTAssertEqual(LocalChatService.memoryStatus(ctx("", .unavailable)), "граф недоступен")
         XCTAssertEqual(LocalChatService.memoryStatus(ctx("т", .confident)), "🧠 граф подмешан")
+    }
+
+    /// Детектор отказа бенча (out1, DS C1, Sonnet I3): вступление «в
+    /// предоставленных блоках» — не отказ, отказ под заголовком и в другой
+    /// словоформе — отказ.
+    func testДетекторОтказа() {
+        for answer in ["В предоставленных блоках сказано: решили перенести релиз на август.",
+                       "Нет информации о сроках, но решили перенести релиз.",
+                       "Решили перенести релиз.\nВ памяти этого нет: даты пока не назвали.\nИсточник: a.md"] {
+            XCTAssertFalse(ChatRetrieval.isAbsence(answer), answer)
+        }
+        for answer in ["В памяти этого нет.", "## Ответ\n\nВ памяти этого нет.", "**Этого нет в памяти**: переезд не обсуждался.",
+                       "Ответ:\nВ графе этого нет.", "I don't have information about that.", "That isn't in memory… no, it is not in memory.",
+                       "没有找到相关内容。", "That is not in memory."] {
+            XCTAssertTrue(ChatRetrieval.isAbsence(answer), answer)
+        }
+        // вопрос без ответа: найденное первой строкой, отказ второй — воздержание
+        XCTAssertTrue(ChatRetrieval.isAbsence("Нашлось про релиз в августе.\nТочного ответа нет.", lines: 2))
     }
 
     func testТелоЗапросаПоПолям() throws {

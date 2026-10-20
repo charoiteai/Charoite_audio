@@ -366,4 +366,77 @@ final class LocalVerdictTests: XCTestCase {
         XCTAssertFalse(found.text.isEmpty)
         XCTAssertEqual(found.verdict, .confident)
     }
+
+    /// Индекс полон, а эмбеддер лёг к запросу — тоже «не проверено»: прежний
+    /// тест ловил nil пустого индекса и до молчания эмбеддера не доходил
+    /// (out1, Haiku M1).
+    func testSilentEmbedderOverFilledIndexIsUnverified() async throws {
+        let index = SemanticIndex()
+        let graph = try makeTestGraph([("Ядра/Погода.md", "дожди весь месяц")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+        let store = tempIndexStore()
+        await index.useForTests(store: store, embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [(path: "Ядра/Погода.md", mtime: 1, text: "дожди весь месяц")])
+        await index.useForTests(store: store, loadStore: true) { _ in nil }
+        let kept = await index.count()
+        XCTAssertEqual(kept, 1, "индекс должен остаться полным")
+        let out = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                         snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(out.text, "")
+        XCTAssertEqual(out.verdict, .unverified)
+    }
+
+    /// Поиск, который не прошёл граф, «пусто» не доказывает (out1, Sonnet C1,
+    /// DS I1): запрос без игл, непрочитанные файлы, векторы другой модели,
+    /// индекс, собранный не весь.
+    func testSearchThatDidNotCoverTheGraphIsUnverified() async throws {
+        let index = SemanticIndex()
+        let graph = try makeTestGraph([("Ядра/Погода.md", "дожди весь месяц"),
+                                       ("Встречи/2026-01-01.md", "обсудили отпуск")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+        let files: [(path: String, mtime: Double, text: String)] = [
+            ("Ядра/Погода.md", 1, "дожди весь месяц"), ("Встречи/2026-01-01.md", 1, "обсудили отпуск")]
+
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: files)
+        let noNeedles = await ArchiveSearch.localSearchOutcome(query: "кто я", limit: 3,
+                                                               snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(noNeedles.verdict, .unverified, "запрос без игл — поиска не было")
+
+        // векторы индекса другой размерности: ни один блок не сравнился
+        let store = tempIndexStore()
+        await index.useForTests(store: store, embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: files)
+        await index.useForTests(store: store, loadStore: true, embedder: { $0.map { $0.contains("бюджет") ? [1, 0, 0] : [0, 1, 0] } })
+        let otherModel = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                                snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(otherModel.verdict, .unverified, "векторы другой модели — семантика не проверила")
+
+        // в индексе один файл из двух: проверена половина графа
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [files[0]])
+        let partial = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                             snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(partial.verdict, .unverified, "индекс собран не весь")
+
+        // файлы есть, но ни один не прочитался; свой граф — кэш текстов
+        // помнит прочитанное выше
+        let shut = try makeTestGraph([("Ядра/Закрыто.md", "дожди весь месяц"),
+                                      ("Встречи/2026-01-02.md", "обсудили отпуск")])
+        defer { try? FileManager.default.removeItem(at: shut) }
+        let locked = shut.appendingPathComponent("Ядра/Закрыто.md")
+        let other = shut.appendingPathComponent("Встречи/2026-01-02.md")
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: other.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: locked.path)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: other.path)
+        }
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [("Ядра/Закрыто.md", 1, "дожди весь месяц"),
+                                    ("Встречи/2026-01-02.md", 1, "обсудили отпуск")])
+        let unread = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                            snippet: 200, root: shut, semanticIndex: index)
+        XCTAssertEqual(unread.verdict, .unverified, "ни один файл не прочитан: \(unread.text)")
+    }
 }

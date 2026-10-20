@@ -29,8 +29,10 @@ enum ChatRetrieval {
         /// Готовый блок для системного промпта: шапка, правило, выдача.
         /// Есть при любом вердикте — правило отсутствия живёт только здесь.
         let block: String
-        /// Опоры для ответа нет или она не доказана: чипов нет.
-        var weak: Bool { verdict == .weak || verdict == .unverified }
+        /// Поиск проверил граф и опоры не нашёл: чипов нет. Не проверенное
+        /// семантикой (`unverified`) сюда не входит: правило велит отвечать
+        /// по этим фрагментам и называть их (out1, DS I).
+        var weak: Bool { verdict == .weak }
     }
 
     /// Запрос к поиску из разговора. Поиск по одной последней реплике
@@ -95,9 +97,11 @@ enum ChatRetrieval {
         // пустой текст с «найдено» не бывает: без выдачи опоры нет
         let verdict: ArchiveSearch.Verdict = text.isEmpty && outcome.verdict == .confident
             ? .empty : outcome.verdict
-        let (head, rule) = honesty(verdict, hasText: !text.isEmpty, lang: lang)
-        var block = "\n\n[\(head)]\n\(rule)"
-        if !outcome.note.isEmpty && text.isEmpty { block += "\n(\(outcome.note))" }
+        let h = honesty(verdict, hasText: !text.isEmpty, lang: lang)
+        var block = "\n\n[\(h.head)]\n\(h.rule)"
+        // оговорка сервера (почему слабо, где не искали) — при любой выдаче:
+        // ради неё разбор и держит `note` (out1, DS M1)
+        if !outcome.note.isEmpty { block += "\n(\(outcome.note))" }
         if !text.isEmpty { block += "\n" + text }
         return Context(verdict: verdict, text: text, block: block)
     }
@@ -114,53 +118,110 @@ enum ChatRetrieval {
     }
 
     /// Шапка и правило честности по вердикту — одна таблица на три языка.
-    /// Формула отсутствия есть только у вердиктов, где поиск её доказал.
+    /// `allowsAbsence` — правило
+    /// велит формулу отсутствия: её право есть только у проверенного «пусто»
+    /// и «слабо»; тест и бенч читают это поле, а не подстроку перевода.
+    struct Honesty: Equatable {
+        let head: String
+        let rule: String
+        let allowsAbsence: Bool
+    }
+
+    /// Формула отсутствия, которой велят правила `weak` и `empty`.
+    static func absenceFormula(lang: String = L.lang) -> String {
+        L.t("«в памяти этого нет»", "\"that is not in memory\"", "「记忆中没有这条」", lang: lang)
+    }
+
     static func honesty(_ verdict: ArchiveSearch.Verdict, hasText: Bool,
-                        lang: String = L.lang) -> (head: String, rule: String) {
+                        lang: String = L.lang) -> Honesty {
+        let f = absenceFormula(lang: lang)
         switch verdict {
         case .confident:
-            return (L.t("ГРАФ ВСТРЕЧ — люди, системы, решения, документация",
-                        "MEETING GRAPH — people, systems, decisions, documentation",
-                        "会议图谱——人物、系统、决策、文档", lang: lang),
-                    L.t("Поиск нашёл совпадения: отвечай по фрагментам, начни с найденного — факт, дата, источник. Если точного ответа в них нет, назови, что нашлось и чего не хватает; «в памяти этого нет» без перечня найденного не говори.",
-                        "The search found matches: answer from the fragments, starting with what was found — fact, date, source. If they hold no exact answer, name what was found and what is missing; do not say \"that is not in memory\" without listing what was found.",
-                        "检索找到了匹配：依据片段作答，先说找到的内容——事实、日期、来源。若片段中没有确切答案，说明找到了什么、缺少什么；不要在未列出所找到内容的情况下说「记忆中没有这条」。", lang: lang))
+            return Honesty(head: L.t("ГРАФ ВСТРЕЧ — люди, системы, решения, документация",
+                                     "MEETING GRAPH — people, systems, decisions, documentation",
+                                     "会议图谱——人物、系统、决策、文档", lang: lang),
+                           rule: L.t("Поиск нашёл совпадения: отвечай по фрагментам, начни с найденного — факт, дата, источник. Если точного ответа в них нет, назови, что нашлось и чего не хватает; отказом без перечня найденного не отвечай.",
+                                     "The search found matches: answer from the fragments, starting with what was found — fact, date, source. If they hold no exact answer, name what was found and what is missing; do not refuse without listing what was found.",
+                                     "检索找到了匹配：依据片段作答，先说找到的内容——事实、日期、来源。若片段中没有确切答案，说明找到了什么、缺少什么；不要在未列出所找到内容的情况下拒答。", lang: lang),
+                           allowsAbsence: false)
         case .weak:
-            return (L.t("ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт",
-                        "MEETING GRAPH — WEAK matches, probably not about the question; do not present them as fact",
-                        "会议图谱——匹配很弱，可能与问题无关；不要当作事实", lang: lang),
-                    L.t("Поиск проверил граф и почти ничего не нашёл: скажи «в памяти этого нет», затем — что нашлось рядом, с оговоркой.",
-                        "The search checked the graph and found almost nothing: say \"that is not in memory\", then what was found nearby, with a caveat.",
-                        "检索已查过图谱，几乎没有找到：先说「记忆中没有这条」，再附带说明列出相近的内容。", lang: lang))
+            // Не «отказ первым словом»: гейт 0.47/0.66 под отказ не калибровали,
+            // а вопрос другими словами попадает сюда с ответом в выдаче (out1, Sonnet I2).
+            return Honesty(head: L.t("ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт",
+                                     "MEETING GRAPH — WEAK matches, probably not about the question; do not present them as fact",
+                                     "会议图谱——匹配很弱，可能与问题无关；不要当作事实", lang: lang),
+                           rule: L.t("Поиск проверил граф, точных совпадений нет. Если ближайшее найденное прямо отвечает на вопрос — ответь по нему и оговорись, что совпадение слабое; иначе скажи \(f) и что нашлось рядом.",
+                                     "The search checked the graph and found no close match. If the nearest fragment directly answers the question, answer from it and say the match is weak; otherwise say \(f) and what was found nearby.",
+                                     "检索已查过图谱，没有接近的匹配。若最接近的片段直接回答了问题，依据它作答并说明匹配较弱；否则说\(f)，并列出相近的内容。", lang: lang),
+                           allowsAbsence: true)
         case .unverified:
             return hasText
-                ? (L.t("ГРАФ ВСТРЕЧ — найдено только по словам, семантикой не проверено",
-                       "MEETING GRAPH — found by words only, not checked semantically",
-                       "会议图谱——仅按字词找到，未经语义检验", lang: lang),
-                   L.t("Отвечай по фрагментам, если они про вопрос. Если нет — скажи, что точного ответа не нашлось, а поиск был неполным; не утверждай, что в памяти этого нет.",
-                       "Answer from the fragments if they are about the question. If not, say no exact answer was found and the search was incomplete; do not claim it is not in memory.",
-                       "若片段与问题相关，依据片段作答。若无关，说明没有找到确切答案且检索不完整；不要断言记忆中没有这条。", lang: lang))
-                : (L.t("ГРАФ ВСТРЕЧ — по словам ничего не нашлось, семантикой не проверено",
-                       "MEETING GRAPH — nothing found by words, not checked semantically",
-                       "会议图谱——按字词未找到，未经语义检验", lang: lang),
-                   L.t("Не утверждай, что в памяти этого нет: поиск был неполным. Скажи, что найти не удалось, и предложи переформулировать.",
-                       "Do not claim it is not in memory: the search was incomplete. Say it could not be found and suggest rephrasing.",
-                       "不要断言记忆中没有这条：检索不完整。说明未能找到，并建议换个说法。", lang: lang))
+                ? Honesty(head: L.t("ГРАФ ВСТРЕЧ — найдено только по словам, семантикой не проверено",
+                                    "MEETING GRAPH — found by words only, not checked semantically",
+                                    "会议图谱——仅按字词找到，未经语义检验", lang: lang),
+                          rule: L.t("Отвечай по фрагментам, если они про вопрос. Если нет — скажи, что точного ответа не нашлось, а поиск был неполным; не утверждай, что в памяти этого нет.",
+                                    "Answer from the fragments if they are about the question. If not, say no exact answer was found and the search was incomplete; do not claim it is not in memory.",
+                                    "若片段与问题相关，依据片段作答。若无关，说明没有找到确切答案且检索不完整；不要断言记忆中没有这条。", lang: lang),
+                          allowsAbsence: false)
+                : Honesty(head: L.t("ГРАФ ВСТРЕЧ — ничего не нашлось, поиск неполный",
+                                    "MEETING GRAPH — nothing found, the search was incomplete",
+                                    "会议图谱——未找到，检索不完整", lang: lang),
+                          rule: L.t("Не утверждай, что в памяти этого нет: поиск был неполным. Скажи, что найти не удалось, и предложи переформулировать.",
+                                    "Do not claim it is not in memory: the search was incomplete. Say it could not be found and suggest rephrasing.",
+                                    "不要断言记忆中没有这条：检索不完整。说明未能找到，并建议换个说法。", lang: lang),
+                          allowsAbsence: false)
         case .empty:
-            return (L.t("ГРАФ ВСТРЕЧ — по запросу ничего не найдено",
-                        "MEETING GRAPH — nothing found for the query",
-                        "会议图谱——未找到与查询相关的内容", lang: lang),
-                    L.t("О фактах встреч и людях скажи «в памяти этого нет», не сочиняй. Вопросы о самом разговоре и о тебе — по разговору.",
-                        "For facts about meetings and people, say \"that is not in memory\" and do not invent. Questions about this conversation or about you — answer from the conversation.",
-                        "关于会议和人物的事实，说「记忆中没有这条」，不要编造。关于本次对话或关于你的问题——依据对话回答。", lang: lang))
+            // «искали без: …» сервер пишет и при доказанном пусто (архив вне
+            // индекса по схеме) — python считает это отсутствием
+            // (`brain.absence_only`), модель называет пропуск (out1, Sonnet I5).
+            return Honesty(head: L.t("ГРАФ ВСТРЕЧ — по запросу ничего не найдено",
+                                     "MEETING GRAPH — nothing found for the query",
+                                     "会议图谱——未找到与查询相关的内容", lang: lang),
+                           rule: L.t("О фактах встреч и людях скажи \(f), не сочиняй; если в оговорке поиска сказано, где не искали, — назови это. Вопросы о самом разговоре и о тебе — по разговору.",
+                                     "For facts about meetings and people, say \(f) and do not invent; if the search note says where it did not look, mention that. Questions about this conversation or about you — answer from the conversation.",
+                                     "关于会议和人物的事实，说\(f)，不要编造；若检索说明中提到未搜索的范围，要指出。关于本次对话或关于你的问题——依据对话回答。", lang: lang),
+                           allowsAbsence: true)
         case .unavailable:
-            return (L.t("ГРАФ ВСТРЕЧ НЕДОСТУПЕН — папка графа не найдена",
-                        "MEETING GRAPH UNAVAILABLE — the graph folder was not found",
-                        "会议图谱不可用——未找到图谱文件夹", lang: lang),
-                    L.t("О фактах встреч скажи, что память сейчас недоступна, а не что «в памяти этого нет».",
-                        "For facts about meetings, say memory is unavailable right now instead of \"that is not in memory\".",
-                        "关于会议的事实，说明记忆当前不可用，而不是说「记忆中没有这条」。", lang: lang))
+            return Honesty(head: L.t("ГРАФ ВСТРЕЧ НЕДОСТУПЕН — папка графа не найдена",
+                                     "MEETING GRAPH UNAVAILABLE — the graph folder was not found",
+                                     "会议图谱不可用——未找到图谱文件夹", lang: lang),
+                           rule: L.t("О фактах встреч скажи, что память сейчас недоступна; не говори, что этого там нет.",
+                                     "For facts about meetings, say memory is unavailable right now; do not say it is not there.",
+                                     "关于会议的事实，说明记忆当前不可用；不要说里面没有。", lang: lang),
+                           allowsAbsence: false)
         }
+    }
+
+    /// Ответ модели — отказ: формула отсутствия в первой содержательной
+    /// строке (заголовок «## Ответ» и метка «Ответ:» пропускаются, разметка
+    /// снята). `lines: 2` — для вопроса без ответа в графе: правило велит
+    /// сперва назвать найденное, затем — чего нет. Детектор бенча — здесь,
+    /// рядом с формулой правил (out1, DS C1, Sonnet I3): список вступлений
+    /// вроде «в предоставленных блоках» считал отказом обычный ответ.
+    static let absencePhrases = [
+        "в памяти этого нет", "в памяти нет", "этого нет в памяти", "нет в памяти",
+        "в графе этого нет", "в графе нет", "в предоставленных данных нет", "в предоставленных блоках нет",
+        "в блоках нет", "информации об этом нет", "точного ответа нет", "точного ответа не нашлось",
+        "найти не удалось", "не нашлось", "ничего не найдено",
+        "not in memory", "not in the memory", "no information", "don't have information",
+        "do not have information", "no exact answer", "no record", "could not be found", "couldn't find",
+        "nothing was found", "记忆中没有", "未能找到", "没有找到", "没有相关", "没有确切答案",
+    ]
+
+    static func isAbsence(_ answer: String, lines: Int = 1) -> Bool {
+        let marks = CharacterSet(charactersIn: "#*>_-`").union(.whitespaces)
+        let content = answer.split(whereSeparator: \.isNewline)
+            .filter { raw in
+                let t = raw.trimmingCharacters(in: marks)
+                // заголовок и короткая метка «Ответ:» — не содержание
+                return !t.isEmpty && !raw.trimmingCharacters(in: .whitespaces).hasPrefix("#")
+                    && !(t.hasSuffix(":") && t.count <= 30)
+            }
+            .prefix(lines)
+            .map { String($0.trimmingCharacters(in: marks).prefix(200)) }
+        let head = content.joined(separator: " ").lowercased().replacingOccurrences(of: "ё", with: "е")
+            .replacingOccurrences(of: "’", with: "'")
+        return absencePhrases.contains { head.contains($0) }
     }
 
     /// Тело запроса `/api/chat`. `stream: false` и температура 0 — для проб:
