@@ -670,7 +670,8 @@ def test_leftovers_beside_a_machine_final_are_no_orphan(data_root, monkeypatch):
     (None, ("mic", "blackhole")),                          # крах до пересборки: финала нет
     ("[1]", ("mic", "blackhole")),                          # сайдкар не объект — не знаем
     (json.dumps({"transcript_sha256": SHA}), ("mic",)),     # канал со звуком без .wav
-], ids=["no_final", "unreadable_sidecar", "channel_without_wav"])
+    (json.dumps({"transcript_sha256": SHA}), ("blackhole",)),
+], ids=["no_final", "unreadable_sidecar", "blackhole_without_wav", "mic_without_wav"])
 def test_leftovers_without_a_proven_final_are_recovered(data_root, monkeypatch, sidecar, wav_labels):
     """Финал не доказан или у канала со звуком нет `.wav` — сирота, как прежде."""
     import daemon
@@ -681,6 +682,33 @@ def test_leftovers_without_a_proven_final_are_recovered(data_root, monkeypatch, 
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
     assert len(started) == 1
+
+
+def test_the_meeting_being_recorded_is_not_recovered(data_root, monkeypatch):
+    """Встреча, которую демон пишет сейчас: `.pcm` растёт, `.wav` и хеша нет —
+    не сирота. Иначе её пересобирала бы цепочка посреди записи (opusfix15 DS M2)."""
+    import daemon
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    _orphan(data_root, "2026-08-10_090000", age_days=0)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
+    assert started == []
+
+
+def test_a_recording_without_a_transcript_is_not_recovered(data_root, monkeypatch):
+    """`.pcm` без стенограммы — пересобирать нечего: не сирота, звук живёт по
+    сроку (opusfix15 DS M2)."""
+    import daemon
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    _orphan(data_root, "2026-08-07_181500", age_days=0)
+    (data_root / "transcripts" / "2026-08-07_181500.md").unlink()
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
+    assert started == []
 
 
 def test_a_stamp_without_recordings_is_not_a_volume_without_flock(data_root, monkeypatch):
@@ -817,8 +845,9 @@ def test_an_empty_channel_beside_a_final_is_not_counted(data_root, monkeypatch):
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
 
 
-def test_a_leftover_whose_stat_fails_is_still_an_orphan(data_root, monkeypatch):
-    """Сбой stat у `.pcm` канала — «не знаем»: сирота, как прежде."""
+@pytest.mark.parametrize("label", ["mic", "blackhole"])
+def test_a_leftover_whose_stat_fails_is_still_an_orphan(data_root, monkeypatch, label):
+    """Сбой stat у `.pcm` любого канала — «не знаем»: сирота, как прежде."""
     import daemon
 
     monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
@@ -827,7 +856,7 @@ def test_a_leftover_whose_stat_fails_is_still_an_orphan(data_root, monkeypatch):
     real = pathlib.Path.stat
 
     def stat(self, *a, **kw):
-        if self.name == f"{stamp}_blackhole.pcm" and not a and not kw:
+        if self.name == f"{stamp}_{label}.pcm" and not a and not kw:
             raise PermissionError(13, "denied")
         return real(self, *a, **kw)
 
@@ -837,9 +866,10 @@ def test_a_leftover_whose_stat_fails_is_still_an_orphan(data_root, monkeypatch):
                                               data_root / "transcripts" / f"{stamp}.md")
 
 
-def test_a_wav_whose_check_fails_keeps_the_meeting_an_orphan(data_root, monkeypatch):
-    """Сбой проверки `.wav` канала со звуком — «не знаем»: сирота, а не
-    пропуск канала."""
+@pytest.mark.parametrize("label", ["mic", "blackhole"])
+def test_a_wav_whose_check_fails_keeps_the_meeting_an_orphan(data_root, monkeypatch, label):
+    """Сбой проверки `.wav` любого канала со звуком — «не знаем»: сирота, а
+    не пропуск канала."""
     import daemon
 
     monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
@@ -848,7 +878,7 @@ def test_a_wav_whose_check_fails_keeps_the_meeting_an_orphan(data_root, monkeypa
     real = pathlib.Path.exists
 
     def exists(self, *a, **kw):
-        if self.name == f"{stamp}_blackhole.wav":
+        if self.name == f"{stamp}_{label}.wav":
             raise PermissionError(13, "denied")
         return real(self, *a, **kw)
 
