@@ -411,7 +411,7 @@ def test_пустой_свежий_каталог_сессии_не_удаляе
 def _no_confirm_pause(monkeypatch):
     import daemon
 
-    monkeypatch.setattr(daemon, "NO_FLOCK_CONFIRM_S", 0)
+    monkeypatch.setattr(daemon, "_confirm_pause", lambda seconds: None)
 
 
 def test_an_orphan_on_a_volume_without_flock_is_not_held_forever(data_root, monkeypatch):
@@ -470,7 +470,7 @@ def test_a_busy_channel_does_not_hold_the_start_of_recording(data_root, monkeypa
     naps = []
     monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
     monkeypatch.setattr(file_locks, "acquire_outcome", probe)
-    monkeypatch.setattr(daemon.time, "sleep", naps.append)
+    monkeypatch.setattr(daemon, "_confirm_pause", naps.append)
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
@@ -492,13 +492,12 @@ def test_a_volume_without_flock_is_confirmed_after_a_pause(data_root, monkeypatc
 
     monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
     monkeypatch.setattr(file_locks, "acquire_outcome", probe)
-    monkeypatch.setattr(daemon.time, "sleep", naps.append)
-    monkeypatch.setattr(daemon, "NO_FLOCK_CONFIRM_S", 0.5)   # снятую фикстурой паузу — назад
+    monkeypatch.setattr(daemon, "_confirm_pause", naps.append)
     _orphan(data_root, "2026-08-07_181500", age_days=3)
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
     assert calls == [{"attempts": 1}, {"attempts": 1}], calls
-    assert naps == [0.5], naps
+    assert naps == [daemon.NO_FLOCK_CONFIRM_S] and daemon.NO_FLOCK_CONFIRM_S > 0, naps
 
 
 def test_a_stat_failure_keeps_the_orphan_marker(data_root, monkeypatch):
@@ -603,4 +602,47 @@ def test_a_stamp_without_recordings_is_not_a_volume_without_flock(data_root, mon
 
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
 
-    assert daemon._volume_without_flock(data_root / "recordings", "2026-08-07_181500") is False
+    assert daemon._volume_without_flock(data_root / "recordings", "2026-08-07_181500", 0.0) is False
+
+
+def test_the_confirmation_pause_is_paid_once_per_start(data_root, monkeypatch):
+    """Пауза подтверждения — свойство тома: N сирот на томе без flock не
+    копят N пауз на пути к `hub.start()` (opusfix5 DS I1)."""
+    import daemon
+    import file_locks
+
+    naps, said = [], []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    monkeypatch.setattr(daemon, "_confirm_pause", naps.append)
+    monkeypatch.setattr(daemon, "emit", said.append)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
+    for day in (5, 6, 7):
+        _orphan(data_root, f"2026-08-0{day}_181500", age_days=0.1)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
+    assert naps == [daemon.NO_FLOCK_CONFIRM_S], naps
+    assert sum("без flock" in m.get("text", "") for m in said) == 3
+
+
+def test_an_unknown_wav_keeps_the_channel_out_of_the_vote(data_root, monkeypatch):
+    """Проверка `.wav` упала (EACCES) — «не знаем»: канал не голосует за «том
+    без flock», встреча под защитой, старт не падает (opusfix5 Haiku I2)."""
+    import daemon
+    import file_locks
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
+    _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    wav = data_root / "recordings" / "2026-08-07_181500_mic.wav"
+    real = pathlib.Path.exists
+
+    def fail(self, *a, **kw):
+        if self == wav:
+            raise PermissionError(13, "EACCES")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "exists", fail)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+    assert len(started) == 1

@@ -225,6 +225,10 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
     return out
 
 
+#: Заголовок PCM-`.wav` модуля `wave` — столько байт `.wav` длиннее своего `.pcm`.
+WAV_HEADER_BYTES = 44
+
+
 def _drop_leftover(pcm: pathlib.Path) -> None:
     """`.wav` канала готов, а `.pcm` рядом остался (крах писателя между
     `replace` и `unlink`, отказ unlink): снять остаток под заявкой. Без этого
@@ -237,9 +241,16 @@ def _drop_leftover(pcm: pathlib.Path) -> None:
     try:
         with pcm.open("rb") as f:
             # Снятое под нами имя проверять не нужно: unlink даст FileNotFoundError.
-            if file_locks.acquire_outcome(f, attempts=1) != file_locks.BUSY:
-                pcm.unlink()
-                log(f"{pcm.name}: .wav готов — остаток .pcm убрала")
+            if file_locks.acquire_outcome(f, attempts=1) == file_locks.BUSY:
+                return
+            # `.wav` без fsync после краха питания бывает усечён: снимаем
+            # исходник, только если `.wav` вмещает его целиком (opusfix5 Sonnet I1,
+            # DS I3) — обе двери пишут байты `.pcm` за заголовком.
+            if pcm.with_suffix(".wav").stat().st_size < WAV_HEADER_BYTES + os.fstat(f.fileno()).st_size:
+                log(f"{pcm.name}: .wav короче исходника — остаток .pcm оставила")
+                return
+            pcm.unlink()
+            log(f"{pcm.name}: .wav готов — остаток .pcm убрала")
     except FileNotFoundError:
         pass
     except OSError as e:        # не дали: след в журнале, следующий прогон попробует снова

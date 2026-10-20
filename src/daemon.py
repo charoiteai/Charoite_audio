@@ -534,6 +534,21 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
 NO_FLOCK_CONFIRM_S = 0.5
 
 
+def _confirm_pause(seconds: float) -> None:
+    """Шов паузы подтверждения: тесты подменяют его, а не общий `time.sleep`."""
+    time.sleep(seconds)
+
+
+def _maybe_exists(path: pathlib.Path) -> bool:
+    """Сбой проверки (EACCES, EIO) — «не знаем», считаем файл на месте: канал
+    тогда не голосует за «том без flock», встреча остаётся под защитой
+    (opusfix5 Haiku I2)."""
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
 def _has_sound(pcm: pathlib.Path) -> bool:
     """Маркер сироты — непустой `.pcm`. Пустой (писатель убит до первого блока)
     восстанавливать нечего; маркером он делал встречу сиротой на каждом старте с
@@ -547,7 +562,7 @@ def _has_sound(pcm: pathlib.Path) -> bool:
         return True
 
 
-def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
+def _volume_without_flock(rec_dir: pathlib.Path, stamp: str, pause: float) -> bool:
     """Все непустые `.pcm` встречи без готового `.wav` отвечают NO_FLOCK:
     пересборка их не сконвертирует (`pcm_to_wav` на NO_FLOCK отказывает), и
     встреча была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть,
@@ -557,10 +572,11 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
     попытка на канал: BUSY (дверь пересборки прежнего демона) не держит старт
     записи (opusfix3 DS I3). NO_FLOCK `acquire_outcome` не повторяет, поэтому
     «том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не
-    уводит встречу из-под защиты ретеншна (opusfix4 DS I4)."""
+    уводит встречу из-под защиты ретеншна (opusfix4 DS I4). Пауза — свойство
+    тома, не встречи: `_recover_orphans` платит её один раз за старт (opusfix5 DS I1)."""
     pcms = [p for label in meeting_stamp.RECORDING_LABELS
             if _has_sound(p := meeting_stamp.recording_path(rec_dir, stamp, label, "pcm"))
-            and not meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists()]
+            and not _maybe_exists(meeting_stamp.recording_path(rec_dir, stamp, label, "wav"))]
 
     def all_no_flock() -> bool:
         outcomes = []
@@ -574,7 +590,8 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
 
     if not all_no_flock():
         return False
-    time.sleep(NO_FLOCK_CONFIRM_S)
+    if pause:
+        _confirm_pause(pause)
     return all_no_flock()
 
 
@@ -615,6 +632,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     # Формат имени знает meeting_stamp: rsplit здесь был бы четвёртым местом
     # со своим знанием формата — а расхождение формата уже дважды стоило
     # проекту встреч (см. докстринг meeting_stamp).
+    pause = NO_FLOCK_CONFIRM_S
     stamps = sorted({s for p in rec_dir.glob("*.pcm")
                      if (s := meeting_stamp.stamp_of_recording(p.name)) and _has_sound(p)})
     for stamp in stamps:
@@ -623,7 +641,8 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         live = tdir / f"{stamp}.md"
         if not live.exists():
             continue                      # без стенограммы пересобирать нечего
-        if _volume_without_flock(rec_dir, stamp):
+        if _volume_without_flock(rec_dir, stamp, pause):
+            pause = 0.0                   # том подтверждён — дальше без паузы
             # Том без flock: пересборка такую запись не тронет (писателя не
             # видно), и встреча была бы сиротой навсегда — пересборка на каждом
             # старте, звук придержан сверх record_keep_days. Не защищаем: запись

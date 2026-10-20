@@ -986,10 +986,30 @@ def test_a_leftover_pcm_next_to_a_published_wav_is_removed(rec_dir, monkeypatch,
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
     wav = rec_dir / "s_mic.wav"
-    wav.write_bytes(b"writer")
+    wav.write_bytes(b"w" * (rt.WAV_HEADER_BYTES + 4096))
 
     assert rt.wait_recording(rec_dir, "s", "mic", 16000) == wav
-    assert not pcm.exists() and wav.read_bytes() == b"writer"
+    assert not pcm.exists() and wav.read_bytes() == b"w" * (rt.WAV_HEADER_BYTES + 4096)
+
+
+@pytest.mark.parametrize("volume", ["flock", "no_flock"])
+def test_a_leftover_pcm_next_to_a_truncated_wav_is_kept(rec_dir, monkeypatch, volume):
+    """`.wav` без fsync после краха питания усечён: исходник — единственная
+    полная копия, не снимаем (opusfix5 Sonnet I1, DS I3)."""
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(rt, "time", _Clock())
+    if volume == "no_flock":
+        monkeypatch.setattr(rt.file_locks, "acquire_outcome", lambda f, **kw: rt.file_locks.NO_FLOCK)
+    lines = []
+    monkeypatch.setattr(rt, "log", lines.append)
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    (rec_dir / "s_mic.wav").write_bytes(b"w" * (rt.WAV_HEADER_BYTES + 4095))
+
+    rt.wait_recording(rec_dir, "s", "mic", 16000)
+
+    assert pcm.exists() and any("короче исходника" in m for m in lines), lines
 
 
 def test_a_leftover_pcm_under_its_writers_claim_is_left_to_it(rec_dir, monkeypatch):
@@ -1077,6 +1097,40 @@ def test_the_claim_state_of_a_past_meeting_does_not_leak_into_the_next(tmp_path,
     assert hub._unclaimed == {}
 
 
+def test_junk_larger_on_disk_than_a_buffered_live_channel_still_goes_first(tmp_path):
+    """Мусор (< 5 с) крупнее на диске, чем живой канал, хвост которого ещё в
+    буфере sink: уборка мусора всё равно раньше первого `.wav` — порядком по
+    размеру этого не обеспечить (opusfix5 DS I2, Haiku I3)."""
+    import audio
+
+    hub = _hub(tmp_path)
+    mic, bh = tmp_path / "s_mic.pcm", tmp_path / "s_blackhole.pcm"
+    five_s = 16000 * 2 * 5
+    sinks = {"mic": mic.open("xb"), "blackhole": bh.open("xb")}
+    sinks["mic"].write(b"\1" * (five_s - 2500))
+    sinks["mic"].flush()
+    sinks["mic"].write(b"\1" * 3000)            # хвост в буфере: на диске меньше мусора
+    sinks["blackhole"].write(b"\1" * (five_s - 2000))
+    sinks["blackhole"].flush()
+    assert mic.stat().st_size < bh.stat().st_size
+    hub._sinks = sinks
+    seen = []
+    real = audio.pathlib.Path.replace
+
+    def watching(self, target):
+        seen.append(bh.exists())
+        return real(self, target)
+
+    audio.pathlib.Path.replace = watching
+    try:
+        hub._finalize_recordings()
+    finally:
+        audio.pathlib.Path.replace = real
+
+    assert seen == [False], "мусорный .pcm пережил публикацию .wav соседнего канала"
+    assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
+
+
 def test_empty_channels_are_dropped_before_the_first_wav_is_published(tmp_path):
     """Крах между `.wav` одного канала и уборкой пустого другого оставлял
     встречу без маркера сироты: финал не собирался (opusfix4 DS C2). Пустой
@@ -1127,3 +1181,28 @@ def test_a_pcm_taken_away_after_publication_is_no_failure_line(tmp_path, monkeyp
 
     assert hub.finalized == {"mic": tmp_path / "s_mic.wav"}
     assert "не снят" not in capsys.readouterr().err
+
+
+def test_junk_taken_away_before_its_removal_is_no_lost_channel(tmp_path, monkeypatch):
+    """Мусорный `.pcm` (< 5 с) уже сняли (ретеншн, «Забыть») между stat и
+    уборкой: звука не было — тревоги «запись пропала» нет."""
+    import audio
+
+    hub = _hub(tmp_path)
+    said = []
+    hub._say = said.append
+    bh = tmp_path / "s_blackhole.pcm"
+    hub._sinks = {"blackhole": bh.open("xb")}
+    real = audio.pathlib.Path.stat
+
+    def and_drop(self, *a, **kw):
+        got = real(self, *a, **kw)
+        if self == bh:
+            monkeypatch.setattr(audio.pathlib.Path, "stat", real)
+            os.unlink(bh)
+        return got
+
+    monkeypatch.setattr(audio.pathlib.Path, "stat", and_drop)
+    hub._finalize_recordings()
+
+    assert not bh.exists() and said == [], said

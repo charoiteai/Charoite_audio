@@ -528,14 +528,14 @@ def _safe_stderr(msg: str) -> None:
         pass
 
 
-def _disk_size(f) -> int:
-    """Размер записанного на диск (без буфера) — порядок финализации каналов.
-    Любой сбой — 0: такой канал идёт первым, `.wav` его до сбоя не появится, а
-    порядок не вправе ронять финализацию."""
-    try:
-        return os.fstat(f.fileno()).st_size
-    except Exception:  # noqa: BLE001 — сортировка не теряет каналы
-        return 0
+def _release(claim: int | None) -> None:
+    """Снять заявку писателя (`os.dup` дескриптора `.pcm`); сбой close не роняет
+    соседний канал (out2)."""
+    if claim is not None:
+        try:
+            os.close(claim)
+        except OSError:
+            pass
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1564,11 +1564,13 @@ class AudioHub:
         # (круг 3, GLM)
         with self._lock:
             sinks, self._sinks = dict(self._sinks), {}
-        # Мусор и пустые каналы — первыми: снять их имя до публикации первого
-        # .wav. Иначе крах между `.wav` одного канала и уборкой пустого
+        # Два прохода: сначала все каналы закрыты и мусор снят, потом
+        # публикуются `.wav`. Крах между `.wav` одного канала и уборкой мусора
         # другого оставлял встречу без маркера сироты — финал не собирался
-        # (opusfix4 DS C2, замер окна x8 — 1,3 мс).
-        for label, f in sorted(sinks.items(), key=lambda kv: _disk_size(kv[1])):
+        # (opusfix4 DS C2, окно x8 — 1,3 мс; порядком по размеру не закрыть —
+        # буфер sink, opusfix5 DS I2).
+        ready = []                       # (label, .pcm, заявка) — каналы со звуком
+        for label, f in sinks.items():
             # Заявка писателя (`_claim_sink`) живёт до снятия имени `.pcm`:
             # пока она держится, пересборка файл не трогает; отпусти её раньше —
             # пересборка сочла бы нас брошенными посреди конвертации (№728).
@@ -1591,6 +1593,18 @@ class AudioHub:
                     p.unlink(missing_ok=True)
                     _safe_stderr(f"запись канала {label} короче 5 с — убрана, .wav не будет")
                     continue
+                ready.append((label, p, claim))
+                claim = None             # заявку несёт второй проход
+            except Exception as e:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
+                self._channel_not_finalized(label, e)
+            finally:
+                try:
+                    f.close()             # сбой flush/dup выше — sink ещё открыт
+                except Exception:  # noqa: BLE001 — сбой close не роняет соседний канал
+                    pass
+                _release(claim)
+        for label, p, claim in ready:
+            try:
                 # Пишем во временное имя и переименовываем: rebuild_transcript
                 # ждёт готовый .wav и до появления файла считает канал
                 # незавершённым.
@@ -1610,36 +1624,33 @@ class AudioHub:
                     # .wav уже опубликован: это не сбой конвертации (финальный
                     # Opus M1). Остаток снимет пересборка под заявкой.
                     _safe_stderr(f"запись канала {label}: .wav готов, .pcm не снят — {type(e).__name__}")
-            except FileNotFoundError:
-                # .pcm сняли из-под записи («Забыть», чужая уборка): звук канала
-                # потерян — молчать нельзя (out1, шаг Haiku I3).
-                self._say(stt_runtime.Status(
-                    f"ЗАПИСЬ КАНАЛА {label} ПРОПАЛА С ДИСКА до конца встречи — финала по ней не будет",
-                    error=True, topic=stt_runtime.TOPIC_DISK))
             except Exception as e:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
-                # Не молча: без строки человек ждал бы финала, которого нет до
-                # пересборки (out2, шаг Haiku M1).
-                # Без заявки пересборка .pcm не тронет: обещать её нельзя (out3).
-                # BUSY/исключение на старте — заявку держал чужой (дверь), а не
-                # мы; после нашего выхода дверь её возьмёт. Не возьмёт только
-                # том без flock (out4 Sonnet M2, opusfix1 Sonnet m3).
-                after = ("восстановите встречу вручную"
-                         if self._unclaimed.get(label) == file_locks.NO_FLOCK
-                         else "финал соберёт пересборка")
-                self._say(stt_runtime.Status(
-                    f"запись канала {label} не сконвертирована ({type(e).__name__}) — "
-                    f".pcm цел, {after}",
-                    error=True, topic=stt_runtime.TOPIC_DISK))
+                self._channel_not_finalized(label, e)
             finally:
-                try:
-                    f.close()             # сбой flush/dup выше — sink ещё открыт
-                except Exception:  # noqa: BLE001 — сбой close не роняет соседний канал
-                    pass
-                if claim is not None:
-                    try:
-                        os.close(claim)   # снимает заявку — после снятия имени
-                    except OSError:       # сбой close не роняет соседний канал (out2)
-                        pass
+                _release(claim)          # снимает заявку — после снятия имени
+
+    def _channel_not_finalized(self, label: str, e: Exception) -> None:
+        """Строка о канале, который финализация не довела до `.wav`."""
+        if isinstance(e, FileNotFoundError):
+            # .pcm сняли из-под записи («Забыть», чужая уборка): звук канала
+            # потерян — молчать нельзя (out1, шаг Haiku I3).
+            self._say(stt_runtime.Status(
+                f"ЗАПИСЬ КАНАЛА {label} ПРОПАЛА С ДИСКА до конца встречи — финала по ней не будет",
+                error=True, topic=stt_runtime.TOPIC_DISK))
+            return
+        # Не молча: без строки человек ждал бы финала, которого нет до
+        # пересборки (out2, шаг Haiku M1).
+        # Без заявки пересборка .pcm не тронет: обещать её нельзя (out3).
+        # BUSY/исключение на старте — заявку держал чужой (дверь), а не
+        # мы; после нашего выхода дверь её возьмёт. Не возьмёт только
+        # том без flock (out4 Sonnet M2, opusfix1 Sonnet m3).
+        after = ("восстановите встречу вручную"
+                 if self._unclaimed.get(label) == file_locks.NO_FLOCK
+                 else "финал соберёт пересборка")
+        self._say(stt_runtime.Status(
+            f"запись канала {label} не сконвертирована ({type(e).__name__}) — "
+            f".pcm цел, {after}",
+            error=True, topic=stt_runtime.TOPIC_DISK))
 
     #: не чаще этого репортёр говорит об одном типе сбоя прохода: сторож идёт
     #: раз в 5 с, и без окна устойчивый баг дал бы строку каждые пять секунд
