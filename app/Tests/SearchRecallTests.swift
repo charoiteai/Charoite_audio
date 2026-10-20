@@ -468,11 +468,12 @@ final class LocalVerdictTests: XCTestCase {
         XCTAssertEqual(halfRead.verdict, .unverified, "половина графа не прочитана: \(halfRead.text)")
     }
 
-    /// Две ссылки наружу графа с одним именем схлопываются в одну rel: охват
-    /// считает её одним файлом, как `allPaths` и индекс (out3, DS M7) —
-    /// иначе граф из одной заметки никогда не доказывал «пусто».
-    func testCollapsedRelCountsOnceInCoverage() async throws {
-        let outside = try makeTestGraph([("a/README.md", "дожди весь месяц"), ("b/README.md", "обсудили отпуск")])
+    /// Две ссылки наружу графа с одним именем схлопываются в одну rel, а
+    /// индекс под этим ключом держит текст одной заметки: охват считается по
+    /// документам, и непроверенная вторая не даёт «пусто» (out4, DS C1 —
+    /// откат out3 M7).
+    func testCollapsedRelDoesNotProveCoverage() async throws {
+        let outside = try makeTestGraph([("a/README.md", "дожди весь месяц"), ("b/README.md", "отпуск перенесли на август")])
         let graph = try makeTestGraph([])
         defer { try? FileManager.default.removeItem(at: outside); try? FileManager.default.removeItem(at: graph) }
         for sub in ["a", "b"] {
@@ -481,10 +482,11 @@ final class LocalVerdictTests: XCTestCase {
             try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside.appendingPathComponent("\(sub)/README.md"))
         }
         let index = SemanticIndex()
-        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        let embed: ([String]) -> [[Float]] = { $0.map { $0.contains("каникулы") || $0.contains("отпуск") ? [1, 0] : [0, 1] } }
+        await index.useForTests(store: tempIndexStore(), embedder: { embed($0) })
         await index.refresh(files: [("README.md", 1, "дожди весь месяц")])
-        let out = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+        let out = await ArchiveSearch.localSearchOutcome(query: "каникулы", limit: 3,
                                                          snippet: 200, root: graph, semanticIndex: index)
-        XCTAssertEqual(out.verdict, .empty, out.text)
+        XCTAssertEqual(out.verdict, .unverified, out.text)
     }
 }

@@ -207,35 +207,26 @@ enum ChatRetrieval {
         }
     }
 
-    /// Формула отсутствия и её близкие варианты — то, что запрещают правила
-    /// `confident` и `unverified`. Ложный отказ бенча судится только по ним:
-    /// «точного ответа не нашлось» велит само правило `unverified`, а «no
-    /// record of …» — обычный оборот факта (out3, DS C2 и I4).
-    static let absenceClaims = [
-        "в памяти этого нет", "в памяти нет", "этого нет в памяти", "нет в памяти",
-        "в графе этого нет", "в графе нет", "not in memory", "not in the memory", "记忆中没有",
-    ]
-
     /// Ответ модели — отказ: формула отсутствия в первой содержательной
     /// строке (заголовок «## Ответ» и метка «Ответ:» пропускаются, разметка
     /// снята). `lines: 2` — для вопроса без ответа в графе: правило велит
     /// сперва назвать найденное, затем — чего нет. Детектор бенча — здесь,
     /// рядом с формулой правил (out1, DS C1, Sonnet I3): список вступлений
     /// вроде «в предоставленных блоках» считал отказом обычный ответ.
-    /// Воздержание судится по широкому списку, ложный отказ — `claimsOnly`.
-    static let absencePhrases = absenceClaims + [
-        "в предоставленных данных нет", "в предоставленных блоках нет",
+    static let absencePhrases = [
+        "в памяти этого нет", "в памяти нет", "этого нет в памяти", "нет в памяти",
+        "в графе этого нет", "в графе нет", "в предоставленных данных нет", "в предоставленных блоках нет",
         "в блоках нет", "информации об этом нет", "точного ответа нет", "точного ответа не нашлось",
-        "найти не удалось", "не удалось найти", "ничего не нашлось", "ничего не найдено", "no information about", "no information on",
+        "найти не удалось", "ничего не нашлось", "ничего не найдено",
+        "not in memory", "not in the memory", "no information about", "no information on",
         "don't have information", "do not have information", "no exact answer", "no record of",
         "could not be found", "couldn't find",
-        "nothing was found", "未能找到", "没有找到", "没有相关", "没有确切答案",
+        "nothing was found", "记忆中没有", "未能找到", "没有找到", "没有相关", "没有确切答案",
     ]
 
-    static func isAbsence(_ answer: String, lines: Int = 1, claimsOnly: Bool = false) -> Bool {
+    static func isAbsence(_ answer: String, lines: Int = 1) -> Bool {
         let marks = CharacterSet(charactersIn: "#*>_-`").union(.whitespaces)
-        let phrases = claimsOnly ? absenceClaims : absencePhrases
-        func says(_ t: String) -> Bool { phrases.contains { t.contains($0) } }
+        func says(_ t: String) -> Bool { absencePhrases.contains { t.contains($0) } }
         let content = answer.split(whereSeparator: \.isNewline)
             .compactMap { raw -> (text: String, says: Bool)? in
                 let t = String(raw.trimmingCharacters(in: marks).prefix(200)).lowercased()
@@ -249,14 +240,6 @@ enum ChatRetrieval {
             }
             .prefix(lines)
         return content.contains { $0.says }
-    }
-
-    /// Ответ нарушил правило вердикта: формула отсутствия первой строкой там,
-    /// где таблица её не разрешает. Ложный отказ бенча — только это: «слабо»
-    /// формулу велит, «неполный поиск» велит «точного ответа не нашлось»
-    /// (out3, DS C2: бенч наказывал ответ, исполнивший правило).
-    static func refusesAgainstRule(_ answer: String, verdict: ArchiveSearch.Verdict) -> Bool {
-        isAbsence(answer, claimsOnly: true) && !honesty(verdict, hasText: true).allowsAbsence
     }
 
     /// Тело запроса `/api/chat`. `stream: false` и температура 0 — для проб:

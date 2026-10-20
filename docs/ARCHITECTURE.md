@@ -1928,9 +1928,8 @@ written fails the run.
 
 Each question in the report carries the search verdict (`confident`, `weak`,
 `unverified`, `empty`, `unavailable`). With synthesis the bench counts
-`FALSE_REFUSAL` — the answer opens with the absence formula where the verdict's
-rule forbids it (`confident`, `unverified`) and holds none of the facts that were
-in what search delivered — per verdict (`ChatRetrieval.refusesAgainstRule`), and `ВОЗДЕРЖАНИЕ` (abstention) — questions with
+`FALSE_REFUSAL` — the answer opens with a refusal and holds none of the facts
+that were in what search delivered — per verdict, and `ВОЗДЕРЖАНИЕ` (abstention) — questions with
 no answer in the graph where the answer was rightly a refusal (names as in
 `scripts/retrieval_compare.py`). The "found / weak / empty" decision is made by
 search (`ArchiveSearch.Outcome.verdict`), and the honesty rule in the prompt is
@@ -1956,9 +1955,9 @@ model the report says they were not applied); a malformed threshold and an
 absence formula in the first content line of the answer
 (`ChatRetrieval.isAbsence`; a heading and a short "Answer:" label are skipped
 unless they are a refusal themselves); for a question without an answer the
-first two lines count. A false refusal is judged by the absence formula and its
-close variants only (`absenceClaims`): "no exact answer was found" is what the
-`unverified` rule asks for, and "no record of …" is an ordinary statement of fact.
+first two lines count. The count does not yet tell a refusal the verdict's rule
+allows (`weak`, or "no exact answer was found" under `unverified`) from one it
+forbids — read it per verdict.
 
 Search calls an empty or weak result proven only when semantics compared the
 query with at least 80% of the graph files that have text (notes that failed to

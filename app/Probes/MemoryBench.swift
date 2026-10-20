@@ -114,8 +114,9 @@ final class MemoryBench: XCTestCase {
                 let inFound = c.must.filter { norm(found).contains(norm($0)) }.count
                 // отказ первой строкой и ни одного факта в ответе: оговорка
                 // «точной даты нет» перед найденным фактом — не отказ (out2, DS I2).
-                if ChatRetrieval.refusesAgainstRule(subject, verdict: outcome.verdict)
-                    && inFound > 0 && hits.isEmpty {
+                // Судья — как в базе, по всем вердиктам (счёт по вердиктам ниже):
+                // какой отказ разрешает правило — задача бенча в два слоя (out4)
+                if ChatRetrieval.isAbsence(subject) && inFound > 0 && hits.isEmpty {
                     falseRefusal[outcome.verdict, default: 0] += 1
                     report += "\n  false_refusal: отказ при \(inFound)/\(c.must.count) фактах в выдаче"
                 }
@@ -131,7 +132,7 @@ final class MemoryBench: XCTestCase {
         if withModel {
             let byVerdict = ArchiveSearch.Verdict.allCases.compactMap { v in
                 falseRefusal[v].map { "\(v.rawValue) \($0)" } }
-            report += "\n\nFALSE_REFUSAL: \(falseRefusal.values.reduce(0, +)) (формула отсутствия при факте в выдаче, где правило её запрещает"
+            report += "\n\nFALSE_REFUSAL: \(falseRefusal.values.reduce(0, +)) (отказ при факте в выдаче"
                 + (byVerdict.isEmpty ? ")" : "; \(byVerdict.joined(separator: ", ")))")
         }
         if abstainTotal > 0 {
@@ -223,9 +224,10 @@ final class MemoryBench: XCTestCase {
             }
             out.append(Case(q: question, must: facts, abstain: abstain))
         }
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            // CRLF-набор и порог с отступом: «\r» валил разбор, отступ молча
-            // снимал гейт (out3, DS M8)
+        // «\r\n» — один Character, по «\n» не делится (out4, Haiku I1)
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n")
+        for raw in lines.split(separator: "\n", omittingEmptySubsequences: false) {
+            // порог с отступом молча снимал гейт (out3, DS M8)
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.hasPrefix("max_false_refusal:") || line.hasPrefix("min_abstain:") {
                 let (key, value) = (line.prefix(while: { $0 != ":" }),

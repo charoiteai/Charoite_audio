@@ -177,32 +177,11 @@ final class ChatRetrievalTests: XCTestCase {
                        "Ответ:\nВ графе этого нет.", "I don't have information about that.", "That isn't in memory… no, it is not in memory.",
                        "没有找到相关内容。", "That is not in memory.",
                        // метка и заголовок, которые сами отказ, не пропускаются (out2, Sonnet I5)
-                       "Нет в памяти:\nпереезд не обсуждали, обсуждали ремонт.", "Не удалось найти информацию о переезде.", "## В графе этого нет\nЕсть про ремонт."] {
+                       "Нет в памяти:\nпереезд не обсуждали, обсуждали ремонт.", "## В графе этого нет\nЕсть про ремонт."] {
             XCTAssertTrue(ChatRetrieval.isAbsence(answer), answer)
         }
         // вопрос без ответа: найденное первой строкой, отказ второй — воздержание
         XCTAssertTrue(ChatRetrieval.isAbsence("Нашлось про релиз в августе.\nТочного ответа нет.", lines: 2))
-        // ложный отказ — только формула отсутствия, а не общий оборот факта (out3, DS I4)
-        for answer in ["No record of objections; the release stays in August.",
-                       "No information about the outage was shared at the meeting.",
-                       "Поиск был неполным: точного ответа не нашлось, но речь шла о ремонте."] {
-            XCTAssertFalse(ChatRetrieval.isAbsence(answer, claimsOnly: true), answer)
-        }
-        XCTAssertTrue(ChatRetrieval.isAbsence("**В памяти этого нет.**", claimsOnly: true))
-        XCTAssertTrue(ChatRetrieval.isAbsence("记忆中没有这条。", claimsOnly: true))
-    }
-
-    /// Ложный отказ бенча — нарушение правила вердикта, а не исполнение
-    /// (out3, DS C2): «слабо» и «пусто» формулу велят, «неполный поиск» велит
-    /// «точного ответа не нашлось».
-    func testЛожныйОтказТолькоПротивПравила() {
-        let refusal = "В памяти этого нет; рядом нашлось про ремонт."
-        XCTAssertTrue(ChatRetrieval.refusesAgainstRule(refusal, verdict: .confident))
-        XCTAssertTrue(ChatRetrieval.refusesAgainstRule(refusal, verdict: .unverified))
-        XCTAssertFalse(ChatRetrieval.refusesAgainstRule(refusal, verdict: .weak))
-        XCTAssertFalse(ChatRetrieval.refusesAgainstRule(refusal, verdict: .empty))
-        XCTAssertFalse(ChatRetrieval.refusesAgainstRule(
-            "Точного ответа не нашлось, поиск был неполным.", verdict: .unverified))
     }
 
     func testТелоЗапросаПоПолям() throws {

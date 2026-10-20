@@ -517,10 +517,9 @@ enum ArchiveSearch {
         // индекс и непрочитанные заметки дают «не проверено» (№634).
         let checked = await semanticIndex.similarChecked(to: query, within: allPaths,
                                                          limit: max(limit * 4, 20))
-        // по rel, как `allPaths` и `compared`: симлинк наружу графа
-        // схлопывает rel, и дубль раздувал знаменатель (out3, DS I7)
-        let withText = Set(all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .map(\.rel)).count
+        // по документам, не по rel: симлинки наружу с одним именем делят rel,
+        // а индекс под ним держит текст одного (out4, DS C1)
+        let withText = all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
         let proven = checked.map { covered(compared: $0.compared, withText: withText, unread: unread) } ?? false
         let sem = checked?.hits ?? []
         let bestSim = sem.first?.score ?? 0
