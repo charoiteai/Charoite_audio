@@ -182,6 +182,22 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(out.rels), ["Ядра/Шлюз.md"])
     }
 
+    /// Карта в корне — симлинк на файл вне графа: картой её делает место
+    /// ссылки, а не цели — источником остаётся (out7, Haiku C1).
+    func testRootMapSymlinkedOutsideTheGraphStaysASource() async throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-svc-maplink-\(UUID().uuidString).json")
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let graph = try makeGraph(["Люди/М.md": "# М\nНичего по теме."])
+        let outside = try makeGraph(["_MOC.md": "- платёжный шлюз провайдер выбран"])
+        try FileManager.default.createSymbolicLink(
+            atPath: graph.appendingPathComponent("_MOC.md").path,
+            withDestinationPath: outside.appendingPathComponent("_MOC.md").path)
+        let out = await ArchiveSearch.localSearchOutcome(
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
+        XCTAssertEqual(try XCTUnwrap(out.rels), ["_MOC.md"])
+    }
+
     /// Папка графа в пути сервера сравнивается в форме схемы: имя с диска
     /// macOS приходит разложенным, регистр может отличаться (out3, DS I1).
     func testGraphRelativeMatchesTheFolderInTheSchemaForm() {

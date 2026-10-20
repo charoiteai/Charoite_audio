@@ -355,9 +355,14 @@ enum ArchiveSearch {
             // слоты выдачи (№750). Карта содержания в корне остаётся. Гейт — по
             // канонической rel (симлинк на указатель не проходит, out1 Haiku)
             // и до чтения и дедупа по содержимому: иначе служебная копия
-            // выигрывала бы дедуп у настоящего файла. Файл вне графа картой не
-            // бывает — для него правило имени без исключения.
-            if inside ? GraphFolders.isChatExcluded(rel) : GraphFolders.isServiceFile(rel) { continue }
+            // выигрывала бы дедуп у настоящего файла. У файла вне графа картой
+            // его делает место ссылки: «_MOC.md» в корне — симлинк наружу
+            // остаётся картой (out7, Haiku C1).
+            // Папка ссылки — канонически: обход отдаёт «/private/var/…», корень
+            // после resolvingSymlinksInPath — «/var/…».
+            let linkInRoot = url.deletingLastPathComponent().resolvingSymlinksInPath().path == graph.path
+            let isMap = inside ? GraphFolders.isMapFile(rel) : linkInRoot && GraphFolders.isMapFile(rel)
+            if GraphFolders.isServiceFile(rel) && !isMap { continue }
             let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             let mtime = rv?.contentModificationDate?.timeIntervalSince1970 ?? 0
             liveKeys.insert(rel)
