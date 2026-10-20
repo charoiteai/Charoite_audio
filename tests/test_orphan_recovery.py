@@ -551,6 +551,30 @@ def test_an_unreadable_channel_does_not_veto_a_volume_without_flock(data_root, m
     assert started == []
 
 
+def test_a_meeting_whose_channels_all_fail_to_open_stays_protected(data_root, monkeypatch):
+    """Ни один `.pcm` встречи не открылся (EACCES, EMFILE на старте) — голосов
+    «том без flock» нет: встреча остаётся сиротой под защитой ретеншна, а не
+    уходит в «вручную» (финальный Opus I2)."""
+    import daemon
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    bh = data_root / "recordings" / "2026-08-07_181500_blackhole.pcm"
+    bh.write_bytes(b"\0" * 4096)
+    real_open = pathlib.Path.open
+
+    def deny(self, *a, **kw):
+        if self.suffix == ".pcm":
+            raise PermissionError(self)
+        return real_open(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "open", deny)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+    assert len(started) == 1
+
+
 @pytest.mark.parametrize("wav", [False, True])
 def test_an_empty_pcm_is_no_orphan_marker(data_root, monkeypatch, wav):
     """Пустой `.pcm` (писатель убит до первого блока) — не сирота: иначе
