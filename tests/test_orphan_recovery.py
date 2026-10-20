@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import pathlib
@@ -596,13 +597,18 @@ def test_a_channel_with_its_wav_does_not_vote_for_a_volume_without_flock(data_ro
     assert len(started) == 1
 
 
-SHA = "a" * 64
+# Хеш того текста, что кладёт `_leftovers_beside_a_final`: финал в фикстурах
+# честный по построению, как после `write_final` (opusfix12 DS M1).
+SHA = hashlib.sha256("финал".encode("utf-8")).hexdigest()
 
 
 def _leftovers_beside_a_final(root: pathlib.Path, stamp: str, *, sidecar: str | None,
-                              wav_labels=("mic", "blackhole")) -> list[pathlib.Path]:
+                              wav_labels=("mic", "blackhole"),
+                              state: str | None = "processing") -> list[pathlib.Path]:
     """Встреча собрана: `.wav` каналов есть, остатки `.pcm` рядом (том без
-    `F_FULLFSYNC` — писатель их оставляет), стенограмма без темы."""
+    `F_FULLFSYNC` — писатель их оставляет), стенограмма без темы. `state` —
+    запись статуса встречи: по умолчанию свежий `processing` (запись есть,
+    исхода нет — решает хеш), None — записи нет."""
     rec = root / "recordings"
     old = time.time() - 3 * 86400
     files = []
@@ -619,7 +625,24 @@ def _leftovers_beside_a_final(root: pathlib.Path, stamp: str, *, sidecar: str | 
     live.write_text("финал", encoding="utf-8")
     if sidecar is not None:
         live.with_name(live.name + ".live.json").write_text(sidecar, encoding="utf-8")
+    _status(root, live, state)
     return files
+
+
+def _status(root: pathlib.Path, live: pathlib.Path, state: str | None) -> None:
+    import meeting_processing as mp
+
+    store = mp.MeetingStatusStore(root)
+    if state == "processing":
+        store.processing(live, "rebuilding_transcript")
+    elif state == "ready":
+        store.ready(live, None)
+    elif state == "empty":
+        store.no_speech(live)
+    elif state == "error":
+        store.failed(live, "RuntimeError: модель не дала разбор")
+    else:
+        assert state is None, state
 
 
 def test_leftovers_beside_a_machine_final_are_no_orphan(data_root, monkeypatch):
@@ -736,6 +759,7 @@ def test_a_leftover_beside_a_wav_is_kept_and_the_written_final_ends_the_orphan(d
     assert pcm.read_bytes() == b"\0" * 4096 and wav.read_bytes() == b"w" * wav_bytes
     live = data_root / "transcripts" / f"{stamp}.md"
     live.with_name(live.name + ".live.json").write_text(json.dumps({"transcript_sha256": SHA}), encoding="utf-8")
+    _status(data_root, live, "processing")    # пересборка пишет статус до `rebuild()`
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
 
 
@@ -807,13 +831,16 @@ def test_a_leftover_whose_stat_fails_is_still_an_orphan(data_root, monkeypatch):
 
     monkeypatch.setattr(pathlib.Path, "stat", stat)
 
+    import meeting_processing as mp
+
     assert not daemon._final_beside_leftovers(data_root / "recordings", stamp,
-                                              data_root / "transcripts" / f"{stamp}.md")
+                                              data_root / "transcripts" / f"{stamp}.md",
+                                              mp.MeetingStatusStore(data_root))
 
 
 def test_a_fresh_leftover_beside_a_final_waits_for_its_term(data_root, monkeypatch):
-    """Остаток младше срока хранения ретеншн не трогает; старше — убирает
-    (`test_leftovers_beside_a_machine_final_are_no_orphan`)."""
+    """Остаток младше срока хранения ретеншн не трогает; срок вышел — убирает
+    (opusfix12 Sonnet M2: вторая половина — тот же остаток, состаренный)."""
     import audio
     import daemon
 
@@ -828,6 +855,77 @@ def test_a_fresh_leftover_beside_a_final_waits_for_its_term(data_root, monkeypat
     audio.AudioHub.prune_recordings(data_root / "recordings", 2, protect=protect)
 
     assert all(f.exists() for f in files)
+    old = now - 3 * 86400
+    for f in files:
+        os.utime(f, (old, old))
+    protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+    audio.AudioHub.prune_recordings(data_root / "recordings", 2, protect=protect)
+
+    assert protect == set() and not any(f.exists() for f in files)
+
+
+@pytest.mark.parametrize("state", ["ready", "empty"])
+def test_a_meeting_with_an_outcome_but_no_final_is_no_orphan(data_root, monkeypatch, state):
+    """Пересборка ушла без машинного финала (тишина, STT без абзацев,
+    потерянный канал), а конвейер дошёл до исхода: остаток рядом с `.wav` —
+    не сирота. Иначе STT заново на каждом старте, а `os.utime` пересборки
+    продлевает звуку срок хранения (opusfix12 Sonnet I1 = Haiku I1, опыт
+    x23: 3 старта из 3 — сирота)."""
+    import audio
+    import daemon
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    files = _leftovers_beside_a_final(data_root, "2026-08-07_181500",
+                                      sidecar=json.dumps({"stamp": "2026-08-07_181500"}), state=state)
+
+    for _ in range(2):
+        assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
+    audio.AudioHub.prune_recordings(data_root / "recordings", 2, protect=set())
+
+    assert started == [] and not any(f.exists() for f in files)
+
+
+@pytest.mark.parametrize("state", ["error", "processing"])
+def test_a_meeting_without_an_outcome_or_a_final_is_still_an_orphan(data_root, monkeypatch, state):
+    """Исхода нет (ошибка, брошенный `processing`) и финала нет — сирота, как прежде."""
+    import daemon
+
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    _leftovers_beside_a_final(data_root, "2026-08-07_181500",
+                              sidecar=json.dumps({"stamp": "2026-08-07_181500"}), state=state)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+
+
+def test_a_final_without_a_status_record_is_an_orphan(data_root, monkeypatch):
+    """Финал записан, а записи статуса нет (срок `STATUS_KEEP_DAYS` вышел,
+    запись статуса не легла): повтор незавершённых встречу не увидит, и
+    минутки не доделал бы никто — «не знаем», сирота (opusfix12 DS I1)."""
+    import daemon
+
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    _leftovers_beside_a_final(data_root, "2026-08-07_181500",
+                              sidecar=json.dumps({"transcript_sha256": SHA}), state=None)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+
+
+def test_a_failing_status_read_keeps_the_meeting_an_orphan(data_root, monkeypatch):
+    """Чтение статуса упало — «не знаем»: сирота, старт не падает."""
+    import daemon
+    import meeting_processing as mp
+
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    _leftovers_beside_a_final(data_root, "2026-08-07_181500",
+                              sidecar=json.dumps({"transcript_sha256": SHA}), state="ready")
+
+    def broken(self, transcript):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(mp.MeetingStatusStore, "state_of", broken)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
 
 
 def test_the_confirmation_pause_is_paid_once_per_start(data_root, monkeypatch):

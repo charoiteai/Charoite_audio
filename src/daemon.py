@@ -586,18 +586,26 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
     return bool(outcomes) and all(o == file_locks.NO_FLOCK for o in outcomes)
 
 
-def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Path) -> bool:
-    """Финал встречи уже собран, а `.pcm` рядом с `.wav` — остаток, а не
-    сирота: у каждого канала со звуком есть `.wav`, и в сайдкаре стенограммы
-    записан машинный финал (`write_final`). Остаток остаётся, когда `.wav` не
-    подтверждён на носителе (том без `F_FULLFSYNC` — у каждой встречи) или
-    дверь его не тронула (том без flock): пересборка такой встречи на каждом
-    старте — STT заново, а ретеншн придерживал бы звук сверх срока хранения
-    (№728, опыт x17: финал без темы). Остаток живёт по обычному сроку.
+def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Path,
+                            statuses: MeetingStatusStore) -> bool:
+    """Встреча закончена, а `.pcm` рядом с `.wav` — остаток, а не сирота: у
+    каждого канала со звуком есть `.wav`, и конвейер дошёл до исхода. Исход —
+    статус `ready` или `empty` (пересборка могла уйти и без финала: тишина,
+    STT без абзацев, потерянный канал — opusfix12 I1, опыт x23) либо машинный
+    финал в сайдкаре (`write_final`) при живой записи статуса: брошенный
+    `processing` после финала доделывает повтор незавершённых, а не STT на
+    старте (opusfix11 C3, опыт x22). Записи статуса нет — «не знаем»
+    (opusfix12 DS I1). Остаток остаётся, когда `.wav` не подтверждён на
+    носителе (том без `F_FULLFSYNC` — у каждой встречи) или дверь его не
+    тронула (том без flock): пересборка такой встречи на каждом старте — STT
+    заново, а ретеншн придерживал бы звук сверх срока хранения (№728, опыт
+    x17). Остаток живёт по обычному сроку.
     «Не знаем» — сирота: канал без `.wav`, сбой проверки, неоднозначный
-    сайдкар восстанавливаются, как прежде. Канала без `.pcm` нет вовсе (запись
-    без второго устройства): `_has_sound` на пропавшем файле отвечает «звук
-    есть», и встреча из одного канала пересобиралась бы на каждом старте."""
+    сайдкар восстанавливаются, как прежде. Канал без `.pcm` не проверяем:
+    звук либо уже в `.wav` (писатель или дверь сняли исходник), либо его не
+    было — запись без второго устройства. `_has_sound` на пропавшем файле
+    отвечает «звук есть» ради ретеншна, и встреча из одного канала
+    пересобиралась бы на каждом старте."""
     for label in meeting_stamp.RECORDING_LABELS:
         try:
             if meeting_stamp.recording_path(rec_dir, stamp, label, "pcm").stat().st_size == 0:
@@ -611,7 +619,13 @@ def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Pat
                 return False
         except OSError:
             return False
-    return live_sidecar.machine_final(live, unknown=False)
+    try:
+        state = statuses.state_of(live)
+    except Exception:  # noqa: BLE001 — сбой чтения статуса — «не знаем», сирота
+        return False
+    if state in ("ready", "empty"):
+        return True
+    return state is not None and live_sidecar.machine_final(live, unknown=False)
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -654,6 +668,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     stamps = sorted({s for p in rec_dir.glob("*.pcm")
                      if (s := meeting_stamp.stamp_of_recording(p.name)) and _has_sound(p)})
     candidates = []
+    statuses = MeetingStatusStore(_root())
     for stamp in stamps:
         if stamp == current_stamp:
             continue                      # наша встреча, она только началась
@@ -662,7 +677,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         # старт записи до `hub.start()` (opusfix6 Sonnet I1).
         if not _maybe_exists(live):
             continue                      # без стенограммы пересобирать нечего
-        if _final_beside_leftovers(rec_dir, stamp, live):
+        if _final_beside_leftovers(rec_dir, stamp, live, statuses):
             continue                      # финал собран, рядом остаток — не сирота
         candidates.append((stamp, live))
     # «Том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не

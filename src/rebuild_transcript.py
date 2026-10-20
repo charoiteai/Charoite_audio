@@ -228,7 +228,6 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
     return out
 
 
-
 #: Пауза между заходами `wait_recording`.
 WAIT_POLL_S = 2.0
 
@@ -280,8 +279,10 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     (`prune_recordings`), а сиротой встречу с финалом не делает
     `daemon._final_beside_leftovers`. Уборка остатка перекодировала готовый
     `.wav` из короткого `.pcm`, на чужой частоте и роняла пересборку на полном
-    диске (№728, opusfix11, опыт x19). Писатель в обход `AudioHub` (ручной скрипт) заявку не берёт
-    и для пересборки неотличим от убитого — это граница механизма.
+    диске (№728, opusfix11, опыт x19).
+
+    Писатель в обход `AudioHub` (ручной скрипт) заявку не берёт и для
+    пересборки неотличим от убитого — это граница механизма.
     `sleep`/`now` — швы часов, как у `live_gate.wait_while_live`.
     """
     # stamp уже разрешён ОДИН РАЗ на пару каналов в rebuild(). Делать это

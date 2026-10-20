@@ -722,6 +722,15 @@ class MeetingStatusStore:
     def has_transcript(self, transcript: pathlib.Path) -> bool:
         return find_final_transcript(pathlib.Path(transcript)).is_file()
 
+    def state_of(self, transcript: pathlib.Path) -> str | None:
+        """Поле `state` записи встречи; записи нет или она не читается — None.
+
+        Демону на старте: встреча с исходом (`ready`, `empty`) закончена, даже
+        если пересборка ушла без машинного финала — тишина, STT без абзацев,
+        потерянный канал (№728 opusfix12 I1, опыт x23)."""
+        state = self._read(pathlib.Path(transcript)).get("state")
+        return state if isinstance(state, str) else None
+
     def _key(self, transcript: pathlib.Path) -> str:
         """Ключ файла статуса — штамп ИСХОДНОГО файла встречи, один на всю жизнь.
 
