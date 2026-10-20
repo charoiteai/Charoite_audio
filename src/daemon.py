@@ -589,17 +589,19 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
 def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Path,
                             statuses: MeetingStatusStore) -> bool:
     """Встреча закончена, а `.pcm` рядом с `.wav` — остаток, а не сирота: у
-    каждого канала со звуком есть `.wav`, и конвейер дошёл до исхода. Исход —
-    статус `ready` или `empty` (пересборка могла уйти и без финала: тишина,
-    STT без абзацев, потерянный канал — opusfix12 I1, опыт x23) либо машинный
-    финал в сайдкаре (`write_final`) при живой записи статуса: брошенный
-    `processing` после финала доделывает повтор незавершённых, а не STT на
-    старте (opusfix11 C3, опыт x22). Записи статуса нет — «не знаем»
-    (opusfix12 DS I1). Остаток остаётся, когда `.wav` не подтверждён на
-    носителе (том без `F_FULLFSYNC` — у каждой встречи) или дверь его не
-    тронула (том без flock): пересборка такой встречи на каждом старте — STT
-    заново, а ретеншн придерживал бы звук сверх срока хранения (№728, опыт
-    x17). Остаток живёт по обычному сроку.
+    каждого канала со звуком есть `.wav`, и встреча доведена: машинный финал
+    в сайдкаре (`write_final`; брошенный после него `processing` доделывает
+    повтор незавершённых, а не STT на старте — opusfix11 C3, опыт x22) либо,
+    без финала, `MeetingStatusStore.settled` — `ready` без отказа пересборки
+    (пересборка без абзацев STT — opusfix12 I1, опыт x23; `ready` после
+    отказа и `empty` исходом не считаются — opusfix13 C1, опыт x24). Хеш
+    спрашиваем первым: он не зависит от срока записи статуса (opusfix13 DS
+    I1, опыт x25a), а чтение статуса ищет ключ по каталогу (x25c).
+    Остаток остаётся, когда `.wav` не подтверждён на носителе (том без
+    `F_FULLFSYNC` — у каждой встречи) или дверь его не тронула (том без
+    flock): пересборка такой встречи на каждом старте — STT заново, а
+    ретеншн придерживал бы звук сверх срока хранения (№728, опыт x17).
+    Остаток живёт по обычному сроку.
     «Не знаем» — сирота: канал без `.wav`, сбой проверки, неоднозначный
     сайдкар восстанавливаются, как прежде. Канал без `.pcm` не проверяем:
     звук либо уже в `.wav` (писатель или дверь сняли исходник), либо его не
@@ -619,13 +621,12 @@ def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Pat
                 return False
         except OSError:
             return False
+    if live_sidecar.machine_final(live, unknown=False):
+        return True
     try:
-        state = statuses.state_of(live)
+        return statuses.settled(live)
     except Exception:  # noqa: BLE001 — сбой чтения статуса — «не знаем», сирота
         return False
-    if state in ("ready", "empty"):
-        return True
-    return state is not None and live_sidecar.machine_final(live, unknown=False)
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
