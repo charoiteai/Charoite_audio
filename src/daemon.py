@@ -568,7 +568,8 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
     встреча была бы сиротой навсегда. Один TAKEN или BUSY — flock на томе есть,
     восстанавливаем (opusfix2 Haiku C1). Сбой открытия не голосует (opusfix1
     DS I3). Канал с готовым `.wav` не голосует: финал из него соберётся на любом
-    томе, а остаток `.pcm` рядом пересборка снимет (opusfix4 DS C1). Проба — одна
+    томе, а остаток `.pcm` рядом живёт до срока хранения и сиротой встречу с
+    финалом не делает (`_final_beside_leftovers`, opusfix4 DS C1). Проба — одна
     попытка на канал: BUSY (дверь пересборки прежнего демона) не держит старт
     записи (opusfix3 DS I3). NO_FLOCK `acquire_outcome` не повторяет — ответ
     подтверждает вторая проба через паузу в `_recover_orphans`."""
@@ -594,10 +595,17 @@ def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Pat
     старте — STT заново, а ретеншн придерживал бы звук сверх срока хранения
     (№728, опыт x17: финал без темы). Остаток живёт по обычному сроку.
     «Не знаем» — сирота: канал без `.wav`, сбой проверки, неоднозначный
-    сайдкар восстанавливаются, как прежде."""
+    сайдкар восстанавливаются, как прежде. Канала без `.pcm` нет вовсе (запись
+    без второго устройства): `_has_sound` на пропавшем файле отвечает «звук
+    есть», и встреча из одного канала пересобиралась бы на каждом старте."""
     for label in meeting_stamp.RECORDING_LABELS:
-        if not _has_sound(meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")):
+        try:
+            if meeting_stamp.recording_path(rec_dir, stamp, label, "pcm").stat().st_size == 0:
+                continue
+        except FileNotFoundError:
             continue
+        except OSError:
+            return False
         try:
             if not meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
                 return False

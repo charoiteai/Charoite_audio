@@ -228,20 +228,6 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
     return out
 
 
-def _drop_leftover(pcm: pathlib.Path, sr: int) -> None:
-    """`.wav` канала есть, а `.pcm` рядом остался (крах писателя между
-    `replace` и `unlink`, отказ unlink, `.wav` не подтверждён на носителе):
-    пересобрать `.wav` из исходника той же дверью `pcm_to_wav` — она снимает
-    `.pcm` только за `.wav` на носителе. Судить остаток по самому `.wav`
-    нельзя: после краха питания там бывают нули полной длины, и уборка
-    снимала единственную полную копию звука (opusfix10 DS C1, опыт x15).
-    Заявка занята — писатель посреди своего unlink, оставляем ему; том без
-    flock — дверь не конвертирует, остаток живёт по сроку хранения, а
-    сиротой встреча с машинным финалом не считается
-    (`daemon._final_beside_leftovers`). Цена — одна переконвертация остатка."""
-    if isinstance(pcm_to_wav(pcm, sr), pathlib.Path) and not pcm.exists():
-        log(f"{pcm.name}: остаток — .wav пересобран из исходника, .pcm убрала")
-
 
 #: Пауза между заходами `wait_recording`.
 WAIT_POLL_S = 2.0
@@ -289,7 +275,12 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     не собирает финал без этого канала; None — записи канала нет (или она
     пуста). На NO_FLOCK дверь зовём один раз — это свойство тома, — а `.wav`
     писателя ждём до срока (out1 Sonnet I1, out2 Sonnet I1). Конвертации «по
-    сроку» нет: без заявки ничего не удаляется. Писатель в обход `AudioHub` (ручной скрипт) заявку не берёт
+    сроку» нет: без заявки ничего не удаляется. `.wav` есть — канал готов, и
+    остаток `.pcm` рядом не трогаем: он живёт до срока хранения
+    (`prune_recordings`), а сиротой встречу с финалом не делает
+    `daemon._final_beside_leftovers`. Уборка остатка перекодировала готовый
+    `.wav` из короткого `.pcm`, на чужой частоте и роняла пересборку на полном
+    диске (№728, opusfix11, опыт x19). Писатель в обход `AudioHub` (ручной скрипт) заявку не берёт
     и для пересборки неотличим от убитого — это граница механизма.
     `sleep`/`now` — швы часов, как у `live_gate.wait_while_live`.
     """
@@ -304,7 +295,6 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     refusal = GONE
     while True:
         if wav.exists():
-            _drop_leftover(pcm, sr)
             return wav
         # Том без flock: дверь больше не зовём — заявки там нет ни у кого, —
         # но .wav писателя ждём весь срок: на штатном стопе пересборка
@@ -323,7 +313,6 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     # мусор короче 5 с, или канала нет. Решает `wav.exists()` ниже.
     pcm_left = pcm.exists()
     if wav.exists():
-        _drop_leftover(pcm, sr)
         return wav    # писатель опубликовал между последним заходом и сроком
     if pcm_left and refusal not in (GONE, EMPTY):
         log(f"{label}: запись не готова — {_REFUSAL_TEXT.get(refusal, refusal)}")

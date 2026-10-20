@@ -528,8 +528,10 @@ def read(live: pathlib.Path, bare: str | None = None) -> dict | None:
 
 def machine_final(live: pathlib.Path, *, unknown: bool = True) -> bool:
     """Был ли когда-то записан машинный финал этой стенограммы — по валидному
-    `transcript_sha256` в её сайдкаре. Ключ вводит только `write_final`;
-    ретитл и перештамповка имён лишь обновляют совпавший.
+    `transcript_sha256` в её сайдкаре. Ключ вводит `write_final`; пишут его
+    ещё `graph_updater.retitle` и `name_fixes.restamp_transcript`, но только
+    поверх уже совпавшего хеша (`machine`, `_machine_owned`). Новый писатель
+    ключа без этого гейта сделал бы «финалом» и черновик (opusfix11 DS M1).
 
     Тотальная: исключений не бросает. «Не знаем» — True: сайдкар неоднозначен
     (две встречи в минуту), не читается (ввод-вывод, не UTF-8, не JSON-объект)
