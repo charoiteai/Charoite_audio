@@ -168,9 +168,9 @@ enum ArchiveSearch {
     /// Источники brain-ответа. Brain отдаёт тот же формат блоков «• путь\n
     /// …фрагмент…»: rels берём ТОЛЬКО из строк-заголовков — упоминание пути в
     /// теле сниппета источником не становится и на brain-пути (круг-2, GLM).
-    /// Ни одного заголовка — nil, честный фолбэк текста. Служебные заголовки
+    /// Ни одного заголовка — nil, честный фолбэк текста. Указатели папок
     /// отброшены (№750): фильтр обхода локального поиска сюда не доходит, а
-    /// заголовки, которые все оказались служебными, — пустой список, не nil:
+    /// заголовки, которые все оказались указателями, — пустой список, не nil:
     /// иначе фолбэк собрал бы чипы из упоминаний в телах сниппетов.
     static func brainRels(_ text: String) -> [String]? {
         let headers = text.split(separator: "\n", omittingEmptySubsequences: false)
@@ -180,7 +180,7 @@ enum ArchiveSearch {
                 return String(s.dropFirst(2))
             }
         guard !headers.isEmpty else { return nil }
-        return headers.filter { !GraphFolders.isServiceFile($0) }
+        return headers.filter { !GraphFolders.isChatExcluded($0) }
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -304,11 +304,16 @@ enum ArchiveSearch {
                 // .obsidian/, .trash/, .git/, .DS_Store и подобное.
                 !url.pathComponents.contains { $0.hasPrefix(".") && $0.count > 1 }
             }
-            // Служебные файлы графа (карта, указатели папок, индекс досье) —
-            // навигация, не документ: занимали слоты выдачи и становились
-            // чипом «_MOC» (№750). До чтения и дедупа по содержимому — иначе
+            // Указатели папок и индекс досье — навигация, не документ: занимали
+            // слоты выдачи (№750). Карта содержания остаётся — обзорные факты
+            // есть только в ней. До чтения и дедупа по содержимому — иначе
             // служебная копия выигрывала бы дедуп у настоящего файла.
-            .filter { !GraphFolders.isServiceFile($0.lastPathComponent) }
+            .filter { url in
+                let rel = url.path.hasPrefix(graph.path + "/")
+                    ? String(url.path.dropFirst(graph.path.count + 1))
+                    : url.lastPathComponent
+                return !GraphFolders.isChatExcluded(rel)
+            }
             .sorted { a, b in
                 let aArch = a.path.contains("/Встречи-архив/")
                 let bArch = b.path.contains("/Встречи-архив/")
@@ -645,9 +650,9 @@ enum ArchiveSearch {
         let raw = ["стенограмм", "_live.md", "transcript", "подсказки и ответы",
                    "_hints", "вопросы и ответы", "черновик"]
         if raw.contains(where: { low.contains($0) }) { return 0.7 }
-        // Дистиллят: решения уже отобраны и сформулированы.
-        // «_moc» убран (№750): служебная карта в поиск не входит, а подстрока
-        // поднимала любой «…_mock…» как дистиллят.
+        // Дистиллят: решения уже отобраны и сформулированы. Карта — по пути
+        // целиком (№750): подстрока «_moc» поднимала любой «…_mock…».
+        if GraphFolders.isMapFile(rel) { return 1.15 }
         let distilled = ["минутк", "_minutes", "саммари", "разбор", "ядра/"]
         if distilled.contains(where: { low.contains($0) }) { return 1.15 }
         return 1.0

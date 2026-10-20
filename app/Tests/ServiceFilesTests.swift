@@ -2,8 +2,9 @@ import XCTest
 @testable import CharoiteApp
 
 #if os(macOS)
-/// Служебные файлы графа (карта, указатели папок, индекс досье) — не источник
-/// чата (№750): чип «_MOC» без вида и смысла, слоты выдачи на навигацию.
+/// Указатели папок и индекс досье — не источник чата (№750): слоты выдачи на
+/// навигацию. Карта содержания остаётся источником с чипом «Карта графа» —
+/// бенч навигации без неё терял обзорные факты (7/13 против 10/13).
 final class ServiceFilesTests: XCTestCase {
 
     private func makeGraph(_ files: [String: String]) throws -> URL {
@@ -34,6 +35,17 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertFalse(GraphFolders.isServiceFile("_Архив/Встреча.md"))
     }
 
+    func testMapStaysAChatSourceOnlyAtTheGraphRoot() {
+        XCTAssertTrue(GraphFolders.isMapFile("_MOC.md"))
+        XCTAssertTrue(GraphFolders.isMapFile("_moc.md"))
+        XCTAssertFalse(GraphFolders.isMapFile("Встречи/_MOC.md"))
+        XCTAssertFalse(GraphFolders.isChatExcluded("_MOC.md"))
+        XCTAssertTrue(GraphFolders.isChatExcluded("Встречи/_MOC.md"))
+        XCTAssertTrue(GraphFolders.isChatExcluded("Ядра/_ЯДРА.md"))
+        XCTAssertTrue(GraphFolders.isChatExcluded("Досье/_ИНДЕКС.md"))
+        XCTAssertFalse(GraphFolders.isChatExcluded("Ядра/Тема.md"))
+    }
+
     /// Swift-копия префиксов совпадает с литералом схемы Чароита: третий
     /// префикс в Python без правки здесь — красный тест, а не тихое расхождение.
     func testPrefixesMatchThePythonSchema() throws {
@@ -53,7 +65,7 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertEqual(lits, GraphFolders.servicePrefixes)
     }
 
-    func testLocalSearchLeavesServiceFilesOut() async throws {
+    func testLocalSearchLeavesFolderIndexesOutAndKeepsTheMap() async throws {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("charoite-svc-index-\(UUID().uuidString).json")
         await SemanticIndex.shared.useForTests(store: store) { _ in nil }
@@ -66,9 +78,9 @@ final class ServiceFilesTests: XCTestCase {
         let out = await ArchiveSearch.localSearchOutcome(
             query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
         let rels = try XCTUnwrap(out.rels)
-        XCTAssertEqual(rels, ["Ядра/Платёжный шлюз.md"])
-        XCTAssertFalse(out.text.contains("_MOC.md") || out.text.contains("_ЯДРА.md"),
-                       "служебный блок ушёл модели: \(out.text.prefix(200))")
+        XCTAssertEqual(Set(rels), ["_MOC.md", "Ядра/Платёжный шлюз.md"])
+        XCTAssertFalse(out.text.contains("_ЯДРА.md"),
+                       "указатель папки ушёл модели: \(out.text.prefix(200))")
     }
 
     func testBrainHeadersDropServiceFiles() {
@@ -80,9 +92,10 @@ final class ServiceFilesTests: XCTestCase {
           …см. Досье/_ИНДЕКС.md…
         """
         XCTAssertEqual(ArchiveSearch.brainRels(text), ["Люди/Мария Соколова.md"])
-        // одни служебные заголовки — пустой список, а не nil: фолбэк по телам
-        // сниппетов собрал бы чипы из упоминаний
-        XCTAssertEqual(ArchiveSearch.brainRels("• _MOC.md\n  …Ядра/Тема.md…"), [])
+        // одни указатели в заголовках — пустой список, а не nil: фолбэк по
+        // телам сниппетов собрал бы чипы из упоминаний
+        XCTAssertEqual(ArchiveSearch.brainRels("• Ядра/_ЯДРА.md\n  …Ядра/Тема.md…"), [])
+        XCTAssertEqual(ArchiveSearch.brainRels("• _MOC.md\n  …обзор…"), ["_MOC.md"])
         XCTAssertNil(ArchiveSearch.brainRels("текст без заголовков, Ядра/Тема.md"))
     }
 
@@ -90,6 +103,7 @@ final class ServiceFilesTests: XCTestCase {
         let s = MemoryScreenPolicy.sources(from: "см. Ядра/_ЯДРА.md и Документация/Отчёт.md")
         XCTAssertEqual(s.map(\.rel), ["Документация/Отчёт.md"])
         XCTAssertEqual(s.first?.title, "Документ · Отчёт")
+        XCTAssertEqual(MemoryScreenPolicy.Source(rel: "_MOC.md", kind: .doc).title, "Карта графа")
     }
 
     func testInventoryCoresSkipTheCoreIndex() throws {
@@ -104,6 +118,8 @@ final class ServiceFilesTests: XCTestCase {
 
     func testMockInNameIsNotADistillate() {
         XCTAssertEqual(ArchiveSearch.roleWeightForTests("Системы/Карта_mockups.md"), 1.0)
+        // карта — дистиллят, как на базе до №750
+        XCTAssertEqual(ArchiveSearch.roleWeightForTests("_MOC.md"), 1.15)
     }
 }
 #endif

@@ -31,6 +31,18 @@ enum GraphFolders {
         return servicePrefixes.contains { f.hasPrefix(fold($0)) }
     }
 
+    /// Карта содержания в корне графа. Служебная по имени, но источником чата
+    /// остаётся (№750, бенч навигации: без неё 7/13 фактов против 10/13) —
+    /// обзорные факты лежат в ней одной; чип подписан «Карта графа».
+    static let mapFile = "_MOC.md"
+
+    /// Карта ли это — путь ОТ КОРНЯ графа, а не имя: «Встречи/_MOC.md» не карта.
+    static func isMapFile(_ rel: String) -> Bool { fold(rel) == fold(mapFile) }
+
+    /// Не источник чата: служебный файл, кроме карты содержания — указатели
+    /// папок («_ЯДРА», «_ИНДЕКС»…) и прочая навигация конвейера.
+    static func isChatExcluded(_ rel: String) -> Bool { isServiceFile(rel) && !isMapFile(rel) }
+
     private static func fold(_ s: String) -> String {
         s.precomposedStringWithCanonicalMapping.lowercased()
             .replacingOccurrences(of: "ё", with: "е")
