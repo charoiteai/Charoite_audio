@@ -722,20 +722,6 @@ class MeetingStatusStore:
     def has_transcript(self, transcript: pathlib.Path) -> bool:
         return find_final_transcript(pathlib.Path(transcript)).is_file()
 
-    def settled(self, transcript: pathlib.Path) -> bool:
-        """Конвейер довёл встречу до готовности, и пересборка не отказала:
-        `ready` без `rebuild_skipped`. Демону на старте — встреча закончена,
-        даже если машинного финала нет (пересборка без абзацев STT; №728
-        opusfix12 I1, опыт x23).
-
-        `ready` с `rebuild_skipped` — граф по черновику после отказа
-        пересборки, а `empty` выводится и из короткого черновика упавшей
-        пересборки (`graph_updater`, EXIT_NO_SPEECH): звук не разобран, и
-        исходом они не считаются (opusfix13 Sonnet C1, Haiku C1, опыт x24).
-        Записи нет или она не читается — False."""
-        data = self._read(pathlib.Path(transcript))
-        return data.get("state") == "ready" and not data.get("rebuild_skipped")
-
     def _key(self, transcript: pathlib.Path) -> str:
         """Ключ файла статуса — штамп ИСХОДНОГО файла встречи, один на всю жизнь.
 

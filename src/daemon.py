@@ -586,22 +586,19 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
     return bool(outcomes) and all(o == file_locks.NO_FLOCK for o in outcomes)
 
 
-def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Path,
-                            statuses: MeetingStatusStore) -> bool:
-    """Встреча закончена, а `.pcm` рядом с `.wav` — остаток, а не сирота: у
-    каждого канала со звуком есть `.wav`, и встреча доведена: машинный финал
-    в сайдкаре (`write_final`; брошенный после него `processing` доделывает
-    повтор незавершённых, а не STT на старте — opusfix11 C3, опыт x22) либо,
-    без финала, `MeetingStatusStore.settled` — `ready` без отказа пересборки
-    (пересборка без абзацев STT — opusfix12 I1, опыт x23; `ready` после
-    отказа и `empty` исходом не считаются — opusfix13 C1, опыт x24). Хеш
-    спрашиваем первым: он не зависит от срока записи статуса (opusfix13 DS
-    I1, опыт x25a), а чтение статуса ищет ключ по каталогу (x25c).
-    Остаток остаётся, когда `.wav` не подтверждён на носителе (том без
-    `F_FULLFSYNC` — у каждой встречи) или дверь его не тронула (том без
-    flock): пересборка такой встречи на каждом старте — STT заново, а
-    ретеншн придерживал бы звук сверх срока хранения (№728, опыт x17).
-    Остаток живёт по обычному сроку.
+def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Path) -> bool:
+    """Финал встречи уже собран, а `.pcm` рядом с `.wav` — остаток, а не
+    сирота: у каждого канала со звуком есть `.wav`, и в сайдкаре стенограммы
+    записан машинный финал (`write_final`). Остаток остаётся, когда `.wav` не
+    подтверждён на носителе (том без `F_FULLFSYNC` — у каждой встречи) или
+    дверь его не тронула (том без flock): пересборка такой встречи на каждом
+    старте — STT заново, а ретеншн придерживал бы звук сверх срока хранения
+    (№728, опыт x17: финал без темы). Остаток живёт по обычному сроку.
+    Закончена — только по хешу: статус встречи здесь не спрашиваем. Конвейер
+    пишет `ready` по своему правилу «финал был» (`machine_final` с
+    `unknown=True`), противоположному этому, и два круга подряд склейка
+    прятала сироту (opusfix13 C1, opusfix14 C1, опыт x26). Цена — встреча с
+    исходом без финала и с остатком пересобирается на каждом старте (№615).
     «Не знаем» — сирота: канал без `.wav`, сбой проверки, неоднозначный
     сайдкар восстанавливаются, как прежде. Канал без `.pcm` не проверяем:
     звук либо уже в `.wav` (писатель или дверь сняли исходник), либо его не
@@ -621,12 +618,7 @@ def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Pat
                 return False
         except OSError:
             return False
-    if live_sidecar.machine_final(live, unknown=False):
-        return True
-    try:
-        return statuses.settled(live)
-    except Exception:  # noqa: BLE001 — сбой чтения статуса — «не знаем», сирота
-        return False
+    return live_sidecar.machine_final(live, unknown=False)
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -669,7 +661,6 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     stamps = sorted({s for p in rec_dir.glob("*.pcm")
                      if (s := meeting_stamp.stamp_of_recording(p.name)) and _has_sound(p)})
     candidates = []
-    statuses = MeetingStatusStore(_root())
     for stamp in stamps:
         if stamp == current_stamp:
             continue                      # наша встреча, она только началась
@@ -678,7 +669,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         # старт записи до `hub.start()` (opusfix6 Sonnet I1).
         if not _maybe_exists(live):
             continue                      # без стенограммы пересобирать нечего
-        if _final_beside_leftovers(rec_dir, stamp, live, statuses):
+        if _final_beside_leftovers(rec_dir, stamp, live):
             continue                      # финал собран, рядом остаток — не сирота
         candidates.append((stamp, live))
     # «Том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не
