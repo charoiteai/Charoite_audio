@@ -43,8 +43,13 @@ enum GraphFolders {
     /// папок («_ЯДРА», «_ИНДЕКС»…) и прочая навигация конвейера.
     static func isChatExcluded(_ rel: String) -> Bool { isServiceFile(rel) && !isMapFile(rel) }
 
+    /// Форма `text_norm.fold` Python: NFC, регистр, ё→е и полноширинные
+    /// U+FF01…U+FF5E → ASCII (имя «＿ЯДРА.md» с IME там служебное — out1).
     private static func fold(_ s: String) -> String {
-        s.precomposedStringWithCanonicalMapping.lowercased()
+        let ascii = String(String.UnicodeScalarView(s.unicodeScalars.map { u in
+            (0xFF01...0xFF5E).contains(u.value) ? Unicode.Scalar(u.value - 0xFEE0)! : u
+        }))
+        return ascii.precomposedStringWithCanonicalMapping.lowercased()
             .replacingOccurrences(of: "ё", with: "е")
     }
 }

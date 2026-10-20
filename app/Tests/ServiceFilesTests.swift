@@ -83,20 +83,59 @@ final class ServiceFilesTests: XCTestCase {
                        "указатель папки ушёл модели: \(out.text.prefix(200))")
     }
 
-    func testBrainHeadersDropServiceFiles() {
+    /// :8100 отдаёт блоки указателей и пути от корня vault (опыт out1:
+    /// «ИИ-граф/_MOC.md», «Ядра/_ЯДРА.md», «Служебное_*») — блок указателя
+    /// уходит и из текста модели, и из чипов; карта под префиксом папки — карта.
+    func testBrainBlocksOfFolderIndexesLeaveTextAndChips() {
         let text = """
-        • Ядра/_ЯДРА.md
+        ⚠ слабые совпадения
+        • g/Ядра/_ЯДРА.md
           …сводка статусов…
 
-        • Люди/Мария Соколова.md
+        • g/Люди/Мария Соколова.md
           …см. Досье/_ИНДЕКС.md…
+        • g/_MOC.md
+          …обзор…
         """
-        XCTAssertEqual(ArchiveSearch.brainRels(text), ["Люди/Мария Соколова.md"])
-        // одни указатели в заголовках — пустой список, а не nil: фолбэк по
-        // телам сниппетов собрал бы чипы из упоминаний
-        XCTAssertEqual(ArchiveSearch.brainRels("• Ядра/_ЯДРА.md\n  …Ядра/Тема.md…"), [])
-        XCTAssertEqual(ArchiveSearch.brainRels("• _MOC.md\n  …обзор…"), ["_MOC.md"])
-        XCTAssertNil(ArchiveSearch.brainRels("текст без заголовков, Ядра/Тема.md"))
+        let out = ArchiveSearch.brainOutcome(text, folder: "g")
+        XCTAssertEqual(out.rels, ["g/Люди/Мария Соколова.md", "g/_MOC.md"])
+        XCTAssertFalse(out.text.contains("_ЯДРА") || out.text.contains("сводка статусов"),
+                       "блок указателя ушёл модели: \(out.text)")
+        XCTAssertTrue(out.text.hasPrefix("⚠ слабые совпадения"))
+        XCTAssertTrue(out.text.contains("…обзор…") && out.text.contains("…см. Досье/_ИНДЕКС.md…"))
+        // одни указатели — пустой список и текст без блоков, а не nil: фолбэк
+        // по телам сниппетов собрал бы чипы из упоминаний
+        let only = ArchiveSearch.brainOutcome("• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g")
+        XCTAssertEqual(only.rels, [])
+        XCTAssertFalse(only.text.contains("Ядра/Тема.md"))
+        let none = ArchiveSearch.brainOutcome("текст без заголовков, Ядра/Тема.md", folder: "g")
+        XCTAssertNil(none.rels)
+        XCTAssertEqual(none.text, "текст без заголовков, Ядра/Тема.md")
+        // карта не в корне графа — указатель
+        XCTAssertEqual(ArchiveSearch.brainOutcome("• g/Встречи/_MOC.md\n  …", folder: "g").rels, [])
+    }
+
+    /// Гейт обхода судит каноническую rel: симлинк с обычным именем на
+    /// указатель папки указателем и остаётся (out1, Haiku I1).
+    func testSymlinkToAFolderIndexIsStillAnIndex() async throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-svc-link-\(UUID().uuidString).json")
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let graph = try makeGraph([
+            "Ядра/_ЯДРА.md": "- [[Ядра/Шлюз]] — платёжный шлюз провайдер выбран",
+            "Ядра/Шлюз.md": "# Шлюз\nПлатёжный провайдер выбран.",
+        ])
+        try FileManager.default.createSymbolicLink(
+            atPath: graph.appendingPathComponent("Ядра/Обзор.md").path,
+            withDestinationPath: "_ЯДРА.md")
+        let out = await ArchiveSearch.localSearchOutcome(
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
+        XCTAssertEqual(try XCTUnwrap(out.rels), ["Ядра/Шлюз.md"])
+    }
+
+    func testFullwidthPrefixIsServiceAsInPython() {
+        XCTAssertTrue(GraphFolders.isServiceFile("Ядра/\u{FF3F}ЯДРА.md"))
+        XCTAssertTrue(GraphFolders.isMapFile("\u{FF3F}MOC.md"))
     }
 
     func testFallbackParserAndDocChipTitle() {
@@ -114,6 +153,17 @@ final class ServiceFilesTests: XCTestCase {
         let snap = GraphInventoryService.scan(graph: graph)
         XCTAssertEqual(snap.cores.map(\.name), ["Релиз"])
         XCTAssertEqual(snap.nodes, 1)
+    }
+
+    /// Счётчик колонки и блок ядер — одно правило (out1: «Служебное_» в
+    /// папке узлов считалось узлом).
+    func testNodeCountersUseTheSchemaRule() throws {
+        let graph = try makeGraph([
+            "Люди/Мария.md": "# Мария",
+            "Люди/Служебное_отчёт.md": "отчёт конвейера",
+            "Люди/_ЛЮДИ.md": "- [[Люди/Мария]]",
+        ])
+        XCTAssertEqual(GraphInventoryService.scan(graph: graph).nodes, 1)
     }
 
     func testMockInNameIsNotADistillate() {

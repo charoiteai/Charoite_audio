@@ -15,6 +15,8 @@ on:
       - ".swiftlint.yml"
       - "tests/test_make_app.py"
       - ".github/workflows/swift-tests.yml"
+      # ServiceFilesTests сверяет префиксы GraphFolders с литералом схемы (№750)
+      - "src/charoite_schema.py"
   push:
     paths:
       - "app/**"
@@ -23,6 +25,8 @@ on:
       - ".swiftlint.yml"
       - "tests/test_make_app.py"
       - ".github/workflows/swift-tests.yml"
+      # ServiceFilesTests сверяет префиксы GraphFolders с литералом схемы (№750)
+      - "src/charoite_schema.py"
 
 concurrency:
   # PR ключуется НОМЕРОМ: head_ref — имя ветки без владельца форка,

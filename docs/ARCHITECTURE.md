@@ -1831,16 +1831,21 @@ is lifted to 1.15. Raw text is best for a quotation and worst for an answer.
 name starts with a service prefix of the schema (`_` or `Служебное_`, compared
 the way `src/charoite_schema.py` compares them: case, ё/е, Unicode form) — the
 folder indexes, the dossier index — never reaches the chat: not the context,
-not a source chip, not the cores block of the memory column. One exception:
-the map of content `_MOC.md` at the graph root stays a source with its own chip
-«Карта графа» and the distillate weight. A bench of 37 questions gave the same
-43/65 facts with and without it, while 8 overview questions lost 3 of 13 facts
-without it: the overview facts live only in the map. The Swift rules are
-`GraphFolders.isServiceFile` (a file-name rule; a folder starting with `_` is
-not judged by it, a test reads the Python literal so the two copies cannot
-drift) and `GraphFolders.isChatExcluded` (service, but not the map). The same
-rule cuts the answers of a running brain server (:8100) by their `• path`
-headers.
+not a source chip, not the cores block of the memory column, not the node
+counters. One exception: the map of content `_MOC.md` at the graph root stays a
+source with its own chip «Карта графа» and the distillate weight. A bench of 37
+questions gave the same 43/65 facts with and without it, while 8 overview
+questions lost 3 of 13 facts without it. Those facts do exist in nodes too, but
+deep inside long files: an 800-character fragment of the node misses them, the
+map states them in one line. The Swift rules are `GraphFolders.isServiceFile`
+(a file-name rule in the fold form of `text_norm.fold`; a folder starting with
+`_` is not judged by it, a test reads the Python literal so the two copies
+cannot drift) and `GraphFolders.isChatExcluded` (service, but not the map). The
+local walk applies it to the canonical path, so a symlink to an index stays an
+index. A running brain server (:8100) returns index blocks too, with paths from
+the vault root (`<graph folder>/_MOC.md`): `ArchiveSearch.brainOutcome` drops
+such blocks from the text and the sources together, judging the path from the
+graph root.
 
 **Context budget.** Output is capped: no single source takes more than 40% of
 the budget, a source left with under 300 characters is dropped whole, and the

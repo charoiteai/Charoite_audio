@@ -54,7 +54,7 @@ final class GraphInventoryService: ObservableObject {
     nonisolated private static func mdCount(_ dir: URL) -> Int {
         (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
             .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".")
-                && !$0.lastPathComponent.hasPrefix("_") }
+                && !GraphFolders.isServiceFile($0.lastPathComponent) }
             .count ?? 0
     }
 
