@@ -739,6 +739,30 @@ def test_a_leftover_beside_a_wav_is_kept_and_the_written_final_ends_the_orphan(d
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
 
 
+def test_a_final_cut_before_its_minutes_is_retried_not_recovered(data_root, monkeypatch):
+    """Крах внутри `rebuild()` между `write_final` (хеш) и минутками: рядом с
+    `.wav` остаток `.pcm`, статус — брошенный `processing` (ready пишется
+    только после графа). Сиротой встреча не считается — её доделывает
+    существующий повтор незавершённых (`retry_unfinished` → `unfinished()`),
+    а не повторный STT на старте (№728 opusfix11 C3, опыт x22)."""
+    import daemon
+    import meeting_processing as mp
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
+    stamp = "2026-08-07_181500"
+    _leftovers_beside_a_final(data_root, stamp, sidecar=json.dumps({"transcript_sha256": SHA}))
+    live = data_root / "transcripts" / f"{stamp}.md"
+    cut = time.time() - mp.STALE_PROCESSING - 60
+    mp.MeetingStatusStore(data_root, now=lambda: cut).processing(live, "rebuilding_transcript")
+    spawned = []
+    monkeypatch.setattr(rt, "_spawn_retry", spawned.append)
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
+    rt.retry_unfinished(mp.MeetingStatusStore(data_root))
+    assert spawned == [live]
+
+
 def test_a_one_channel_meeting_with_a_final_is_no_orphan(data_root, monkeypatch):
     """Записан один канал (второго устройства нет): канал без `.pcm` — не
     канал без `.wav`, встреча с финалом не сирота."""
