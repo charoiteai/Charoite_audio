@@ -264,6 +264,7 @@ def test_skipped_is_falsy_like_the_old_none():
 
 def test_machine_final_valid_hash(root):
     assert live_sidecar.machine_final(_live(root, {"transcript_sha256": SHA})) is True
+    assert live_sidecar.machine_final(_live(root, {"transcript_sha256": SHA}), unknown=False) is True
 
 
 def test_machine_final_no_hash(root):
@@ -287,6 +288,7 @@ def test_machine_final_unreadable_content_is_unknown(root, raw):
     live = _live(root)
     live.with_name(live.name + ".live.json").write_bytes(raw)
     assert live_sidecar.machine_final(live) is True
+    assert live_sidecar.machine_final(live, unknown=False) is False, "сирота: финал не доказан (№728)"
 
 
 def test_machine_final_is_total(root, monkeypatch):
@@ -298,6 +300,7 @@ def test_machine_final_is_total(root, monkeypatch):
 
     monkeypatch.setattr(live_sidecar.json, "loads", deep)
     assert live_sidecar.machine_final(live) is True
+    assert live_sidecar.machine_final(live, unknown=False) is False
 
 
 def test_machine_final_unknown_leaves_a_trace(root, capsys):
@@ -318,6 +321,7 @@ def test_machine_final_ambiguous_sidecar_is_unknown(root):
         (tdir / f"{bare}{live_sidecar.TAIL}").write_text(json.dumps({"stamp": bare}), encoding="utf-8")
     assert live_sidecar.sidecar_for(live) is None
     assert live_sidecar.machine_final(live) is True
+    assert live_sidecar.machine_final(live, unknown=False) is False
 
 
 def test_machine_final_oserror_is_unknown(root, monkeypatch):

@@ -18,8 +18,12 @@ import os
 import pathlib
 import sys
 import threading
+import wave
 
 import pytest
+
+#: Заголовок PCM-`.wav` модуля `wave`.
+WAV_HEADER = 44
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -448,12 +452,12 @@ def test_a_leftover_stays_next_to_a_full_wav_not_on_the_medium(rec_dir, monkeypa
 
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\1" * 4096)
-    (rec_dir / "s_mic.wav").write_bytes(b"\0" * (rt.WAV_HEADER_BYTES + 4096))
+    (rec_dir / "s_mic.wav").write_bytes(b"\0" * (WAV_HEADER + 4096))
     lines = []
     monkeypatch.setattr(rt, "log", lines.append)
     _refuse_flush(monkeypatch, full_sync, errno_)
 
-    rt._drop_leftover(pcm)
+    rt._drop_leftover(pcm, 16000)
 
     assert pcm.exists()
     assert any("не подтверждён на носителе" in m for m in lines)
@@ -960,7 +964,8 @@ def test_on_a_volume_without_flock_the_writers_wav_is_still_awaited(rec_dir, mon
     calls = []
 
     def door(p, sr):
-        calls.append(p)
+        if not wav.exists():                # за готовым .wav дверь зовёт уборка остатка
+            calls.append(p)
         return rt.file_locks.NO_FLOCK
 
     def sleep(s):
@@ -1225,45 +1230,47 @@ def test_an_empty_pcm_held_by_its_writer_at_the_deadline_stays(rec_dir, monkeypa
     assert pcm.exists()
 
 
-@pytest.mark.parametrize("volume", ["flock", "no_flock"])
-def test_a_leftover_pcm_next_to_a_published_wav_is_removed(rec_dir, monkeypatch, volume):
-    """Писатель упал между `replace` и `unlink`: `.wav` полон, `.pcm` рядом.
-    Остаток снимаем под заявкой — иначе встреча пересобирается на каждом
-    старте и ретеншн её придерживает (финальный Opus I1в). На томе без flock
-    — тоже: `.wav` публикует только дочитавший писатель (opusfix4 DS C1)."""
+@pytest.mark.parametrize("wav_body", [b"w" * (WAV_HEADER + 4096), b"\0" * (WAV_HEADER + 4096),
+                                      b"w" * (WAV_HEADER + 4095)],
+                         ids=["full", "zeros_full_length", "truncated"])
+def test_a_leftover_pcm_is_converted_again_through_the_door(rec_dir, monkeypatch, wav_body):
+    """Остаток `.pcm` рядом с `.wav` (крах писателя между `replace` и
+    `unlink`, нули полной длины после краха питания, усечённый `.wav`):
+    `.wav` пересобирается из исходника дверью `pcm_to_wav`, `.pcm` снимается
+    за `.wav` на носителе. Состояние `.wav` уборка не судит — нули полной
+    длины проходили сброс и стоили исходника (opusfix10 DS C1, опыт x15)."""
     import rebuild_transcript as rt
 
     monkeypatch.setattr(rt, "time", _Clock())
-    if volume == "no_flock":
-        monkeypatch.setattr(rt.file_locks, "acquire_outcome", lambda f, **kw: rt.file_locks.NO_FLOCK)
-    pcm = rec_dir / "s_mic.pcm"
-    pcm.write_bytes(b"\0" * 4096)
-    wav = rec_dir / "s_mic.wav"
-    wav.write_bytes(b"w" * (rt.WAV_HEADER_BYTES + 4096))
-
-    assert rt.wait_recording(rec_dir, "s", "mic", 16000) == wav
-    assert not pcm.exists() and wav.read_bytes() == b"w" * (rt.WAV_HEADER_BYTES + 4096)
-
-
-@pytest.mark.parametrize("volume", ["flock", "no_flock"])
-def test_a_leftover_pcm_next_to_a_truncated_wav_is_kept(rec_dir, monkeypatch, volume):
-    """`.wav` без fsync после краха питания усечён: исходник — единственная
-    полная копия, не снимаем (opusfix5 Sonnet I1, DS I3; база `.pcm` не
-    удаляла никогда — опыт x10)."""
-    import rebuild_transcript as rt
-
-    monkeypatch.setattr(rt, "time", _Clock())
-    if volume == "no_flock":
-        monkeypatch.setattr(rt.file_locks, "acquire_outcome", lambda f, **kw: rt.file_locks.NO_FLOCK)
     lines = []
     monkeypatch.setattr(rt, "log", lines.append)
     pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\1\2" * 2048)
+    wav = rec_dir / "s_mic.wav"
+    wav.write_bytes(wav_body)
+
+    assert rt.wait_recording(rec_dir, "s", "mic", 16000) == wav
+    assert not pcm.exists()
+    with wave.open(str(wav), "rb") as w:
+        assert w.getframerate() == 16000 and w.readframes(w.getnframes()) == b"\1\2" * 2048
+    assert sum("остаток" in m for m in lines) == 1, lines
+
+
+def test_a_leftover_pcm_on_a_volume_without_flock_is_kept(rec_dir, monkeypatch):
+    """Том без flock: дверь не конвертирует — остаток и `.wav` не трогаем,
+    звук живёт по сроку хранения (сиротой такая встреча с финалом не
+    считается — `daemon._final_beside_leftovers`)."""
+    import rebuild_transcript as rt
+
+    monkeypatch.setattr(rt, "time", _Clock())
+    monkeypatch.setattr(rt.file_locks, "acquire_outcome", lambda f, **kw: rt.file_locks.NO_FLOCK)
+    pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
-    (rec_dir / "s_mic.wav").write_bytes(b"w" * (rt.WAV_HEADER_BYTES + 4095))
+    wav = rec_dir / "s_mic.wav"
+    wav.write_bytes(b"w" * (WAV_HEADER + 4096))
 
-    rt.wait_recording(rec_dir, "s", "mic", 16000)
-
-    assert pcm.exists() and any("короче исходника" in m for m in lines), lines
+    assert rt.wait_recording(rec_dir, "s", "mic", 16000) == wav
+    assert pcm.exists() and wav.read_bytes() == b"w" * (WAV_HEADER + 4096)
 
 
 def test_a_leftover_pcm_under_its_writers_claim_is_left_to_it(rec_dir, monkeypatch):

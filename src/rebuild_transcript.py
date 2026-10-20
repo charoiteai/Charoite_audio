@@ -34,7 +34,7 @@ import time
 import typing
 import wave
 
-from charoite_paths import code_root, durable_replace, flush_file, harden_umask, log_path, meeting_log, resolve_root
+from charoite_paths import code_root, durable_replace, harden_umask, log_path, meeting_log, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -228,45 +228,19 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path | str:
     return out
 
 
-#: Заголовок PCM-`.wav` модуля `wave` — столько байт `.wav` длиннее своего `.pcm`.
-WAV_HEADER_BYTES = 44
-
-
-def _drop_leftover(pcm: pathlib.Path) -> None:
-    """`.wav` канала готов, а `.pcm` рядом остался (крах писателя между
-    `replace` и `unlink`, отказ unlink): снять остаток под заявкой. Без этого
-    `_recover_orphans` находит `.pcm` и пересобирает встречу на каждом старте,
-    а ретеншн её придерживает (финальный Opus I1в). Заявка занята — это
-    писатель посреди своего unlink, оставляем ему. Тому без flock (NO_FLOCK)
-    остаток тоже снимаем: `.wav` публикует только писатель, дочитав `.pcm`
-    (дверь на NO_FLOCK не конвертирует), — записи в этот файл больше не будет
-    (opusfix4 DS C1). `.wav` короче исходника (публикация без fsync, крах
-    питания) остаток не снимает: база `.pcm` не удаляла никогда, и полную копию
-    звука уборка не трогает (opusfix5 Sonnet I1, DS I3). Встреча тогда остаётся
-    сиротой, как в базе всегда (opusfix6 C1 понижен опытом x10). Обе двери
-    публикуют через `durable_replace` и снимают `.pcm` только за `.wav` на
-    носителе; остаток — так же, после сброса `.wav` здесь (opusfix9). Короткий
-    `.wav` рядом с `.pcm` остаётся от записей до этой правки (opusfix8)."""
-    try:
-        with pcm.open("rb") as f:
-            # Снятое под нами имя проверять не нужно: unlink даст FileNotFoundError.
-            if file_locks.acquire_outcome(f, attempts=1) == file_locks.BUSY:
-                return
-            # Обе двери пишут байты `.pcm` за заголовком `wave`.
-            if pcm.with_suffix(".wav").stat().st_size < WAV_HEADER_BYTES + os.fstat(f.fileno()).st_size:
-                log(f"{pcm.name}: .wav короче исходника — остаток .pcm оставила")
-                return
-            # Писатель оставляет `.pcm` и за `.wav`, не подтверждённым на
-            # носителе: полной длины мало — нули той же длины после краха.
-            if not flush_file(pcm.with_suffix(".wav")):
-                log(f"{pcm.name}: .wav не подтверждён на носителе — остаток .pcm оставила")
-                return
-            pcm.unlink()
-            log(f"{pcm.name}: .wav готов — остаток .pcm убрала")
-    except FileNotFoundError:
-        pass
-    except OSError as e:        # не дали: след в журнале, следующий прогон попробует снова
-        log(f"{pcm.name}: остаток .pcm не снят — {type(e).__name__}")
+def _drop_leftover(pcm: pathlib.Path, sr: int) -> None:
+    """`.wav` канала есть, а `.pcm` рядом остался (крах писателя между
+    `replace` и `unlink`, отказ unlink, `.wav` не подтверждён на носителе):
+    пересобрать `.wav` из исходника той же дверью `pcm_to_wav` — она снимает
+    `.pcm` только за `.wav` на носителе. Судить остаток по самому `.wav`
+    нельзя: после краха питания там бывают нули полной длины, и уборка
+    снимала единственную полную копию звука (opusfix10 DS C1, опыт x15).
+    Заявка занята — писатель посреди своего unlink, оставляем ему; том без
+    flock — дверь не конвертирует, остаток живёт по сроку хранения, а
+    сиротой встреча с машинным финалом не считается
+    (`daemon._final_beside_leftovers`). Цена — одна переконвертация остатка."""
+    if isinstance(pcm_to_wav(pcm, sr), pathlib.Path) and not pcm.exists():
+        log(f"{pcm.name}: остаток — .wav пересобран из исходника, .pcm убрала")
 
 
 #: Пауза между заходами `wait_recording`.
@@ -330,7 +304,7 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     refusal = GONE
     while True:
         if wav.exists():
-            _drop_leftover(pcm)
+            _drop_leftover(pcm, sr)
             return wav
         # Том без flock: дверь больше не зовём — заявки там нет ни у кого, —
         # но .wav писателя ждём весь срок: на штатном стопе пересборка
@@ -349,7 +323,7 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int, *,
     # мусор короче 5 с, или канала нет. Решает `wav.exists()` ниже.
     pcm_left = pcm.exists()
     if wav.exists():
-        _drop_leftover(pcm)
+        _drop_leftover(pcm, sr)
         return wav    # писатель опубликовал между последним заходом и сроком
     if pcm_left and refusal not in (GONE, EMPTY):
         log(f"{label}: запись не готова — {_REFUSAL_TEXT.get(refusal, refusal)}")

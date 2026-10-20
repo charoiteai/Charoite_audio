@@ -585,6 +585,27 @@ def _volume_without_flock(rec_dir: pathlib.Path, stamp: str) -> bool:
     return bool(outcomes) and all(o == file_locks.NO_FLOCK for o in outcomes)
 
 
+def _final_beside_leftovers(rec_dir: pathlib.Path, stamp: str, live: pathlib.Path) -> bool:
+    """Финал встречи уже собран, а `.pcm` рядом с `.wav` — остаток, а не
+    сирота: у каждого канала со звуком есть `.wav`, и в сайдкаре стенограммы
+    записан машинный финал (`write_final`). Остаток остаётся, когда `.wav` не
+    подтверждён на носителе (том без `F_FULLFSYNC` — у каждой встречи) или
+    дверь его не тронула (том без flock): пересборка такой встречи на каждом
+    старте — STT заново, а ретеншн придерживал бы звук сверх срока хранения
+    (№728, опыт x17: финал без темы). Остаток живёт по обычному сроку.
+    «Не знаем» — сирота: канал без `.wav`, сбой проверки, неоднозначный
+    сайдкар восстанавливаются, как прежде."""
+    for label in meeting_stamp.RECORDING_LABELS:
+        if not _has_sound(meeting_stamp.recording_path(rec_dir, stamp, label, "pcm")):
+            continue
+        try:
+            if not meeting_stamp.recording_path(rec_dir, stamp, label, "wav").exists():
+                return False
+        except OSError:
+            return False
+    return live_sidecar.machine_final(live, unknown=False)
+
+
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     """Добить встречи, оборванные аварийно. Возвращает штампы, которые
     пересобираются прямо сейчас, — их записи ретеншну трогать нельзя.
@@ -633,6 +654,8 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         # старт записи до `hub.start()` (opusfix6 Sonnet I1).
         if not _maybe_exists(live):
             continue                      # без стенограммы пересобирать нечего
+        if _final_beside_leftovers(rec_dir, stamp, live):
+            continue                      # финал собран, рядом остаток — не сирота
         candidates.append((stamp, live))
     # «Том без flock» подтверждает вторая проба через паузу: разовый ENOLCK не
     # уводит встречу из-под защиты ретеншна (opusfix4 DS I4). Пауза — одна на

@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import pathlib
 import sys
@@ -580,8 +581,8 @@ def test_an_empty_pcm_is_no_orphan_marker(data_root, monkeypatch, wav):
 
 def test_a_channel_with_its_wav_does_not_vote_for_a_volume_without_flock(data_root, monkeypatch):
     """Том без flock, `.wav` готов, `.pcm` рядом (крах между `replace` и
-    `unlink`): финал из `.wav` соберётся на любом томе, остаток снимет
-    `_drop_leftover` — встречу восстанавливаем (opusfix4 DS C1)."""
+    `unlink`), финала нет: финал из `.wav` соберётся на любом томе —
+    встречу восстанавливаем (opusfix4 DS C1)."""
     import daemon
     import file_locks
 
@@ -590,6 +591,68 @@ def test_a_channel_with_its_wav_does_not_vote_for_a_volume_without_flock(data_ro
     monkeypatch.setattr(file_locks, "acquire_outcome", lambda f, **kw: file_locks.NO_FLOCK)
     _orphan(data_root, "2026-08-07_181500", age_days=3)
     (data_root / "recordings" / "2026-08-07_181500_mic.wav").write_bytes(b"RIFF")
+
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
+    assert len(started) == 1
+
+
+SHA = "a" * 64
+
+
+def _leftovers_beside_a_final(root: pathlib.Path, stamp: str, *, sidecar: str | None,
+                              wav_labels=("mic", "blackhole")) -> list[pathlib.Path]:
+    """Встреча собрана: `.wav` каналов есть, остатки `.pcm` рядом (том без
+    `F_FULLFSYNC` — писатель их оставляет), стенограмма без темы."""
+    rec = root / "recordings"
+    old = time.time() - 3 * 86400
+    files = []
+    for label in ("mic", "blackhole"):
+        pcm = rec / f"{stamp}_{label}.pcm"
+        pcm.write_bytes(b"\1" * 4096)
+        files.append(pcm)
+        if label in wav_labels:
+            files.append(rec / f"{stamp}_{label}.wav")
+            files[-1].write_bytes(b"RIFF")
+    for f in files:
+        os.utime(f, (old, old))
+    live = root / "transcripts" / f"{stamp}.md"
+    live.write_text("финал", encoding="utf-8")
+    if sidecar is not None:
+        live.with_name(live.name + ".live.json").write_text(sidecar, encoding="utf-8")
+    return files
+
+
+def test_leftovers_beside_a_machine_final_are_no_orphan(data_root, monkeypatch):
+    """Финал записан (`write_final`), рядом с `.wav` остатки `.pcm`: не сирота.
+    Иначе — STT заново на каждом старте и ретеншн держит звук сверх срока
+    хранения (№728, опыт x17 B2: на aec074ac пересборка, база `.pcm` снимала)."""
+    import audio
+    import daemon
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    files = _leftovers_beside_a_final(data_root, "2026-08-07_181500",
+                                      sidecar=json.dumps({"transcript_sha256": SHA}))
+
+    protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+    audio.AudioHub.prune_recordings(data_root / "recordings", 2, protect=protect)
+
+    assert protect == set() and started == []
+    assert not any(f.exists() for f in files), "ретеншн обязан убрать звук по сроку"
+
+
+@pytest.mark.parametrize("sidecar,wav_labels", [
+    (None, ("mic", "blackhole")),                          # крах до пересборки: финала нет
+    ("[1]", ("mic", "blackhole")),                          # сайдкар не объект — не знаем
+    (json.dumps({"transcript_sha256": SHA}), ("mic",)),     # канал со звуком без .wav
+], ids=["no_final", "unreadable_sidecar", "channel_without_wav"])
+def test_leftovers_without_a_proven_final_are_recovered(data_root, monkeypatch, sidecar, wav_labels):
+    """Финал не доказан или у канала со звуком нет `.wav` — сирота, как прежде."""
+    import daemon
+
+    started = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain", started.append)
+    _leftovers_beside_a_final(data_root, "2026-08-07_181500", sidecar=sidecar, wav_labels=wav_labels)
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
     assert len(started) == 1
@@ -651,12 +714,13 @@ def test_a_failing_transcript_check_does_not_stop_the_start(data_root, monkeypat
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {"2026-08-07_181500"}
 
 
-@pytest.mark.parametrize("wav_bytes,removed", [(4096 + 44, True), (4095 + 44, False)])
-def test_a_leftover_is_removed_only_next_to_a_full_wav(data_root, monkeypatch, wav_bytes, removed):
-    """`.wav` и непустой `.pcm` рядом: первый старт пересобирает встречу. Рядом
-    с полным `.wav` пересборка снимает остаток, и второй старт сироты не видит;
-    рядом с коротким — `.pcm` цел, встреча остаётся сиротой, как в базе всегда
-    (opusfix6 C1 понижен опытом x10; fsync публикации — долг №572)."""
+@pytest.mark.parametrize("wav_bytes", [4096 + 44, 4095 + 44], ids=["full", "truncated"])
+def test_a_leftover_is_converted_again_and_the_next_start_sees_no_orphan(data_root, monkeypatch, wav_bytes):
+    """`.wav` и непустой `.pcm` рядом, финала нет: первый старт пересобирает
+    встречу. Пересборка конвертирует остаток заново дверью `pcm_to_wav` — и
+    рядом с полным `.wav`, и рядом с усечённым (крах питания без fsync) — и
+    снимает `.pcm` за `.wav` на носителе; второй старт сироты не видит
+    (opusfix10 DS C1: уборка не судит по состоянию `.wav`)."""
     import daemon
     import file_locks
     import rebuild_transcript as rt
@@ -670,9 +734,8 @@ def test_a_leftover_is_removed_only_next_to_a_full_wav(data_root, monkeypatch, w
 
     assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == {stamp}
     assert rt.wait_recording(data_root / "recordings", stamp, "mic", 16000) == wav
-    assert pcm.exists() is not removed
-    again = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
-    assert again == (set() if removed else {stamp})
+    assert not pcm.exists() and wav.stat().st_size == 4096 + 44
+    assert daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000") == set()
 
 
 def test_the_confirmation_pause_is_paid_once_per_start(data_root, monkeypatch):
