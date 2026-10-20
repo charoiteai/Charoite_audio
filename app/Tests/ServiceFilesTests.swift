@@ -107,9 +107,10 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertTrue(out.text.contains("…обзор…") && out.text.contains("…см. Досье/_ИНДЕКС.md…"))
         // одни указатели — пустой список и текст без блоков, а не nil: фолбэк
         // по телам сниппетов собрал бы чипы из упоминаний
-        let only = ArchiveSearch.brainOutcome("• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g")
+        let only = ArchiveSearch.brainOutcome(ArchiveSearch.lowConfidenceMarker
+                                              + "• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g")
         XCTAssertEqual(only.rels, [])
-        XCTAssertFalse(only.text.contains("Ядра/Тема.md"))
+        XCTAssertEqual(only.text, "", "выброшено всё — ни блоков, ни маркера «слабо»")
         let none = ArchiveSearch.brainOutcome("текст без заголовков, Ядра/Тема.md", folder: "g")
         XCTAssertNil(none.rels)
         XCTAssertEqual(none.text, "текст без заголовков, Ядра/Тема.md")
@@ -154,6 +155,17 @@ final class ServiceFilesTests: XCTestCase {
         let out = await ArchiveSearch.localSearchOutcome(
             query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
         XCTAssertEqual(try XCTUnwrap(out.rels), ["Ядра/Шлюз.md"])
+    }
+
+    /// Папка графа в пути сервера сравнивается в форме схемы: имя с диска
+    /// macOS приходит разложенным, регистр может отличаться (out3, DS I1).
+    func testGraphRelativeMatchesTheFolderInTheSchemaForm() {
+        let folder = "Граф_ёлки"
+        XCTAssertEqual(GraphFolders.graphRelative(folder.decomposedStringWithCanonicalMapping + "/_MOC.md",
+                                                  folder: folder), "_MOC.md")
+        XCTAssertEqual(GraphFolders.graphRelative("граф_ёлки/Люди/М.md", folder: folder), "Люди/М.md")
+        XCTAssertEqual(GraphFolders.graphRelative("Другой/Люди/М.md", folder: folder), "Другой/Люди/М.md")
+        XCTAssertEqual(GraphFolders.graphRelative("_MOC.md", folder: folder), "_MOC.md")
     }
 
     func testFullwidthPrefixIsServiceAsInPython() {

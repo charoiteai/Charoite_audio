@@ -135,8 +135,9 @@ enum ArchiveSearch {
 
     /// Результат поиска для потребителей, которым важно «ЧТО подмешали», а
     /// не только текст. `rels` — точный список хитов, реально вошедших в
-    /// текст (в порядке выдачи); nil — структуры нет (brain-ветка отдаёт
-    /// только текст), потребитель падает на разбор текста.
+    /// текст (в порядке выдачи), пути от корня графа; nil — структуры нет
+    /// (ответ без заголовков блоков), потребитель падает на разбор текста;
+    /// [] — структура есть, источников не осталось (фолбэк не нужен).
     /// Круг-1 по PR #396: DS, Codex и GLM независимо указали, что чипы
     /// источников из regex по склеенной строке ловят упоминания из сниппетов
     /// и молча ломаются о форматирование packContext.
@@ -188,10 +189,7 @@ enum ArchiveSearch {
             let s = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
             return s.hasSuffix(".md") ? s : nil
         }
-        func graphRel(_ path: String) -> String {
-            let head = folder + "/"
-            return !folder.isEmpty && path.hasPrefix(head) ? String(path.dropFirst(head.count)) : path
-        }
+        func graphRel(_ path: String) -> String { GraphFolders.graphRelative(path, folder: folder) }
         var preamble: [Substring] = []
         var blocks: [(rel: String, lines: [Substring])] = []
         for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -205,6 +203,9 @@ enum ArchiveSearch {
         }
         guard !blocks.isEmpty else { return Outcome(text: text, rels: nil) }
         let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
+        // выброшено всё — пустой контекст, без шапки и маркера «слабо»:
+        // иначе чат показал бы «слабые совпадения» над пустотой (out3)
+        if kept.isEmpty { return Outcome(text: "", rels: []) }
         let lines = preamble + kept.flatMap(\.lines)
         var seen = Set<String>()
         let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
