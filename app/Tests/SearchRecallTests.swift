@@ -346,6 +346,13 @@ final class LocalVerdictTests: XCTestCase {
                                                             snippet: 200, root: graph, semanticIndex: index)
         XCTAssertEqual(silent.text, "")
         XCTAssertEqual(silent.verdict, .unverified)
+        // сильная лексика без семантики — «нашлось» не доказано, как в python
+        // (out3, DS I3); маркера нет — чипы видны
+        let wordsOnly = await ArchiveSearch.localSearchOutcome(query: "дожди месяц", limit: 3,
+                                                               snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertFalse(wordsOnly.text.isEmpty)
+        XCTAssertFalse(wordsOnly.text.hasPrefix(ArchiveSearch.lowConfidenceMarker))
+        XCTAssertEqual(wordsOnly.verdict, .unverified)
 
         // Эмбеддер отвечает, похожего нет: пусто проверено.
         await index.useForTests(store: tempIndexStore(), embedder: { texts in
@@ -459,5 +466,25 @@ final class LocalVerdictTests: XCTestCase {
         let halfRead = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
                                                               snippet: 200, root: half, semanticIndex: index)
         XCTAssertEqual(halfRead.verdict, .unverified, "половина графа не прочитана: \(halfRead.text)")
+    }
+
+    /// Две ссылки наружу графа с одним именем схлопываются в одну rel: охват
+    /// считает её одним файлом, как `allPaths` и индекс (out3, DS M7) —
+    /// иначе граф из одной заметки никогда не доказывал «пусто».
+    func testCollapsedRelCountsOnceInCoverage() async throws {
+        let outside = try makeTestGraph([("a/README.md", "дожди весь месяц"), ("b/README.md", "обсудили отпуск")])
+        let graph = try makeTestGraph([])
+        defer { try? FileManager.default.removeItem(at: outside); try? FileManager.default.removeItem(at: graph) }
+        for sub in ["a", "b"] {
+            let link = graph.appendingPathComponent("\(sub)/README.md")
+            try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside.appendingPathComponent("\(sub)/README.md"))
+        }
+        let index = SemanticIndex()
+        await index.useForTests(store: tempIndexStore(), embedder: { $0.map { $0.contains("бюджет") ? [1, 0] : [0, 1] } })
+        await index.refresh(files: [("README.md", 1, "дожди весь месяц")])
+        let out = await ArchiveSearch.localSearchOutcome(query: "квартальный бюджет", limit: 3,
+                                                         snippet: 200, root: graph, semanticIndex: index)
+        XCTAssertEqual(out.verdict, .empty, out.text)
     }
 }

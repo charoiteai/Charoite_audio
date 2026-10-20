@@ -62,11 +62,18 @@ final class ChatRetrievalTests: XCTestCase {
         XCTAssertTrue(unverified.block.contains("поиск неполный"))
         // фрагменты не прошли гейт и охват не доказан: чипов нет, как до №634,
         // а строка статуса — «поиск неполный», не «слабые совпадения» (out2)
-        let unverifiedText = ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified), lang: "ru")
-        XCTAssertTrue(unverifiedText.weak)
+        let m = ArchiveSearch.lowConfidenceMarker
+        let unverifiedText = ChatRetrieval.contextBlock(outcome(m + "- a.md\nт", .unverified), lang: "ru")
+        XCTAssertTrue(unverifiedText.hidesSources)
+        // подвал «слабые совпадения» — не у неполного поиска (out3, DS I6)
+        XCTAssertFalse(unverifiedText.weak)
         if L.lang == "ru" { XCTAssertEqual(LocalChatService.memoryStatus(unverifiedText), "граф: поиск неполный") }
-        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .confident)).weak)
-        XCTAssertTrue(ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak)).weak)
+        // сильная лексика без семантики: маркера нет — чипы видны (out3, DS I3)
+        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified)).hidesSources)
+        XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .confident)).hidesSources)
+        let weakText = ChatRetrieval.contextBlock(outcome(m + "- a.md\nт", .weak))
+        XCTAssertTrue(weakText.weak)
+        XCTAssertTrue(weakText.hidesSources)
         // оговорка сервера доходит до модели и при непустой выдаче
         let noted = ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak, note: "почти ничего нет"), lang: "ru")
         XCTAssertTrue(noted.block.contains("(почти ничего нет)"))
@@ -130,9 +137,17 @@ final class ChatRetrievalTests: XCTestCase {
             "⚠ По словам ничего не нашлось по «x» в графе, семантикой не проверено (кэш) — не считать доказанным отсутствием"),
             folder: "Граф"))
 
-        let empty = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+        // «Ничего не найдено» сервера — не доказательство: его индекс без
+        // архива встреч, решает локальный поиск (out3, C1 DS и Haiku)
+        XCTAssertNil(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
             "Ничего не найдено по «x» в графе (искали без: архив)"), folder: "Граф"))
-        XCTAssertEqual(empty.verdict, .empty)
+
+        // «⚠» не первой строкой шапки — вердикт и оговорка не теряются (out3, DS I5)
+        let late = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+            "📋 ДОСЬЕ «X» (Граф, источников 3)\n⚠ Похоже, почти ничего нет.\nНайдено в vault (1 из 9):\n\n• Граф/А.md\n  …т…"),
+            folder: "Граф"))
+        XCTAssertEqual(late.verdict, .weak)
+        XCTAssertEqual(late.note, "Похоже, почти ничего нет.")
     }
 
     func testСтатусИзВердикта() throws {
@@ -143,6 +158,7 @@ final class ChatRetrievalTests: XCTestCase {
         XCTAssertEqual(LocalChatService.memoryStatus(ctx("т", .unverified)), "граф: поиск неполный")
         XCTAssertEqual(LocalChatService.memoryStatus(ctx("", .unavailable)), "граф недоступен")
         XCTAssertEqual(LocalChatService.memoryStatus(ctx("т", .confident)), "🧠 граф подмешан")
+        XCTAssertEqual(LocalChatService.memoryStatus(ctx("т", .weak)), "граф: слабые совпадения")
     }
 
     /// Детектор отказа бенча (out1, DS C1, Sonnet I3): вступление «в
@@ -166,6 +182,27 @@ final class ChatRetrievalTests: XCTestCase {
         }
         // вопрос без ответа: найденное первой строкой, отказ второй — воздержание
         XCTAssertTrue(ChatRetrieval.isAbsence("Нашлось про релиз в августе.\nТочного ответа нет.", lines: 2))
+        // ложный отказ — только формула отсутствия, а не общий оборот факта (out3, DS I4)
+        for answer in ["No record of objections; the release stays in August.",
+                       "No information about the outage was shared at the meeting.",
+                       "Поиск был неполным: точного ответа не нашлось, но речь шла о ремонте."] {
+            XCTAssertFalse(ChatRetrieval.isAbsence(answer, claimsOnly: true), answer)
+        }
+        XCTAssertTrue(ChatRetrieval.isAbsence("**В памяти этого нет.**", claimsOnly: true))
+        XCTAssertTrue(ChatRetrieval.isAbsence("记忆中没有这条。", claimsOnly: true))
+    }
+
+    /// Ложный отказ бенча — нарушение правила вердикта, а не исполнение
+    /// (out3, DS C2): «слабо» и «пусто» формулу велят, «неполный поиск» велит
+    /// «точного ответа не нашлось».
+    func testЛожныйОтказТолькоПротивПравила() {
+        let refusal = "В памяти этого нет; рядом нашлось про ремонт."
+        XCTAssertTrue(ChatRetrieval.refusesAgainstRule(refusal, verdict: .confident))
+        XCTAssertTrue(ChatRetrieval.refusesAgainstRule(refusal, verdict: .unverified))
+        XCTAssertFalse(ChatRetrieval.refusesAgainstRule(refusal, verdict: .weak))
+        XCTAssertFalse(ChatRetrieval.refusesAgainstRule(refusal, verdict: .empty))
+        XCTAssertFalse(ChatRetrieval.refusesAgainstRule(
+            "Точного ответа не нашлось, поиск был неполным.", verdict: .unverified))
     }
 
     func testТелоЗапросаПоПолям() throws {

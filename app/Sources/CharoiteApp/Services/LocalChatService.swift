@@ -191,17 +191,7 @@ final class LocalChatService: ObservableObject {
     /// Строка статуса — из вердикта поиска, тем же решением, что и правило
     /// честности в промпте: «пусто» не пишется там, где поиск был неполным
     /// или графа нет (№634).
-    nonisolated static func memoryStatus(_ context: ChatRetrieval.Context) -> String {
-        switch context.verdict {
-        case .confident: return L.t("🧠 граф подмешан", "🧠 graph mixed in", "🧠 已加入图谱")
-        case .weak: return L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配")
-        // «слабые совпадения» — слова проверенного поиска; здесь поиск
-        // неполный при любой выдаче (out1, DS I)
-        case .unverified: return L.t("граф: поиск неполный", "graph: search incomplete", "图谱：检索不完整")
-        case .empty: return L.t("в графе пусто по теме", "graph has nothing on the topic", "图谱中无相关内容")
-        case .unavailable: return L.t("граф недоступен", "graph unavailable", "图谱不可用")
-        }
-    }
+    nonisolated static func memoryStatus(_ context: ChatRetrieval.Context) -> String { context.status }
 
     private func stream(_ prompt: String, into bubbleId: UUID) async {
         // Snapshot the configured endpoint before asynchronous retrieval.
@@ -218,6 +208,7 @@ final class LocalChatService: ObservableObject {
         var chipSources: [MemoryScreenPolicy.Source] = []
         var sourcesInContext = 0
         var weakMatches = false
+        var searchIncomplete = false
         if memoryOn {
             let topic = ChatRetrieval.query(from: messages)
             // Сосед по [[ссылке]] без слов запроса — только модели на этом Mac
@@ -229,13 +220,16 @@ final class LocalChatService: ObservableObject {
             guard !Task.isCancelled else { return }
             let context = ChatRetrieval.contextBlock(outcome)
             let vault = context.text
-            let lowConf = context.weak
+            let lowConf = context.hidesSources
             // Чипы под ответом — точный список хитов поиска (Outcome.rels);
             // упоминание пути в чужом сниппете источником не считается
             // (круг-1: DS/Codex/GLM). Brain-ветка структуры не отдаёт —
             // честный запасной разбор текста. Слабые совпадения чипами не
             // выдаём — их нельзя показывать как опору ответа.
-            weakMatches = lowConf && !vault.isEmpty
+            weakMatches = context.weak
+            // фрагменты без чипов при неполном поиске: подвал не «слабые
+            // совпадения» и не «граф не в контексте» (out3, DS I6)
+            searchIncomplete = lowConf && context.verdict == .unverified && !vault.isEmpty
             let found = outcome.rels.map { rels in
                 rels.map { MemoryScreenPolicy.Source(rel: $0, kind: MemoryScreenPolicy.kind(of: $0)) }
             } ?? MemoryScreenPolicy.sources(from: vault)
@@ -326,7 +320,7 @@ final class LocalChatService: ObservableObject {
                 model: effModel, seconds: secs,
                 meetingsInContext: chipSources.filter { $0.kind == .meeting }.count,
                 sourcesInContext: sourcesInContext,
-                memoryOn: memoryOn, weakMatches: weakMatches,
+                memoryOn: memoryOn, weakMatches: weakMatches, searchIncomplete: searchIncomplete,
                 inferenceIsLocal: inferenceIsLocal)
         }
         switch outcome {

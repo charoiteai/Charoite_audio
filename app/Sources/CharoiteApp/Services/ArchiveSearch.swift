@@ -215,7 +215,10 @@ enum ArchiveSearch {
     }
 
     /// Ответ brain-сервера (после среза `brainSearch`) → `Outcome` с вердиктом.
-    /// Пустой ответ («Ничего не найдено») — `empty`. Строка «⚠ …» первой —
+    /// Пустой ответ («Ничего не найдено») — nil: индекс сервера по схеме
+    /// без архива встреч и копий стенограмм («искали без: …»), а локальный
+    /// поиск читает весь граф и сам доказывает охват (out3, C1 DS и Haiku).
+    /// Строка «⚠ …» первой —
     /// решение сервера: «не провер…» в ней — `unverified`, иначе `weak`; сама
     /// строка уходит в `note`, причину видит модель (№634: прежний срез её
     /// терял). После неё пусто — nil: отсутствие не доказано, решает локальный
@@ -236,7 +239,7 @@ enum ArchiveSearch {
     /// тело блока он пишет одной свёрнутой строкой с отступом, и «• путь.md»
     /// внутри фрагмента заголовком не становится (out2).
     static func brainOutcome(_ text: String, folder: String) -> Outcome? {
-        guard !text.isEmpty else { return Outcome(text: "", rels: [], verdict: .empty) }
+        guard !text.isEmpty else { return nil }
         var body = Substring(text)
         var note = ""
         var verdict = Verdict.confident
@@ -304,16 +307,15 @@ enum ArchiveSearch {
     }
 
     /// Ответ :8100 → вход `brainOutcome`: «Ничего не найдено» — пусто, иначе
-    /// тело без строки-шапки «Найдено в vault (N из M):». Строка «⚠ …» —
-    /// первой строкой: из неё brainOutcome берёт вердикт и оговорку (№634).
+    /// тело без строки-шапки «Найдено в vault (N из M):». Строка «⚠ …» из
+    /// шапки — первой строкой, где бы сервер её ни поставил: из неё
+    /// brainOutcome берёт вердикт и оговорку (№634; out3, DS I5).
     static func brainSlice(_ text: String) -> String {
         if text.hasPrefix("Ничего не найдено") { return "" }
-        let lowConf = text.hasPrefix(lowConfidenceMarker)
-        if let range = text.range(of: "\n\n") {
-            let body = String(text[range.upperBound...])
-            return lowConf ? String(text.prefix { $0 != "\n" }) + "\n" + body : body
-        }
-        return text
+        guard let range = text.range(of: "\n\n") else { return text }
+        let body = String(text[range.upperBound...])
+        let warn = text[..<range.lowerBound].split(separator: "\n").first { $0.hasPrefix(lowConfidenceMarker) }
+        return warn.map { String($0) + "\n" + body } ?? body
     }
 
     struct Hit {
@@ -515,7 +517,10 @@ enum ArchiveSearch {
         // индекс и непрочитанные заметки дают «не проверено» (№634).
         let checked = await semanticIndex.similarChecked(to: query, within: allPaths,
                                                          limit: max(limit * 4, 20))
-        let withText = all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        // по rel, как `allPaths` и `compared`: симлинк наружу графа
+        // схлопывает rel, и дубль раздувал знаменатель (out3, DS I7)
+        let withText = Set(all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map(\.rel)).count
         let proven = checked.map { covered(compared: $0.compared, withText: withText, unread: unread) } ?? false
         let sem = checked?.hits ?? []
         let bestSim = sem.first?.score ?? 0
@@ -604,7 +609,9 @@ enum ArchiveSearch {
             return Outcome(text: lowConfidenceMarker + body, rels: rels,
                            verdict: proven ? .weak : .unverified)
         }
-        return Outcome(text: body, rels: rels, verdict: .confident)
+        // без семантики «нашлось» не доказано и при сильной лексике — как
+        // python `graph_search.verdict` (out3, DS I3); маркера нет, чипы видны
+        return Outcome(text: body, rels: rels, verdict: checked == nil ? .unverified : .confident)
     }
 
     static func linkedContext(_ original: [Hit], documents: [String: String], needles: [String],
