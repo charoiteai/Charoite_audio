@@ -68,7 +68,7 @@ final class ChatRetrievalTests: XCTestCase {
         // подвал «слабые совпадения» — не у неполного поиска (out3, DS I6)
         XCTAssertFalse(unverifiedText.weak)
         if L.lang == "ru" { XCTAssertEqual(LocalChatService.memoryStatus(unverifiedText), "граф: поиск неполный") }
-        // сильная лексика без семантики: маркера нет — чипы видны (out3, DS I3)
+        // чипы гаснут по маркеру, не по вердикту: `unverified` без маркера чипы держит
         XCTAssertFalse(ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified)).hidesSources)
         // подвал «поиск неполный» — у любого unverified с выдачей, без выдачи — нет (out5, Haiku M1)
         XCTAssertTrue(ChatRetrieval.contextBlock(outcome("- a.md\nт", .unverified)).searchIncomplete)
