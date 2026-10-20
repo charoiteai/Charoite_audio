@@ -108,33 +108,6 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertFalse(called)
     }
 
-    /// Ответ :8100 разбирается по строкам, как его пишет сервер: досье
-    /// остаются целиком, шапка, разделитель и строка «⚠ Похоже…» уходят,
-    /// маркер — в начало (out5: срез по первому «\n\n» терял первое досье).
-    func testBrainBodyKeepsDossiersAndDropsServiceLines() {
-        let m = ArchiveSearch.lowConfidenceMarker
-        let blocks = "• g/Люди/М.md\n  …факт…\n\n• g/Ядра/Т.md\n  …"
-        XCTAssertEqual(ArchiveSearch.brainBody("Найдено в vault (2 из 4):\n\n" + blocks), blocks)
-        XCTAssertEqual(ArchiveSearch.brainBody(m + " Похоже, слабые совпадения:\nНайдено в vault (2 из 4):\n\n" + blocks),
-                       m + blocks)
-        let dossiers = "📋 ДОСЬЕ «А» (g, источников 3)\nсводка А\n\n📋 ДОСЬЕ «Б» (g, источников 2)\nсводка Б"
-        let sep = "\n\n— — — ниже отдельные фрагменты графа — — —\n\n"
-        XCTAssertEqual(ArchiveSearch.brainBody(dossiers + sep + "Найдено в vault (2 из 4):\n\n" + blocks),
-                       dossiers + "\n\n" + blocks)
-        XCTAssertEqual(ArchiveSearch.brainBody(dossiers + sep + m + " Похоже:\nНайдено в vault (2 из 4):\n\n" + blocks),
-                       m + dossiers + "\n\n" + blocks)
-        // одни досье (фрагментов нет) — как есть
-        XCTAssertEqual(ArchiveSearch.brainBody(dossiers), dossiers)
-        // шапка внутри фрагмента — не шапка
-        let inBody = "• g/Люди/М.md\n  …\nНайдено в vault (1 из 1):"
-        XCTAssertEqual(ArchiveSearch.brainBody(inBody), inBody)
-    }
-
-    func testEmptyBrainAnswerGoesToLocalSearch() async {
-        let out = await ArchiveSearch.choose(brain: "", folder: "g") { .init(text: "L", rels: ["Люди/М.md"]) }
-        XCTAssertEqual(out.text, "L")
-    }
-
     /// :8100 отдаёт блоки указателей и пути от корня vault (опыт out1:
     /// «ИИ-граф/_MOC.md», «Ядра/_ЯДРА.md», «Служебное_*») — блок указателя
     /// уходит и из текста модели, и из чипов; карта под префиксом папки — карта.
@@ -161,12 +134,8 @@ final class ServiceFilesTests: XCTestCase {
         // «в графе пусто» и не теряет сводку досье над блоками (out4)
         XCTAssertNil(ArchiveSearch.brainOutcome(ArchiveSearch.lowConfidenceMarker
                                                 + "• g/Ядра/_ЯДРА.md\n  …Ядра/Тема.md…", folder: "g"))
-        // над указателями сводка досье — она и уходит модели, без чипов (out5)
-        let dossier = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainBody(
-            "📋 ДОСЬЕ «Тема» (g, источников 3)\nсводка\n\n— — — ниже отдельные фрагменты графа — — —\n\n"
-            + "⚠ Похоже, слабые совпадения:\nНайдено в vault (1 из 1):\n\n• g/Ядра/_ЯДРА.md\n  …"), folder: "g"))
-        XCTAssertEqual(dossier.text, "📋 ДОСЬЕ «Тема» (g, источников 3)\nсводка")
-        XCTAssertEqual(dossier.rels, [])
+        XCTAssertNil(ArchiveSearch.brainOutcome("📋 ДОСЬЕ «Тема» (g, источников 3)\nсводка\n\n"
+                                                + "Найдено в vault (1 из 1):\n\n• g/Ядра/_ЯДРА.md\n  …", folder: "g"))
         let none = ArchiveSearch.brainOutcome("текст без заголовков, Ядра/Тема.md", folder: "g")
         XCTAssertNil(none?.rels)
         XCTAssertEqual(none?.text, "текст без заголовков, Ядра/Тема.md")

@@ -137,8 +137,7 @@ enum ArchiveSearch {
     /// не только текст. `rels` — точный список хитов, реально вошедших в
     /// текст (в порядке выдачи), пути от корня графа; nil — структуры нет
     /// (ответ без заголовков блоков), потребитель падает на разбор текста;
-    /// [] — источников нет: локальный поиск ничего не нашёл или от brain
-    /// остались одни сводки досье (фолбэк по тексту не нужен).
+    /// [] — структура есть, источников не осталось (фолбэк не нужен).
     /// Круг-1 по PR #396: DS, Codex и GLM независимо указали, что чипы
     /// источников из regex по склеенной строке ловят упоминания из сниппетов
     /// и молча ломаются о форматирование packContext.
@@ -171,7 +170,7 @@ enum ArchiveSearch {
     /// иначе — локальный поиск (сервер не поднят или отдал одни указатели).
     static func choose(brain: String?, folder: String,
                        local: () async -> Outcome) async -> Outcome {
-        if let brain, !brain.isEmpty, let out = brainOutcome(brain, folder: folder) { return out }
+        if let brain, let out = brainOutcome(brain, folder: folder) { return out }
         return await local()
     }
 
@@ -184,14 +183,13 @@ enum ArchiveSearch {
     /// «Служебное_*»; фильтр одних чипов оставлял их модели). Пути сервера
     /// идут от корня vault («<папка графа>/_MOC.md») — правило судит путь от
     /// корня графа, и rels отдаются от корня графа — как у локальной ветки
-    /// (вид чипа, «Карта графа», открытие файла). Все блоки выброшены: над
-    /// ними сводки досье — они и уходят модели, без чипов и без маркера
-    /// «слабо» (гейт уверенности сервер к досье не применяет); досье нет — nil,
-    /// и поиск уходит в локальный (out4, out5).
+    /// (вид чипа, «Карта графа», открытие файла). Все блоки выброшены — nil,
+    /// и поиск уходит в локальный: brain отдал слоты указателям, а сводки досье
+    /// над блоками (out4) и узлы по тем же словам локальный поиск найдёт сам.
     /// Заголовок — «• » в КОЛОНКЕ 0, как разбирает свой ответ сам сервер:
     /// тело блока он пишет одной свёрнутой строкой с отступом, и «• путь.md»
-    /// внутри фрагмента заголовком не становится (out2). Маркер «⚠» `brainBody`
-    /// ставит в начало тела — снимается до разбора и возвращается.
+    /// внутри фрагмента заголовком не становится (out2). Маркер «⚠» brainSearch
+    /// клеит к первому заголовку — снимается до разбора и возвращается.
     static func brainOutcome(_ text: String, folder: String) -> Outcome? {
         let weak = text.hasPrefix(lowConfidenceMarker)
         let body = weak ? String(text.dropFirst(lowConfidenceMarker.count)) : text
@@ -214,18 +212,14 @@ enum ArchiveSearch {
         }
         guard !blocks.isEmpty else { return Outcome(text: text, rels: nil) }
         let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
-        if kept.isEmpty {
-            let pre = preamble.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            return pre.isEmpty ? nil : Outcome(text: pre, rels: [])
-        }
+        if kept.isEmpty { return nil }
         let lines = preamble + kept.flatMap(\.lines)
         var seen = Set<String>()
         let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
         return Outcome(text: (weak ? lowConfidenceMarker : "") + lines.joined(separator: "\n"), rels: rels)
     }
 
-    /// Поиск через локальный brain-сервер; nil — сервер не поднят, не ответил
-    /// или ничего не нашёл (тогда ищет локальный поиск).
+    /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
     private static func brainSearch(query: String, limit: Int, snippet: Int) async -> String? {
         guard let graph = AppSettings.graphDir,
               let url = URL(string: "http://127.0.0.1:8100/vault_search") else { return nil }
@@ -244,32 +238,17 @@ enum ArchiveSearch {
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = obj["text"] as? String, !text.isEmpty else { return nil }
-        if text.hasPrefix("Ничего не найдено") { return nil }
+        if text.hasPrefix("Ничего не найдено") { return "" }
         // граф вне vault brain-сервера (демо, другой диск) — честный фолбэк
         // на локальный поиск, а не сообщение об ошибке в качестве «сырья»
         if text.hasPrefix("Папка не найдена") || text.hasPrefix("Недопустимый путь") { return nil }
-        return brainBody(text)
-    }
-
-    /// Текст ответа :8100 → тело для `brainOutcome`. Сервер пишет: сводки
-    /// досье, строку «— — — ниже отдельные фрагменты графа — — —», строку
-    /// «⚠ Похоже…» при слабых совпадениях, шапку «Найдено в vault (N из M):»,
-    /// блоки. Служебные строки выбрасываются по строкам, досье остаётся: срез
-    /// по первому «\n\n» (с #33) отрезал шапку и первый абзац первого досье, а
-    /// короткое досье — целиком (out5). Маркер «⚠» — в начало тела.
-    static func brainBody(_ text: String) -> String {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        let firstBlock = lines.firstIndex { $0.hasPrefix("• ") } ?? lines.endIndex
-        guard let h = lines[..<firstBlock].firstIndex(where: { $0.hasPrefix("Найдено в vault (") })
-        else { return text }
-        let weak = h > 0 && lines[h - 1].hasPrefix(lowConfidenceMarker)
-        var head = Array(lines[..<(weak ? h - 1 : h)])
-        func trimTail() { while head.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { head.removeLast() } }
-        trimTail()
-        if head.last?.hasPrefix("— — —") == true { head.removeLast(); trimTail() }
-        let rest = lines[(h + 1)...].drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }
-        let body = (head.isEmpty ? [] : head + [""]) + rest
-        return (weak ? lowConfidenceMarker : "") + body.joined(separator: "\n")
+        // тело без строки-шапки «Найдено в vault (N из M):», маркер «⚠» сохраняем
+        let lowConf = text.hasPrefix(lowConfidenceMarker)
+        if let range = text.range(of: "\n\n") {
+            let body = String(text[range.upperBound...])
+            return lowConf ? lowConfidenceMarker + body : body
+        }
+        return text
     }
 
     struct Hit {
