@@ -1845,9 +1845,11 @@ local walk applies it to the canonical path, so a symlink to an index stays an
 index. A running brain server (:8100) returns index blocks too, with paths from
 the vault root (`<graph folder>/_MOC.md`): `ArchiveSearch.brainOutcome` drops
 such blocks from the text and the sources together, judging the path from the
-graph root. When nothing but index blocks came back, the chat falls through to
-the local search: the brain spent its slots on indexes, and the dossier
-summaries it puts above the blocks are files the local search reads itself.
+graph root. The server's answer is parsed line by line (`brainBody`): dossier
+summaries above the blocks stay whole, the header, separator and weak-match
+lines go. When nothing but index blocks came back, the dossier summaries go to
+the model without chips; with no dossiers the chat falls through to the local
+search, as it does when the server finds nothing.
 
 **Context budget.** Output is capped: no single source takes more than 40% of
 the budget, a source left with under 300 characters is dropped whole, and the
