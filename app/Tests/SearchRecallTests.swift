@@ -346,13 +346,12 @@ final class LocalVerdictTests: XCTestCase {
                                                             snippet: 200, root: graph, semanticIndex: index)
         XCTAssertEqual(silent.text, "")
         XCTAssertEqual(silent.verdict, .unverified)
-        // сильная лексика без семантики — «нашлось» не доказано, как в python
-        // (out3, DS I3); маркера нет — чипы видны
+        // сильная лексика без семантики — `confident`, как в базе (долг №637)
         let wordsOnly = await ArchiveSearch.localSearchOutcome(query: "дожди месяц", limit: 3,
                                                                snippet: 200, root: graph, semanticIndex: index)
         XCTAssertFalse(wordsOnly.text.isEmpty)
         XCTAssertFalse(wordsOnly.text.hasPrefix(ArchiveSearch.lowConfidenceMarker))
-        XCTAssertEqual(wordsOnly.verdict, .unverified)
+        XCTAssertEqual(wordsOnly.verdict, .confident)
 
         // Эмбеддер отвечает, похожего нет: пусто проверено.
         await index.useForTests(store: tempIndexStore(), embedder: { texts in

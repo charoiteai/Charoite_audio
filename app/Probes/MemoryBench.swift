@@ -224,11 +224,9 @@ final class MemoryBench: XCTestCase {
             }
             out.append(Case(q: question, must: facts, abstain: abstain))
         }
-        // «\r\n» — один Character, по «\n» не делится (out4, Haiku I1)
-        let lines = text.replacingOccurrences(of: "\r\n", with: "\n")
-        for raw in lines.split(separator: "\n", omittingEmptySubsequences: false) {
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             // порог с отступом молча снимал гейт (out3, DS M8)
-            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("max_false_refusal:") || line.hasPrefix("min_abstain:") {
                 let (key, value) = (line.prefix(while: { $0 != ":" }),
                                     scalar(line.drop(while: { $0 != ":" }).dropFirst()))

@@ -1966,12 +1966,8 @@ query with at least 80% of the graph files that have text (notes that failed to
 open count in the denominator) (`SEM_SHARE_MIN` of
 the python search). Vectors of another embedding model, an index that is not
 fully built, a query of stop words only and notes that could not be opened give
-`unverified`: "that is not in memory" is then forbidden. Without semantics a
-strong lexical match is `unverified` too, as in the python verdict; it keeps its
-source chips, which disappear only under the weak-match marker. An empty answer
-from the brain server (`Ничего не найдено`, its index skips the meeting archive by
-design) is not a proof of absence: the chat falls back to local search, which
-reads the whole graph.
+`unverified`: "that is not in memory" is then forbidden. Source chips disappear
+only under the weak-match marker.
 
 **Generation temperature is pinned to zero.** This is not a detail. With the
 default temperature the same code scored 11, then 13, then 11 again out of 14 —

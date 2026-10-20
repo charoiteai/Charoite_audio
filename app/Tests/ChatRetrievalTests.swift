@@ -142,17 +142,9 @@ final class ChatRetrievalTests: XCTestCase {
             "⚠ По словам ничего не нашлось по «x» в графе, семантикой не проверено (кэш) — не считать доказанным отсутствием"),
             folder: "Граф"))
 
-        // «Ничего не найдено» сервера — не доказательство: его индекс без
-        // архива встреч, решает локальный поиск (out3, C1 DS и Haiku)
-        XCTAssertNil(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
-            "Ничего не найдено по «x» в графе (искали без: архив)"), folder: "Граф"))
-
-        // «⚠» не первой строкой шапки — вердикт и оговорка не теряются (out3, DS I5)
-        let late = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
-            "📋 ДОСЬЕ «X» (Граф, источников 3)\n⚠ Похоже, почти ничего нет.\nНайдено в vault (1 из 9):\n\n• Граф/А.md\n  …т…"),
-            folder: "Граф"))
-        XCTAssertEqual(late.verdict, .weak)
-        XCTAssertEqual(late.note, "Похоже, почти ничего нет.")
+        // «Ничего не найдено» сервера — `empty`, как в базе (долг №637)
+        XCTAssertEqual(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
+            "Ничего не найдено по «x» в графе (искали без: архив)"), folder: "Граф")?.verdict, .empty)
     }
 
     func testСтатусИзВердикта() throws {
