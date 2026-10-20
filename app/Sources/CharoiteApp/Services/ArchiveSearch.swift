@@ -135,8 +135,9 @@ enum ArchiveSearch {
 
     /// Результат поиска для потребителей, которым важно «ЧТО подмешали», а
     /// не только текст. `rels` — точный список хитов, реально вошедших в
-    /// текст (в порядке выдачи); nil — структуры нет (brain-ветка отдаёт
-    /// только текст), потребитель падает на разбор текста.
+    /// текст (в порядке выдачи), пути от корня графа; nil — структуры нет
+    /// (ответ без заголовков блоков), потребитель падает на разбор текста;
+    /// [] — структура есть, источников не осталось (фолбэк не нужен).
     /// Круг-1 по PR #396: DS, Codex и GLM независимо указали, что чипы
     /// источников из regex по склеенной строке ловят упоминания из сниппетов
     /// и молча ломаются о форматирование packContext.
@@ -156,23 +157,66 @@ enum ArchiveSearch {
             !(ProcessInfo.processInfo.environment[name] ?? "")
                 .trimmingCharacters(in: .whitespaces).isEmpty
         }
-        if !graphOverridden,
-           let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
-            // Brain отдаёт тот же формат блоков «• путь\n  …фрагмент…»:
-            // берём rels ТОЛЬКО из строк-заголовков — упоминание пути в теле
-            // сниппета источником не становится и на brain-пути (круг-2,
-            // GLM). Ни одного заголовка — rels=nil, честный фолбэк текста.
-            let headerRels = viaBrain.split(separator: "\n", omittingEmptySubsequences: false)
-                .compactMap { line -> String? in
-                    let s = line.trimmingCharacters(in: .whitespaces)
-                    guard s.hasPrefix("• "), s.hasSuffix(".md") else { return nil }
-                    return String(s.dropFirst(2))
-                }
-            return Outcome(text: viaBrain, rels: headerRels.isEmpty ? nil : headerRels)
+        let viaBrain = graphOverridden
+            ? nil : await brainSearch(query: query, limit: limit, snippet: snippet)
+        return await choose(brain: viaBrain, folder: AppSettings.graphDir?.lastPathComponent ?? "") {
+            await localSearchOutcome(query: query, limit: limit,
+                                     snippet: snippet, budget: budget,
+                                     includeLinked: includeLinked)
         }
-        return await localSearchOutcome(query: query, limit: limit,
-                                        snippet: snippet, budget: budget,
-                                        includeLinked: includeLinked)
+    }
+
+    /// Выбор движка: ответ brain, если после разбора в нём остались источники,
+    /// иначе — локальный поиск (сервер не поднят или отдал одни указатели).
+    static func choose(brain: String?, folder: String,
+                       local: () async -> Outcome) async -> Outcome {
+        if let brain, let out = brainOutcome(brain, folder: folder) { return out }
+        return await local()
+    }
+
+    /// Ответ brain-сервера → текст модели и источники из ОДНОГО списка блоков.
+    /// Brain отдаёт блоки «• путь\n  …фрагмент…»: rels берём ТОЛЬКО из строк-
+    /// заголовков — упоминание пути в теле сниппета источником не становится и
+    /// на brain-пути (круг-2, GLM). Ни одного заголовка — текст как есть и
+    /// rels=nil, честный фолбэк. Блок указателя папки выбрасывается целиком,
+    /// и из текста, и из rels (№750, out1: :8100 отдаёт «_ЯДРА», «_КОМАНДЫ»,
+    /// «Служебное_*»; фильтр одних чипов оставлял их модели). Пути сервера
+    /// идут от корня vault («<папка графа>/_MOC.md») — правило судит путь от
+    /// корня графа, и rels отдаются от корня графа — как у локальной ветки
+    /// (вид чипа, «Карта графа», открытие файла). Все блоки выброшены — nil,
+    /// и поиск уходит в локальный: brain отдал слоты указателям, а сводки досье
+    /// над блоками (out4) и узлы по тем же словам локальный поиск найдёт сам.
+    /// Заголовок — «• » в КОЛОНКЕ 0, как разбирает свой ответ сам сервер:
+    /// тело блока он пишет одной свёрнутой строкой с отступом, и «• путь.md»
+    /// внутри фрагмента заголовком не становится (out2). Маркер «⚠» brainSearch
+    /// клеит к первому заголовку — снимается до разбора и возвращается.
+    static func brainOutcome(_ text: String, folder: String) -> Outcome? {
+        let weak = text.hasPrefix(lowConfidenceMarker)
+        let body = weak ? String(text.dropFirst(lowConfidenceMarker.count)) : text
+        func header(_ line: Substring) -> String? {
+            guard line.hasPrefix("• ") else { return nil }
+            let s = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            return s.hasSuffix(".md") ? s : nil
+        }
+        func graphRel(_ path: String) -> String { GraphFolders.graphRelative(path, folder: folder) }
+        var preamble: [Substring] = []
+        var blocks: [(rel: String, lines: [Substring])] = []
+        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let h = header(line) {
+                blocks.append((h, [line]))
+            } else if blocks.isEmpty {
+                preamble.append(line)
+            } else {
+                blocks[blocks.count - 1].lines.append(line)
+            }
+        }
+        guard !blocks.isEmpty else { return Outcome(text: text, rels: nil) }
+        let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
+        if kept.isEmpty { return nil }
+        let lines = preamble + kept.flatMap(\.lines)
+        var seen = Set<String>()
+        let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
+        return Outcome(text: (weak ? lowConfidenceMarker : "") + lines.joined(separator: "\n"), rels: rels)
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -305,9 +349,19 @@ enum ArchiveSearch {
         var liveKeys = Set<String>()
         for url in urls {
             let canon = url.resolvingSymlinksInPath().path
-            let rel = canon.hasPrefix(graph.path + "/")
-                ? String(canon.dropFirst(graph.path.count + 1))
-                : url.lastPathComponent
+            let inside = canon.hasPrefix(graph.path + "/")
+            let rel = inside ? String(canon.dropFirst(graph.path.count + 1)) : url.lastPathComponent
+            // Указатели папок и индекс досье — навигация, не документ: занимали
+            // слоты выдачи (№750). Карта содержания в корне остаётся. Гейт — по
+            // канонической rel (симлинк на указатель не проходит, out1 Haiku)
+            // и до чтения и дедупа по содержимому: иначе служебная копия
+            // выигрывала бы дедуп у настоящего файла. У файла вне графа картой
+            // его делает место ссылки: «_MOC.md» в корне — симлинк наружу
+            // остаётся картой (out7, Haiku C1).
+            // Папка ссылки — канонически: обход отдаёт «/private/var/…», корень
+            // после resolvingSymlinksInPath — «/var/…».
+            if GraphFolders.isServiceFile(rel) && !(GraphFolders.isMapFile(rel)
+                && (inside || url.deletingLastPathComponent().resolvingSymlinksInPath().path == graph.path)) { continue }
             let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             let mtime = rv?.contentModificationDate?.timeIntervalSince1970 ?? 0
             liveKeys.insert(rel)
@@ -632,8 +686,10 @@ enum ArchiveSearch {
         let raw = ["стенограмм", "_live.md", "transcript", "подсказки и ответы",
                    "_hints", "вопросы и ответы", "черновик"]
         if raw.contains(where: { low.contains($0) }) { return 0.7 }
-        // Дистиллят: решения уже отобраны и сформулированы.
-        let distilled = ["минутк", "_minutes", "саммари", "разбор", "ядра/", "_moc"]
+        // Дистиллят: решения уже отобраны и сформулированы. Карта — по пути
+        // целиком (№750): подстрока «_moc» поднимала любой «…_mock…».
+        if GraphFolders.isMapFile(rel) { return 1.15 }
+        let distilled = ["минутк", "_minutes", "саммари", "разбор", "ядра/"]
         if distilled.contains(where: { low.contains($0) }) { return 1.15 }
         return 1.0
     }

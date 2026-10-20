@@ -15,4 +15,50 @@ enum GraphFolders {
     static let docs = ["Документация", "Docs", "文档"]
     static let cores = ["Ядра", "Cores", "核心"]
     static var all: [String] { meetings + nodes + dossiers + docs }
+
+    /// Префиксы служебного файла — зеркало `service_prefixes` схемы Чароита
+    /// (src/charoite_schema.py; тест сверяет литерал). Указатели папок, карта
+    /// содержания, кандидаты, индекс досье пишет конвейер: это навигация, не
+    /// документ, и Python-поиск держит их вне индекса (`doc_role` → SERVICE).
+    /// Правило ИМЕНИ ФАЙЛА: папки с «_» оно не судит.
+    static let servicePrefixes = ["_", "Служебное_"]
+
+    /// Служебный ли файл — по имени (последний компонент пути), в форме
+    /// сравнения Python-схемы: единая форма Unicode, регистр, ё→е.
+    static func isServiceFile(_ rel: String) -> Bool {
+        let name = (rel as NSString).lastPathComponent
+        let f = fold(name)
+        return servicePrefixes.contains { f.hasPrefix(fold($0)) }
+    }
+
+    /// Карта содержания в корне графа. Служебная по имени, но источником чата
+    /// остаётся (№750, бенч навигации: без неё 7/13 фактов против 10/13) —
+    /// обзорные факты лежат в ней одной; чип подписан «Карта графа».
+    static let mapFile = "_MOC.md"
+
+    /// Карта ли это — путь ОТ КОРНЯ графа, а не имя: «Встречи/_MOC.md» не карта.
+    static func isMapFile(_ rel: String) -> Bool { fold(rel) == fold(mapFile) }
+
+    /// Путь от корня vault («<папка графа>/Люди/X.md», так отвечает сервер
+    /// памяти) → путь от корня графа. Папка сравнивается в форме схемы (NFC
+    /// с диска macOS, регистр); путь без неё возвращается как есть.
+    static func graphRelative(_ path: String, folder: String) -> String {
+        guard !folder.isEmpty, let slash = path.firstIndex(of: "/"),
+              fold(String(path[..<slash])) == fold(folder) else { return path }
+        return String(path[path.index(after: slash)...])
+    }
+
+    /// Не источник чата: служебный файл, кроме карты содержания — указатели
+    /// папок («_ЯДРА», «_ИНДЕКС»…) и прочая навигация конвейера.
+    static func isChatExcluded(_ rel: String) -> Bool { isServiceFile(rel) && !isMapFile(rel) }
+
+    /// Форма `text_norm.fold` Python: NFC, регистр, ё→е и полноширинные
+    /// U+FF01…U+FF5E → ASCII (имя «＿ЯДРА.md» с IME там служебное — out1).
+    private static func fold(_ s: String) -> String {
+        let ascii = String(String.UnicodeScalarView(s.unicodeScalars.map { u in
+            (0xFF01...0xFF5E).contains(u.value) ? Unicode.Scalar(u.value - 0xFEE0)! : u
+        }))
+        return ascii.precomposedStringWithCanonicalMapping.lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+    }
 }
