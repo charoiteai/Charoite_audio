@@ -13,8 +13,9 @@ final class PrepDebtsTests: XCTestCase {
         return Calendar.current.date(from: c)!
     }
 
-    private func item(_ text: String, line: Int, on day: Date? = nil) -> TasksService.Item {
-        TasksService.Item(id: "f#\(line)", file: URL(fileURLWithPath: "/tmp/f.md"), rel: "f.md",
+    private func item(_ text: String, line: Int, on day: Date? = nil,
+                      rel: String = "f.md") -> TasksService.Item {
+        TasksService.Item(id: "\(rel)#\(line)", file: URL(fileURLWithPath: "/tmp/\(rel)"), rel: rel,
                           lineIndex: line, text: text, done: false,
                           fileDate: day ?? date(2026, 8, 1), sourceLine: "- [ ] \(text)")
     }
@@ -75,9 +76,29 @@ final class PrepDebtsTests: XCTestCase {
 
     func testMostUrgentPrefersFresherMeetingsInsideOneBucket() {
         let now = date(2026, 8, 20)
-        let items = (1...5).map { i in item("**Марк** — дело \(i)", line: i, on: date(2026, 8, i)) }
+        // mtime у всех свежий и одинаковый, решает дата встречи из пути
+        var items = (1...5).map { i in
+            item("**Марк** — дело \(i)", line: i, on: now, rel: "Встречи/2026-08-0\(i)_1200/Минутки.md")
+        }
+        items.append(item("**Марк** — из заметки", line: 6, on: now, rel: "Заметки/дела.md"))
         XCTAssertEqual(PrepView.mostUrgent(items, limit: 3, now: now).map(\.lineIndex), [5, 4, 3],
-                       "без срока — свежие встречи первыми, а не порядок файла")
+                       "без срока — свежие встречи первыми; заметка с новым mtime — после встреч")
+    }
+
+    func testFreshnessDoesNotReorderDatedBuckets() {
+        let now = date(2026, 8, 20)
+        // обе «на этой неделе»; свежесть встречи здесь не ключ — решает порядок, как до №755
+        let early = item("**Марк** — сдать к 21.08", line: 1, rel: "Встречи/2026-08-01_1200/Минутки.md")
+        let fresh = item("**Марк** — отчёт к 26.08", line: 2, rel: "Встречи/2026-08-19_1200/Минутки.md")
+        XCTAssertEqual(PrepView.mostUrgent([early, fresh], limit: 1, now: now).map(\.lineIndex), [1])
+    }
+
+    func testDebtSetNarrowsOnlyWithoutTopic() {
+        let items = [item("**Света** — чужое", line: 1), item("**Марк** — своё", line: 2)]
+        XCTAssertEqual(PrepView.debtSet(items, hasTopic: false, owner: "Марк").map(\.lineIndex), [2],
+                       "без темы — только свои")
+        XCTAssertEqual(PrepView.debtSet(items, hasTopic: true, owner: "Марк").map(\.lineIndex), [1, 2],
+                       "при теме — все открытые вне темы, как было")
     }
 }
 #endif

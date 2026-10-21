@@ -309,10 +309,17 @@ struct PrepView: View {
     }
 
     private func recomputeDebts() {
-        var open = otherOpenTasks
-        if nextTopic == nil { open = Self.promised(open, owner: TasksMineStale.owner) }
+        let open = Self.debtSet(otherOpenTasks, hasTopic: nextTopic != nil, owner: TasksMineStale.owner)
         debts = Debts(summary: open.isEmpty ? "" : Self.debtsSummary(open.map { ($0.text, $0.dueAnchor) }),
                       urgent: nextTopic == nil ? Self.mostUrgent(open, limit: 3) : [])
+    }
+
+    /// Набор блока долгов: при теме встречи — все открытые вне темы, как было;
+    /// без темы — «Что вы обещали» (`promised`). Сводка и тройка берутся из
+    /// него обе.
+    static func debtSet(_ open: [TasksService.Item], hasTopic: Bool,
+                        owner: String) -> [TasksService.Item] {
+        hasTopic ? open : promised(open, owner: owner)
     }
 
     /// «Что вы обещали» — секция «Мои» экрана задач (`TasksScreenPolicy.split`),
@@ -349,24 +356,26 @@ struct PrepView: View {
     /// Горящее сверху: просроченные, потом неделя, потом остальное.
     static func mostUrgent(_ items: [TasksService.Item], limit: Int,
                            now: Date = Date()) -> [TasksService.Item] {
-        let ranked = items.map { item -> (TasksScreenPolicy.DueBucket, Int, TasksService.Item) in
+        let ranked = items.map { item -> (TasksScreenPolicy.DueBucket, Int, Double, TasksService.Item) in
             let bucket = TasksScreenPolicy.bucket(text: item.text, done: false,
                                                   anchor: item.dueAnchor, now: now)
             // внутри просроченных — самые давние первыми
             var days = 0
             if case .overdue(let d)? = TaskDue.parse(item.text)?
                 .status(now: now, anchor: item.dueAnchor) { days = -d }
-            return (bucket, days, item)
+            // Только без срока — свежие встречи первыми: все свои без срока
+            // лежат в одной корзине, и тройку решал путь файла (№755). Дата —
+            // встречи, не mtime: отметка чекбокса переписывает файл заметки, и
+            // её строки прыгали бы наверх. Без встречи — после встреч.
+            let fresh = bucket == .undated ? -(item.dueAnchor?.timeIntervalSince1970 ?? 0) : 0
+            return (bucket, days, fresh, item)
         }
-        // Третий ключ — свежесть встречи: все свои без срока лежат в одной
-        // корзине, и без него тройку решал путь файла (№755). Четвёртый —
-        // стабильность: при равных — порядок файла, а не произвол нестабильной
-        // сортировки (ревью 22.08, DeepSeek).
+        // Последний ключ — стабильность: при равных — порядок файла, а не
+        // произвол нестабильной сортировки (ревью 22.08, DeepSeek).
         return ranked
-            .sorted { ($0.0, $0.1, -$0.2.happenedAt.timeIntervalSince1970, $0.2.id)
-                < ($1.0, $1.1, -$1.2.happenedAt.timeIntervalSince1970, $1.2.id) }
+            .sorted { ($0.0, $0.1, $0.2, $0.3.id) < ($1.0, $1.1, $1.2, $1.3.id) }
             .prefix(limit)
-            .map(\.2)
+            .map(\.3)
     }
 
     // MARK: - Прошлая встреча
