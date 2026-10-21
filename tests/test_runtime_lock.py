@@ -238,9 +238,9 @@ def test_one_compile_command_for_every_target_with_the_platform_floor_only_where
 
 #: Что делать, когда вход или лок движка разошёлся с константой (PR Dependabot правит
 #: только `.in`): процедура подъёма — в docs/DIARIZATION.md, пункт «Version».
-NEM_BUMP = ("правьте не .in, а MLX_AUDIO_VERSION в src/diarize_nemotron.py — после проверки стыка "
-            "на новой версии; затем .venv/bin/python scripts/lock_runtime_deps.py nemotron и рецепты "
-            "в docs/DIARIZATION.md и docs/ru/DIARIZATION.md (docs/DIARIZATION.md, пункт «Version»)")
+NEM_BUMP = (".in и лок — генерат MLX_AUDIO_VERSION (src/diarize_nemotron.py), руками не правятся. "
+            "Константа уже поднята — запустите .venv/bin/python scripts/lock_runtime_deps.py nemotron "
+            "(нужен uv); PR Dependabot — подъём целиком по docs/DIARIZATION.md, пункт «Version»")
 
 
 def test_the_engine_lock_pins_the_version_the_engine_module_names():

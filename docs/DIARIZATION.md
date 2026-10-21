@@ -360,13 +360,21 @@ set, the bench prints the exact folder):
   `MLX_AUDIO_VERSION`, and a test keeps the recipe above equal to it. Another
   `major.minor` branch or a package without distribution metadata is refused
   before the run with the recipe; the same branch with another patch, a dev or
-  a local build gets a warning and the run goes on. Raising it: check the seam
-  on the new version first (offline and `--stream` outputs equal to the old
-  version on the same recordings, no network under a `deny network*` sandbox),
-  then change `MLX_AUDIO_VERSION`, run
-  `.venv/bin/python scripts/lock_runtime_deps.py nemotron` and update the
-  recipe above. `requirements-nemotron.in` and the lock are generated:
-  Dependabot edits only `.in`, so its PR is red until someone does this.
+  a local build gets a warning and the run goes on. Raising it, a patch or a
+  branch alike: on the PR branch change `MLX_AUDIO_VERSION` first (the engine
+  refuses another branch before the run), run
+  `.venv/bin/python scripts/lock_runtime_deps.py nemotron` (needs `uv`) and
+  update the recipes in `docs/DIARIZATION.md` and `docs/ru/DIARIZATION.md`.
+  Then check the seam before merging: install the engine into two clean
+  `CHAROITE_ROOT` folders with the app's bundled python
+  (`<app>/Contents/Resources/python/bin/python3 scripts/install_engine.py nemotron`),
+  one from the branch and one from `main` as the old side; on the same
+  recordings run each tree's `src/diarize_nemotron.py <wav> --model <weights>`
+  and `--stream --model <weights>` (s16le 16 kHz on stdin) with its
+  environment's python. Outputs must be equal (stream lines without `cpu_s`,
+  `rss_mb`, `phys_mb`), and equal again under a `deny network*` sandbox.
+  `requirements-nemotron.in` and the lock are generated: Dependabot edits only
+  `.in`, so its PR is red until someone does this.
 - **Network.** The loader accepts only a local folder with `config.json` and
   weights and hands mlx-audio a `pathlib.Path`, for which the library does not
   go to the hub. A repository id is refused with the download recipe, not

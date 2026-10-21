@@ -533,13 +533,20 @@ def test_availability_names_a_version_other_than_the_checked_one(tmp_path, monke
     assert nem.availability(d) is None
 
 
+#: Соседи проверенной версии выводятся из константы: подъём MLX_AUDIO_VERSION, и
+#: на другую ветку тоже, тестов не трогает (выходной круг №756, DS M2).
+_MAJOR, _MINOR, _PATCH = (int(x) for x in nem.MLX_AUDIO_VERSION.split(".")[:3])
+SAME_BRANCH = f"{_MAJOR}.{_MINOR}.{_PATCH + 1}"
+NEXT_BRANCH = f"{_MAJOR}.{_MINOR + 1}.0"
+
+
 @pytest.mark.parametrize("installed, refused, warned", [
     (nem.MLX_AUDIO_VERSION, False, False),
-    ("0.5.6", False, True),
-    ("0.5.7", False, True),
-    ("0.5.7.dev0+g1a2b3c", False, True),
-    ("0.5.6+local", False, True),
-    ("0.6.0", True, False),
+    (SAME_BRANCH, False, True),
+    (f"{nem.MLX_AUDIO_VERSION}.post1", False, True),
+    (f"{SAME_BRANCH}.dev0+g1a2b3c", False, True),
+    (f"{SAME_BRANCH}+local", False, True),
+    (NEXT_BRANCH, True, False),
     ("0.4.9", True, False),
     ("мусор", True, False),
     (None, True, False),
@@ -559,20 +566,20 @@ def test_version_policy_refuses_another_branch_and_warns_on_a_patch(installed, r
 def test_availability_warns_on_a_patch_and_still_passes(tmp_path, monkeypatch):
     """Та же ветка, другой патч: не проблема, а строка в сток предупреждений."""
     monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.5.7")
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: SAME_BRANCH)
     warned = []
     assert nem.availability(_model_dir(tmp_path), warn=warned.append) is None
-    assert len(warned) == 1 and "0.5.7" in warned[0]
+    assert len(warned) == 1 and SAME_BRANCH in warned[0]
 
 
 def test_availability_warns_to_stderr_by_default(tmp_path, monkeypatch, capsys):
     """Без своего стока предупреждение — одна строка в stderr, stdout чист: бенч печатает
     в stdout таблицу, и строка о версии не должна в неё попасть."""
     monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.5.7")
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: SAME_BRANCH)
     assert nem.availability(_model_dir(tmp_path)) is None
     out, err = capsys.readouterr()
-    assert out == "" and err.endswith("\n") and err.count("\n") == 1 and "0.5.7" in err
+    assert out == "" and err.endswith("\n") and err.count("\n") == 1 and SAME_BRANCH in err
 
 
 def test_the_docs_install_the_pinned_version():
@@ -586,7 +593,9 @@ def test_the_docs_install_the_pinned_version():
     pins = {k: v for k, v in pins.items() if v}
     assert pins, "доки перестали называть версию mlx-audio — сторож смотрит мимо"
     for doc, versions in pins.items():
-        assert set(versions) == {nem.MLX_AUDIO_VERSION}, (doc, versions)
+        assert set(versions) == {nem.MLX_AUDIO_VERSION}, (
+            f"{doc} ставит mlx-audio {versions}, проверена {nem.MLX_AUDIO_VERSION}: рецепты в "
+            "docs/DIARIZATION.md и docs/ru/DIARIZATION.md правятся вместе с константой")
 
 
 # ------------------------------------------------ протокол пересборки (№473)
