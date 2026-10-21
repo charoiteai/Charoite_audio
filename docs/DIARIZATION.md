@@ -360,18 +360,11 @@ set, the bench prints the exact folder):
   `MLX_AUDIO_VERSION`, and a test keeps the recipe above equal to it. Another
   `major.minor` branch or a package without distribution metadata is refused
   before the run with the recipe; the same branch with another patch, a dev or
-  a local build gets a warning and the run goes on. Raising it, a patch or a
-  branch alike: on the PR branch change `MLX_AUDIO_VERSION` first (the engine
-  refuses another branch before the run), run
-  `.venv/bin/python scripts/lock_runtime_deps.py nemotron` (needs `uv`) and
-  update the recipes in `docs/DIARIZATION.md` and `docs/ru/DIARIZATION.md`.
-  Before merging the seam is checked by hand, CI does not run it: on the same
-  recordings the engine on the new version gives the same offline and
-  `--stream` output as on the old one (stream lines without the process price,
-  `live_nemotron.FRONT_PRICE_KEYS`), and the same again with no network.
-  `requirements-nemotron.in` and the lock are
-  generated: Dependabot edits only `.in`, so its PR is red until the constant,
-  the lock and the recipes are raised.
+  a local build gets a warning and the run goes on. Raising it: change
+  `MLX_AUDIO_VERSION`, run `.venv/bin/python scripts/lock_runtime_deps.py nemotron`
+  (needs `uv`) and update the recipes in both `DIARIZATION.md`.
+  `requirements-nemotron.in` and the lock are generated, so a Dependabot PR that
+  edits only `.in` stays red until the constant, the lock and the recipes move.
 - **Network.** The loader accepts only a local folder with `config.json` and
   weights and hands mlx-audio a `pathlib.Path`, for which the library does not
   go to the hub. A repository id is refused with the download recipe, not
