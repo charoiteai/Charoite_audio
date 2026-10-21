@@ -4,6 +4,7 @@
 
 Настоящий сокет нужен: таймаут, не-200 и не-JSON — это и есть логика сигнала."""
 import contextlib
+import datetime as dt
 import http.server
 import json
 import pathlib
@@ -24,17 +25,21 @@ GB = 10**9
 
 
 @contextlib.contextmanager
-def _fake_ollama(status=200, body=None, delay=0.0):
-    """Подставной сервер `/api/ps` на 127.0.0.1:<свободный порт>."""
+def _fake_ollama(status=200, body=None, delay=0.0, short=0):
+    """Подставной сервер `/api/ps` на 127.0.0.1:<свободный порт>. `short` —
+    объявить на столько байт больше, чем отдать: ответ оборвётся."""
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             time.sleep(delay)
             payload = (body if isinstance(body, bytes) else json.dumps(body).encode()) if body is not None else b""
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload) + short))
+                self.end_headers()
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # клиент ушёл по таймауту — так и задумано
 
         def log_message(self, *a):
             pass
@@ -55,7 +60,7 @@ def _config(root, base_url, extra=""):
     (root / "config" / "config.yaml").write_text(f"llm:\n  base_url: {base_url}\n{extra}", encoding="utf-8")
 
 
-def _model(name, size, expires="2026-10-21T17:39:24.402754+03:00"):
+def _model(name, size, expires=None):
     return {"name": name, "model": name, "size": size, "size_vram": size, "expires_at": expires,
             "context_length": 8192, "digest": "x", "details": {}}
 
@@ -66,23 +71,84 @@ def ram_64gb(monkeypatch):
 
 
 def test_resident_big_model_makes_machine_busy(tmp_path, ram_64gb):
-    """Опыт 21.10 16:11: 35b держит 22,5 ГБ, сторож отвечал «тихо» — теперь занято со словами."""
-    with _fake_ollama(body={"models": [_model("qwen3.6:35b-mlx", 22_493_923_824)]}) as url:
+    """Опыт 21.10 16:11: 35b держит 22,5 ГБ, сторож отвечал «тихо» — теперь занято
+    со словами и командой, которая освобождает память."""
+    expires = "2026-10-21T17:39:24.402754+03:00"
+    until = busy_signals._until_words(expires)
+    with _fake_ollama(body={"models": [_model("qwen3.6:35b-mlx", 22_493_923_824, expires)]}) as url:
         _config(tmp_path, url)
         busy = busy_signals.machine_busy(tmp_path)
-        assert len(busy) == 1
-        assert busy[0].startswith("локальные модели держат память (")
-        assert "qwen3.6:35b-mlx 22,5 ГБ до 17:39" in busy[0]
-        assert "всего 22,5 ГБ при пороге 11,5 ГБ" in busy[0]
+        assert busy == [f"локальные модели держат память (qwen3.6:35b-mlx 22,5 ГБ {until}; "
+                        "всего 22,5 ГБ при пороге 11,5 ГБ) — освободить сразу: "
+                        "ollama stop qwen3.6:35b-mlx"]
         assert busy_signals.machine_busy(tmp_path, count_resident=False) == []
+
+
+MSK = dt.timezone(dt.timedelta(hours=3))
+
+
+@pytest.mark.parametrize("expires, words", [
+    ("2026-10-21T17:39:24.402754+03:00", "до 17:39"),
+    ("2026-10-21T14:39:24Z", "до 17:39"),           # UTC → местное
+    ("2026-10-22T09:15:00+03:00", "до 22.10 09:15"),  # другой день — с датой
+    ("2318-02-01T00:00:00+03:00", "без срока"),       # keep_alive -1: год далеко вперёд
+    ("не дата", ""),
+    (None, ""),
+])
+def test_until_words_local_time(expires, words):
+    """Срок — по местному времени: срез `[11:16]` показывал бы часы чужого пояса."""
+    now = dt.datetime(2026, 10, 21, 16, 50, tzinfo=MSK)
+    assert busy_signals._until_words(expires, now) == words
 
 
 def test_two_models_sum_over_the_share(tmp_path, ram_64gb):
     """Порог — по сумме: две модели по 6 ГБ вместе выше 1/6 от 64 ГБ (11,5 ГБ)."""
-    with _fake_ollama(body={"models": [_model("a", 6 * GB), _model("b", 6 * GB, expires=None)]}) as url:
+    with _fake_ollama(body={"models": [_model("a", 6 * GB), _model("b", 7 * GB)]}) as url:
         _config(tmp_path, url)
         busy = busy_signals.machine_busy(tmp_path)
-        assert len(busy) == 1 and "a 6,0 ГБ до 17:39, b 6,0 ГБ;" in busy[0]
+        assert len(busy) == 1 and "(b 7,0 ГБ, a 6,0 ГБ; всего 13,0 ГБ" in busy[0]
+        assert busy[0].endswith("ollama stop b")
+
+
+def test_floor_on_small_machine(tmp_path, monkeypatch):
+    """16 ГиБ: 1/6 — 2,9 ГБ, и 4b (~3 ГБ) держала бы прогоны. Пол 8 ГБ: 4b — свободно, 9 ГБ — занято."""
+    monkeypatch.setattr(busy_signals, "_physical_bytes", lambda: 16 * 2**30)
+    with _fake_ollama(body={"models": [_model("gemma4:e4b", 3_100_000_000)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.machine_busy(tmp_path) == []
+    with _fake_ollama(body={"models": [_model("qwen:14b", 9 * GB)]}) as url:
+        _config(tmp_path, url)
+        busy = busy_signals.machine_busy(tmp_path)
+        assert len(busy) == 1 and "при пороге 8,0 ГБ)" in busy[0]
+
+
+def test_memory_size_unknown(tmp_path, monkeypatch):
+    """sysconf не ответил: большая модель — «не читается», а не падение; без моделей объём не нужен."""
+    monkeypatch.setattr(busy_signals, "_physical_bytes", lambda: None)
+    with _fake_ollama(body={"models": [_model("big", 20 * GB)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.machine_busy(tmp_path) == [
+            "память моделей не читается (объём памяти машины не определён)"]
+    with _fake_ollama(body={"models": []}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.machine_busy(tmp_path) == []
+
+
+def test_physical_bytes_sysconf_failure(monkeypatch):
+    def nope(name):
+        raise ValueError(name)
+    monkeypatch.setattr(busy_signals.os, "sysconf", nope)
+    assert busy_signals._physical_bytes() is None
+
+
+def test_not_ollama_engine_is_not_asked(tmp_path, monkeypatch):
+    """mlx-server: по адресу движка нет `/api/ps` — 404 читался бы «занято» вечно.
+    Модель mlx-server здесь не видна (ограничение, долг №615)."""
+    def boom(*a, **k):
+        raise AssertionError("спросили не Ollama")
+    monkeypatch.setattr(busy_signals.net, "open_url", boom)
+    _config(tmp_path, "http://127.0.0.1:8080", "  engine: mlx-server\n")
+    assert busy_signals.resident_models(tmp_path) == ([], None)
 
 
 def test_small_resident_model_is_not_busy(tmp_path, ram_64gb):
@@ -117,6 +183,14 @@ def test_unreadable_census_is_busy(tmp_path, ram_64gb, status, body, words):
         _config(tmp_path, url)
         busy = busy_signals.machine_busy(tmp_path)
         assert len(busy) == 1 and busy[0].startswith("память моделей не читается (") and words in busy[0]
+
+
+def test_cut_answer_is_busy(tmp_path, ram_64gb):
+    """Ответ оборвался посреди тела — IncompleteRead (HTTPException), не падение сторожа."""
+    with _fake_ollama(body={"models": []}, short=100) as url:
+        _config(tmp_path, url)
+        busy = busy_signals.machine_busy(tmp_path)
+        assert len(busy) == 1 and "IncompleteRead" in busy[0] and busy[0].endswith("проверьте Ollama")
 
 
 def test_hanging_server_is_busy_within_timeout(tmp_path, ram_64gb, monkeypatch):

@@ -917,11 +917,16 @@ it signals degradation, it does not break the loop.
   `/api/ps` (address only through `privacy.llm_base_url`, this machine
   only, read only when the data root has its own `config/config.yaml`)
   marks the machine busy once resident models reach 1/6 of physical memory
-  — the app's chat and side stands publish no leases, yet a 32b/35b left
-  resident pushed a heavy run into 11.7 GB of swap. A server that is not
-  listening means no models; an answer that cannot be read means busy. The
-  night's own wait (`wait_for_idle`) does not count it: the night loads the
-  35b itself. Since 28.09 the mutation lock is
+  (never below 8 GB, so a 4b on a 16 GB Mac stays quiet) — the app's chat
+  and side stands publish no leases, yet a 32b/35b left resident pushed a
+  heavy run into 11.7 GB of swap. The reason names each model with its
+  unload time and the command that frees memory at once (`ollama stop`).
+  A server that is not listening means no models; an answer that cannot be
+  read means busy. Only the Ollama engine is counted: a model held by
+  `mlx-server` is not visible here. The mutator re-checks it between
+  mutants at most once a minute, as it does for a recording and the night.
+  The night's own wait (`wait_for_idle`) does not count it: the night loads
+  the 35b itself. Since 28.09 the mutation lock is
   shared: several mutators may run at once (`--jobs N` shares, a second
   run beside the first), another mutator is no reason to refuse, and the
   night waits while any of them holds the lock.

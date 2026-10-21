@@ -439,6 +439,11 @@ def journal_open(data_root: pathlib.Path, totals: ScanTotals, k: int, rng: str,
     return done
 
 
+#: Как часто между мутантами спрашивать Ollama о моделях в памяти (№595):
+#: запрос 10–20 мс, мутант — секунды-минуты; чаще незачем.
+RESIDENT_POLL_S = 60.0
+
+
 def busy_guard(args) -> bool:
     """Действует ли гвард занятости машины. Снимает его только `--force` —
     человек сознательно идёт поверх встречи. Отдельного флага для CI нет и не
@@ -1903,6 +1908,7 @@ def main(argv: list[str]) -> int:
             facts.broken, facts.broken_rc = reason, 2
             save(reason)
             return 2
+        resident_checked = clock()
         for i, mut in enumerate([] if aborted else todo, 1):
             suite = suite_key(work, mut.path)
             # Бюджет — вне гварда занятости: `--force` идёт поверх встречи, но
@@ -1921,6 +1927,12 @@ def main(argv: list[str]) -> int:
                     aborted = "живая встреча"
                 elif busy_signals.night_running(data_root):
                     aborted = "ночной цикл"
+                # Модель встречи заняла память (№595): тесты мутантов поверх
+                # неё — своп. Опрос Ollama — не чаще раза в минуту.
+                elif clock() - resident_checked >= RESIDENT_POLL_S:
+                    resident_checked = clock()
+                    if busy_signals.resident_busy_reason(data_root):
+                        aborted = "модели в памяти"
             if aborted:
                 print(f"⏹ {aborted} — прерываюсь ({facts.tested}/{len(plan)} "
                       "проверено, остальное не судилось)")

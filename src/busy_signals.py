@@ -13,6 +13,8 @@ PR #399, DeepSeek: pid+mtime+STALE-велосипед дал три дыры —
 """
 from __future__ import annotations
 
+import datetime as dt
+import http.client
 import json
 import os
 import pathlib
@@ -36,10 +38,13 @@ NIGHTLY_REL = pathlib.Path("logs") / "nightly.json"
 #: nightly.json со state=running старше этого — брошенный (ребут посреди ночи)
 NIGHT_STALE_S = 8 * 3600
 CONFIG_REL = pathlib.Path("config") / "config.yaml"
-#: Доля физической памяти, от которой резидентные модели Ollama — «машина занята»
-#: (№595): 64 ГБ → 10,7 ГБ — 35b (22,5 ГБ) и 32b (~20 ГБ) да, эмбеддер bge-m3
-#: (0,7–1,2 ГБ) нет. Своп 11,7 ГБ 02.10 — вторая большая модель поверх первой.
+#: Порог «машина занята» по моделям в памяти Ollama (№595): большее из доли
+#: физической памяти и пола. Mac 64 ГиБ → 11,5 ГБ (десятичные, как в `ollama ps`):
+#: 35b (22,5 ГБ) и 32b (~20 ГБ) — занято, эмбеддер bge-m3 (0,7–1,2 ГБ) — нет. Пол —
+#: для машин 16–32 ГиБ: без него 4b (~3 ГБ) на 16 ГиБ уже держала бы прогоны.
+#: Своп 11,7 ГБ 02.10 — вторая большая модель поверх первой.
 RESIDENT_BUSY_SHARE = 1 / 6
+RESIDENT_BUSY_FLOOR = 8 * 10**9
 #: Потолок переписи моделей: `/api/ps` отвечает за 10–20 мс и во время загрузки
 #: модели (замеры 17.10 и 21.10); дольше — сервер не в себе, и это «не читается».
 RESIDENT_TIMEOUT_S = 2.0
@@ -106,10 +111,12 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
       каталог, тест, CI — без фолбэка на пример, иначе тест спросил бы живую
       Ollama владельца), адрес не этой машины или не разрешён (`/api/ps` чужого
       сервера о нашей памяти ничего не говорит), сервер не слушает (моделей нет);
-    - модели — `([(имя, байт, срок ЧЧ:ММ)], None)`;
-    - не читается — `([], причина)`: таймаут, не-200, тело без `models`/`size`,
-      битый конфиг. Сломанный сигнал — не свободная машина.
+    - модели — `([(имя, байт, срок словами)], None)`;
+    - не читается — `([], причина)`: таймаут, не-200, обрыв ответа, тело без
+      `models`/`size`, битый конфиг. Сломанный сигнал — не свободная машина.
     Адрес — только из `privacy.llm_base_url`: сырой `llm.base_url` проект не читает.
+    Считается только Ollama: модель движка mlx-server живёт отдельным процессом
+    без переписи и здесь не видна (долг №615).
     """
     path = root / CONFIG_REL
     if not path.is_file():
@@ -121,6 +128,8 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     if not isinstance(cfg, dict):
         return [], f"конфиг {path} не словарь"
     try:
+        if privacy.llm_engine(cfg) != "ollama":
+            return [], None
         base = privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused:
         return [], None
@@ -138,7 +147,7 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
         return [], f"{url}: {e.reason}"
     except ConnectionRefusedError:
         return [], None
-    except (OSError, socket.timeout, ValueError) as e:
+    except (OSError, socket.timeout, ValueError, http.client.HTTPException) as e:
         return [], f"{url}: {type(e).__name__}"
     models = body.get("models") if isinstance(body, dict) else None
     if not isinstance(models, list):
@@ -148,30 +157,53 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
         size = m.get("size") if isinstance(m, dict) else None
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             return [], f"{url}: у модели нет размера"
-        expires = m.get("expires_at")
-        out.append((str(m.get("name") or "?"), size,
-                    expires[11:16] if isinstance(expires, str) and len(expires) >= 16 else ""))
+        out.append((str(m.get("name") or "?"), size, _until_words(m.get("expires_at"))))
     return out, None
 
 
-def _physical_bytes() -> int:
-    return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+def _until_words(expires: object, now: dt.datetime | None = None) -> str:
+    """Срок выгрузки словами по местному времени: «до 17:39», другой день —
+    «до 22.10 09:15», бессрочно (Ollama пишет год далеко вперёд) — «без срока»."""
+    if not isinstance(expires, str):
+        return ""
+    now = now or dt.datetime.now().astimezone()
+    try:
+        when = dt.datetime.fromisoformat(expires).astimezone(now.tzinfo)
+    except ValueError:
+        return ""
+    if when.year > now.year + 1:
+        return "без срока"
+    return f"до {when:%H:%M}" if when.date() == now.date() else f"до {when:%d.%m %H:%M}"
+
+
+def _physical_bytes() -> int | None:
+    try:
+        n = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError):
+        return None
+    return n if n > 0 else None
 
 
 def resident_busy_reason(root: pathlib.Path) -> str | None:
     """Слова «модели держат память» — или None, если держат меньше доли ОЗУ."""
     models, problem = resident_models(root)
     if problem:
-        return f"память моделей не читается ({problem})"
+        return f"память моделей не читается ({problem}) — проверьте Ollama"
     held = sum(size for _, size, _ in models)
+    if held < RESIDENT_BUSY_FLOOR:
+        return None
     total = _physical_bytes()
-    if held < total * RESIDENT_BUSY_SHARE:
+    if total is None:
+        return "память моделей не читается (объём памяти машины не определён)"
+    limit = max(total * RESIDENT_BUSY_SHARE, RESIDENT_BUSY_FLOOR)
+    if held < limit:
         return None
     gb = lambda n: f"{n / 1e9:.1f}".replace(".", ",")  # noqa: E731
-    names = ", ".join(f"{name} {gb(size)} ГБ" + (f" до {until}" if until else "")
-                      for name, size, until in sorted(models, key=lambda m: -m[1]))
-    return (f"локальные модели держат память ({names}; всего {gb(held)} ГБ "
-            f"при пороге {gb(total * RESIDENT_BUSY_SHARE)} ГБ — {RESIDENT_BUSY_SHARE:.0%} памяти)")
+    ordered = sorted(models, key=lambda m: -m[1])
+    names = ", ".join(f"{name} {gb(size)} ГБ" + (f" {until}" if until else "")
+                      for name, size, until in ordered)
+    return (f"локальные модели держат память ({names}; всего {gb(held)} ГБ при пороге "
+            f"{gb(limit)} ГБ) — освободить сразу: ollama stop {ordered[0][0]}")
 
 
 def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,

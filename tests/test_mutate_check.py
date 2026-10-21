@@ -1486,6 +1486,35 @@ def test_бюджет_хватает_на_базу_и_k_мутантов(tmp_pat
     assert "⏹ бюджет — прерываюсь (3/5" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_модель_в_памяти_прерывает_между_мутантами(tmp_path, monkeypatch, capsys, force):
+    """Модель встречи заняла память посреди прогона (№595) — прерываемся между
+    мутантами, как при записи и ночи; Ollama спрашиваем не чаще RESIDENT_POLL_S.
+    Мутанты по 30 с: первый опрос — после второго мутанта (60 с с начала цикла).
+    `--force` снимает и этот гвард."""
+    import busy_signals
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 5)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 30})
+    опросы = []
+
+    def занято(root):
+        опросы.append(root)
+        return "локальные модели держат память (qwen 22,5 ГБ)"
+    monkeypatch.setattr(busy_signals, "resident_busy_reason", занято)
+    отчёт = tmp_path / "отчёт.txt"
+    argv = ["mutate_check.py", "--range", "HEAD", "--timeout", "100",
+            "--report", str(отчёт)] + (["--force"] if force else [])
+    if force:
+        assert mc.main(argv) == 0
+        assert len(журнал) == 1 + 5 and опросы == [], (журнал, опросы)
+        return
+    assert mc.main(argv) == exit_codes.EXIT_PARTIAL
+    assert len(журнал) == 1 + 2 and len(опросы) == 1, (журнал, опросы)
+    assert "⏹ модели в памяти — прерываюсь (2/5" in capsys.readouterr().out
+    assert "(остановка: модели в памяти)" in отчёт.read_text(encoding="utf-8")
+
+
 def test_оценка_мутанта_это_замер_его_набора(tmp_path, monkeypatch):
     """Ключ базы и ключ мутанта совпадают, хоть `tests_for` и отдаёт новый список
     на каждый вызов. Наборы разной длины: база 10 + 30 при бюджете 60 оставляет
