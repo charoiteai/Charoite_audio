@@ -184,6 +184,24 @@ def engine_python(root: pathlib.Path) -> pathlib.Path:
     return engine_dir(root) / "python" / "bin" / "python3"
 
 
+def engine_mlx_audio(root: pathlib.Path) -> str | None | bool:
+    """Версия mlx-audio в установленном окружении — по раскладке, без запуска.
+
+    Источник — поле `Version:` метаданных дистрибутива, как у пробы
+    (`importlib.metadata.version`), а не имя каталога `*.dist-info`: строкой
+    «0.5.10» меньше «0.5.9». Не ровно один дистрибутив (нет, два после ручного
+    pip, несколько `python3.*`) — `None`: версию не сверить (№758, вход in1).
+    Каталог site-packages есть, а дистрибутива нет — `False`: пакет не поставлен
+    или без метаданных, проба на нём откажет так же (out2 DS M5)."""
+    # Один каталог дважды (симлинк `python3` → `python3.12`) дал бы два «разных»
+    # дистрибутива и ложное «не ровно один» (№758, out1 DS M4).
+    sites = sorted({str(p.resolve()) for p in (engine_dir(root) / "python" / "lib").glob("python3*/site-packages")})
+    found = list(importlib.metadata.distributions(name="mlx-audio", path=sites)) if sites else []
+    if sites and not found:
+        return False
+    return found[0].version if len(found) == 1 else None
+
+
 def app_python() -> str:
     """Python приложения рядом с кодом — или "", если код лежит не в бандле.
 
@@ -887,6 +905,13 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
         интерпретаторе mlx-audio нужной версии, готовность не проверяет: контракт
         модуля — «без запуска движка», и это меряет только проба, которую доктор
         зовёт при выбранном Nemotron;
+      * `outdated` — версия mlx-audio своего окружения установщика не совпадает
+        с `MLX_AUDIO_VERSION`: причина с командой установщика или `None`.
+        Считается только при пустом ключе, годном интерпретаторе установщика и
+        прочитанной версии (`engine_mlx_audio` не `None`): неизвестная версия
+        не повод звать переустановку, которая её не прояснит (№758, out1 S I1);
+        вердикт — `version_verdict` (одна политика с пересборкой). На `ready`
+        не влияет: на той же ветке пересборка идёт с предупреждением (№758);
       * `missing` — чего не хватает для готовности: `None` — готов;
         `"environment"` — ключ пуст и `engine_interpreter` не нашёл, чем
         запускать (окружение не установлено); `"interpreter"` — выбранного
@@ -919,6 +944,11 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
     else:
         missing, ready_reason = None, None
     ready = missing is None
+    outdated = None
+    installed = engine_mlx_audio(root) if not setting.strip() and missing in (None, "weights") else None
+    if installed is not None:   # `False` — дистрибутива нет: вердикт «без метаданных»
+        refusal_v, warning_v = version_verdict(installed or None, recipe=f"переставьте: {install_command(root)}")
+        outdated = refusal_v or warning_v
     return {
         "backend": normalize_engine_key(sufler.get("diarize_backend")),
         "nemotron_python": setting,
@@ -930,6 +960,7 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
         "weights_reason": weights_problem,
         "ready": ready,
         "ready_reason": ready_reason,
+        "outdated": outdated,
         "missing": missing,
         "live_mode": normalize_live_mode(sufler.get("live_nemotron")),
     }

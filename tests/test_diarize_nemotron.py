@@ -865,6 +865,73 @@ def test_the_engine_lives_under_the_data_root_next_to_its_weights(tmp_path):
     assert nem.model_dir(tmp_path) == tmp_path / "models" / "diar" / "nemotron"
 
 
+def _dist(root, version, *, folder=None, python="python3.12"):
+    """dist-info mlx-audio в окружении установщика: имя каталога и `Version:` — порознь."""
+    d = (nem.engine_dir(root) / "python" / "lib" / python / "site-packages"
+         / f"{folder or 'mlx_audio-' + version}.dist-info")
+    d.mkdir(parents=True)
+    (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: mlx-audio\nVersion: {version}\n", encoding="utf-8")
+
+
+def test_the_env_version_comes_from_metadata_and_only_when_unambiguous(tmp_path):
+    """Версия окружения — поле `Version:`, а не имя каталога; не ровно один дистрибутив —
+    `None` (№758, вход in1: «0.5.10» строкой меньше «0.5.9»)."""
+    assert nem.engine_mlx_audio(tmp_path) is None
+    _dist(tmp_path, "0.5.10")
+    assert nem.engine_mlx_audio(tmp_path) == "0.5.10"
+    _dist(tmp_path, "0.5.9")
+    assert nem.engine_mlx_audio(tmp_path) is None
+    other = tmp_path / "другой"
+    _dist(other, "0.5.9.post1", folder="mlx_audio-0.5.9")
+    assert nem.engine_mlx_audio(other) == "0.5.9.post1"
+
+
+def test_engine_state_says_the_installer_env_is_outdated_without_touching_ready(tmp_path, monkeypatch):
+    """Своё окружение установщика отстало от MLX_AUDIO_VERSION — `outdated` с командой
+    установщика; `ready` прежний: пересборка на той же ветке идёт (№758). Ключ задан —
+    его версию ведёт владелец ключа, `outdated` нет."""
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
+    python = nem.engine_python(tmp_path)
+    python.parent.mkdir(parents=True)
+    python.write_text("#", encoding="utf-8")
+    python.chmod(0o755)
+    _dist(tmp_path, "0.5.6")
+    state = nem.engine_state(tmp_path, {})
+    assert state["missing"] == "weights"
+    assert "mlx-audio 0.5.6" in state["outdated"] and nem.install_command(tmp_path) in state["outdated"]
+    assert nem.engine_state(tmp_path, {"sufler": {"nemotron_python": str(python)}})["outdated"] is None
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.6")
+    assert nem.engine_state(tmp_path, {})["outdated"] is None
+    assert nem.engine_state(tmp_path / "пусто", {})["outdated"] is None   # окружения нет — это `missing`
+    # Версия неизвестна (второй дистрибутив) — не повод звать переустановку (out1 S I1).
+    _dist(tmp_path, "0.5.6", folder="mlx_audio-0.5.6-копия")
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
+    assert nem.engine_mlx_audio(tmp_path) is None and nem.engine_state(tmp_path, {})["outdated"] is None
+
+
+def test_an_env_without_the_distribution_is_outdated_by_the_same_verdict(tmp_path, monkeypatch):
+    """site-packages есть, дистрибутива mlx-audio нет — `False`, и `outdated` несёт вердикт
+    «без метаданных» с командой установщика: проба на таком окружении откажет так же,
+    а без `engine_outdated` у включённого движка не было бы кнопки (out2 DS M5)."""
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
+    python = nem.engine_python(tmp_path)
+    python.parent.mkdir(parents=True)
+    python.write_text("#", encoding="utf-8")
+    python.chmod(0o755)
+    (nem.engine_dir(tmp_path) / "python" / "lib" / "python3.12" / "site-packages").mkdir(parents=True)
+    assert nem.engine_mlx_audio(tmp_path) is False
+    outdated = nem.engine_state(tmp_path, {})["outdated"]
+    assert "без метаданных" in outdated and nem.install_command(tmp_path) in outdated
+
+
+def test_the_env_version_survives_a_python3_symlink(tmp_path):
+    """`lib/python3` → `python3.12` — один каталог, а не два дистрибутива (out1 DS M4)."""
+    _dist(tmp_path, "0.5.9")
+    lib = nem.engine_dir(tmp_path) / "python" / "lib"
+    (lib / "python3").symlink_to("python3.12")
+    assert nem.engine_mlx_audio(tmp_path) == "0.5.9"
+
+
 def test_engine_state_missing_names_what_is_lacking(tmp_path):
     """`engine_state.missing` называет, чего не хватает до готовности: окружения,
     интерпретатора, бита исполнения у интерпретатора, весов — или `None`, когда готов;
