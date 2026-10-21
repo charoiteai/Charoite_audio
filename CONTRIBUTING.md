@@ -113,10 +113,18 @@ review gates, and who answers for what — is documented in
   already covered. Extracting the body into a helper (the irreversible call, or
   only the condition that decides it; private or not) does not leave the zone,
   and the helper is not added to the list: the closure is read off the tree
-  being mutated. It does not follow another module, `getattr` on a string,
-  `globals()`, a registry filled at runtime, or an attribute of a value whose
-  class is unknown (`hub.drop(...)`). Moving the helper into another module is a
-  separate case and stays outside the zone.
+  being mutated. One step into another module: a product symbol that the door
+  module imports (`from x import y`, `as`, relative, `import x` with `x.y`) and
+  its closure mentions becomes the entry `x::y` at the same revision, unless
+  `x` (or `x::y`) is listed in `mutation_not_critical` in both the base and the
+  head of the range (a single revision without a left end has no such list). A
+  module-level `x` there does not stop the step from a `module::function` door
+  when `x` itself has `x::…` entries in `mutation_critical` (decided per
+  function); from a whole-file door it always does. It does not go further
+  across modules, nor follow
+  `from x import *`, re-exports, `getattr` on a string, `globals()`, a registry
+  filled at runtime, or an attribute of a value whose class is unknown
+  (`hub.drop(...)`).
   A module in the area that imports a network library or the `safe_write` door
   must be listed in `mutation_critical` or in `mutation_not_critical` with a
   reason — `layout_map --check` guards it. A survivor in a critical zone is red;

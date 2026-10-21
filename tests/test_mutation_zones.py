@@ -644,3 +644,150 @@ def test_инвентарь_ревизии_читает_коммит_а_не_д�
     assert lm.zone_signal("src/mod.py", inv.files["src/mod.py"].tree) is None
     диск = lm.inventory(repo)
     assert lm.zone_signal("src/mod.py", диск.files["src/mod.py"].tree) == "импорт requests"
+
+
+# ------------------------------------------------ №613: вынос решения двери в другой модуль
+
+_ДВЕРЬ_ИЗ_ИМПОРТА = {
+    "from": "from x import too_old\n\n\ndef sweep(p):\n    if too_old(p):\n        p.unlink()\n",
+    "as": "from x import too_old as old\n\n\ndef sweep(p):\n    if old(p):\n        p.unlink()\n",
+    "attr": "import x\n\n\ndef sweep(p):\n    if x.too_old(p):\n        p.unlink()\n",
+    "as_module": "import x as xx\n\n\ndef sweep(p):\n    if xx.too_old(p):\n        p.unlink()\n",
+    "relative": "from .x import too_old\n\n\ndef sweep(p):\n    if too_old(p):\n        p.unlink()\n",
+    "inner_import": "def sweep(p):\n    from x import too_old\n    if too_old(p):\n        p.unlink()\n",
+    "module_var": "from x import too_old\n\nCHECK = too_old\n\n\ndef sweep(p):\n    if CHECK(p):\n        p.unlink()\n",
+    "helper": "from x import too_old\n\n\ndef _decide(p):\n    return too_old(p)\n\n\ndef sweep(p):\n    if _decide(p):\n        p.unlink()\n",
+}
+
+_X = ("import y\n\n\ndef too_old(p):\n    return _age(p) > 30\n\n\ndef _age(p):\n    return y.age(p)\n\n\n"
+      "def unrelated(p):\n    return p > 1\n\n\nclass Clock:\n    def now(self):\n        return 0\n")
+
+
+def _ревизия(tmp_path, files: dict[str, str]):
+    repo = tmp_path / "repo"
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "база"], cwd=repo, check=True)
+    return lm.inventory(repo, rev="HEAD")
+
+
+def _критичен(inv, entries, rel: str, qual: str) -> bool:
+    return lm.in_zone(entries, rel, qual, inv.files[rel].tree)
+
+
+@pytest.mark.parametrize("форма", sorted(_ДВЕРЬ_ИЗ_ИМПОРТА))
+def test_символ_из_импорта_двери_критичен_в_своём_модуле(tmp_path, форма):
+    """Условие двери вынесено в `x.too_old` и импортировано: мутант `x.py` критичен
+    вместе с хелпером, который `too_old` зовёт внутри `x`; соседний `unrelated` — нет.
+    Без расширения (только `in_zone`) `x.py` вне зоны — это и был дефект №613."""
+    pkg = форма == "relative"
+    door = "src/pkg/door.py" if pkg else "src/door.py"
+    x = "src/pkg/x.py" if pkg else "src/x.py"
+    files = {door: _ДВЕРЬ_ИЗ_ИМПОРТА[форма], x: _X.replace("import y\n", "from . import y\n") if pkg else _X,
+             ("src/pkg/y.py" if pkg else "src/y.py"): "def age(p):\n    return p\n"}
+    if pkg:
+        files["src/pkg/__init__.py"] = ""
+    inv = _ревизия(tmp_path, files)
+    entries = {f"{lm.module_of(door)}::sweep"}
+    assert not _критичен(inv, entries, x, "too_old")
+    расширено = lm.zones_with_imports(entries, inv)
+    assert расширено == entries | {f"{lm.module_of(x)}::too_old"}, расширено
+    assert _критичен(inv, расширено, x, "too_old")
+    assert _критичен(inv, расширено, x, "_age")          # дальше — обычный `_delegated`
+    assert not _критичен(inv, расширено, x, "unrelated")
+    # один шаг между модулями: `y.age`, который зовёт `x._age`, не критичен
+    y = "src/pkg/y.py" if pkg else "src/y.py"
+    assert not _критичен(inv, расширено, y, "age")
+
+
+def test_импорт_без_упоминания_в_замыкании_двери_не_критичен(tmp_path):
+    """Модуль двери импортирует символ, но зовёт его функция вне зоны — не критичен.
+    Сам модуль как значение (`x` без атрибута) символа не называет."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": ("import x\nfrom x import too_old, unrelated\n\n\n"
+                        "def sweep(p):\n    log(x)\n    p.unlink()\n\n\n"
+                        "def other(p):\n    return too_old(p) and unrelated(p)\n"),
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    assert lm.zones_with_imports({"door::sweep"}, inv) == {"door::sweep"}
+
+
+def test_вне_области_мутатора_и_не_определение_не_добавляются(tmp_path):
+    """Символ модуля вне `mutation_area` (служебный скрипт, чужая библиотека) и имя,
+    которого нет среди определений модуля-цели (переэкспорт, `*`), записью не становятся;
+    класс — становится, и его методы критичны."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": ("import json\nfrom x import Clock, again\nfrom x import *\n\n\n"
+                        "def sweep(p):\n    json.dumps(p)\n    again(p)\n    too_old(p)\n"
+                        "    return Clock().now()\n"),
+        "src/x.py": _X + "\nfrom y import age as again\n",
+        "src/y.py": "def age(p):\n    return p\n",
+        "tests/test_x.py": "def test_x():\n    pass\n"})
+    расширено = lm.zones_with_imports({"door::sweep"}, inv)
+    assert расширено == {"door::sweep", "x::Clock"}, расширено
+    assert _критичен(inv, расширено, "src/x.py", "Clock.now")
+    # модуль, который область мутатора не ломает, записью не становится
+    без_x = lm.mutation_area(inv) - {"src/x.py"}
+    assert lm.zones_with_imports({"door::sweep"}, inv, без_x) == {"door::sweep"}
+
+
+def test_запись_целым_файлом_тянет_импорт_уровня_модуля(tmp_path):
+    """Дверь — весь файл: код уровня модуля тоже дверь, и его импорт критичен."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": "from x import too_old\n\nSTALE = too_old(40)\n",
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    assert lm.zones_with_imports({"door"}, inv) == {"door", "x::too_old"}
+    assert lm.zones_with_imports({"door::nothing"}, inv) == {"door::nothing"}
+
+
+def test_некритичный_модуль_расширением_не_добавляется(tmp_path):
+    """Явное «не критично» сильнее расширения по импорту: модуль целиком или
+    сам символ в `not_critical` записью зоны не становится (№613, круг 1)."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": "from x import too_old, Clock\n\n\ndef sweep(p):\n    return too_old(p) or Clock()\n",
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    assert lm.zones_with_imports({"door::sweep"}, inv) == {"door::sweep", "x::too_old", "x::Clock"}
+    assert lm.zones_with_imports({"door::sweep"}, inv, None, {"x"}) == {"door::sweep"}
+    assert lm.zones_with_imports({"door::sweep"}, inv, None, {"x::Clock"}) == {"door::sweep", "x::too_old"}
+
+
+def test_дробно_решённый_модуль_расширение_не_гасит(tmp_path):
+    """Модуль со своими записями в критичных («двери — функциями») решён дробно:
+    его «не критично» значит «кроме перечисленного», и условие, которое зовёт
+    дверь другого модуля, остаётся критичным (№613, круг 2: `retro_fill::process`
+    → `live_sidecar::wants_build`). Запись символа гасит символ и тут."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": "from x import too_old, Clock\n\n\ndef sweep(p):\n    return too_old(p) or Clock()\n",
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    zone = {"door::sweep", "x::Clock"}
+    assert lm.zones_with_imports(zone, inv, None, {"x"}) == zone | {"x::too_old"}
+    assert lm.zones_with_imports(zone, inv, None, {"x", "x::too_old"}) == zone
+
+
+def test_дверь_целым_файлом_не_обходит_модульное_не_критично(tmp_path):
+    """Обход модульного «не критично» у дробно решённого модуля — только для шага
+    из двери-функции (№762, круг 3 C, Sonnet I1): дверь целым файлом упоминает
+    половину модуля, и «кроме перечисленного» стало бы «всё, что она зовёт»."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": "from x import too_old, Clock\n\n\ndef sweep(p):\n    return too_old(p) or Clock()\n",
+        "src/whole.py": "from x import too_old\n\n\ndef run(p):\n    return too_old(p)\n",
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    zone = {"whole", "x::Clock"}
+    assert lm.zones_with_imports(zone, inv, None, {"x"}) == zone
+    assert lm.zones_with_imports(zone, inv, None, ()) == zone | {"x::too_old"}
+    assert lm.zones_with_imports(zone | {"door::sweep"}, inv, None, {"x"}) == zone | {"door::sweep", "x::too_old"}
+
+
+def test_грамматика_импорта_одна_на_imports_of_и_привязки():
+    """`imports_of` и `import_bindings` читают один разбор: имя, которое связала
+    привязка, есть и среди написанных импортов."""
+    import ast
+    tree = ast.parse("import a.b\nimport c.d as m\nfrom x import y as z, w\n"
+                     "from . import q\nfrom .r import *\n")
+    rel = "src/charoite_graph/k.py"
+    assert lm.imports_of(rel, tree) == {"a.b", "c.d", "x", "x.y", "x.w", "charoite_graph",
+                                        "charoite_graph.q", "charoite_graph.r", "charoite_graph.r.*"}
+    assert lm.import_bindings(rel, tree) == {"a": {"a"}, "m": {"c.d"}, "z": {"x.y"}, "w": {"x.w"},
+                                             "q": {"charoite_graph.q"}}
