@@ -1254,6 +1254,11 @@ skipped the scrub). The app's minutes parser skips the service tail lines
 The built-in minutes templates and the MCP prompt do not ask the model for
 the meeting date (№738): it used to copy the most prominent date of the talk,
 and every reader takes the date from the file stamp anyway.
+A numeric date in the minutes is checked only as a whole token
+(`fact_check.DATE_NUM_RE`): it starts on a word boundary, so version tails
+like `v1.10` or `Python3.10` are not dates; the suffix "г" counts only right
+after a four-digit year; any horizontal space may separate day and month.
+Chains of numbers and ranges wait for one token parser, not more patterns.
 
 **Why a phone recording stopped is a value that travels with the file.** On
 07.09 one meeting arrived on the Mac as three pieces with no call in between,
