@@ -37,6 +37,10 @@ def busy_now(store: MeetingStatusStore, root: pathlib.Path | None = None) -> lis
 
     Мутатор добавлен после ночи 23→24.08: он делил модель с досье — 35
     ReadTimeout по 300 с; теперь его лок ночь ждёт наравне с разбором.
+
+    Модели в памяти Ollama (`busy_signals.resident_busy_reason`, №595) сюда не
+    входят намеренно: ночь сама грузит 35b, и после вечернего разбора ждала бы
+    до NIGHTLY_WAIT выгрузки своей же модели.
     """
     busy = list(store.busy())
     if root is not None and live_gate.daemon_alive(root):
