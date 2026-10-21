@@ -332,7 +332,7 @@ DER (diarization error rate): долю времени речи, подписан
 напечатает точный каталог):
 
 ```bash
-.venv/bin/pip install "mlx-audio==0.5.8"
+.venv/bin/pip install "mlx-audio==0.5.9"
 .venv/bin/hf download mlx-community/Nemotron-3-Diarization --local-dir models/diar/nemotron
 .venv/bin/python scripts/diar_bench.py --make --crosstalk
 .venv/bin/python scripts/diar_bench.py --crosstalk --engine compare
@@ -347,7 +347,12 @@ DER (diarization error rate): долю времени речи, подписан
 - **Версия.** Номер, на котором проверен стык, живёт в `MLX_AUDIO_VERSION`, и
   тест держит рецепт выше равным ему. Другая ветка `major.minor` или пакет без
   метаданных дистрибутива — отказ до прогона с рецептом; та же ветка с другим
-  патчем, dev- или локальной сборкой — предупреждение, прогон идёт.
+  патчем, dev- или локальной сборкой — предупреждение, прогон идёт. Подъём:
+  правится `MLX_AUDIO_VERSION`, запускается
+  `.venv/bin/python scripts/lock_runtime_deps.py nemotron` (нужен `uv`),
+  обновляются рецепты в обоих `DIARIZATION.md`. `requirements-nemotron.in` и
+  лок — генерат, поэтому PR Dependabot, который правит только `.in`, красный,
+  пока не подняты константа, лок и рецепты.
 - **Сеть.** Загрузчик принимает только локальный каталог с `config.json` и
   весами и передаёт в mlx-audio `pathlib.Path` — для Path библиотека на хаб не
   ходит. Идентификатор репозитория — отказ с рецептом загрузки, а не загрузка.

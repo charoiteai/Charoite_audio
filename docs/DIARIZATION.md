@@ -344,7 +344,7 @@ the development venv (paths are relative to the repo root; with `CHAROITE_ROOT`
 set, the bench prints the exact folder):
 
 ```bash
-.venv/bin/pip install "mlx-audio==0.5.8"
+.venv/bin/pip install "mlx-audio==0.5.9"
 .venv/bin/hf download mlx-community/Nemotron-3-Diarization --local-dir models/diar/nemotron
 .venv/bin/python scripts/diar_bench.py --make --crosstalk
 .venv/bin/python scripts/diar_bench.py --crosstalk --engine compare
@@ -360,7 +360,11 @@ set, the bench prints the exact folder):
   `MLX_AUDIO_VERSION`, and a test keeps the recipe above equal to it. Another
   `major.minor` branch or a package without distribution metadata is refused
   before the run with the recipe; the same branch with another patch, a dev or
-  a local build gets a warning and the run goes on.
+  a local build gets a warning and the run goes on. Raising it: change
+  `MLX_AUDIO_VERSION`, run `.venv/bin/python scripts/lock_runtime_deps.py nemotron`
+  (needs `uv`) and update the recipes in both `DIARIZATION.md`.
+  `requirements-nemotron.in` and the lock are generated, so a Dependabot PR that
+  edits only `.in` stays red until the constant, the lock and the recipes move.
 - **Network.** The loader accepts only a local folder with `config.json` and
   weights and hands mlx-audio a `pathlib.Path`, for which the library does not
   go to the hub. A repository id is refused with the download recipe, not
