@@ -531,7 +531,7 @@ def _скраб_падает(текст):
     raise RuntimeError(f"Symlink loop from {текст!r}")
 
 
-def test_scrub_failure_hides_the_exception_text(tmp_path, monkeypatch):
+def test_scrub_failure_hides_the_exception_text(tmp_path, monkeypatch, capsys):
     """Скраб упал на тексте исключения — наружу уходит тип сбоя и пометка
     «не проверено», ни слова исходного текста (№762)."""
     root = tmp_path / "данные"
@@ -551,6 +551,55 @@ def test_scrub_failure_hides_the_exception_text(tmp_path, monkeypatch):
     assert _ошибка(ответ), out
     assert out.endswith(f"OSError: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
     assert "нет файла" not in out and str(home) not in out, out
+    журнал = capsys.readouterr().err
+    assert "скраб не отработал: RuntimeError" in журнал, журнал
+    assert str(home) not in журнал and "Symlink" not in журнал, журнал
+
+
+def test_scrub_failure_survives_a_closed_stderr(tmp_path, monkeypatch, capsys):
+    """Журнал сбоя скраба не роняет шов: без stderr строки нет совсем (не в
+    stdout — там протокол), сломанный stderr молчит (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    class Сломан:
+        def write(self, _):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    for поток in (None, Сломан()):
+        monkeypatch.setattr(mcp_server.sys, "stderr", поток)
+        assert mcp_server._чисто("текст") is None
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("канал", ["ToolError", "RootNotNamed"])
+def test_empty_refusal_text_is_not_marked_unchecked(tmp_path, monkeypatch, канал):
+    """Пометка «не проверено» — только когда скраб упал; пустой текст отказа
+    проверять нечего, он остаётся пустым (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def отказ():
+        raise mcp_server.ToolError("") if канал == "ToolError" else charoite_paths.RootNotNamed("")
+
+    if канал == "ToolError":
+        monkeypatch.setattr(mcp_server, "_latest", отказ)
+    else:
+        monkeypatch.setattr(mcp_server, "_root", отказ)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert mcp_server._НЕ_ПРОВЕРЕНО not in out, out
 
 
 def test_scrub_failure_hides_the_answer(tmp_path, monkeypatch):
@@ -567,6 +616,7 @@ def test_scrub_failure_hides_the_answer(tmp_path, monkeypatch):
     out = _текст(ответ)
     assert _ошибка(ответ), out
     assert out.endswith(f"ответ не показан: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
+    assert "тело" not in out and "2026-09-13_1200" not in out, out
 
 
 def test_scrub_failure_hides_the_tool_error_text(tmp_path, monkeypatch):

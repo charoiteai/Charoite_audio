@@ -246,8 +246,14 @@ def _чисто(текст: str) -> str | None:
     try:
         return privacy.scrub_local_paths(текст)[0]
     except Exception as сбой:  # noqa: BLE001 — любой сбой скраба: текст не проверен, наружу его нельзя
-        # причину — владельцу в журнал сервера, без текста: в нём пути
-        print(f"[privacy] скраб не отработал: {type(сбой).__name__}", file=sys.stderr)
+        # причину — владельцу в журнал сервера, без текста: в нём пути. Без
+        # stderr print ушёл бы в stdout — транспорт протокола; сбой записи
+        # (закрытый канал) не должен уронить шов
+        if sys.stderr is not None:
+            try:
+                print(f"[privacy] скраб не отработал: {type(сбой).__name__}", file=sys.stderr)
+            except Exception:  # noqa: BLE001
+                pass
         return None
 
 
