@@ -13,13 +13,14 @@ enum NemotronActionKind: Equatable {
 enum NemotronDecision: Equatable {
     /// Все условия выполнены — условная запись ключа ещё не делалась.
     case attemptWrite
-    /// Ключ записан.
+    /// Ключ записан (или уже стоял: переустановка включённого движка).
     case written(String)
     /// Ключ не пишется; `offerEnable` — показать «Включить», `offerReinstall` —
     /// «Переставить» (после неудачной пробы, если план разрешает установку).
     case stop(String, offerEnable: Bool, offerReinstall: Bool)
 
     static var cancelledText: String { L.t("отменено", "cancelled", "已取消") }
+    static var installedText: String { L.t("Nemotron поставлен", "Nemotron is installed", "Nemotron 已安装") }
 
     /// Исход процесса и проверки ключа → решение. Порядок: исход, корень,
     /// сырое значение ключа, `offer.enable.allowed` нового плана, результат
@@ -32,7 +33,17 @@ enum NemotronDecision: Equatable {
                        enableAllowed: Bool,
                        enableReason: String,
                        cas: AppSettings.ConfigCAS?) -> NemotronDecision {
-        if let failure = outcomeFailure(outcome, kind: kind) { return failure }
+        // Установка, когда ключ уже `nemotron` («Переставить» у включённого движка,
+        // №758): писать нечего, `enable` такого плана запрещён по праву — код 0
+        // установщика и есть успех, и после отмены в окне фиксации замены тоже
+        // (out2 DS M4). Текст — только о том, что доказано: окружение поставлено;
+        // состояние движка показывает план, который служба просит следом (out2 DS I1).
+        let keyOn = kind == .install && !rootChanged && r1 == r0
+            && r1?.trimmingCharacters(in: .whitespaces).lowercased() == "nemotron"
+        if let failure = outcomeFailure(outcome, kind: kind) {
+            let committed = outcome.code == 0 && outcome.reason == .exit && !outcome.notStarted
+            return keyOn && committed ? .written(installedText) : failure
+        }
         if rootChanged {
             return .stop(L.t("папку данных сменили, пока шло действие — ключ не записан",
                              "the data folder changed while this was running — the key was not written",
@@ -43,6 +54,7 @@ enum NemotronDecision: Equatable {
                           "the config changed while this was running — the engine is installed but not enabled",
                           "运行期间配置已被修改——引擎已安装但未启用")
         if r1 != r0 { return .stop(changed, offerEnable: true, offerReinstall: false) }
+        if keyOn { return .written(installedText) }
         if !enableAllowed { return .stop(enableReason, offerEnable: false, offerReinstall: false) }
         switch cas {
         case nil:

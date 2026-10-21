@@ -102,6 +102,39 @@ final class NemotronPlanTests: XCTestCase {
 
     // MARK: 3. что видно
 
+    /// Включённый движок с отставшим окружением: кнопка установки — «Переставить», а
+    /// предупреждение подписано словами, не кодом (№758).
+    func testОтставшееОкружениеПредлагаетПереставить() {
+        let v = visible(.ready(Self.plan("enabled", install: true, disable: true, warnings: ["engine_outdated"])))
+        XCTAssertEqual(v.install, .init(title: NemotronVisibleActions.reinstallTitle, enabled: true, note: nil))
+        XCTAssertNotNil(v.consent)
+        XCTAssertEqual(v.warnings.count, 1)
+        XCTAssertNotEqual(v.warnings.first, "engine_outdated")
+        let fresh = visible(.ready(Self.plan("not_installed", install: true)))
+        XCTAssertEqual(fresh.install?.title, NemotronVisibleActions.installTitle)
+        // sherpa выбран, движок готов: «Включить» и установка рядом (out1 S I2 = DS I2).
+        let off = visible(.ready(Self.plan("ready_off", install: true, enable: true, warnings: ["engine_outdated"])))
+        XCTAssertEqual(off.install?.title, NemotronVisibleActions.installTitle)
+        XCTAssertNotNil(off.enable)
+        // Установка запрещена (диск): выключенная «Переставить» с причиной, а не одно предупреждение.
+        let disk = visible(.ready(Self.plan("enabled", disable: true, warnings: ["engine_outdated"])))
+        XCTAssertEqual(disk.install, .init(title: NemotronVisibleActions.reinstallTitle, enabled: false,
+                                           note: "нельзя поставить"))
+        let quiet = visible(.ready(Self.plan("enabled", disable: true)))
+        XCTAssertNil(quiet.install)
+        // Ключ уже `nemotron`, веса битые — тоже переустановка (out2 H I1).
+        let broken = visible(.ready(Self.plan("enabled_broken", install: true, disable: true,
+                                              warnings: ["engine_outdated"])))
+        XCTAssertEqual(broken.install?.title, NemotronVisibleActions.reinstallTitle)
+        // Неудачная проба рядом с видимой установкой — одна кнопка, а не две (out2 DS M2).
+        let failed = NemotronEngineService.Action.outcome(.init(text: "проба не прошла", success: false,
+                                                                offerReinstall: true))
+        let one = visible(.ready(Self.plan("ready_off", install: true, enable: true, warnings: ["engine_outdated"])),
+                          action: failed)
+        XCTAssertNotNil(one.install)
+        XCTAssertNil(one.reinstall)
+    }
+
     func testУстановкаСБлокомСогласия() {
         let v = visible(.ready(Self.plan(install: true)))
         XCTAssertEqual(v.install, .init(title: NemotronVisibleActions.installTitle, enabled: true, note: nil))
