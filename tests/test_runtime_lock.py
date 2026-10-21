@@ -236,6 +236,16 @@ def test_one_compile_command_for_every_target_with_the_platform_floor_only_where
     assert [floor for _, floor in seen] == ["14.0", ""]
 
 
+#: Что делать, когда `.in` движка разошёлся с константой. Тут состояний два, и проверка их
+#: не различает — текст называет оба: генератор при новой `.in` откатил бы PR Dependabot
+#: (выходной круг 2 по №756). Отставший лок при `.in` на константе — свой текст у его
+#: проверки ниже. Процедура подъёма — docs/DIARIZATION.md, пункт «Version».
+NEM_BUMP = (".in и лок — генерат MLX_AUDIO_VERSION (src/diarize_nemotron.py), руками не правятся. "
+            "Новая версия пришла в .in (PR Dependabot) — генератор её откатит: поднимайте константу "
+            "по docs/DIARIZATION.md, пункт «Version». Константу подняли вы — запустите "
+            ".venv/bin/python scripts/lock_runtime_deps.py nemotron (нужен uv)")
+
+
 def test_the_engine_lock_pins_the_version_the_engine_module_names():
     """Версию стыка знает модуль движка; вход и лок движка от неё не отстают."""
     import lock_runtime_deps as lrd
@@ -243,10 +253,17 @@ def test_the_engine_lock_pins_the_version_the_engine_module_names():
     assert lrd.nemotron_deps() == [f"mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION}"]
     listed = [ln.strip() for ln in NEM_INPUT.read_text(encoding="utf-8").splitlines()
               if ln.strip() and not ln.startswith("#")]
-    assert listed == lrd.nemotron_deps(), "requirements-nemotron.in разъехался с MLX_AUDIO_VERSION"
+    assert listed == lrd.nemotron_deps(), (
+        f"requirements-nemotron.in {listed} против MLX_AUDIO_VERSION "
+        f"{diarize_nemotron.MLX_AUDIO_VERSION}: {NEM_BUMP}")
     text = NEM_LOCK.read_text(encoding="utf-8")
+    # .in уже равен константе: Dependabot тут ни при чём, лок отстал — например, генератор
+    # записал .in и упал на uv (выходной круг 3 по №756).
+    locked = re.findall(r"^mlx-audio==(\S+)", text, re.M)
     assert re.search(rf"^mlx-audio=={re.escape(diarize_nemotron.MLX_AUDIO_VERSION)} \\", text, re.M), (
-        "лок движка отстал — пересоберите: .venv/bin/python scripts/lock_runtime_deps.py nemotron")
+        f"лок движка {locked} против MLX_AUDIO_VERSION "
+        f"{diarize_nemotron.MLX_AUDIO_VERSION}, .in уже на ней: запустите "
+        ".venv/bin/python scripts/lock_runtime_deps.py nemotron (нужен uv)")
 
 
 def test_the_engine_lock_names_its_platform_and_hashes_every_package():
