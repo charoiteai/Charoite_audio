@@ -41,6 +41,20 @@ final class TasksBadgeTests: XCTestCase {
         XCTAssertEqual(s.attention, 0)
     }
 
+    /// Граница «Старых» — календарный день: в течение одного дня сводка не
+    /// меняется, иначе шапка (живое `Date()`) уходила от бейджа (снимок скана)
+    /// посреди дня. Встреча 14 дней назад в 12:00 — живая весь сегодняшний день.
+    func testStaleBoundaryDoesNotMoveWithinTheDay() {
+        let meeting = day(-TasksScreenPolicy.staleAfterDays).addingTimeInterval(12 * 3600)
+        let item = [("**Коля** — без срока", false, meeting, Optional(meeting))]
+        let morning = TasksScreenPolicy.summary(item, owner: "Марк", now: now.addingTimeInterval(9 * 3600))
+        let evening = TasksScreenPolicy.summary(item, owner: "Марк", now: now.addingTimeInterval(16 * 3600))
+        XCTAssertEqual(morning, evening)
+        XCTAssertEqual(morning.open, 1)
+        let tomorrow = TasksScreenPolicy.summary(item, owner: "Марк", now: day(1).addingTimeInterval(60))
+        XCTAssertEqual(tomorrow.stale, 1, "назавтра — старое")
+    }
+
     /// Проводка, а не политика: сервис после скана публикует ту же сводку, что
     /// шапка считает по `items`. Старая формула бейджа (все не сделанные)
     /// здесь дала бы 3 вместо 1.

@@ -62,8 +62,26 @@ final class GraphInventoryService: ObservableObject {
     /// же встречи — папкой «Встречи-архив/<дата — тема>/» с минутками внутри.
     /// Плоский счёт .md не видел архивных папок вовсе (граф владельца 21.10:
     /// 392 заметки, 409 архивных папок, встреч по ключу — 411; №757, круг in1).
-    /// Одна встреча — один ключ `TasksService.meetingKey` (12 цифр имени), тот
-    /// же, что связывает с встречей её поручения; запись без ключа — одна встреча.
+    /// Одна встреча — один штамп в начале имени: заметка `2026-08-04_1131.md`,
+    /// папка `2026-08-04 11-31 — тема/`. Секунды — часть штампа: конвейер даёт
+    /// посекундный ключ второй встрече той же минуты (`meeting_stamp.graph_key`,
+    /// архив — «11-31-12»), и 12 цифр склеивали бы две встречи (круг out1).
+    /// Цифры темы («Бюджет 2027») в штамп не попадают. Запись без штампа — одна встреча.
+    nonisolated static func meetingIdentity(_ name: String) -> String? {
+        let ns = name as NSString
+        guard let m = stampRx.firstMatch(in: name, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        return (1..<m.numberOfRanges).compactMap { i -> String? in
+            let r = m.range(at: i)
+            return r.location == NSNotFound ? nil : ns.substring(with: r)
+        }.joined()
+    }
+
+    // swiftlint:disable:next force_try
+    nonisolated private static let stampRx = try! NSRegularExpression(
+        pattern: #"^(\d{4})-(\d{2})-(\d{2})[ _](\d{2})-?(\d{2})(?:-?(\d{2}))?(?!\d)"#)
+
     nonisolated static func meetingCount(graph: URL) -> Int {
         var keys = Set<String>()
         var keyless = 0
@@ -76,7 +94,7 @@ final class GraphInventoryService: ObservableObject {
                 guard !name.hasPrefix("."), !GraphFolders.isServiceFile(name) else { continue }
                 let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
                 guard isDir || url.pathExtension == "md" else { continue }
-                if let key = TasksService.meetingKey(name) { keys.insert(key) } else { keyless += 1 }
+                if let key = meetingIdentity(name) { keys.insert(key) } else { keyless += 1 }
             }
         }
         return keys.count + keyless

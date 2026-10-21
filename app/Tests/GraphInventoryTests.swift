@@ -59,11 +59,28 @@ final class GraphInventoryTests: XCTestCase {
         XCTAssertEqual(GraphInventoryService.scan(graph: graph).meetings, 3)
     }
 
+    /// Вторая встреча той же минуты получает посекундный штамп (конвейер,
+    /// `meeting_stamp.graph_key`) — это другая встреча; цифры темы — не штамп.
+    func testMeetingsKeepSecondMeetingOfTheSameMinute() throws {
+        let graph = try makeGraph { root in
+            try self.put(root, "Встречи/2026-07-21_1000.md")
+            try self.put(root, "Встречи/2026-07-21_100012.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00 — Бюджет 2027/Минутки.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00-12 — Повтор/Минутки.md")
+        }
+        XCTAssertEqual(GraphInventoryService.scan(graph: graph).meetings, 2)
+        XCTAssertEqual(GraphInventoryService.meetingIdentity("2026-07-21 10-00 — Бюджет 2027"), "202607211000")
+        XCTAssertEqual(GraphInventoryService.meetingIdentity("2026-07-21_100012.md"), "20260721100012")
+        XCTAssertNil(GraphInventoryService.meetingIdentity("2026-07-10_прим_постановка.md"))
+    }
+
     func testMeetingsLabelNamesTheGraph() {
-        guard L.lang == "ru" else { return }
-        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(1), "1 встреча в графе")
-        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(2), "2 встречи в графе")
-        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(11), "11 встреч в графе")
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(1),
+                       L.t("1 встреча в графе", "1 meeting in the graph", "1 场图谱中的会议"))
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(2),
+                       L.t("2 встречи в графе", "2 meetings in the graph", "2 场图谱中的会议"))
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(11),
+                       L.t("11 встреч в графе", "11 meetings in the graph", "11 场图谱中的会议"))
     }
 
     func testCoreStatusIgnoresBodyRuleLines() throws {

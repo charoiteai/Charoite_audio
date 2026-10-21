@@ -172,8 +172,13 @@ enum TasksScreenPolicy {
                       calendar: Calendar = .current)
         -> (mine: [Int], fresh: [Int], stale: [Int]) {
         var mine: [Int] = [], fresh: [Int] = [], stale: [Int] = []
-        let cutoff = calendar.date(byAdding: .day, value: -staleAfterDays, to: now)
-            ?? now.addingTimeInterval(-Double(staleAfterDays) * 86_400)
+        // От начала сегодняшнего дня, а не от «сейчас»: у встречи в ключе есть
+        // часы, и граница проходила в её время суток — шапка экрана меняла
+        // счёт посреди дня, а бейдж (сводка скана) ждал полуночи (№757, out1).
+        // Так сводка — функция календарного дня, как и сроки (`TaskDue.status`).
+        let today = calendar.startOfDay(for: now)
+        let cutoff = calendar.date(byAdding: .day, value: -staleAfterDays, to: today)
+            ?? today.addingTimeInterval(-Double(staleAfterDays) * 86_400)
         for (i, item) in items.enumerated() {
             if isMine(item.text, owner: owner) {
                 mine.append(i)
