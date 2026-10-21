@@ -368,7 +368,9 @@ set, the bench prints the exact folder):
   Then check the seam by hand before merging (CI does not run it): install the
   engine from the branch and from `main` (the old side) into two clean data
   folders with the install command of
-  [Post-meeting pass on Nemotron](#post-meeting-pass-on-nemotron); on the same
+  [Post-meeting pass on Nemotron](#post-meeting-pass-on-nemotron) — it needs the
+  python of a built Charoite.app, the venv is refused; `--check` of both
+  folders must name different mlx-audio versions; on the same
   recordings run each tree's `src/diarize_nemotron.py <wav> --model <weights>`
   and `--stream --model <weights>` (s16le 16 kHz on stdin) with its
   environment's python. Outputs must be equal, the stream lines without the

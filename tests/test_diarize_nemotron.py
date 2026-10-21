@@ -540,6 +540,7 @@ _MAJOR, _MINOR = nem._branch(nem.MLX_AUDIO_VERSION)
 SAME_BRANCH = f"{_MAJOR}.{_MINOR}.9999"
 NEXT_BRANCH = f"{_MAJOR}.{_MINOR + 1}.0"
 PREV_BRANCH = f"{_MAJOR}.{_MINOR - 1}.0" if _MINOR else f"{_MAJOR - 1}.0.0"
+assert nem._branch(PREV_BRANCH) not in (None, (_MAJOR, _MINOR)), f"соседа ниже {nem.MLX_AUDIO_VERSION} нет"
 
 
 @pytest.mark.parametrize("installed, refused, warned", [

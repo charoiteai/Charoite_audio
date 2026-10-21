@@ -256,8 +256,13 @@ def test_the_engine_lock_pins_the_version_the_engine_module_names():
         f"requirements-nemotron.in {listed} против MLX_AUDIO_VERSION "
         f"{diarize_nemotron.MLX_AUDIO_VERSION}: {NEM_BUMP}")
     text = NEM_LOCK.read_text(encoding="utf-8")
+    # .in уже равен константе: Dependabot тут ни при чём, лок отстал — например, генератор
+    # записал .in и упал на uv (выходной круг 3 по №756).
+    locked = re.findall(r"^mlx-audio==(\S+)", text, re.M)
     assert re.search(rf"^mlx-audio=={re.escape(diarize_nemotron.MLX_AUDIO_VERSION)} \\", text, re.M), (
-        f"лок движка отстал: {NEM_BUMP}")
+        f"лок движка {locked} против MLX_AUDIO_VERSION "
+        f"{diarize_nemotron.MLX_AUDIO_VERSION}, .in уже на ней: запустите "
+        ".venv/bin/python scripts/lock_runtime_deps.py nemotron (нужен uv)")
 
 
 def test_the_engine_lock_names_its_platform_and_hashes_every_package():
