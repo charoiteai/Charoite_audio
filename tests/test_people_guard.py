@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from test_pre_push_markers import REPO, Repo, _owner_env, git, guard_run
+from test_pre_push_markers import MARKER, REPO, Repo, _owner_env, git, guard_run
 
 FAKE = "Аристарх" + " Чебуреков"            # из частей: целиком сработал бы на этом файле у владельца
 LABEL = "Собеседник 3"
@@ -88,6 +88,32 @@ def test_diarization_label_in_people_is_not_a_person(repo):
     assert p.returncode == 0, p.stderr
 
 
+def test_real_name_with_a_label_in_brackets_is_a_person(repo):
+    """«Аристарх (Собеседник 4)» — человек с пометкой модели, не метка: находка
+    остаётся (out1 I1 Sonnet, I2 DeepSeek)."""
+    env = _owner_env(repo)
+    named = "Аристарх (Собеседник 4)"
+    _people(repo, named, LABEL)
+    _stage(repo, "docs/a.md", f"{named}\n{LABEL}\n")
+    p = guard_run(repo.work, env=env)
+    assert p.returncode == 1 and "docs/a.md:1" in p.stderr and "docs/a.md:2" not in p.stderr, p.stderr
+
+
+def test_all_refuses_an_edited_label_rule_when_it_would_drop_a_hit(repo):
+    """Правка правила меток в рабочей копии — отказ в любом режиме, где правило
+    отбрасывает находку, не только в pre-push (out1 I1 DeepSeek)."""
+    env = _owner_env(repo)
+    repo.write("docs/old.md", f"{FAKE}\n")
+    repo.commit("old")
+    _people(repo, FAKE)
+    rule = repo.work / "src" / "charoite_graph" / "graph_names.py"
+    rule.write_text(rule.read_text(encoding="utf-8") + "\nis_speaker_placeholder = lambda stem: True\n",
+                    encoding="utf-8")
+    p = subprocess.run([sys.executable, str(repo.work / "scripts" / "check_private_markers.py"), "--all"],
+                       cwd=repo.work, env=env, capture_output=True, text=True)    # страж этого checkout
+    assert p.returncode == 1 and "правило меток" in p.stderr, p.stderr
+
+
 def test_synthetic_name_outside_the_graph_passes(repo):
     env = _owner_env(repo)
     _people(repo, FAKE)
@@ -97,7 +123,10 @@ def test_synthetic_name_outside_the_graph_passes(repo):
 
 @pytest.mark.parametrize("gate", [None, "import sys\nsys.exit(2)\n",
                                   'print(\'{"v": 1, "records": 999, "names": 5, "hits": []}\')\n',
-                                  'print(\'{"v": 2, "records": 2, "names": 5, "hits": []}\')\n'])
+                                  'print(\'{"v": 2, "records": 2, "names": 5, "hits": []}\')\n',
+                                  # гейт, который вход не читал, а счёт записей угадал (out1 C5 Haiku)
+                                  'import json, sys\nr = json.load(sys.stdin)\nprint(json.dumps({"v": 1, '
+                                  '"records": len(r), "names": 5, "digest": "0" * 64, "hits": []}))\n'])
 def test_owner_machine_without_a_working_gate_is_refused(repo, gate):
     """Нет гейта, гейт не смог, ответ не сходится с запросом, старая версия —
     отказ, а не «чисто»: имена людей не проверены."""
@@ -177,6 +206,70 @@ def test_pre_push_refuses_an_edited_label_rule_in_the_main_checkout(repo):
     repo.commit("ok", wt)
     p = git(wt, "push", "origin", "feat", env=env, check=False)
     assert p.returncode != 0 and "правило меток" in p.stderr, p.stderr
+
+
+def test_pre_push_hides_a_branch_name_with_a_person(repo):
+    """Имя ссылки — запись гейта; отказ не печатает его ни строкой имени, ни
+    строкой маркера (out1 C1 обеих голов)."""
+    env = _owner_env(repo)
+    _people(repo, "Аристарх")
+    wt = repo.worktree("feat")
+    repo.write("n.md", "чисто\n", wt)
+    repo.commit("ok", wt)
+    p = git(wt, "push", "origin", "feat:refs/heads/feat/Аристарх", env=env, check=False)
+    assert p.returncode != 0 and "имя ссылки (скрыто)" in p.stderr, p.stderr
+    assert "Аристарх" not in p.stdout + p.stderr, p.stderr
+
+
+def test_pre_commit_hides_a_published_path_that_also_has_a_marker(repo):
+    """Опубликованный файл с именем в пути и маркером в тексте: проход маркеров
+    по дереву печатает пути — имя людей судится раньше, путь не печатается (out1 C2)."""
+    env = _owner_env(repo)
+    repo.write(f"docs/{FAKE}.md", f"{MARKER}\n")
+    repo.commit("old")
+    _people(repo, FAKE)
+    _stage(repo, "docs/a.md", "раз\n")
+    p = guard_run(repo.work, env=env)
+    assert p.returncode == 1 and "имя файла (путь скрыт)" in p.stderr, p.stderr
+    assert "Чебуреков" not in p.stdout + p.stderr, p.stderr
+
+
+def test_range_hides_the_path_in_a_binary_blob_line(repo):
+    """Строка «(двоичный)» печатает путь маской маркеров — имя людей в нём
+    скрывается той же точкой печати (out1 C2 Sonnet)."""
+    env = _owner_env(repo)
+    _people(repo, FAKE)
+    (repo.work / "docs").mkdir(exist_ok=True)
+    (repo.work / "docs" / f"{FAKE}.docx").write_bytes(b"PK\x00\x01\x02")
+    repo.commit("bin")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=env)
+    assert p.returncode == 1 and "(двоичный)" in p.stderr, p.stderr
+    assert "Чебуреков" not in p.stdout + p.stderr, p.stderr
+
+
+def test_gate_stderr_is_not_printed(repo):
+    """Сбой гейта: его stderr (пути графа с именами) страж не печатает."""
+    env = _owner_env(repo, gate=f"import sys\nprint('ссылка в графе: Люди/{FAKE}.md', file=sys.stderr)\nsys.exit(2)\n")
+    _stage(repo, "docs/a.md", "раз\n")
+    p = guard_run(repo.work, env=env)
+    assert p.returncode == 1 and "страж не смог проверить" in p.stderr, p.stderr
+    assert "Чебуреков" not in p.stdout + p.stderr, p.stderr
+
+
+def test_pre_push_label_rule_ignores_a_shim_in_the_package_init(repo):
+    """`__init__.py` пакета вне сверки канона: подмена правила там не выключает
+    имена (out1 C2 DeepSeek) — страж грузит один файл правила."""
+    env = _owner_env(repo)
+    (repo.work / "src" / "charoite_graph" / "__init__.py").write_text(
+        "import sys, types\n_m = types.ModuleType('charoite_graph.graph_names')\n"
+        "_m.is_placeholder_node = lambda stem: True\nsys.modules['charoite_graph.graph_names'] = _m\n",
+        encoding="utf-8")
+    _people(repo, FAKE)
+    wt = repo.worktree("feat")
+    repo.write("n.md", f"{FAKE}\n", wt)
+    repo.commit("leak", wt)
+    p = git(wt, "push", "origin", "feat", env=env, check=False)
+    assert p.returncode != 0 and "имя человека из графа" in p.stderr, p.stderr
 
 
 # ── настоящий гейт, подставной граф ──────────────────────────────────────────

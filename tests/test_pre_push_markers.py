@@ -464,7 +464,7 @@ def test_push_revs_skips_deletions_and_unknown_published_tips(repo):
 # Заглушка гейта имён графа (№605) — тот же контракт `--people-scan`, что у
 # настоящего: имя ищется подстрокой без регистра, ответ с рукопожатием. Имена —
 # из файла `people.txt` рядом с заглушкой; нет файла — имён нет, ответ чистый.
-STUB_GATE = """import json, pathlib, sys
+STUB_GATE = """import hashlib, json, pathlib, sys
 names = pathlib.Path(__file__).with_name("people.txt")
 names = names.read_text(encoding="utf-8").split("\\n") if names.exists() else []
 recs = json.loads(sys.stdin.read())
@@ -474,7 +474,8 @@ for place, text in recs:
         if n.casefold() in text.casefold():
             line = next((i + 1 for i, s in enumerate(text.split("\\n")) if n.casefold() in s.casefold()), None)
             hits.append([place, line, n])
-print(json.dumps({"v": 1, "records": len(recs), "names": 150, "hits": hits}))
+digest = hashlib.sha256(json.dumps(recs, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+print(json.dumps({"v": 1, "records": len(recs), "names": 150, "digest": digest, "hits": hits}))
 sys.exit(1 if hits else 0)
 """
 

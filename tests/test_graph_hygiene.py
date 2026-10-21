@@ -1076,7 +1076,7 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     (graph / "Люди" / "Собеседник 1 (Саша).md").write_text("# Собеседник 1 (Саша)\n", encoding="utf-8")
     (graph / "Люди" / "Иван Иванов.md").write_text("# Иван Иванов\n", encoding="utf-8")
     (graph / "Системы" / "Собеседник 3.md").write_text("# Собеседник 3 (система-тёзка)\n", encoding="utf-8")
-    (graph / "Люди" / "Таня (Собеседник 4).md").write_text("# Таня (Собеседник 4)\n", encoding="utf-8")
+    (graph / "Люди" / "Аристарх (Собеседник 4).md").write_text("# Аристарх (Собеседник 4)\n", encoding="utf-8")
     meeting = graph / "Встречи" / "2026-08-01_1000.md"
     meeting.write_text(
         "# Встреча\n\n## Участники\n- [[Люди/Собеседник 3|Собеседник 3]] · [[Люди/Иван Иванов|Иван]]\n"
@@ -1093,12 +1093,12 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     before = meeting.read_text(encoding="utf-8")
     p = mp.plan(graph)
     assert p["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"] and p["links"] == 12, p   # + CRLF-файл + указатель
-    assert p["manual"] == ["Таня (Собеседник 4)"], "имя + метка в скобках — ручное решение, не миграция"
-    (graph / "Люди" / "Таня.md").write_text("# Таня\n", encoding="utf-8")
-    (graph / "Люди" / "Таня Петрова.md").write_text("# Таня Петрова\n", encoding="utf-8")
-    assert mp.manual_hints(graph, p["manual"]) == {"Таня (Собеседник 4)": ["Таня", "Таня Петрова (частично)"]}
-    (graph / "Люди" / "Таня.md").unlink()
-    (graph / "Люди" / "Таня Петрова.md").unlink()
+    assert p["manual"] == ["Аристарх (Собеседник 4)"], "имя + метка в скобках — ручное решение, не миграция"
+    (graph / "Люди" / "Аристарх.md").write_text("# Аристарх\n", encoding="utf-8")
+    (graph / "Люди" / "Аристарх Петров.md").write_text("# Аристарх Петров\n", encoding="utf-8")
+    assert mp.manual_hints(graph, p["manual"]) == {"Аристарх (Собеседник 4)": ["Аристарх", "Аристарх Петров (частично)"]}
+    (graph / "Люди" / "Аристарх.md").unlink()
+    (graph / "Люди" / "Аристарх Петров.md").unlink()
     assert p["namesakes_elsewhere"] == [g.name_key("Собеседник 3")], "тёзка в Системах — голую ссылку оставить"
     assert meeting.read_text(encoding="utf-8") == before, "dry-run ничего не меняет"
     out = mp.apply(graph, tmp_path / "backup", log=lambda *_: None)
@@ -1112,7 +1112,7 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     assert "```\n[[Люди/Собеседник 3|в коде]]\n```" in text, "внутри кода не трогаем"
     assert "Говорил Собеседника 3." in (graph / "Досье" / "Тема.md").read_text(encoding="utf-8")
     assert not (graph / "Люди" / "Собеседник 3.md").exists() and (graph / "Люди" / "Иван Иванов.md").exists()
-    assert (graph / "Люди" / "Таня (Собеседник 4).md").exists(), "узел с именем не тронут"
+    assert (graph / "Люди" / "Аристарх (Собеседник 4).md").exists(), "узел с именем не тронут"
     dest = pathlib.Path(out["backup"])
     assert (dest / "Люди" / "Собеседник 3.md").exists() and (dest / "files" / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8") == before
     manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
@@ -1128,7 +1128,7 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     assert "Иван Иванов" in index and "Собеседник 3" not in index
     assert mp.plan(graph)["nodes"] == [] and mp.apply(graph, tmp_path / "backup", log=lambda *_: None)["links"] == 0
     assert g.is_placeholder_node("Собеседник 1 (Саша)") and g.is_placeholder_node("Speaker 2 (муж)")
-    assert g.is_placeholder_node("Таня (Собеседник 4)") and not g.is_placeholder_node("Иван Иванов")
+    assert g.is_placeholder_node("Аристарх (Собеседник 4)") and not g.is_placeholder_node("Иван Иванов")
     assert g.is_placeholder_node("Анна (Participant 4)") and g.is_placeholder_node("Ли (发言人 2)"), "те же метки, что для целого имени"
     assert not g.is_placeholder_node("Саша (собеседница)"), "«собеседница» в скобках — не метка"
 
