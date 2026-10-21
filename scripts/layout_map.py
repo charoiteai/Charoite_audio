@@ -1679,13 +1679,22 @@ def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None,
     (`inventory(rev=…)`), не рабочий диск.
 
     Явное «не критично» (`not_critical`, вторая рука `layout.json`) — решение
-    человека и сильнее расширения: символ модуля, записанного некритичным,
-    записью не становится. Без этого дверь «целым файлом» (`graph_updater`)
-    делала критичными `llm::LLM` со всеми методами — правка `llm.py` давала 41
-    критичного мутанта вместо одного.
+    человека и сильнее расширения: символ модуля, записанного некритичным
+    целиком, записью не становится. Без этого дверь «целым файлом»
+    (`graph_updater`) делала критичными `llm::LLM` со всеми методами — правка
+    `llm.py` давала 41 критичного мутанта вместо одного. Модуль, у которого есть
+    свои записи в критичных (`live_sidecar`: «двери — функциями»), решён дробно:
+    его «не критично» значит «кроме перечисленного», и расширение не гасит —
+    иначе условие двери `retro_fill::process` в `live_sidecar::wants_build`
+    оставалось бы некритичным. Запись символа (`x::y`) в некритичных гасит
+    только сам символ; методы класса — внутри модуля, как у `in_zone`.
+    Упоминания из заголовка класса (базы, декораторы, атрибуты) шаг не видит.
     """
     entries = frozenset(entries)
-    not_critical = frozenset(not_critical)
+    # «не критично» модулем гасит расширение, только если модуль не решён дробно
+    dotted = {zone_rel(zone_split(e)[0], inv.files) for e in entries if zone_split(e)[1]}
+    not_critical = frozenset(e for e in not_critical
+                             if zone_split(e)[1] or zone_rel(zone_split(e)[0], inv.files) not in dotted)
     area = mutation_area(inv) if area is None else area
     mods = modules(inv)
     rel_of = {m: rel for rel in inv.files if (m := module_of(rel)) is not None}

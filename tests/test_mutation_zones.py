@@ -753,6 +753,19 @@ def test_некритичный_модуль_расширением_не_доб�
     assert lm.zones_with_imports({"door::sweep"}, inv, None, {"x::Clock"}) == {"door::sweep", "x::too_old"}
 
 
+def test_дробно_решённый_модуль_расширение_не_гасит(tmp_path):
+    """Модуль со своими записями в критичных («двери — функциями») решён дробно:
+    его «не критично» значит «кроме перечисленного», и условие, которое зовёт
+    дверь другого модуля, остаётся критичным (№613, круг 2: `retro_fill::process`
+    → `live_sidecar::wants_build`). Запись символа гасит символ и тут."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": "from x import too_old, Clock\n\n\ndef sweep(p):\n    return too_old(p) or Clock()\n",
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    zone = {"door::sweep", "x::Clock"}
+    assert lm.zones_with_imports(zone, inv, None, {"x"}) == zone | {"x::too_old"}
+    assert lm.zones_with_imports(zone, inv, None, {"x", "x::too_old"}) == zone
+
+
 def test_грамматика_импорта_одна_на_imports_of_и_привязки():
     """`imports_of` и `import_bindings` читают один разбор: имя, которое связала
     привязка, есть и среди написанных импортов."""
