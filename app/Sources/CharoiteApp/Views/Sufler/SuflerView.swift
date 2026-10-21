@@ -92,7 +92,7 @@ struct SuflerView: View {
         }
     }
 
-    private var tasksOpen: Int { tasksSvc.openCount }
+    private var tasksOpen: Int { tasksSvc.attentionCount }
 
     /// «Встреча началась — начать запись?» Полоса вместо системного
     /// уведомления: разрешение на уведомления просить ради этого не хочется, а

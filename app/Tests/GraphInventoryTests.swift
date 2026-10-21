@@ -44,6 +44,28 @@ final class GraphInventoryTests: XCTestCase {
         XCTAssertEqual(snap.cores.first?.status, "подпись вне CI решена")
     }
 
+    /// Встреча — ключ, а не файл (№757): архив лежит папкой с минутками
+    /// внутри, а заметка той же встречи — файлом в «Встречи/». Плоский счёт .md
+    /// давал 1 на три встречи этого графа.
+    func testMeetingsCountArchiveFoldersOncePerMeeting() throws {
+        let graph = try makeGraph { root in
+            try self.put(root, "Встречи/2026-07-21_1000.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00 — Планирование/Минутки.md")
+            try self.put(root, "Встречи-архив/2026-07-20 09-00 — Ретро/Минутки.md")
+            try self.put(root, "Встречи/2026-07-10_прим_постановка.md")   // без ключа — своя встреча
+            try self.put(root, "Встречи-архив/_ОГЛАВЛЕНИЕ.md")             // служебный
+            try self.put(root, "Встречи/черновик.txt")                     // не заметка
+        }
+        XCTAssertEqual(GraphInventoryService.scan(graph: graph).meetings, 3)
+    }
+
+    func testMeetingsLabelNamesTheGraph() {
+        guard L.lang == "ru" else { return }
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(1), "1 встреча в графе")
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(2), "2 встречи в графе")
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(11), "11 встреч в графе")
+    }
+
     func testCoreStatusIgnoresBodyRuleLines() throws {
         let graph = try makeGraph { root in
             try self.put(root, "Ядра/Тема.md", "# Тема\n\n---\n\nстатус после линейки")

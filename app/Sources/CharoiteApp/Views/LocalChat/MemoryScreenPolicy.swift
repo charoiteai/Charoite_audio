@@ -198,6 +198,16 @@ enum MemoryScreenPolicy {
         return parts.joined(separator: " · ")
     }
 
+    /// Счёт встреч ГРАФА: экран «Встречи» показывает архив записей, и при
+    /// импортированном графе без записей «2 встречи» рядом с «Встреч пока нет»
+    /// читались как поломка (№757). Своя подпись, не `LibraryScreenPolicy.meetings`:
+    /// та — подпись архива и строки чата.
+    static func meetingsLabel(_ n: Int) -> String {
+        LibraryScreenPolicy.plural(n, ru: ("встреча в графе", "встречи в графе", "встреч в графе"),
+                                   en: ("meeting in the graph", "meetings in the graph"),
+                                   zh: "场图谱中的会议")
+    }
+
     static func nodesLabel(_ n: Int) -> String {
         LibraryScreenPolicy.plural(n, ru: ("узел", "узла", "узлов"), en: ("node", "nodes"), zh: "个节点")
     }

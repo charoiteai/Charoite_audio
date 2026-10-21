@@ -52,6 +52,11 @@ final class WorkspaceNavigation: ObservableObject {
 
     func open(_ section: WorkspaceSection, meetingID: String? = nil) {
         if let meetingID { selectedMeetingID = meetingID }
+        // Общий вход в «Задачи» (кнопка «Задачи · N» на «Встрече», меню) —
+        // вся выборка: число на кнопке посчитано по ней, а фильтр встречи,
+        // оставшийся от карточки, показал бы другое (№757, круг in1).
+        // Фильтр ставит только `openTasks(meetingID:)`.
+        if section == .tasks { selectedTaskMeetingID = nil }
         selection = section
         AppDelegate.showMainWindow()
     }

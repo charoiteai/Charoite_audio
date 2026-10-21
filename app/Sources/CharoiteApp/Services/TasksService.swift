@@ -60,10 +60,24 @@ final class TasksService: ObservableObject {
     var isMutating: Bool { !pendingIDs.isEmpty }
 
     @Published private(set) var items: [Item] = []
-    @Published private(set) var openCount = 0
+    /// Сводка всей выборки — та же функция, что у шапки экрана «Задачи»
+    /// (`TasksScreenPolicy.summary`). Бейджи читают `attentionCount` отсюда, а
+    /// не фильтруют `items` сами: два правила «открытого» разошлись (№757 —
+    /// «Задачи 2» при шапке «0 открыто · 2 старых»).
+    @Published private(set) var summary = TasksScreenPolicy.Summary.empty
+    var attentionCount: Int { summary.attention }
     @Published private(set) var mutationError: String?
     @Published private(set) var pendingIDs: Set<String> = []
     private var scanGeneration = 0
+    private var dayObserver: NSObjectProtocol?
+
+    init() {
+        // Пересчёт по уже загруженным `items`, без скана диска.
+        dayObserver = NotificationCenter.default.addObserver(
+            forName: .NSCalendarDayChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recount() }
+        }
+    }
 
     // Литеральный паттерн — ошибка компиляции невозможна.
     // nonisolated: константа читается из фонового скана, а не только с
@@ -240,7 +254,20 @@ final class TasksService: ObservableObject {
             // перемешиваются между сканами.
             return $0.lineIndex < $1.lineIndex
         }
-        openCount = items.filter { !$0.done }.count
+        recount()
+    }
+
+    /// Граница «Старые» зависит от сегодняшней даты: без пересчёта на смене
+    /// дня бейдж держал бы вчерашнюю сводку, пока граф не изменится, а шапка
+    /// экрана считает по `Date()` на каждой отрисовке (№757, круг in1).
+    private func recount(now: Date = Date()) {
+        summary = Self.summary(of: items, owner: TasksMineStale.owner, now: now)
+    }
+
+    nonisolated static func summary(of items: [Item], owner: String,
+                                    now: Date = Date()) -> TasksScreenPolicy.Summary {
+        TasksScreenPolicy.summary(items.map { ($0.text, $0.done, $0.happenedAt, $0.dueAnchor) },
+                                  owner: owner, now: now)
     }
 
     /// Поручения одной встречи лежат в её архивной папке и несут тот же

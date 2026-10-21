@@ -58,6 +58,30 @@ final class GraphInventoryService: ObservableObject {
             .count ?? 0
     }
 
+    /// Встречи графа, а не файлы: заметка лежит в «Встречи/» файлом, архив той
+    /// же встречи — папкой «Встречи-архив/<дата — тема>/» с минутками внутри.
+    /// Плоский счёт .md не видел архивных папок вовсе (граф владельца 21.10:
+    /// 392 заметки, 409 архивных папок, встреч по ключу — 411; №757, круг in1).
+    /// Одна встреча — один ключ `TasksService.meetingKey` (12 цифр имени), тот
+    /// же, что связывает с встречей её поручения; запись без ключа — одна встреча.
+    nonisolated static func meetingCount(graph: URL) -> Int {
+        var keys = Set<String>()
+        var keyless = 0
+        for folder in GraphFolders.meetings {
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: graph.appendingPathComponent(folder),
+                includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            for url in entries {
+                let name = url.lastPathComponent
+                guard !name.hasPrefix("."), !GraphFolders.isServiceFile(name) else { continue }
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                guard isDir || url.pathExtension == "md" else { continue }
+                if let key = TasksService.meetingKey(name) { keys.insert(key) } else { keyless += 1 }
+            }
+        }
+        return keys.count + keyless
+    }
+
     /// Папки ядер по контракту — свежие «сквозные темы» для нижнего блока.
     nonisolated private static let coreFolders = GraphFolders.cores
 
@@ -66,7 +90,7 @@ final class GraphInventoryService: ObservableObject {
         // Codex+GLM: две частные таблицы разошлись, en/zh-граф давал нули).
         typealias GC = GraphFolders
         var snap = Snapshot()
-        snap.meetings = GC.meetings.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
+        snap.meetings = meetingCount(graph: graph)
         let plainNodes = GC.nodes.filter { !coreFolders.contains($0) }
         snap.nodes = plainNodes.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
         snap.dossiers = GC.dossiers.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)

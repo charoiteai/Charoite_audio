@@ -24,18 +24,6 @@ extension TasksScreenPolicy.DueBucket {
     }
 }
 
-/// Секции «Мои» и «Старые» — поверх обеих группировок (запрос владельца
-/// 01.09: «за мной — первым, даже если задачи далеко; старьё — почистить»).
-enum TasksMineStale {
-    /// Кэш на процесс: configValue читает config.yaml с диска, а owner
-    /// дёргался из трёх computed-секций на каждую букву поиска (GLM r1).
-    static let owner: String = AppSettings.configValue("user_name") ?? ""
-    static let mineTitle = L.t("Мои", "Mine", "我的")
-    static func staleTitle(_ n: Int) -> String {
-        L.t("Старые (\(n))", "Stale (\(n))", "旧任务（\(n)）")
-    }
-}
-
 struct TasksView: View {
     @ObservedObject private var tasks = TasksService.shared
     @ObservedObject private var repository = MeetingRepository.shared
