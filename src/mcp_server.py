@@ -26,6 +26,7 @@ import live_gate
 import live_sidecar
 import meeting_source
 import meeting_stamp
+import privacy
 from config_loader import fingerprint, load_user_or_example
 from llm import LLM, LLMHTTPError, forget_fit
 
@@ -202,7 +203,13 @@ def _tool(fn):
             _root()
         except RootNotNamed as отказ:
             raise _ОтказБезКорня(f"{fn.__name__} не выполнен: {отказ}\n\n{_recipe()}") from отказ
-        return fn(*args, **kwargs)
+        ответ = fn(*args, **kwargs)
+        # Единственный шов всех инструментов: клиент MCP отдаёт текст модели, а
+        # в нём бывали пути этой машины (вывод ребёнка, корень данных в отказе).
+        # Дом → «~», корень данных вне дома → метка. Не строку не трогаем.
+        if isinstance(ответ, str):
+            ответ, _ = privacy.scrub_local_paths(ответ)
+        return ответ
     return mcp.tool()(с_корнем)
 
 
@@ -354,7 +361,7 @@ def sufler_make_minutes() -> str:
         # изменились. Хеш источника — тем же объектом, что у пересборки.
         tail = "" if wrote.state == live_sidecar.FRESH else (
             "\n(паспорт производной не подтверждён: проверьте сайдкар стенограммы)")
-        return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
+        return f"Минутки сохранены: {mpath.name}{tail}\n\n{out[:2000]}"
     finally:
         # Сводки частей снимаются на ЛЮБОМ исходе ПОСЛЕ ответа модели — это
         # решение в пользу приватности: кэш свёртки хранит речь встречи и без

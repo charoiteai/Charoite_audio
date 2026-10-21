@@ -388,6 +388,77 @@ def test_the_answer_helpers_read_the_installed_mcp():
     assert hasattr(mcp_server.mcp, "_mcp_server") == ветка_1x, mcp_server.FastMCP.__module__
 
 
+def _fake_home(tmp_path, monkeypatch):
+    """Домашний каталог внутри tmp_path, отдельный от корня данных."""
+    home = tmp_path / "дом"
+    home.mkdir()
+    monkeypatch.setattr(pathlib.Path, "home", lambda _cls=None: home)
+    return home
+
+
+def _no_machine_paths(out, root, home):
+    assert str(root) not in out, out
+    assert str(home) not in out, out
+    assert os.path.realpath(root) not in out, out
+
+
+def test_saved_minutes_answer_names_no_machine_path(tmp_path, monkeypatch):
+    """Успех `sufler_make_minutes` говорит имя файла встречи, а не путь машины
+    (№762): ответ уходит модели клиента MCP."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    tdir = _transcripts(root, monkeypatch)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("llm:\n  model: проба\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+    _minutes_client(monkeypatch, lambda: "## Темы\n- смета\n")
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert out.startswith("Минутки сохранены: 2026-09-13_1200_minutes.md"), out
+    assert (tdir / "2026-09-13_1200_minutes.md").exists()
+    _no_machine_paths(out, root, home)
+
+
+def test_unreadable_config_answer_names_no_machine_path(tmp_path, monkeypatch):
+    """Отказ «конфиг не прочитан» зовёт файл по имени `config.yaml`, но не
+    называет корень данных этой машины (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("llm:\n  engine: ollama\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "конфиг не прочитан" in out and "config.yaml" in out, out
+    _no_machine_paths(out, root, home)
+
+
+def test_update_graph_answer_scrubs_paths_printed_by_the_child(tmp_path, monkeypatch):
+    """Ребёнок печатает путь под домом (в stdout и в stderr) — модель клиента
+    видит `~` (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    charoite_paths.use_data_root(root, replace=True)
+
+    def run(*a, **k):
+        return subprocess.CompletedProcess(
+            a[0], 0, stdout=f"узел записан: {home}/graph/a.md\n",
+            stderr=f"Traceback: File \"{home}/code/src/graph_updater.py\", line 959\n")
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", run)
+
+    out = mcp_server.sufler_update_graph()
+
+    assert "~/graph/a.md" in out and "~/code/src/graph_updater.py" in out, out
+    assert str(home) not in out, out
+
+
 @pytest.mark.корень_называет_тест
 def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
     """Реестр по поведению, путём клиента MCP — то, что видит владелец. Без
