@@ -485,7 +485,7 @@ def _placeholder(name: str) -> bool:
     global _rule
     if _rule is None:
         _placeholder_rule_is_canon()
-        rule = pathlib.Path(__file__).resolve().parent.parent / PLACEHOLDER_RULE
+        rule = _code_top() / PLACEHOLDER_RULE
         spec = importlib.util.spec_from_file_location("_charoite_graph_names", rule)
         try:
             mod = importlib.util.module_from_spec(spec)
@@ -498,11 +498,18 @@ def _placeholder(name: str) -> bool:
     return _rule(name)
 
 
+def _code_top() -> pathlib.Path:
+    """Корень КОДА этого checkout. Единственный подъём от `__file__` в страже: его
+    прощает исключение раскладки, а единственность держит тест — второй подъём
+    (скажем, к данным) прошёл бы под тем же прощением молча (№605 out-layout)."""
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
 def _placeholder_rule_is_canon() -> None:
     """Pre-push зовёт страж основного checkout и сверяет его с HEAD (хук), а правило
     меток страж импортирует из `src/` того же checkout: незакоммиченная правка там
     выключила бы источник имён мимо хука (in1 I7) — отказ."""
-    top = pathlib.Path(__file__).resolve().parent.parent
+    top = _code_top()
     rule = PLACEHOLDER_RULE
     env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
     p = subprocess.run([*_GIT, "-C", str(top), "diff", "--quiet", "HEAD", "--", rule], capture_output=True, env=env)

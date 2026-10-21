@@ -57,7 +57,7 @@
 
 Канон: `src/charoite_paths.py`. Область правила: `src/`, `scripts/`.
 
-- `scripts/check_private_markers.py`, форма «file»: страж обезличивания автономен: хуки зовут его из основного checkout, а установку и тесты pre-push копируют его одним файлом, без src/ — импорт канона путей уронил бы хук ImportError. Подъём от __file__ ведёт к корню КОДА: правило меток src/charoite_graph/graph_names.py грузится по пути и сверяется с HEAD того же checkout; данных не касается, sys.path не трогает (№605)
+- `scripts/check_private_markers.py`, форма «file»: страж обезличивания автономен по импортам: pre-push зовёт страж основного checkout, pre-commit — рабочего дерева, тесты pre-push копируют его одним файлом без src/ — импорт канона путей уронил бы их ImportError. Подъём от __file__ один (_code_top, единственность держит тест) и ведёт к корню КОДА: правило меток src/charoite_graph/graph_names.py грузится по пути и сверяется с HEAD того же checkout; данных не касается, sys.path не трогает (№605)
 - `scripts/layout_map.py`, форма «file»: сам гейт раскладки: строка вычисляет корень РЕПОЗИТОРИЯ — две ступени вверх от scripts/layout_map.py, из него берутся src/, docs/design/layout.json и карта; sys.path она не трогает. Канон в этот момент недостижим: чтобы импортировать src/charoite_paths.py, надо сперва тем же подъёмом от __file__ положить src/ в sys.path — эта строка и есть такой подъём, сделанный до всякого канона. Цепочка ведёт к корню КОДА (src/, docs/design/layout.json), данных он не касается (№338)
 - `src/deps.py`, форма «file»: рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)
 
@@ -211,7 +211,7 @@
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/DIARIZATION.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/DIARIZATION.md, docs/zh/ARCHITECTURE.md, docs/zh/DIARIZATION.md
 - `src/charoite_graph/dossier.py` ← docs/FEATURES.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/charoite_graph/frontmatter.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
-- `src/charoite_graph/graph_names.py` ← CONTRIBUTING.md
+- `src/charoite_graph/graph_names.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/zh/CONTRIBUTING.md
 - `src/charoite_graph/graph_nodes.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/charoite_graph/graph_search.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/scripts/README.md, scripts/README.md
 - `src/charoite_graph/redirects.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md

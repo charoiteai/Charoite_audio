@@ -201,6 +201,18 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
         "без замера корней правило не судит вовсе — ни нарушителей, ни исключения"
 
 
+def test_the_markers_guard_climbs_from_its_file_once():
+    """Прощение раскладки снимает форму «file» со стража целиком: второй подъём от
+    `__file__` (скажем, к данным) прошёл бы под ним молча. Подъём держится один —
+    в `_code_top` (№605 out-layout, DS Critical и Sonnet I1)."""
+    tree = ast.parse((ROOT / "scripts" / "check_private_markers.py").read_text(encoding="utf-8"))
+    owners = [f.name for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+              for n in ast.walk(f) if isinstance(n, ast.Name) and n.id == "__file__"]
+    total = sum(isinstance(n, ast.Name) and n.id == "__file__" for n in ast.walk(tree))
+    assert owners == ["_code_top"] and total == 1, \
+        f"подъём от __file__ в страже: {total}, в функциях {owners} — один, в _code_top"
+
+
 def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
     """Форма «модуль распоряжается своим положением» проверяется НАЗНАЧЕНИЕМ
     узла, а не написанием выражения вокруг него.
