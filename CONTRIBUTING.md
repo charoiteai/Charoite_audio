@@ -117,7 +117,11 @@ review gates, and who answers for what — is documented in
   module imports (`from x import y`, `as`, relative, `import x` with `x.y`) and
   its closure mentions becomes the entry `x::y` at the same revision, unless
   `x` (or `x::y`) is listed in `mutation_not_critical` in both the base and the
-  head of the range. It does not go further across modules, nor follow
+  head of the range (a single revision without a left end has no such list). A
+  module-level `x` there does not stop the step from a `module::function` door
+  when `x` itself has `x::…` entries in `mutation_critical` (decided per
+  function); from a whole-file door it always does. It does not go further
+  across modules, nor follow
   `from x import *`, re-exports, `getattr` on a string, `globals()`, a registry
   filled at runtime, or an attribute of a value whose class is unknown
   (`hub.drop(...)`).

@@ -766,6 +766,20 @@ def test_дробно_решённый_модуль_расширение_не_г
     assert lm.zones_with_imports(zone, inv, None, {"x", "x::too_old"}) == zone
 
 
+def test_дверь_целым_файлом_не_обходит_модульное_не_критично(tmp_path):
+    """Обход модульного «не критично» у дробно решённого модуля — только для шага
+    из двери-функции (№762, круг 3 C, Sonnet I1): дверь целым файлом упоминает
+    половину модуля, и «кроме перечисленного» стало бы «всё, что она зовёт»."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": "from x import too_old, Clock\n\n\ndef sweep(p):\n    return too_old(p) or Clock()\n",
+        "src/whole.py": "from x import too_old\n\n\ndef run(p):\n    return too_old(p)\n",
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    zone = {"whole", "x::Clock"}
+    assert lm.zones_with_imports(zone, inv, None, {"x"}) == zone
+    assert lm.zones_with_imports(zone, inv, None, ()) == zone | {"x::too_old"}
+    assert lm.zones_with_imports(zone | {"door::sweep"}, inv, None, {"x"}) == zone | {"door::sweep", "x::too_old"}
+
+
 def test_грамматика_импорта_одна_на_imports_of_и_привязки():
     """`imports_of` и `import_bindings` читают один разбор: имя, которое связала
     привязка, есть и среди написанных импортов."""

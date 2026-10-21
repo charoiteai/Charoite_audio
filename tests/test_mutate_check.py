@@ -2600,6 +2600,17 @@ def test_некритичный_модуль_не_становится_крит�
     assert plan2 and all(m.critical for m in plan2), [(m.qualname, m.critical) for m in plan2]
 
 
+def test_одна_ревизия_не_снимает_по_некритичным(tmp_path):
+    """Диапазон без левого конца — второй руки нет: «не критично» из одной
+    ревизии расширение не гасит, как и «только в голове» (№762, круг 3 C, DS M2)."""
+    зоны = {"mutation_critical": {"door": "дверь"}, "mutation_not_critical": {"x": "условие"}}
+    repo = _git_repo(tmp_path, {"src/x.py": "def f():\n    return 1\n", mc.ZONES_REL: json.dumps(зоны)})
+    (repo / "src" / "x.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка"], cwd=repo, check=True)
+    assert mc.zones_for(repo, "HEAD")[1] == frozenset()
+    assert mc.zones_for(repo, "HEAD~1...HEAD")[1] == frozenset({"x"})
+
+
 def test_выживший_в_некритичной_зоне_зелёный_со_списком(tmp_path, monkeypatch, capsys):
     """Опыт №469, пара к `test_jobs_2_находит_тех_же_выживших…` (там критичный —
     красный): те же два выживших вне критичных зон — исход 0, оба названы в отчёте

@@ -424,8 +424,9 @@ _SCHEMA: dict[str, Field] = {
     # по дереву ревизии: вызов, значение, декоратор, класс со всеми методами,
     # в том числе вложенный в объемлющий класс, модульная переменная). Хелпер
     # в список не вписывают, формат ключа прежний.
-    # Не следует в другой модуль, в `getattr` по строке, в `globals()`, в реестр
-    # времени работы и в `hub.drop`.
+    # В другой модуль — один шаг по импорту (`zones_with_imports`): символ продукта,
+    # который упоминает замыкание двери, становится записью `x::y`. Не следует в
+    # `getattr` по строке, в `globals()`, в реестр времени работы и в `hub.drop`.
     # `mutation_not_critical` — решение «не дверь» с
     # обоснованием для модуля, который сторож (`zone_problems`) иначе потребовал бы решить.
     "mutation_critical": Field(dict, "decision"),
@@ -1684,17 +1685,21 @@ def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None,
     (`graph_updater`) делала критичными `llm::LLM` со всеми методами — правка
     `llm.py` давала 41 критичного мутанта вместо одного. Модуль, у которого есть
     свои записи в критичных (`live_sidecar`: «двери — функциями»), решён дробно:
-    его «не критично» значит «кроме перечисленного», и расширение не гасит —
-    иначе условие двери `retro_fill::process` в `live_sidecar::wants_build`
-    оставалось бы некритичным. Запись символа (`x::y`) в некритичных гасит
-    только сам символ; методы класса — внутри модуля, как у `in_zone`.
+    его «не критично» значит «кроме перечисленного», и шаг из двери-функции оно
+    не гасит — иначе условие `daemon::_recover_orphans` в
+    `live_sidecar::machine_final` оставалось бы некритичным. Шаг из двери целым
+    файлом оно гасит всегда: такая дверь упоминает половину модуля, и «кроме
+    перечисленного» стало бы «всё, что она зовёт». Запись символа (`x::y`) в
+    некритичных гасит только сам символ; методы класса — внутри модуля, как у
+    `in_zone`.
     Упоминания из заголовка класса (базы, декораторы, атрибуты) шаг не видит.
     """
     entries = frozenset(entries)
-    # «не критично» модулем гасит расширение, только если модуль не решён дробно
+    not_critical = frozenset(not_critical)
+    # из двери-функции «не критично» модулем гасит шаг, только если модуль не решён дробно
     dotted = {zone_rel(zone_split(e)[0], inv.files) for e in entries if zone_split(e)[1]}
-    not_critical = frozenset(e for e in not_critical
-                             if zone_split(e)[1] or zone_rel(zone_split(e)[0], inv.files) not in dotted)
+    narrow = frozenset(e for e in not_critical
+                       if zone_split(e)[1] or zone_rel(zone_split(e)[0], inv.files) not in dotted)
     area = mutation_area(inv) if area is None else area
     mods = modules(inv)
     rel_of = {m: rel for rel in inv.files if (m := module_of(rel)) is not None}
@@ -1717,7 +1722,9 @@ def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None,
         for qual in closure:
             for fn in fns.get(qual, ()):
                 roots.extend(_mention_roots(fn))
-        if _lexical_in_zone(entries, rel, ""):
+        whole = _lexical_in_zone(entries, rel, "")
+        gate = not_critical if whole else narrow
+        if whole:
             # запись — весь файл: код уровня модуля тоже дверь
             roots.extend(n for n in getattr(tree, "body", [])
                          if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
@@ -1735,7 +1742,7 @@ def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None,
             symbol = full[len(target) + 1:].split(".")[0]
             if target_rel not in defined:
                 defined[target_rel] = set(_definitions(target_tree)[0])
-            if symbol in defined[target_rel] and not _lexical_in_zone(not_critical, target_rel, symbol):
+            if symbol in defined[target_rel] and not _lexical_in_zone(gate, target_rel, symbol):
                 added.add(f"{target}::{symbol}")
     return entries | frozenset(added)
 

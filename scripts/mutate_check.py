@@ -645,7 +645,8 @@ def zones_for(root: pathlib.Path, rng: str) -> tuple[frozenset[str], frozenset[s
     импорту (№613), и потому действует, только если оно есть в обеих ревизиях: PR
     не снимает свои мутанты, вписав модуль в некритичные. Ревизии без файла или
     без ключа — пустой вклад и заметка, а не отказ: первый PR №469 сам вводит
-    ключ. Возвращает (критичные, некритичные, дайджест, заметка)."""
+    ключ. Одна ревизия без левого конца — второй руки нет, «не критично» не
+    действует. Возвращает (критичные, некритичные, дайджест, заметка)."""
     left, _, right = split_range(rng)
     entries: set[str] = set()
     not_critical: set[str] | None = None
@@ -666,6 +667,8 @@ def zones_for(root: pathlib.Path, rng: str) -> tuple[frozenset[str], frozenset[s
             notes.append(f"в {rev[:12]} списка зон нет")
             continue
         entries.update(got)
+    if not left:
+        not_critical = None
     digest = hashlib.sha256("\n".join(sorted(entries)).encode("utf-8")).hexdigest()[:12]
     return frozenset(entries), frozenset(not_critical or ()), digest, "; ".join(notes)
 
