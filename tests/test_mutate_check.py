@@ -10,6 +10,7 @@
 import ast
 import collections
 import dataclasses
+import functools
 import itertools
 import json
 import re
@@ -1198,12 +1199,32 @@ class _Часы:
 
 def _мутанты(rel: str, n: int) -> list:
     """Первые `n` мутантов HEAD-версии файла, которые применяются к ней же."""
+    return list(_годные(rel, n))
+
+
+@functools.cache
+def _годные(rel: str, n: int) -> tuple:
+    """Лениво и один раз на воркер: `applied` разбирает файл целиком, и проверка
+    всех ~500 мутантов стоила каждому тесту ~34 с, а CI — таймаут pytest (№595).
+    Тоталность `applied` по всем кандидатам держит свой тест на малом модуле."""
     head = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=REPO,
                           capture_output=True, text=True, check=True).stdout
     found = mc.scan(REPO / rel, set(range(1, head.count("\n") + 1)), head).mutations
-    # лениво: `applied` разбирает файл целиком, и проверка всех ~500 мутантов
-    # стоила каждому тесту ~34 с, а CI — таймаут pytest (№595)
-    return list(itertools.islice((m for m in found if mc.applied(m, head)[0] is not None), n))
+    return tuple(itertools.islice((m for m in found if mc.applied(m, head)[0] is not None), n))
+
+
+def test_applied_тотален_на_каждом_кандидате():
+    """`applied` на каждом кандидате малого модуля отвечает текстом или причиной
+    словами — не падает. Хелпер `_мутанты` больше не гоняет его по всему файлу
+    (DS M1 узкого круга №595)."""
+    rel = "src/exit_codes.py"
+    head = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=REPO,
+                          capture_output=True, text=True, check=True).stdout
+    found = mc.scan(REPO / rel, set(range(1, head.count("\n") + 1)), head).mutations
+    assert found
+    for m in found:
+        text, why = mc.applied(m, head)
+        assert (text is not None) or why, m
 
 
 def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_на=None):

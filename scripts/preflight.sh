@@ -41,7 +41,10 @@ FAIL=""
 SKIPPED=""
 T0=$(date +%s)
 SKIP=",${PREFLIGHT_SKIP:-},"
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/preflight.XXXXXX")   # шаблон с X — и BSD, и GNU (тест шага 4 идёт в CI на Linux)
+# шаблон с X — и BSD, и GNU (тест шага 4 идёт в CI на Linux); без каталога логи
+# шагов ушли бы в «/» и покраснели без причины (№595, Sonnet I3 = DS I1)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/preflight.XXXXXX") \
+  || { echo "preflight: временный каталог не создаётся (${TMPDIR:-/tmp}) — прогон не стартует"; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
 skipped() { case "$SKIP" in *",$1,"*) SKIPPED="$SKIPPED $1"; printf '   – %s пропущен (PREFLIGHT_SKIP)\n' "$1"; return 0;; esac; return 1; }
 step() { printf '\n── %s\n' "$1"; }

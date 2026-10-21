@@ -27,6 +27,7 @@ def tree(tmp_path):
     t = tmp_path / "tree"
     (t / "scripts").mkdir(parents=True)
     (t / "src").mkdir()
+    (t / "tests").mkdir()   # шаг 1 линтует src/ scripts/ tests/
     (t / ".github" / "workflows").mkdir(parents=True)
     shutil.copy(ROOT / "scripts" / "preflight.sh", t / "scripts" / "preflight.sh")
     shutil.copy(ROOT / "src" / "exit_codes.py", t / "src" / "exit_codes.py")
@@ -50,7 +51,17 @@ def _preflight(tree, tmp_path, rc, msg, **extra):
            "FAKE_ARGV": str(argv), "FAKE_MSG": msg, "FAKE_RC": str(rc), **extra}
     r = subprocess.run(["/bin/bash", "scripts/preflight.sh", "HEAD"], cwd=tree, env=env,
                        capture_output=True, text=True, timeout=60)
-    return r, argv.read_text()
+    # мутатор не запущен (ранний выход preflight) — пустой argv, а не голый
+    # FileNotFoundError без вывода скрипта (Sonnet M1 узкого круга №595)
+    return r, argv.read_text() if argv.exists() else ""
+
+
+def test_no_temp_dir_is_a_named_refusal(tree, tmp_path):
+    """Временный каталог не создаётся — отказ старта кодом 2 с причиной, а не
+    логи шагов в «/» и FAIL без слов (Sonnet I3 = DS I1 узкого круга №595)."""
+    r, argv = _preflight(tree, tmp_path, 0, "ok", TMPDIR=str(tmp_path / "нет"))
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "временный каталог не создаётся" in r.stdout and argv == ""
 
 
 def test_busy_start_is_a_skip(tree, tmp_path):
