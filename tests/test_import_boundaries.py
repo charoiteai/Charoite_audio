@@ -201,38 +201,15 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
         "без замера корней правило не судит вовсе — ни нарушителей, ни исключения"
 
 
-def test_the_markers_guard_climbs_from_its_file_once():
-    """Прощение раскладки снимает форму «file» со стража целиком: второй подъём от
-    положения файла (скажем, к данным) прошёл бы под ним молча. Подъём один — в
-    `_code_top`, его тело и оба потребителя закреплены текстом (№605 out-layout,
-    out2, out3). Граница: подъём мимо грамматики гейта (`sys.argv[0]`, имя
-    `__file__`, склеенное из строк) не видит гейт ни в одном файле — это предел
-    `_any_file` для всего дерева, а не этого прощения (замер out3 на main)."""
+def test_the_markers_guard_has_no_root_exemption():
+    """Страж берёт корень основного checkout у git, а не от `__file__`: исключения
+    раскладки у него нет, и любой подъём от положения файла гейт видит как в любом
+    модуле (№605 out4 — четыре круга текстовых пинов одного подъёма находили
+    следующее написание)."""
+    layout = json.loads((ROOT / "docs" / "design" / "layout.json").read_text(encoding="utf-8"))
+    assert "scripts/check_private_markers.py" not in layout["root_exemptions"]
     tree = ast.parse((ROOT / "scripts" / "check_private_markers.py").read_text(encoding="utf-8"))
-    funcs = {f.name: f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)}
-    top = funcs["_code_top"]
-    lines = lm._any_file(tree)
-    assert len(lines) == 1 and top.lineno <= lines[0] <= top.end_lineno, \
-        f"положение файла в страже: строки {lines} — одна, в _code_top"
-    body = [ast.unparse(st) for st in top.body if not (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))]
-    assert body == ["return pathlib.Path(__file__).resolve().parent.parent"], \
-        f"тело _code_top — один подъём на две ступени без ветвей: {body}"
-    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
-    refs = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "_code_top"]
-    def stmt(n):
-        while not isinstance(n, ast.stmt):
-            n = parents[n]
-        return n
-    uses = sorted(ast.unparse(stmt(n)) for n in refs if isinstance(parents[n], ast.Call) and parents[n].func is n)
-    assert len(uses) == len(refs) and uses == ["rule = _code_top() / PLACEHOLDER_RULE", "top = _code_top()"], \
-        f"корень кода стража уходит не только в правило и git -C (псевдоним — тоже уход): {uses}, ссылок {len(refs)}"
-    canon = funcs["_placeholder_rule_is_canon"]
-    reads = [parents[n] for n in ast.walk(canon) if isinstance(n, ast.Name) and n.id == "top"
-             and isinstance(n.ctx, ast.Load)]
-    assert reads and all(isinstance(r, ast.FormattedValue)
-                         or isinstance(r, ast.Call) and ast.unparse(r.func) == "str"
-                         and isinstance(parents[r], ast.List) for r in reads), \
-        "top читается только строкой: str(top) элементом списка аргументов git, {top} в сообщении"
+    assert lm._any_file(tree) == []
 
 
 def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):

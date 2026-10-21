@@ -1087,9 +1087,10 @@ def test_raw_objects_returns_each_object_whole(repo, monkeypatch):
         assert got[sha] == want, sha
 
 
-def test_the_guard_code_root_is_the_checkout():
-    """Подъём стража ведёт к корню КОДА того же checkout — значение, а не написание
-    (№605 out2, DS)."""
-    assert guard._code_top() == REPO
+def test_the_guard_code_root_is_the_main_checkout():
+    """Правило меток страж берёт из основного checkout — того, что называет git
+    (`--git-common-dir`), как и хук pre-push (№605 out4)."""
+    common = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert guard.canonical_checkout() == pathlib.Path(common).resolve().parent
     assert guard.PLACEHOLDER_RULE == "src/charoite_graph/graph_names.py"
-    assert (guard._code_top() / guard.PLACEHOLDER_RULE).resolve() == REPO / "src" / "charoite_graph" / "graph_names.py"
