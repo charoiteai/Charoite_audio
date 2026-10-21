@@ -459,6 +459,46 @@ def test_update_graph_answer_scrubs_paths_printed_by_the_child(tmp_path, monkeyp
     assert str(home) not in out, out
 
 
+def test_tool_exception_text_names_no_machine_path(tmp_path, monkeypatch):
+    """Исключение тела инструмента — второй канал наружу: на mcp 1.x его текст
+    доходит до клиента как есть (`[Errno 2] … '<путь>'`). Файл встречи пропал
+    между `_latest` и чтением (ретеншн) — модель видит отказ с причиной, но без
+    пути машины (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    tdir = _transcripts(root, monkeypatch)
+    пропал = tdir / "2026-09-13_1200.md"
+    пропал.unlink()
+    monkeypatch.setattr(mcp_server, "_latest", lambda: пропал)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "FileNotFoundError" in out and "2026-09-13_1200.md" in out, out
+    _no_machine_paths(out, root, home)
+
+
+def test_no_root_refusal_scrubs_the_reason_but_keeps_the_recipe(monkeypatch, tmp_path):
+    """Причина отказа без корня может назвать путь машины — она чистится;
+    рецепт регистрации называет путь к коду сервера намеренно и остаётся (№762)."""
+    home = _fake_home(tmp_path, monkeypatch)
+
+    def нет_корня():
+        raise charoite_paths.RootNotNamed(f"корень данных {home}/Чароит.app/данные внутри бандла")
+
+    monkeypatch.setattr(mcp_server, "_root", нет_корня)
+
+    ответ = asyncio.run(_вызвать("sufler_status"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "~/Чароит.app/данные внутри бандла" in out, out
+    assert f"{home}/Чароит.app" not in out, out
+    assert mcp_server._recipe() in out, out
+
+
 @pytest.mark.корень_называет_тест
 def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
     """Реестр по поведению, путём клиента MCP — то, что видит владелец. Без
