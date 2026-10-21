@@ -507,6 +507,7 @@ def _label_rule():
     src = git("show", f"refs/heads/main:{PLACEHOLDER_RULE}", own_repo=True)
     mod = types.ModuleType("_charoite_graph_names")
     try:
+        # nosemgrep — код правила из локальной main, доверен как страж pre-push (докстринг)
         exec(compile(src, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
         is_label = mod.is_speaker_placeholder
     except (Exception, SystemExit) as e:  # noqa: BLE001 — сбой правила — отказ, не проход

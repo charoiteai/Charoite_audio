@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from test_pre_push_markers import MARKER, REPO, Repo, _owner_env, git, guard, guard_run
+from test_pre_push_markers import MARKER, OWNER, REPO, Repo, _owner_env, git, guard, guard_run
 
 FAKE = "Аристарх" + " Чебуреков"            # из частей: целиком сработал бы на этом файле у владельца
 LABEL = "Собеседник 3"
@@ -351,6 +351,8 @@ def test_git_dir_pointing_at_another_repo_does_not_pick_the_rule(repo):
     repo.commit("old")
     evil = repo.tmp / "evil"
     git(repo.tmp, "clone", "-q", str(repo.work), str(evil), env=repo.env)
+    for k, v in (("user.email", OWNER), ("user.name", "Charoite AI")):
+        git(evil, "config", k, v, env=repo.env)
     _weaken(evil)
     repo.commit("weak rule", evil)
     p = guard_run(repo.work, "--all", env={**env, "GIT_DIR": str(evil / ".git")})
