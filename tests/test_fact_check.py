@@ -215,6 +215,8 @@ def test_prefix_month_does_not_hide_invented_date():
     # номер версии после буквы и первая половина пунктов — не дата стенограммы
     assert unanchored("срок 03.10", "обновили Python3.10") == ["03.10"]
     assert unanchored("сдать 01.10", "пункты 1.10-1.12 регламента") == ["01.10"]
+    assert unanchored("сдать 02.05", "в смеси 2.05г соли") == ["02.05"]
+    assert unanchored("сдать 01.10", "согласно п. 1.10г договора") == ["01.10"]
 
 
 def test_invented_ordinal_date_caught():
