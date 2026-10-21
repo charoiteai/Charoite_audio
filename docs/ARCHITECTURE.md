@@ -1113,7 +1113,9 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   Every string a tool returns, and the text of any error it raises, passes one
   seam (`_tool`) through `privacy.scrub_local_paths`: the home folder becomes
   `~`, a data root outside it a marker. Paths outside both are not rewritten.
-  The registration recipe keeps the path to the server code on purpose.
+  The registration recipe keeps the path to the server code on purpose. Errors
+  the mcp package raises before the tool runs (argument validation) do not pass
+  this seam.
 
 ## Surviving a crash
 

@@ -499,6 +499,46 @@ def test_no_root_refusal_scrubs_the_reason_but_keeps_the_recipe(monkeypatch, tmp
     assert mcp_server._recipe() in out, out
 
 
+def test_root_check_failure_passes_the_seam(monkeypatch, tmp_path):
+    """Проверка корня может упасть не отказом, а сбоем (петля симлинков в
+    `CHAROITE_ROOT` → `RuntimeError` с путём) — он идёт тем же швом, что и
+    сбой тела: ошибка инструмента без пути машины (№762)."""
+    home = _fake_home(tmp_path, monkeypatch)
+
+    def петля():
+        raise RuntimeError(f"Symlink loop from '{home}/данные'")
+
+    monkeypatch.setattr(mcp_server, "_root", петля)
+
+    ответ = asyncio.run(_вызвать("sufler_status"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "Symlink loop from '~/данные'" in out, out
+    assert str(home) not in out, out
+
+
+def test_tool_error_from_the_body_keeps_its_text(tmp_path, monkeypatch):
+    """Отказ, который тело адресует клиенту (`ToolError`), уходит своим текстом,
+    чистым и без имени класса впереди (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def отказ():
+        raise mcp_server.ToolError(f"встреча {home}/x.md занята")
+
+    monkeypatch.setattr(mcp_server, "_latest", отказ)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "встреча ~/x.md занята" in out, out
+    assert "ToolError:" not in out, out
+
+
 @pytest.mark.корень_называет_тест
 def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
     """Реестр по поведению, путём клиента MCP — то, что видит владелец. Без
