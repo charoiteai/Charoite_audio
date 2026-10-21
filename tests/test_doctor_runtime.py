@@ -845,7 +845,7 @@ def test_a_probe_on_another_mlx_audio_branch_is_a_warning_with_advice(key, capsy
 @pytest.mark.parametrize("key", ["", "/env/python"])
 def test_a_post_release_of_the_tested_branch_warns_without_reinstall_advice(key, suffix, capsys,
                                                                             monkeypatch, tmp_path):
-    """`0.5.8.post1` (и dev-сборка) при проверенной 0.5.8 — та же ветка: пересборка
+    """`<проверенная>.post1` (и dev-сборка) при проверенной версии — та же ветка: пересборка
     идёт (`version_verdict`), доктор только предупреждает и не советует переставить
     окружение (№695, круг n695-p2, DS M1). Рецепт на случай отказа загрузки — по
     тому, чей интерпретатор: при заданном ключе установщик его не обновит, совет —

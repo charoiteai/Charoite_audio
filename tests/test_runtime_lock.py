@@ -236,6 +236,13 @@ def test_one_compile_command_for_every_target_with_the_platform_floor_only_where
     assert [floor for _, floor in seen] == ["14.0", ""]
 
 
+#: Что делать, когда вход или лок движка разошёлся с константой (PR Dependabot правит
+#: только `.in`): процедура подъёма — в docs/DIARIZATION.md, пункт «Version».
+NEM_BUMP = ("правьте не .in, а MLX_AUDIO_VERSION в src/diarize_nemotron.py — после проверки стыка "
+            "на новой версии; затем .venv/bin/python scripts/lock_runtime_deps.py nemotron и рецепты "
+            "в docs/DIARIZATION.md и docs/ru/DIARIZATION.md (docs/DIARIZATION.md, пункт «Version»)")
+
+
 def test_the_engine_lock_pins_the_version_the_engine_module_names():
     """Версию стыка знает модуль движка; вход и лок движка от неё не отстают."""
     import lock_runtime_deps as lrd
@@ -243,10 +250,10 @@ def test_the_engine_lock_pins_the_version_the_engine_module_names():
     assert lrd.nemotron_deps() == [f"mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION}"]
     listed = [ln.strip() for ln in NEM_INPUT.read_text(encoding="utf-8").splitlines()
               if ln.strip() and not ln.startswith("#")]
-    assert listed == lrd.nemotron_deps(), "requirements-nemotron.in разъехался с MLX_AUDIO_VERSION"
+    assert listed == lrd.nemotron_deps(), f"requirements-nemotron.in разъехался с MLX_AUDIO_VERSION: {NEM_BUMP}"
     text = NEM_LOCK.read_text(encoding="utf-8")
     assert re.search(rf"^mlx-audio=={re.escape(diarize_nemotron.MLX_AUDIO_VERSION)} \\", text, re.M), (
-        "лок движка отстал — пересоберите: .venv/bin/python scripts/lock_runtime_deps.py nemotron")
+        f"лок движка отстал: {NEM_BUMP}")
 
 
 def test_the_engine_lock_names_its_platform_and_hashes_every_package():
