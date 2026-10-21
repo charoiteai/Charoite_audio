@@ -80,14 +80,16 @@ DATE_ISO_RE = re.compile(r"(?<![\d./-])(?:19|20)\d{2}-(\d{2})-(\d{2})(?![./-]?\d
 # «версия 1.5», «v2.1» — номер релиза, а не дата
 VERSION_CTX_RE = re.compile(r"(?:верси\w*|version|v\.?)\s*$", re.I)
 # «23 августа», «4-го октября», «4го октября»: число с окончанием или без;
-# число и месяц — на одной строке («в списке 3» и «мая…» ниже — не дата);
-# пробел любой, кроме перевода строки: неразрывный (23\u00a0августа) — тоже
+# число и месяц — через пробел на одной строке: обычный или неразрывный
+# (23\u00a0августа); перевод строки, табуляция и разделители строк — не пробел
+# («в списке 3» и «мая…» ниже, «3» и «мая» в соседних ячейках — не дата)
+_SP = "[ \u00a0\u202f\u2009]+"
 DATE_WORD_RE = re.compile(
-    rf"\b(\d{{1,2}})(?:-?(?:го|ого|е|ое))?[^\S\n]+({_alt(MONTHS)})\b")
+    rf"\b(\d{{1,2}})(?:-?(?:го|ого|е|ое))?{_SP}({_alt(MONTHS)})\b")
 # «четвёртого октября», «двадцать пятого октября»: десяток и единица — только
 # соседние слова без знака препинания («было двадцать, пятого октября» — 05.10)
 DATE_ORDINAL_RE = re.compile(
-    rf"\b(?:({_alt(TENS_WORDS)})[^\S\n]+)?({_alt(ORDINAL_DAYS)})[^\S\n]+({_alt(MONTHS)})\b")
+    rf"\b(?:({_alt(TENS_WORDS)}){_SP})?({_alt(ORDINAL_DAYS)}){_SP}({_alt(MONTHS)})\b")
 
 
 def _add(out: set, day: int, month: str) -> None:
@@ -95,20 +97,20 @@ def _add(out: set, day: int, month: str) -> None:
         out.add(f"{day:02d}.{month}")
 
 
-def _add_numeric(out: set, text: str, start: int, day: str, mon: str, year: str | None) -> None:
-    """Числовая дата «день.месяц[.год]», начатая в `text` с `start`, — в `out`, если это дата."""
+def _numeric(text: str, start: int, day: str, mon: str, year: str | None) -> str | None:
+    """Числовая дата «день.месяц[.год]», начатая в `text` с `start`, — «ДД.ММ» или None."""
     if not (1 <= int(day) <= 31 and 1 <= int(mon) <= 12):
-        return
+        return None
     if VERSION_CTX_RE.search(text[max(0, start - 12):start]):
-        return  # «версия 1.5»
+        return None  # «версия 1.5»
     # 1.5 — это и 1 мая, и версия 1.5. Различаем по форме записи: у даты
     # месяц пишут двузначным (15.08) либо день заведомо не месяц (23.8).
     # Однозначный месяц при дне ≤ 12 (1.5, 2.3) считаем номером версии:
     # пропустить сомнительную дату дешевле, чем дёргать ложной тревогой.
     # С годом (1.5.2026) сомнения нет.
     if len(mon) == 1 and int(day) <= 12 and not year:
-        return
-    out.add(f"{int(day):02d}.{int(mon):02d}")
+        return None
+    return f"{int(day):02d}.{int(mon):02d}"
 
 
 def _dates(text: str) -> set[str]:
@@ -119,11 +121,14 @@ def _dates(text: str) -> set[str]:
     out: set[str] = set()
     for match in DATE_NUM_RE.finditer(text):
         day, _, mon, year = match.groups()
-        _add_numeric(out, text, match.start(), day, mon, year)
+        if date := _numeric(text, match.start(), day, mon, year):
+            out.add(date)
     for match in DATE_RANGE_RE.finditer(text):
+        # диапазон — обе половины датами или ни одной: «12.5-15.5 млн» не дата
         d1, m1, y1, d2, m2, y2 = match.groups()
-        _add_numeric(out, text, match.start(), d1, m1, y1)
-        _add_numeric(out, text, match.start(), d2, m2, y2)
+        pair = (_numeric(text, match.start(), d1, m1, y1), _numeric(text, match.start(), d2, m2, y2))
+        if all(pair):
+            out.update(pair)
     for mon, day in DATE_ISO_RE.findall(text):
         if 1 <= int(mon) <= 12:
             _add(out, int(day), mon)
