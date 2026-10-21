@@ -26,6 +26,7 @@ import live_gate
 import live_sidecar
 import meeting_source
 import meeting_stamp
+import privacy
 from config_loader import fingerprint, load_user_or_example
 from llm import LLM, LLMHTTPError, forget_fit
 
@@ -195,6 +196,12 @@ def _tool(fn):
     `functools.wraps` обязателен: схему параметров MCP строит по сигнатуре, и
     без него `max_chars` у `sufler_live_transcript` превратился бы в
     `*args, **kwargs`.
+
+    Строковый ответ инструмента проходит `privacy.scrub_local_paths`: клиент —
+    модель, и абсолютные пути этой машины (дом, корень данных) ей не нужны и
+    не должны уезжать в чужие контексты. Нестроковый ответ не трогаем.
+    Исключение `_ОтказБезКорня` с рецептом сюда не попадает — оно летит мимо
+    возврата, и путь к коду сервера в `_recipe()` остаётся намеренно.
     """
     @functools.wraps(fn)
     def с_корнем(*args, **kwargs):
@@ -202,7 +209,10 @@ def _tool(fn):
             _root()
         except RootNotNamed as отказ:
             raise _ОтказБезКорня(f"{fn.__name__} не выполнен: {отказ}\n\n{_recipe()}") from отказ
-        return fn(*args, **kwargs)
+        результат = fn(*args, **kwargs)
+        if isinstance(результат, str):
+            результат, _замен = privacy.scrub_local_paths(результат)
+        return результат
     return mcp.tool()(с_корнем)
 
 
@@ -296,7 +306,7 @@ def sufler_make_minutes() -> str:
         client = _client()
     except Exception as e:                    # noqa: BLE001 — причина важнее типа, она в тексте
         return (f"конфиг не прочитан ({type(e).__name__}: {e}) — минутки НЕ тронуты "
-                f"({mpath.name}). Проверьте {_root()}/config/config.yaml: "
+                f"({mpath.name}). Проверьте config/config.yaml: "
                 f"нужен раздел llm с ключом model")
     try:
         # длинная встреча — через ту же свёртку частей, что у демона: иначе Ollama
@@ -354,7 +364,7 @@ def sufler_make_minutes() -> str:
         # изменились. Хеш источника — тем же объектом, что у пересборки.
         tail = "" if wrote.state == live_sidecar.FRESH else (
             "\n(паспорт производной не подтверждён: проверьте сайдкар стенограммы)")
-        return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
+        return f"Минутки сохранены: {mpath.name}{tail}\n\n{out[:2000]}"
     finally:
         # Сводки частей снимаются на ЛЮБОМ исходе ПОСЛЕ ответа модели — это
         # решение в пользу приватности: кэш свёртки хранит речь встречи и без

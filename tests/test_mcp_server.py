@@ -161,6 +161,25 @@ def test_mcp_minutes_take_the_owner_and_the_language_from_the_config(tmp_path, m
     assert "смета к пятому" in out, "ответ инструмента несёт сами минутки"
 
 
+def test_mcp_minutes_success_reply_has_no_machine_paths(tmp_path, monkeypatch):
+    """Клиент MCP — модель: полный путь файла встречи ей не нужен (№762a).
+
+    Ответ успеха называет файл именем, как и ветки отказа; шов `_tool` для
+    строки остаётся вторым слоем. На коде базы здесь стоял `{mpath}` — путь
+    этой машины уезжал в контекст модели.
+    """
+    tdir = _transcripts(tmp_path, monkeypatch)
+    _minutes_client(monkeypatch, lambda: "- **Кто** — что — срок")
+    monkeypatch.setattr(pathlib.Path, "home", lambda _cls=None: tmp_path / "дом")
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert str(tmp_path) not in out, out
+    assert str(pathlib.Path.home()) not in out, out
+    assert "Минутки сохранены: 2026-09-13_1200_minutes.md" in out, out
+    assert (tdir / "2026-09-13_1200_minutes.md").exists()
+
+
 @pytest.mark.parametrize("existing", [False, True])
 def test_mcp_minutes_keep_edits_made_during_generation(tmp_path, monkeypatch, existing):
     tdir = _transcripts(tmp_path, monkeypatch)
@@ -252,6 +271,28 @@ def test_update_graph_timeout_is_a_message_not_a_crash(tmp_path, monkeypatch):
     assert "20 мин" in out and "прерван" in out
 
 
+def test_update_graph_reply_hides_the_home_path(tmp_path, monkeypatch):
+    """Ребёнок печатает абсолютные пути — в ответе клиенту их быть не должно.
+
+    `sufler_update_graph` отдавал `stdout + stderr` как есть, и отчёт
+    graph_updater нёс пути этой машины в контекст модели (№762a). Шов `_tool`
+    заменяет дом на `~`; на коде базы путь остаётся полным.
+    """
+    home = tmp_path / "дом"
+    home.mkdir()
+    monkeypatch.setattr(pathlib.Path, "home", lambda _cls=None: home)
+
+    def run(*a, **k):
+        return subprocess.CompletedProcess(
+            a[0], 0, stdout=f"обновлён граф: {home}/заметки.md\n", stderr="")
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", run)
+    out = mcp_server.sufler_update_graph()
+
+    assert str(home) not in out, out
+    assert "~/заметки.md" in out, out
+
+
 def test_правка_конфига_видна_без_перезапуска_сервера(tmp_path, monkeypatch):
     """Владелец сменил модель в приложении — следующий вызов инструмента знает.
 
@@ -311,6 +352,10 @@ def test_конфиг_без_модели_объясняет_отказ_а_не_
     out = mcp_server.sufler_make_minutes()
 
     assert "минутки НЕ тронуты" in out and "config.yaml" in out and "model" in out
+    # Отказ не выдаёт модели, где лежат данные на этой машине (№762a): файл
+    # называется путём от корня данных, а не полным.
+    assert str(tmp_path) not in out, out
+    assert str(pathlib.Path.home()) not in out, out
     assert not (tdir / "2026-09-13_1200_minutes.md").exists(), "пустышка легла на диск"
 
 
