@@ -1091,3 +1091,5 @@ def test_the_guard_code_root_is_the_checkout():
     """Подъём стража ведёт к корню КОДА того же checkout — значение, а не написание
     (№605 out2, DS)."""
     assert guard._code_top() == REPO
+    assert guard.PLACEHOLDER_RULE == "src/charoite_graph/graph_names.py"
+    assert (guard._code_top() / guard.PLACEHOLDER_RULE).resolve() == REPO / "src" / "charoite_graph" / "graph_names.py"
