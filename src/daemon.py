@@ -3224,8 +3224,7 @@ def main():
                     # одним написанием, строка итога — механически: шаги и их
                     # порядок — у общего входа минуток (№732)
                     out = meeting_source.finish_minutes(
-                        out, meeting_source.live(whole, note, began_at=meeting_source.began_of(tr.path)),
-                        owner=owner_name,
+                        out, meeting_source.live(whole, note), owner=owner_name,
                         participants=action_items.participants_set(tr.participants(), owner=owner_name),
                         lang=llm.lang)
                     # Маркер перепроверяем ПЕРЕД записью, а не только на входе
@@ -3331,8 +3330,7 @@ def main():
             ok = True
             # источник = речь + оговорка о записи: оговорка уходит в промпт
             # отдельным блоком после свёртки, в документ — строкой (№317)
-            source = meeting_source.live(tr.full() or "(пусто)", trace.summary(),
-                                         began_at=meeting_source.began_of(tr.path))
+            source = meeting_source.live(tr.full() or "(пусто)", trace.summary())
             try:
                 for tok in llm.minutes(source.speech, recording_note=source.recording_note):
                     chunks.append(tok)

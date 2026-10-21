@@ -31,7 +31,7 @@ PEOPLE = {"Анна", "Борис"}
 
 def _finish(doc=DOC, speech=SPEECH, note=NOTE):
     return meeting_source.finish_minutes(
-        doc, meeting_source.live(speech, note, began_at=None), owner="Анна", participants=PEOPLE, lang="ru")
+        doc, meeting_source.live(speech, note), owner="Анна", participants=PEOPLE, lang="ru")
 
 
 #: байты прежней цепочки «Протокола» демона (annotate → normalize → finalize →
@@ -148,50 +148,8 @@ def test_every_minutes_path_goes_through_the_entry():
         assert "meeting_source.finish_minutes(" in body, f"{name}: мимо входа минуток"
         for step in ("fact_check.annotate(", "without_footnote(", "action_items.normalize(",
                      "finalize_assignees(", "with_note(", "without_note(",
-                     "scrub_local_paths(", "with_date("):
+                     "scrub_local_paths("):
             assert step not in body, f"{name}: свой шаг {step} мимо входа"
-        # начало встречи доезжает до входа на каждом пути: источник входа —
-        # `of()` по файлу или `live(…, began_at=began_of(…))` (№738, Haiku I4
-        # входа); по дереву, не по подстроке (выход out1, Sonnet M2 = Haiku M2)
-        for source in _entry_sources(path, name):
-            assert _carries_start(source), f"{name}: источник без начала встречи"
-
-
-def _entry_sources(path: pathlib.Path, name: str) -> list[ast.expr]:
-    """Источник каждого вызова `finish_minutes` в функции: выражение второго
-    аргумента; имя разворачивается в значение его присваивания (и аннотированного)
-    в той же функции."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
-    assigned = {t.id: n.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
-                for t in n.targets if isinstance(t, ast.Name)}
-    assigned |= {n.target.id: n.value for n in ast.walk(fn)
-                 if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value}
-    resolve = lambda e: assigned.get(e.id, e) if isinstance(e, ast.Name) else e   # noqa: E731
-    calls = [n for n in ast.walk(fn) if _is_call(n, "finish_minutes")]
-    assert calls, f"{name}: нет вызова входа"
-    out = []
-    for call in calls:
-        arg = call.args[1] if len(call.args) > 1 else next(k.value for k in call.keywords if k.arg == "source")
-        source = resolve(arg)
-        if _is_call(source, "live"):
-            source.keywords = [ast.keyword(arg=k.arg, value=resolve(k.value)) for k in source.keywords]
-        out.append(source)
-    return out
-
-
-def _is_call(node: ast.AST, attr: str) -> bool:
-    """Вызов `meeting_source.<attr>(…)` — получатель тоже проверяется (out2, Sonnet M4)."""
-    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == attr
-            and isinstance(node.func.value, ast.Name) and node.func.value.id == "meeting_source")
-
-
-def _carries_start(source: ast.expr) -> bool:
-    if _is_call(source, "of"):
-        return True
-    began = next((k.value for k in getattr(source, "keywords", []) if k.arg == "began_at"), None)
-    return _is_call(source, "live") and _is_call(began, "began_of")
 
 
 def test_app_tail_marks_mirror_the_python_writers():
@@ -202,13 +160,3 @@ def test_app_tail_marks_mirror_the_python_writers():
     line = next(x for x in swift.splitlines() if "static let tailMarks" in x)
     assert f'"{channel_trace.SUMMARY_MARK}"' in line
     assert f'"{fact_check.FOOTNOTE_MARK}"' in line
-
-
-def test_app_ignores_every_date_label_the_entry_writes():
-    """Строку даты пишет вход (`meeting_source.DATE_LABEL`), приложение её
-    пропускает по своему списку меток; метка без звёзд и двоеточия обязана в
-    нём быть (выход №738, DS M2: «date/time» в Swift не было)."""
-    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "MeetingMinutes.swift").read_text(encoding="utf-8")
-    line = next(x for x in swift.splitlines() if ".ignored)" in x)
-    for label in meeting_source.DATE_LABEL.values():
-        assert f'"{label.strip("*:：").lower()}"' in line, label

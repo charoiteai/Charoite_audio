@@ -13,7 +13,6 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
-import re
 import sys
 
 import pytest
@@ -90,8 +89,7 @@ def test_the_note_changes_the_source_hash_but_not_the_speech(tmp_path):
     assert noted.recording_note == NOTE and NOTE.startswith(channel_trace.SUMMARY_MARK)
     assert noted.sha() != plain.sha()
     assert noted.sha() == live_sidecar.sha(noted.speech + "\n\n" + NOTE)
-    assert meeting_source.live(noted.speech, NOTE, began_at=None) == noted, "живой путь и путь по файлу — один объект"
-    assert noted.began_at == "2026-09-02 10:21", "начало — по штампу файла, вне равенства и хеша (№738)"
+    assert meeting_source.live(noted.speech, NOTE) == noted, "живой путь и путь по файлу — один объект"
 
 
 class _FakeLLM:
@@ -270,11 +268,8 @@ def test_mcp_minutes_take_the_speech_the_note_and_leave_a_passport(tmp_path, mon
     out = mcp_server.sufler_make_minutes()
     assert "📌 КТ: смета" not in seen["fit"] and "реплика" in seen["fit"], "в свёртку — только речь"
     assert seen["prompt"].count(NOTE) == 1 and seen["prompt"].index(NOTE) > seen["prompt"].index("[сжато: сводки частей]")
-    # дату модель не пишет: строку ставит вход из штампа файла (№738)
-    assert not re.search(r"(?<!\w)(?:дат[аыу]|date)(?!\w)", seen["prompt"].replace(NOTE, ""), re.IGNORECASE)
     doc = (tdir / "2026-09-13_1200_minutes.md").read_text(encoding="utf-8")
     assert doc.count(NOTE) == 1
-    assert doc.startswith("**Дата/время:** 2026-09-13 12:00\n")
     meta = live_sidecar.read(f)
     assert meta["minutes_sha256"] == live_sidecar.sha(doc)
     assert meta["minutes_source_sha256"] == meeting_source.of(f, text).sha()
@@ -293,10 +288,10 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     # и прежняя метка конца окна исчезла бы вместе с ней
     loop = "\n".join(строки[функции["minutes_loop"].lineno - 1:функции["minutes_loop"].end_lineno])
     assert loop.index("full[-14_000:]") < loop.index("note = trace.summary()") < loop.index("llm.recording_block(note)") < loop.index("Обнови ЧЕРНОВИК")
-    assert "meeting_source.finish_minutes(\n                        out, meeting_source.live(whole, note," in loop, \
+    assert "meeting_source.finish_minutes(\n                        out, meeting_source.live(whole, note)" in loop, \
         "черновик сверяет факты по всей речи, не по окну (№732, Sonnet I1)"
     summ = "\n".join(строки[функции["_do_summary"].lineno - 1:функции["_do_summary"].end_lineno])
-    assert 'source = meeting_source.live(tr.full() or "(пусто)", trace.summary(),' in summ
+    assert 'source = meeting_source.live(tr.full() or "(пусто)", trace.summary())' in summ
     assert "llm.minutes(source.speech, recording_note=source.recording_note)" in summ
     assert '"".join(chunks), source, owner=owner_name' in summ, "сверка — по тому же множеству, что видела модель"
 

@@ -113,16 +113,6 @@ def started_at(stamp: str) -> dt.datetime | None:
         return None
 
 
-def meeting_start(stem: str) -> dt.datetime | None:
-    """Начало встречи по имени главного файла — живого, с темой или с `-N`.
-
-    `started_at` якорится на конце штампа: имя с темой дало бы None. Сначала
-    `stamp_of`, потом момент — одна пара на всех, кому нужно «когда началась»
-    (шапка минуток, манифест архива; №738)."""
-    stamp = stamp_of(stem)
-    return started_at(stamp) if stamp else None
-
-
 def is_stamp(key: object) -> bool:
     """Ключ встречи целиком — «ГГГГ-ММ-ДД_ЧЧММ[СС][-N]», и ничего больше.
 
