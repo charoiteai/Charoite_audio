@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from test_pre_push_markers import MARKER, REPO, Repo, _owner_env, git, guard_run
+from test_pre_push_markers import MARKER, REPO, Repo, _owner_env, git, guard, guard_run
 
 FAKE = "Аристарх" + " Чебуреков"            # из частей: целиком сработал бы на этом файле у владельца
 LABEL = "Собеседник 3"
@@ -318,10 +318,10 @@ def test_no_label_rule_in_main_is_a_refusal(repo):
     assert p.returncode == 1 and "страж не смог проверить" in p.stderr and "docs/n.md" not in p.stderr, p.stderr
 
 
-@pytest.mark.parametrize("var", ["GIT_DIR", "GIT_COMMON_DIR"])
-def test_git_env_pointing_at_another_repo_does_not_pick_the_rule(repo, var):
-    """Переменная git на чужой клон с ослабленным правилом в main: правило берётся
-    из репозитория, где запущен страж (out6 DS C1)."""
+def test_git_dir_pointing_at_another_repo_does_not_pick_the_rule(repo):
+    """GIT_DIR на чужой клон с ослабленным правилом в main: правило берётся из
+    репозитория, где запущен страж (out6 DS C1). GIT_COMMON_DIR и GIT_NAMESPACE без
+    GIT_DIR правило `git show` не меняют (замер out7) — их держит тест списка ниже."""
     env = _owner_env(repo)
     _people(repo, FAKE)
     repo.write("docs/n.md", f"{FAKE}\n")
@@ -330,8 +330,24 @@ def test_git_env_pointing_at_another_repo_does_not_pick_the_rule(repo, var):
     git(repo.tmp, "clone", "-q", str(repo.work), str(evil), env=repo.env)
     _weaken(evil)
     repo.commit("weak rule", evil)
-    p = guard_run(repo.work, "--all", env={**env, var: str(evil / ".git")})
+    p = guard_run(repo.work, "--all", env={**env, "GIT_DIR": str(evil / ".git")})
     assert p.returncode == 1 and "docs/n.md:1" in p.stderr, p.stderr
+
+
+def test_own_repo_git_drops_every_repo_selecting_variable(monkeypatch):
+    """Каждая переменная выбора репозитория снимается для чтения канона — список
+    держится тестом целиком, а не двумя опытами (out7 DS M1)."""
+    seen = {}
+    def fake_run(cmd, **kw):
+        seen.update(kw.get("env") or {})
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    for var in guard._FOREIGN_REPO_ENV:
+        monkeypatch.setenv(var, "/elsewhere")
+    monkeypatch.setattr(guard.subprocess, "run", fake_run)
+    guard.git("show", "refs/heads/main:x", own_repo=True)
+    assert seen and not set(seen) & set(guard._FOREIGN_REPO_ENV)
+    assert {"GIT_DIR", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES"} <= set(guard._FOREIGN_REPO_ENV)
 
 
 @pytest.mark.parametrize("body", ["raise SystemExit(0)\n", "is_speaker_placeholder = 1\n",

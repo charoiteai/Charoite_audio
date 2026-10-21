@@ -92,8 +92,17 @@ def _clip(text: str, limit: int = 60) -> str:
     return text[:limit]
 
 
-def git(*args: str, stdin: bytes | None = None) -> bytes:
-    p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin)
+# Окружение, которым git выбирает чужой репозиторий. Глобально его не вычистить: в
+# pre-commit `git commit -a` отдаёт хуку временный индекс через GIT_INDEX_FILE, и
+# дифф стража должен читать именно его. Вычищает тот, кто читает канон (`own_repo`).
+_FOREIGN_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
+
+
+def git(*args: str, stdin: bytes | None = None, own_repo: bool = False) -> bytes:
+    """`own_repo` — репозиторий, где запущен страж, без переменных выбора чужого (out6 DS C1)."""
+    env = {k: v for k, v in os.environ.items() if k not in _FOREIGN_REPO_ENV} if own_repo else None
+    p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin, env=env)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip()
         raise GitError(f"git {' '.join(args[:2])}: {_clip(err, 300) or f'код {p.returncode}'}")
@@ -489,23 +498,15 @@ def _placeholder(name: str) -> bool:
     return _rule(name)
 
 
-# Окружение, которым git выбирает чужой репозиторий: правило меток читается из
-# репозитория, где запущен страж, а не из того, на который указала переменная (out6 DS C1).
-_FOREIGN_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
-
-
 def _label_rule():
-    """Правило меток ветки main как проверенная функция; любой сбой правила —
-    `PeopleGateError`, в том числе `SystemExit` из его кода: отказ не станет проходом
-    (out6 Sonnet M1)."""
-    env = {k: v for k, v in os.environ.items() if k not in _FOREIGN_REPO_ENV}
-    p = subprocess.run([*_GIT, "show", f"refs/heads/main:{PLACEHOLDER_RULE}"], capture_output=True, env=env)
-    if p.returncode != 0:
-        raise PeopleGateError(f"нет правила меток продукта в ветке main (git show, код {p.returncode})")
+    """Правило меток ветки main как проверенная функция; исключение или `SystemExit`
+    из его кода — `PeopleGateError`: ошибка в правиле не станет проходом (out6
+    Sonnet M1). Код правила в main доверен так же, как сам страж из main, — от
+    умысла там (`os._exit`) защиты нет и не нужно: коммит в main меняет и страж."""
+    src = git("show", f"refs/heads/main:{PLACEHOLDER_RULE}", own_repo=True)
     mod = types.ModuleType("_charoite_graph_names")
     try:
-        exec(compile(p.stdout, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
+        exec(compile(src, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
         is_label = mod.is_speaker_placeholder
     except (Exception, SystemExit) as e:
         raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None

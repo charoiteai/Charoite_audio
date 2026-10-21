@@ -1088,10 +1088,8 @@ def test_raw_objects_returns_each_object_whole(repo, monkeypatch):
 
 
 def test_the_label_rule_is_a_tracked_file_of_the_product():
-    """Правило меток страж читает из ветки main по этому пути (№605 out5)."""
+    """Правило меток страж читает из ветки main по этому пути — путь есть в судимой
+    ревизии в любом checkout, CI тоже (№605 out5, out7)."""
     assert guard.PLACEHOLDER_RULE == "src/charoite_graph/graph_names.py"
-    if subprocess.run(["git", "-C", str(REPO), "rev-parse", "-q", "--verify", "refs/heads/main"],
-                      capture_output=True).returncode != 0:
-        pytest.skip("в этом checkout нет локальной ветки main (CI)")
-    assert subprocess.run(["git", "-C", str(REPO), "cat-file", "-e", f"refs/heads/main:{guard.PLACEHOLDER_RULE}"],
-                          capture_output=True).returncode == 0
+    assert subprocess.run(["git", "-C", str(REPO), "cat-file", "-e", f"HEAD:{guard.PLACEHOLDER_RULE}"],
+                          capture_output=True).returncode == 0, "правила нет в ревизии, которая станет main"
