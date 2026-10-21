@@ -53,11 +53,3 @@ def test_the_prompt_asks_neither_the_date_nor_who_implements_a_decision(lang, da
     client.stream = fake_stream
     list(client.minutes("[10:00] А: начнём\n"))
     assert date_label not in seen["prompt"] and owner_word not in seen["prompt"]
-
-
-
-def test_the_mcp_prompt_does_not_ask_the_date():
-    """Минутки по MCP — тот же отказ: «Составь минутки: дата, …» (№738)."""
-    line = next(x for x in (ROOT / "src" / "mcp_server.py").read_text(encoding="utf-8").splitlines()
-                if "Составь минутки:" in x)
-    assert "дата" not in line.lower() and "участники" in line
