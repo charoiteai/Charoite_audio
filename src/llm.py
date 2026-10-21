@@ -1907,7 +1907,7 @@ class LLM:
                 "按以下模板用 markdown 写会议纪要：\n"
                 + (self.minutes_template + "\n\n" if self.minutes_template else
                    "# 会议纪要\n"
-                   "**日期/时间：** … **参会人：** …\n"
+                   "**参会人：** …\n"
                    "## 议题\n## 决定\n## 行动项\n## 待解决问题\n## 风险\n\n")
                 + "规则：\n"
                 "- 只用会议记录中说过的内容\n"
@@ -1916,7 +1916,7 @@ class LLM:
                 "  例：「- [ ] **德米特里** — 与财务对齐预算 — 7月25日前」\n"
                 "- 行动项只分配给与会者（发言或被点名的人）；缺席者的事项写入「待解决问题」：「转交某某：…」\n"
                 "- 行动项常以口语出现：「你来负责？」「你来做吧」「发给我」「那我来做」「请看一下」——这些也是行动项，不是闲聊\n"
-                "- 决定的格式：「- **决定了什么** — 谁负责执行」\n"
+                "- 决定的格式：「- **决定了什么** — 一行说明要点」\n"
                 "- 参会人：对话中出现的名字；一个都没听到——写「主人及对方」\n"
                 "- 空的部分只写一个词：「无」\n"
                 "- 全文控制在900字符以内：纪要要一分钟能读完",
@@ -1930,7 +1930,7 @@ class LLM:
                 "Write meeting minutes in markdown using this template:\n"
                 + (self.minutes_template + "\n\n" if self.minutes_template else
                    "# Meeting minutes\n"
-                   "**Date/time:** … **Participants:** …\n"
+                   "**Participants:** …\n"
                    "## Topics\n## Decisions\n## Action items\n## Open questions\n## Risks\n\n")
                 + "Rules:\n"
                 "- use only what was said in the transcript\n"
@@ -1941,7 +1941,7 @@ class LLM:
                 "for someone absent write under Open questions: «pass on to Name: …»\n"
                 "- an action item is often phrased casually: «can you take this?», «you do it», "
                 "«send it to me», «I'll handle that», «have a look, please» — these are action items, not chatter\n"
-                "- decisions as: «- **what was decided** — who implements»\n"
+                "- decisions as: «- **what was decided** — the gist in one line»\n"
                 "- participants: names from the conversation; none heard — «owner and counterparts»\n"
                 "- empty section: single word «none»\n"
                 "- keep the whole document under 900 characters: minutes are a one-minute read",
@@ -1951,12 +1951,17 @@ class LLM:
             )
         return self._doc_stream(
             # Данные отделены тегами от инструкций, правила — позитивные
-            # («пиши так»), а не отрицания: qwen следует им заметно лучше
+            # («пиши так»), а не отрицания: qwen следует им заметно лучше.
+            # Поля даты в шаблоне нет: модель брала самую заметную дату речи
+            # («26 октября» — день переезда); дату встречи все читатели берут
+            # из штампа в имени файла, строка в тексте не нужна (№738). У решения нет исполнителя:
+            # «— кто внедряет» дублировал поручения в «Решениях», а требование
+            # исполнителя уже стоило саммари раздела решений (03.08).
             f"<стенограмма>\n{transcript}\n</стенограмма>\n\n" + block +
             "Составь минутки встречи в markdown по шаблону:\n"
             + (self.minutes_template + "\n\n" if self.minutes_template else
                "# Минутки встречи\n"
-               "**Дата/время:** … **Участники:** …\n"
+               "**Участники:** …\n"
                "## Темы\n## Решения\n## Поручения\n## Открытые вопросы\n## Риски\n\n")
             + "Правила:\n"
             "- бери только то, что прозвучало в стенограмме\n"
@@ -1967,7 +1972,7 @@ class LLM:
             "обращались); дело для отсутствующего пиши в «Открытые вопросы»: «передать Имени: …»\n"
             "- поручение часто звучит разговорно: «возьмёшь на себя?», «давай ты», «кинь мне», "
             "«я тогда сделаю», «посмотри, пожалуйста» — это тоже поручения, а не реплики\n"
-            "- решение пиши так: «- **что решили** — кто внедряет»\n"
+            "- решение пиши так: «- **что решили** — суть одной строкой»\n"
             "- участники: имена из разговора; если имена не звучали — «владелец и собеседники»\n"
             "- в пустом разделе ставь одно слово «нет»\n"
             "- держи весь документ в пределах 900 знаков: минутки читают за минуту, "
