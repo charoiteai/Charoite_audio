@@ -509,7 +509,7 @@ def _label_rule():
     try:
         exec(compile(src, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
         is_label = mod.is_speaker_placeholder
-    except (Exception, SystemExit) as e:
+    except (Exception, SystemExit) as e:  # noqa: BLE001 — сбой правила — отказ, не проход
         raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None
     if not callable(is_label):
         raise PeopleGateError("правило меток продукта не функция")
@@ -517,7 +517,7 @@ def _label_rule():
     def rule(stem: str) -> bool:                    # скобка в имени — человек: при сомнении отказ (Opus I1, opus-fix C1)
         try:
             return not set(stem) & set("()（）") and is_label(stem) is True
-        except (Exception, SystemExit) as e:
+        except (Exception, SystemExit) as e:  # noqa: BLE001 — сбой правила — отказ, не проход
             raise PeopleGateError(f"правило меток продукта упало ({type(e).__name__})") from None
     return rule
 
