@@ -30,7 +30,7 @@ import file_locks  # noqa: E402
 import live_gate  # noqa: E402
 import privacy  # noqa: E402
 import yaml  # noqa: E402
-from charoite_graph import net  # noqa: E402
+from charoite_graph import address_policy, net  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 
 LOCK_REL = pathlib.Path("logs") / "mutation.lock"
@@ -162,9 +162,11 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
 
 
 def _read_bounded(url: str) -> bytes:
-    """Тело ответа целиком за RESIDENT_TIMEOUT_S и не больше RESIDENT_MAX_BYTES:
+    """Тело ответа за RESIDENT_TIMEOUT_S и не больше RESIDENT_MAX_BYTES:
     таймаут `urlopen` — на каждую операцию сокета, и сервер, отдающий тело по
-    байту, держал бы сторожа сколько угодно (Opus по №595)."""
+    байту, держал бы сторожа сколько угодно (Opus по №595). Дедлайн проверяется
+    между кусками, поэтому потолок — дедлайн плюс один таймаут сокета; заголовки
+    под ним не стоят (долг №615)."""
     deadline = time.monotonic() + RESIDENT_TIMEOUT_S
     chunks, size = [], 0
     with net.open_url(urllib.request.Request(url), timeout=RESIDENT_TIMEOUT_S) as r:
@@ -204,9 +206,13 @@ def _census_config(root: pathlib.Path) -> tuple[dict | None, str | None]:
     try:
         privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused as e:
-        # Битая грамматика адреса — поломка конфига; чужая машина, рубильник,
-        # открытый http — политика, «не наша память» (решает resident_models).
-        if getattr(e.__cause__, "kind", None) in ("scheme", "ambiguous"):
+        # Битая грамматика адреса и 0.0.0.0/:: («слушать всё» вместо адреса) —
+        # поломка конфига; чужая машина, рубильник, открытый http — политика,
+        # «не наша память» (решает resident_models). Вид — из причины отказа:
+        # тест грамматики краснеет, если privacy её потеряет (№595, DS I2/I3).
+        cause = e.__cause__
+        if isinstance(cause, address_policy.AddressRefused) and (
+                cause.kind in ("scheme", "ambiguous") or cause.detail == address_policy.UNSPECIFIED):
             return None, f"конфиг {path}: {e}"
     return cfg, None
 

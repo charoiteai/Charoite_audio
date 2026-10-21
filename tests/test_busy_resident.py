@@ -25,9 +25,11 @@ GB = 10**9
 
 
 @contextlib.contextmanager
-def _fake_ollama(status=200, body=None, delay=0.0, short=0, drip=0.0):
+def _fake_ollama(status=200, body=None, delay=0.0, short=0, drip=0.0, chunked=False):
     """Подставной сервер `/api/ps` на 127.0.0.1:<свободный порт>. `short` —
-    объявить на столько байт больше, чем отдать: ответ оборвётся."""
+    объявить на столько байт больше, чем отдать: ответ оборвётся. `chunked` — тело
+    кусками `Transfer-Encoding: chunked`, как Go отдаёт ответ длиннее ~2 КБ, и один
+    кусок двумя записями с паузой."""
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             time.sleep(delay)
@@ -35,6 +37,18 @@ def _fake_ollama(status=200, body=None, delay=0.0, short=0, drip=0.0):
             try:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
+                if chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    for i in range(0, len(payload), 4096):
+                        part = payload[i:i + 4096]
+                        half = len(part) // 2
+                        self.wfile.write(f"{len(part):x}\r\n".encode() + part[:half])
+                        self.wfile.flush()
+                        time.sleep(0.05)
+                        self.wfile.write(part[half:] + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    return
                 self.send_header("Content-Length", str(len(payload) + short))
                 self.end_headers()
                 if drip:
@@ -118,6 +132,18 @@ def test_two_models_sum_over_the_share(tmp_path, ram_64gb):
         assert busy[0].endswith("ollama stop b")
 
 
+def test_chunked_answer_is_read_whole(tmp_path, ram_64gb):
+    """Ответ длиннее ~2 КБ Ollama (Go) шлёт кусками без Content-Length: проверка
+    обрыва по `length` его не трогает, а кусок, пришедший двумя записями, — не
+    обрыв (DS M1 проверки правок Opus по №595)."""
+    models = [_model(f"m{i}", GB // 10) for i in range(40)] + [_model("qwen3.6:35b", 22 * GB)]
+    with _fake_ollama(body={"models": models}, chunked=True) as url:
+        _config(tmp_path, url)
+        got, problem = busy_signals.resident_models(tmp_path)
+        assert problem is None and len(got) == 41
+        assert busy_signals.machine_busy(tmp_path)[0].endswith("ollama stop qwen3.6:35b")
+
+
 def test_floor_on_small_machine(tmp_path, monkeypatch):
     """16 ГиБ: 1/6 — 2,9 ГБ, и 4b (~3 ГБ) держала бы прогоны. Пол 8 ГБ: 4b — свободно, 9 ГБ — занято."""
     monkeypatch.setattr(busy_signals, "_physical_bytes", lambda: 16 * 2**30)
@@ -174,13 +200,15 @@ def test_mlx_engine_still_counts_ollama(tmp_path, ram_64gb):
         assert len(busy) == 1 and busy[0].startswith("локальные модели держат память (qwen3.6:35b-mlx")
 
 
-def test_address_grammar_is_a_config_problem(tmp_path, monkeypatch):
-    """`base_url: localhost:11434` без схемы — поломка конфига (установщик откажет кодом 1),
-    а не «не наша память» и не «свободно»."""
+@pytest.mark.parametrize("base_url", ["localhost:11434", "http://[::1", "http://0.0.0.0:11434"])
+def test_address_grammar_is_a_config_problem(tmp_path, monkeypatch, base_url):
+    """Адрес без схемы, неразборчивый адрес и 0.0.0.0 («слушать всё» вместо адреса) —
+    поломка конфига (установщик откажет кодом 1), а не «не наша память» и не «свободно»
+    (DS I3 проверки правок Opus по №595)."""
     def boom(*a, **k):
         raise AssertionError("спросили битый адрес")
     monkeypatch.setattr(busy_signals.net, "open_url", boom)
-    _config(tmp_path, "localhost:11434")
+    _config(tmp_path, f'"{base_url}"')
     problem = busy_signals.resident_config_problem(tmp_path)
     assert problem and problem.startswith("конфиг ") and "llm.base_url" in problem
     assert busy_signals.machine_busy(tmp_path)[0].endswith("— почините config/config.yaml")

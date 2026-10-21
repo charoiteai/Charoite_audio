@@ -148,13 +148,15 @@ step "4. мутация изменённых строк ($RANGE)"
 if ! skipped mutation; then
   # корень данных владельца — мутатору явно: сам он берёт корень от своего файла
   # и в worktree не видит лока живой встречи (№339, DS I9 = GLM I1)
-  # согласие идти поверх занятой машины (PREFLIGHT_FORCE) действует и на мутатор:
-  # иначе шаг 0 пропущен, а мутатор отказывает той же занятостью (Opus по №595)
-  force=""; [ -n "${PREFLIGHT_FORCE:-}" ] && force="--force"
-  CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" $force > "$WORK/mutation.log" 2>&1; rc=$?
+  # PREFLIGHT_FORCE мутатору не передаётся: его `--force` снимает и уступку
+  # встрече и ночи между мутантами, а согласие было только на старт (№595, Haiku I-2)
+  CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" > "$WORK/mutation.log" 2>&1; rc=$?
   tail -4 "$WORK/mutation.log" | sed 's/^/   /'
-  # код 3 мутатора — «машина занята» (старт или замок), а не дефект: пропуск вслух
-  if [ $rc -eq 3 ]; then SKIPPED="$SKIPPED mutation(машина занята)"; else
+  # Мутатор отказал занятостью на старте — пропуск вслух, а не дефект. Тот же код 3
+  # у невзятого замка (ФС без flock ожиданием не лечится) — провал. Различаем по
+  # строке старта, пока у занятости нет своего кода (№575; №595, Sonnet I-1 = DS I1).
+  if [ $rc -eq 3 ] && grep -q "мутатор не стартует" "$WORK/mutation.log"; then
+    SKIPPED="$SKIPPED mutation(машина занята)"; else
   case "$(outcome $rc)" in
     ok)      verdict 0 mutation ;;
     nothing) SKIPPED="$SKIPPED mutation(проверять нечего)" ;;
