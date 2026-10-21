@@ -10,6 +10,7 @@
 import ast
 import collections
 import dataclasses
+import itertools
 import json
 import re
 import os
@@ -1200,7 +1201,9 @@ def _мутанты(rel: str, n: int) -> list:
     head = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=REPO,
                           capture_output=True, text=True, check=True).stdout
     found = mc.scan(REPO / rel, set(range(1, head.count("\n") + 1)), head).mutations
-    return [m for m in found if mc.applied(m, head)[0] is not None][:n]
+    # лениво: `applied` разбирает файл целиком, и проверка всех ~500 мутантов
+    # стоила каждому тесту ~34 с, а CI — таймаут pytest (№595)
+    return list(itertools.islice((m for m in found if mc.applied(m, head)[0] is not None), n))
 
 
 def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_на=None):

@@ -41,7 +41,7 @@ FAIL=""
 SKIPPED=""
 T0=$(date +%s)
 SKIP=",${PREFLIGHT_SKIP:-},"
-WORK=$(mktemp -d -t preflight)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/preflight.XXXXXX")   # шаблон с X — и BSD, и GNU (тест шага 4 идёт в CI на Linux)
 trap 'rm -rf "$WORK"' EXIT
 skipped() { case "$SKIP" in *",$1,"*) SKIPPED="$SKIPPED $1"; printf '   – %s пропущен (PREFLIGHT_SKIP)\n' "$1"; return 0;; esac; return 1; }
 step() { printf '\n── %s\n' "$1"; }
