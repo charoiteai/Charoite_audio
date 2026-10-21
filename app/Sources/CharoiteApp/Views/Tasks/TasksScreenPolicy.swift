@@ -10,6 +10,20 @@ enum TasksGrouping: String, CaseIterable {
     case byDue
 }
 
+/// Секции «Мои» и «Старые» — поверх обеих группировок (запрос владельца
+/// 01.09: «за мной — первым, даже если задачи далеко; старьё — почистить»).
+// Здесь, а не во вью: владельца читает и TasksService — бейдж раздела
+// считается той же сводкой, что и шапка экрана (№757).
+enum TasksMineStale {
+    /// Кэш на процесс: configValue читает config.yaml с диска, а owner
+    /// дёргался из трёх computed-секций на каждую букву поиска (GLM r1).
+    static let owner: String = AppSettings.configValue("user_name") ?? ""
+    static let mineTitle = L.t("Мои", "Mine", "我的")
+    static func staleTitle(_ n: Int) -> String {
+        L.t("Старые (\(n))", "Stale (\(n))", "旧任务（\(n)）")
+    }
+}
+
 /// Чистая политика экрана задач (макет docs/design/MOBILE_2026-08.md,
 /// раздел «macOS: доделки»): сводка трёх чисел и корзины сроков —
 /// тестируются без UI и без TasksService.
@@ -44,6 +58,14 @@ enum TasksScreenPolicy {
         let open: Int      // открытые БЕЗ просроченных и БЕЗ старых: числа не пересекаются
         let stale: Int     // свёрнутые «Старые» — своя цифра, чтобы счёт не терялся
         let done: Int
+
+        /// «Ждут внимания» — число бейджа раздела и кнопки «Задачи · N»: просрочено
+        /// плюс открыто, то есть ровно те два числа, что шапка экрана печатает
+        /// первыми. Старые сюда не входят — как и в шапке (#479); прежний бейдж
+        /// считал все не сделанные и спорил с экраном, куда вёл (№757).
+        var attention: Int { overdue + open }
+
+        static let empty = Summary(overdue: 0, open: 0, stale: 0, done: 0)
     }
 
     /// «2 просрочено · 9 открыто · 3 старых · 3 сделано» — вместо голого
@@ -150,8 +172,13 @@ enum TasksScreenPolicy {
                       calendar: Calendar = .current)
         -> (mine: [Int], fresh: [Int], stale: [Int]) {
         var mine: [Int] = [], fresh: [Int] = [], stale: [Int] = []
-        let cutoff = calendar.date(byAdding: .day, value: -staleAfterDays, to: now)
-            ?? now.addingTimeInterval(-Double(staleAfterDays) * 86_400)
+        // От начала сегодняшнего дня, а не от «сейчас»: у встречи в ключе есть
+        // часы, и граница проходила в её время суток — шапка экрана меняла
+        // счёт посреди дня, а бейдж (сводка скана) ждал полуночи (№757, out1).
+        // Так сводка — функция календарного дня, как и сроки (`TaskDue.status`).
+        let today = calendar.startOfDay(for: now)
+        let cutoff = calendar.date(byAdding: .day, value: -staleAfterDays, to: today)
+            ?? today.addingTimeInterval(-Double(staleAfterDays) * 86_400)
         for (i, item) in items.enumerated() {
             if isMine(item.text, owner: owner) {
                 mine.append(i)

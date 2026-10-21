@@ -44,7 +44,7 @@ struct MemoryInventoryColumn: View {
         // Числа с источником: это счёт файлов графа, не самочувствие UI.
         HStack(spacing: 6) {
             counter(snapshot.meetings,
-                    LibraryScreenPolicy.meetings(snapshot.meetings))
+                    MemoryScreenPolicy.meetingsLabel(snapshot.meetings))
             counter(snapshot.nodes,
                     MemoryScreenPolicy.nodesLabel(snapshot.nodes))
             counter(snapshot.dossiers,
