@@ -98,12 +98,29 @@ def now() -> str:
 
 
 def started_at(stamp: str) -> dt.datetime | None:
-    """Момент начала встречи по штампу. None — имя не наше, дальше незачем."""
+    """Момент начала встречи по штампу. None — имя не наше, дальше незачем.
+
+    Невозможная дата (`2026-02-30_1200`, имя импорта собрано из аргументов) —
+    тоже None: регексп проверяет только цифры, а исключение из `strptime`
+    роняло общий вход минуток у всех четырёх писателей (№738, Sonnet I4 входа)."""
     m = _RE.match(stamp)
     if not m:
         return None
     core = m.group(1)
-    return dt.datetime.strptime(core, FMT if len(core) == 17 else _FMT_LEGACY)
+    try:
+        return dt.datetime.strptime(core, FMT if len(core) == 17 else _FMT_LEGACY)
+    except ValueError:
+        return None
+
+
+def meeting_start(stem: str) -> dt.datetime | None:
+    """Начало встречи по имени главного файла — живого, с темой или с `-N`.
+
+    `started_at` якорится на конце штампа: имя с темой дало бы None. Сначала
+    `stamp_of`, потом момент — одна пара на всех, кому нужно «когда началась»
+    (шапка минуток, манифест архива; №738)."""
+    stamp = stamp_of(stem)
+    return started_at(stamp) if stamp else None
 
 
 def is_stamp(key: object) -> bool:

@@ -89,7 +89,8 @@ def test_the_note_changes_the_source_hash_but_not_the_speech(tmp_path):
     assert noted.recording_note == NOTE and NOTE.startswith(channel_trace.SUMMARY_MARK)
     assert noted.sha() != plain.sha()
     assert noted.sha() == live_sidecar.sha(noted.speech + "\n\n" + NOTE)
-    assert meeting_source.live(noted.speech, NOTE) == noted, "живой путь и путь по файлу — один объект"
+    assert meeting_source.live(noted.speech, NOTE, began_at=None) == noted, "живой путь и путь по файлу — один объект"
+    assert noted.began_at == "2026-09-02 10:21", "начало — по штампу файла, вне равенства и хеша (№738)"
 
 
 class _FakeLLM:
@@ -288,10 +289,10 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     # и прежняя метка конца окна исчезла бы вместе с ней
     loop = "\n".join(строки[функции["minutes_loop"].lineno - 1:функции["minutes_loop"].end_lineno])
     assert loop.index("full[-14_000:]") < loop.index("note = trace.summary()") < loop.index("llm.recording_block(note)") < loop.index("Обнови ЧЕРНОВИК")
-    assert "meeting_source.finish_minutes(\n                        out, meeting_source.live(whole, note)" in loop, \
+    assert "meeting_source.finish_minutes(\n                        out, meeting_source.live(whole, note," in loop, \
         "черновик сверяет факты по всей речи, не по окну (№732, Sonnet I1)"
     summ = "\n".join(строки[функции["_do_summary"].lineno - 1:функции["_do_summary"].end_lineno])
-    assert 'source = meeting_source.live(tr.full() or "(пусто)", trace.summary())' in summ
+    assert 'source = meeting_source.live(tr.full() or "(пусто)", trace.summary(),' in summ
     assert "llm.minutes(source.speech, recording_note=source.recording_note)" in summ
     assert '"".join(chunks), source, owner=owner_name' in summ, "сверка — по тому же множеству, что видела модель"
 

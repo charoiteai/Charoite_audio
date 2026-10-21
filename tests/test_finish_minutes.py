@@ -31,7 +31,7 @@ PEOPLE = {"Анна", "Борис"}
 
 def _finish(doc=DOC, speech=SPEECH, note=NOTE):
     return meeting_source.finish_minutes(
-        doc, meeting_source.live(speech, note), owner="Анна", participants=PEOPLE, lang="ru")
+        doc, meeting_source.live(speech, note, began_at=None), owner="Анна", participants=PEOPLE, lang="ru")
 
 
 #: байты прежней цепочки «Протокола» демона (annotate → normalize → finalize →
@@ -148,8 +148,12 @@ def test_every_minutes_path_goes_through_the_entry():
         assert "meeting_source.finish_minutes(" in body, f"{name}: мимо входа минуток"
         for step in ("fact_check.annotate(", "without_footnote(", "action_items.normalize(",
                      "finalize_assignees(", "with_note(", "without_note(",
-                     "scrub_local_paths("):
+                     "scrub_local_paths(", "with_date(", "without_date("):
             assert step not in body, f"{name}: свой шаг {step} мимо входа"
+        # начало встречи доезжает до входа на каждом пути: по файлу — `of()`,
+        # живой путь демона — явным словом (№738, Haiku I4 входа)
+        assert ("meeting_source.of(" in body
+                or "began_at=meeting_source.began_of(tr.path)" in body), f"{name}: источник без начала встречи"
 
 
 def test_app_tail_marks_mirror_the_python_writers():

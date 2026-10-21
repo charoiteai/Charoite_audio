@@ -1250,7 +1250,12 @@ note line, the machine-path scrub — run in one entry,
 rebuild; before it the draft and MCP skipped the fact check and the rebuild
 skipped the scrub). The app's minutes parser skips the service tail lines
 (`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
-`fact_check.FOOTNOTE_MARK`).
+`fact_check.FOOTNOTE_MARK`). The "Date/time" header line is written by the
+same entry from the meeting stamp (`MeetingSource.began_at`, №738): the model's
+date field is dropped before the fact check, and the built-in templates no
+longer ask for it — the model used to copy the most prominent date of the
+talk. An imported recording gets the date only: its stamp is the file time,
+not the start.
 
 **Why a phone recording stopped is a value that travels with the file.** On
 07.09 one meeting arrived on the Mac as three pieces with no call in between,

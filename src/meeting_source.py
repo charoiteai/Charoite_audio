@@ -16,7 +16,10 @@
   стенограммы (`LLM.recording_block`), после всех обрезок; в документ —
   механической строкой (`with_note`), не поручением модели;
 - `canon()`/`sha()` — то, что хеширует паспорт производной: минутки без
-  оговорки при появившейся оговорке становятся STALE ровно один раз.
+  оговорки при появившейся оговорке становятся STALE ровно один раз;
+- `began_at` — начало встречи по штампу файла, строка шапки «Дата/время»
+  минуток (№738). Вне `canon()`: момент выводится из того же имени, что и ключ
+  встречи, и паспорт от него не зависит.
 
 Входной круг DS и GLM (19.09) сошёлся на этом объекте: «файл как вход не
 существует, есть то, что владелец отдал как речь, и то, что он же пометил как
@@ -26,20 +29,25 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+import re
 from typing import NamedTuple
 
 import action_items
 import channel_trace
 import fact_check
 import live_sidecar
+import meeting_stamp
 import privacy
 import transcript
+import transcript_origin
 
 
 @dataclasses.dataclass(frozen=True)
 class MeetingSource:
     speech: str
     recording_note: str | None = None
+    # не часть источника: равенство и хеш — по речи и оговорке (№738)
+    began_at: str | None = dataclasses.field(default=None, compare=False)
 
     def canon(self) -> str:
         """Каноническое тело источника для хеша паспорта."""
@@ -66,12 +74,83 @@ def of(live: pathlib.Path, text: str) -> MeetingSource:
     писателя одной производной считали разные хеши (Critical DS и GLM
     выходного круга по №317). Штамп нужен только писателю до переезда пары
     (`ChannelTrace`) — у читателей его нет."""
-    return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live))
+    return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live),
+                         began_at=began_of(live))
 
-def live(speech: str, note: str | None) -> MeetingSource:
+def live(speech: str, note: str | None, *, began_at: str | None) -> MeetingSource:
     """Источник живого пути: речь из `Transcript.full()`, оговорка из
-    `ChannelTrace.summary()` того же процесса."""
-    return MeetingSource(speech, note)
+    `ChannelTrace.summary()` того же процесса, начало — `began_of(tr.path)`.
+    Начало обязательным словом: умолчание None молча оставило бы живой путь
+    без даты (Haiku I4 входа №738)."""
+    return MeetingSource(speech, note, began_at=began_at)
+
+
+def began_of(live: pathlib.Path) -> str | None:
+    """Значение поля «Дата/время» минуток по имени главного файла встречи.
+
+    Штамп живой записи — начало: «ГГГГ-ММ-ДД ЧЧ:ММ». У импорта штамп взят из
+    времени файла записи (конец встречи или копирования, `transcribe_file`),
+    поэтому только дата, без ложной точности (Sonnet I5 и DS I5 входа №738).
+    Формат ГГГГ-ММ-ДД, не ДД.ММ: до сверки фактов шапку снимает `without_date`,
+    но читатели файла (граф, разбор) видят её в тексте как есть.
+    None — имя не наше: шапку тогда не трогаем."""
+    moment = meeting_stamp.meeting_start(live.stem)
+    if moment is None:
+        return None
+    if transcript_origin.SIDECAR_KEY in (live_sidecar.read_direct(live) or {}):
+        return f"{moment:%Y-%m-%d}"
+    return f"{moment:%Y-%m-%d %H:%M}"
+
+
+#: подпись поля даты, которую пишет код, по языку минуток
+DATE_LABEL = {"ru": "**Дата/время:**", "en": "**Date/time:**", "zh": "**日期/时间：**"}
+# Поле даты в ответе модели: подписи трёх языков и короткие («Дата», MCP-промпт
+# просил «дата»), двоеточие ASCII и полноширинное, с жирным и без. Значение —
+# до следующего жирного поля на той же строке или до конца строки, через
+# перевод строки никогда (S-I3 = DS-C2 входа №738: «до следующего поля» без
+# границы строки съедало разделы).
+_DATE_FIELD = re.compile(
+    r"\*{0,2}[ \t]*(?<!\w)(?:Дата/время|Дата|Date/time|Date|日期/时间|日期)[ \t]*[:：][ \t]*\*{0,2}"
+    r"[^\n]*?(?=\*\*[^*\n]+[:：]\*\*|$)", re.IGNORECASE)
+_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+
+
+def _head_end(lines: list[str]) -> int:
+    """Граница шапки: до первого раздела «## » или пункта списка. Поле даты
+    ищем только в шапке — пункт «- Дата: релиз 3 ноября» в теле не шапка."""
+    for i, line in enumerate(lines):
+        if line.startswith("## ") or _LIST_ITEM.match(line):
+            return i
+    return len(lines)
+
+
+def without_date(doc: str) -> str:
+    """Снять поле даты из шапки — и написанное моделью, и строку `with_date`.
+    Остаток строки («**Участники:** …») остаётся, пустая строка уходит."""
+    lines = doc.split("\n")
+    end = _head_end(lines)
+    head: list[str] = []
+    for line in lines[:end]:
+        if not _DATE_FIELD.search(line):
+            head.append(line)
+            continue
+        rest = _DATE_FIELD.sub("", line).strip()
+        if rest:
+            head.append(rest)
+    return "\n".join(head + lines[end:])
+
+
+def with_date(doc: str, began_at: str | None, lang: str = "ru") -> str:
+    """Строка «Дата/время» от кода: под заголовком «# …», иначе первой.
+    Прежнее поле снимается, повтор даёт те же байты. Без начала — документ
+    как есть: дату модели не трогаем, если своей нет."""
+    if not began_at:
+        return doc
+    doc = without_date(doc)
+    line = f"{DATE_LABEL.get(lang, DATE_LABEL['ru'])} {began_at}"
+    lines = doc.split("\n")
+    at = 1 if lines and lines[0].startswith("# ") else 0
+    return "\n".join(lines[:at] + [line] + lines[at:])
 
 
 def with_note(doc: str, note: str | None) -> str:
@@ -102,17 +181,24 @@ def finish_minutes(doc: str, source: MeetingSource, *, owner: str,
     держал свою цепочку: черновик и MCP шли без сверки фактов, пересборка
     без скраба пути машины, порядок шагов расходился (№732).
 
-    Порядок — контракт: сверка со стенограммой по тому множеству, что видела
+    Порядок — контракт: поле даты модели снимается первым (№738: дата —
+    машинный факт, не утверждение модели; сверка не должна ни ругаться на
+    выдуманную дату, которую код заменит, ни читать штамп «2026-11-03» как
+    «11.03»), затем сверка со стенограммой по тому множеству, что видела
     модель (речь + оговорка), затем чекбоксы окна «Задачи», затем владелец
     одним написанием и пометка «не участник» (`finalize_assignees`), затем
-    строка оговорки, последней — скраб пути машины: хеш паспорта и отметка
-    автотекста снимаются с этих байтов. Все шаги идемпотентны: повторный
-    вызов по готовому документу его не меняет: прежняя оговорка снимается
-    до шагов, прежнюю сноску снимает `annotate`."""
+    строка даты из штампа, затем строка оговорки, последней — скраб пути
+    машины: хеш паспорта и отметка автотекста снимаются с этих байтов. Все
+    шаги идемпотентны: повторный вызов по готовому документу его не меняет:
+    прежняя оговорка и строка даты снимаются до шагов, прежнюю сноску
+    снимает `annotate`. Начала нет (имя не наше) — поле модели не трогаем."""
     doc = without_note(doc, source.recording_note)
+    if source.began_at:
+        doc = without_date(doc)
     doc = fact_check.annotate(doc, source.canon())
     doc = action_items.normalize(doc)
     doc = action_items.finalize_assignees(doc, participants, owner, lang=lang)
+    doc = with_date(doc, source.began_at, lang)
     doc = with_note(doc, source.recording_note)
     doc, _n = privacy.scrub_local_paths(doc)
     return doc
