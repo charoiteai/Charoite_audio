@@ -785,7 +785,9 @@ JSON 由契约模块的一个函数 `status_event` 构建：`error` 总是有，
 要么根本到不了（其余所有路径）——18.09 的纪要看起来是完整的。分段小结只由守护进程在停止时
 写入：守护进程死亡就没有这一行，尽管事件全在边车里。现在派生物的来源是一个对象
 `meeting_source.MeetingSource(speech, recording_note)`：发言（`transcript.speech_of`）
-被折叠和窗口裁剪，`fact_check` 也据此核对引文；说明（`channel_trace.recording_note`——与
+被折叠和窗口裁剪，`fact_check` 也据此核对引文（日期统一成 `DD.MM` 比较：序数日、
+带词尾的数字和 `DD.MM.YYYY` 都能与数字写法对上，月份按精确词形匹配，因此
+「2 масштаба」不是 02.05）；说明（`channel_trace.recording_note`——与
 守护进程停止时写的同一行，`summary_of`）作为独立块进入提示，位于转写标签之外、所有裁剪
 之后（`LLM.recording_block`，ru/en/zh，附规则「不要当作发言引用；丢失通道的沉默不能理解
 为同意」），以机械方式写入文档（`meeting_source.with_note`——让模型「在风险里提一下」无法

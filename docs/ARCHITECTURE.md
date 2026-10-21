@@ -1228,7 +1228,10 @@ died there was no line, although every event was in the sidecar. Now the
 source of a derivative is one object,
 `meeting_source.MeetingSource(speech, recording_note)`: speech
 (`transcript.speech_of`) is what folds and windows cut and what `fact_check`
-verifies quotes against; the note (`channel_trace.recording_note` — the same
+verifies quotes against (dates are compared in one `DD.MM` form: ordinal day
+words, numerals with endings and `DD.MM.YYYY` meet their numeric spelling, and
+month names are exact word forms, so «2 масштаба» is not 02.05); the note
+(`channel_trace.recording_note` — the same
 string the daemon writes at stop, `summary_of`) goes into the prompt as a
 separate block outside the transcript tag and AFTER every cut
 (`LLM.recording_block`, ru/en/zh, with the rule "never quote it as speech; do
