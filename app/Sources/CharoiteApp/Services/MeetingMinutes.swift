@@ -47,7 +47,7 @@ struct MeetingMinutes: Equatable {
         (["поручения", "задачи", "action items", "行动项", "任务"], .tasks),
         (["открытые вопросы", "вопросы", "open questions", "待解决问题"], .openQuestions),
         (["риски", "risks", "风险"], .risks),
-        (["участники", "дата/время", "participants", "参会人", "日期/时间"], .ignored),
+        (["участники", "дата/время", "participants", "date/time", "参会人", "日期/时间"], .ignored),
     ]
 
     /// Начала строк служебного хвоста, который демон дописывает в минутки

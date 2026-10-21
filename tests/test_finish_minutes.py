@@ -150,10 +150,39 @@ def test_every_minutes_path_goes_through_the_entry():
                      "finalize_assignees(", "with_note(", "without_note(",
                      "scrub_local_paths(", "with_date(", "without_date("):
             assert step not in body, f"{name}: свой шаг {step} мимо входа"
-        # начало встречи доезжает до входа на каждом пути: по файлу — `of()`,
-        # живой путь демона — явным словом (№738, Haiku I4 входа)
-        assert ("meeting_source.of(" in body
-                or "began_at=meeting_source.began_of(tr.path)" in body), f"{name}: источник без начала встречи"
+        # начало встречи доезжает до входа на каждом пути: источник входа —
+        # `of()` по файлу или `live(…, began_at=began_of(…))` (№738, Haiku I4
+        # входа); по дереву, не по подстроке (выход out1, Sonnet M2 = Haiku M2)
+        for source in _entry_sources(path, name):
+            assert _carries_start(source), f"{name}: источник без начала встречи"
+
+
+def _entry_sources(path: pathlib.Path, name: str) -> list[ast.expr]:
+    """Источник каждого вызова `finish_minutes` в функции: выражение второго
+    аргумента, а имя — значение его присваивания в той же функции."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+    assigned = {t.id: n.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "finish_minutes"]
+    assert calls, f"{name}: нет вызова входа"
+    out = []
+    for call in calls:
+        arg = call.args[1] if len(call.args) > 1 else next(k.value for k in call.keywords if k.arg == "source")
+        out.append(assigned.get(arg.id, arg) if isinstance(arg, ast.Name) else arg)
+    return out
+
+
+def _carries_start(source: ast.expr) -> bool:
+    if not (isinstance(source, ast.Call) and isinstance(source.func, ast.Attribute)):
+        return False
+    if source.func.attr == "of":
+        return True
+    began = next((k.value for k in source.keywords if k.arg == "began_at"), None)
+    return (source.func.attr == "live" and isinstance(began, ast.Call)
+            and isinstance(began.func, ast.Attribute) and began.func.attr == "began_of")
 
 
 def test_app_tail_marks_mirror_the_python_writers():
@@ -164,3 +193,13 @@ def test_app_tail_marks_mirror_the_python_writers():
     line = next(x for x in swift.splitlines() if "static let tailMarks" in x)
     assert f'"{channel_trace.SUMMARY_MARK}"' in line
     assert f'"{fact_check.FOOTNOTE_MARK}"' in line
+
+
+def test_app_ignores_every_date_label_the_entry_writes():
+    """Строку даты пишет вход (`meeting_source.DATE_LABEL`), приложение её
+    пропускает по своему списку меток; метка без звёзд и двоеточия обязана в
+    нём быть (выход №738, DS M2: «date/time» в Swift не было)."""
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "MeetingMinutes.swift").read_text(encoding="utf-8")
+    line = next(x for x in swift.splitlines() if ".ignored)" in x)
+    for label in meeting_source.DATE_LABEL.values():
+        assert f'"{label.strip("*:：").lower()}"' in line, label

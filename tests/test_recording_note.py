@@ -269,8 +269,11 @@ def test_mcp_minutes_take_the_speech_the_note_and_leave_a_passport(tmp_path, mon
     out = mcp_server.sufler_make_minutes()
     assert "📌 КТ: смета" not in seen["fit"] and "реплика" in seen["fit"], "в свёртку — только речь"
     assert seen["prompt"].count(NOTE) == 1 and seen["prompt"].index(NOTE) > seen["prompt"].index("[сжато: сводки частей]")
+    # дату модель не пишет: строку ставит вход из штампа файла (№738)
+    assert "дат" not in seen["prompt"].replace(NOTE, "").lower()
     doc = (tdir / "2026-09-13_1200_minutes.md").read_text(encoding="utf-8")
     assert doc.count(NOTE) == 1
+    assert doc.startswith("**Дата/время:** 2026-09-13 12:00\n")
     meta = live_sidecar.read(f)
     assert meta["minutes_sha256"] == live_sidecar.sha(doc)
     assert meta["minutes_source_sha256"] == meeting_source.of(f, text).sha()

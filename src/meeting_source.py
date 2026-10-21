@@ -104,40 +104,83 @@ def began_of(live: pathlib.Path) -> str | None:
 
 #: подпись поля даты, которую пишет код, по языку минуток
 DATE_LABEL = {"ru": "**Дата/время:**", "en": "**Date/time:**", "zh": "**日期/时间：**"}
-# Поле даты в ответе модели: подписи трёх языков и короткие («Дата», MCP-промпт
-# просил «дата»), двоеточие ASCII и полноширинное, с жирным и без. Значение —
-# до следующего жирного поля на той же строке или до конца строки, через
-# перевод строки никогда (S-I3 = DS-C2 входа №738: «до следующего поля» без
-# границы строки съедало разделы).
-_DATE_FIELD = re.compile(
-    r"\*{0,2}[ \t]*(?<!\w)(?:Дата/время|Дата|Date/time|Date|日期/时间|日期)[ \t]*[:：][ \t]*\*{0,2}"
-    r"[^\n]*?(?=\*\*[^*\n]+[:：]\*\*|$)", re.IGNORECASE)
-_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+#: ключи поля даты в шапке: свои подписи и короткие, которые писала модель
+#: (MCP-промпт просил «дата»); ключ — метка без звёзд и двоеточия, строчными
+DATE_KEYS = frozenset({"дата/время", "дата", "date/time", "date", "日期/时间", "日期"})
+# Шапка разбирается на поля, а не ищется регэкспом по прозе (выход №738: три
+# головы сошлись — регэксп угадывал границы поля и шапки и то съедал
+# участников, то калечил «**Meeting date:**», то оставлял вторую дату). Поле —
+# метка и значение до следующей метки: жирная метка «**М:**» / «**М**:» где
+# угодно в строке (старый шаблон писал «**Дата/время:** … **Участники:** …»),
+# голая «М:» — только в начале строки или куска после «|».
+_BOLD_LABEL = re.compile(r"\*\*(?P<label>[^*\n]{1,40}?)[ \t]*(?:[:：][ \t]*\*\*|\*\*[ \t]*[:：])")
+_PLAIN_LABEL = re.compile(r"[ \t]*(?P<label>[^\W\d_][^:：*|\n]{0,39}?)[ \t]*[:：]")
+_LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 
 
-def _head_end(lines: list[str]) -> int:
-    """Граница шапки: до первого раздела «## » или пункта списка. Поле даты
-    ищем только в шапке — пункт «- Дата: релиз 3 ноября» в теле не шапка."""
-    for i, line in enumerate(lines):
-        if line.startswith("## ") or _LIST_ITEM.match(line):
-            return i
-    return len(lines)
+def _key(label: str) -> str:
+    return " ".join(label.lower().split())
+
+
+def _fields(chunk: str) -> list[tuple[str | None, str]]:
+    """Поля куска строки: (ключ метки, текст поля с меткой). Текст до первой
+    метки — с ключом None: это не поле."""
+    marks = [(m.start(), _key(m["label"])) for m in _BOLD_LABEL.finditer(chunk)]
+    plain = _PLAIN_LABEL.match(chunk)
+    if plain and (not marks or plain.end() <= marks[0][0]):
+        marks.insert(0, (0, _key(plain["label"])))
+    out: list[tuple[str | None, str]] = []
+    if not marks or marks[0][0] > 0:
+        out.append((None, chunk[:marks[0][0] if marks else len(chunk)]))
+    for i, (at, key) in enumerate(marks):
+        out.append((key, chunk[at:marks[i + 1][0] if i + 1 < len(marks) else len(chunk)]))
+    return out
+
+
+def _head_field(line: str) -> list[tuple[str | None, str]] | None:
+    """Поля строки шапки или None, если строка не поле: не начинается с метки
+    (после маркера списка) или это заголовок раздела — метка без значения
+    («**Решения:**», «Темы:»), кроме пустого поля даты."""
+    body = line[len(m.group(0)):] if (m := _LIST_ITEM.match(line)) else line
+    fields = _fields(body)
+    if not fields or fields[0][0] is None:
+        return None
+    if len(fields) == 1 and fields[0][0] not in DATE_KEYS:
+        text = fields[0][1]
+        label = _BOLD_LABEL.match(text) or _PLAIN_LABEL.match(text)
+        if not text[label.end():].strip():
+            return None
+    return fields
 
 
 def without_date(doc: str) -> str:
     """Снять поле даты из шапки — и написанное моделью, и строку `with_date`.
-    Остаток строки («**Участники:** …») остаётся, пустая строка уходит."""
+    Шапка — строки под заголовком «# …» подряд, пока каждая начинается с
+    метки (пустые строки не рвут); раздел, «## », пункт без метки — конец.
+    Прочие поля строки («**Участники:** …») остаются как были; строка без
+    полей уходит; строка без поля даты — те же байты."""
     lines = doc.split("\n")
-    end = _head_end(lines)
-    head: list[str] = []
-    for line in lines[:end]:
-        if not _DATE_FIELD.search(line):
-            head.append(line)
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i < len(lines) and lines[i].startswith("# "):
+        i += 1
+    out = lines[:i]
+    for j in range(i, len(lines)):
+        line = lines[j]
+        if not line.strip():
+            out.append(line)
             continue
-        rest = _DATE_FIELD.sub("", line).strip()
-        if rest:
-            head.append(rest)
-    return "\n".join(head + lines[end:])
+        if line.lstrip().startswith("#") or _head_field(line) is None:
+            return "\n".join(out + lines[j:])
+        marker = m.group(0) if (m := _LIST_ITEM.match(line)) else ""
+        chunks = line[len(marker):].split("|")
+        kept = ["".join(t for k, t in _fields(c) if k not in DATE_KEYS).strip() for c in chunks]
+        if all(k not in DATE_KEYS for c in chunks for k, _t in _fields(c)):
+            out.append(line)
+        elif any(kept):
+            out.append(marker + " | ".join(x for x in kept if x))
+    return "\n".join(out)
 
 
 def with_date(doc: str, began_at: str | None, lang: str = "ru") -> str:
@@ -149,7 +192,8 @@ def with_date(doc: str, began_at: str | None, lang: str = "ru") -> str:
     doc = without_date(doc)
     line = f"{DATE_LABEL.get(lang, DATE_LABEL['ru'])} {began_at}"
     lines = doc.split("\n")
-    at = 1 if lines and lines[0].startswith("# ") else 0
+    at = next((i for i, x in enumerate(lines) if x.strip()), 0)
+    at = at + 1 if at < len(lines) and lines[at].startswith("# ") else 0
     return "\n".join(lines[:at] + [line] + lines[at:])
 
 

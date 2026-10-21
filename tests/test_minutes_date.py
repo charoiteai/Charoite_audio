@@ -85,6 +85,38 @@ def test_the_value_never_crosses_a_line():
     assert out == doc.replace("26 октября", "2026-10-17 20:00")
 
 
+@pytest.mark.parametrize("doc,want", [
+    # пустое значение даты рядом с участниками: участники остаются (DS-C1 out1, опыт)
+    ("**Дата/время:** **Участники:** Доброслав\n", "**Участники:** Доброслав\n"),
+    # двоеточие снаружи жирного (Sonnet I1 out1)
+    ("# М\n**Дата/время**: 26 октября (ночь)\n\n## Решения\n", "# М\n\n## Решения\n"),
+    # шапка пунктами списка: поле даты снимается, второй даты нет (DS I2, Haiku I3)
+    ("# М\n- **Дата/время:** 26 октября\n- **Участники:** А\n## Темы\n", "# М\n- **Участники:** А\n## Темы\n"),
+    # соседнее поле не жирное, через «|» или «**М**:» (Sonnet I2, Haiku I2)
+    ("# М\n**Дата/время:** 26 октября | Участники: Анна, Борис\n## Т\n", "# М\nУчастники: Анна, Борис\n## Т\n"),
+    ("# М\n**Дата/время:** 26 октября **Участники**: Анна\n## Т\n", "# М\n**Участники**: Анна\n## Т\n"),
+])
+def test_the_date_field_leaves_the_head_and_nothing_else(doc, want):
+    assert meeting_source.without_date(doc) == want
+
+
+@pytest.mark.parametrize("doc", [
+    "**Meeting date:** 2026-10-17 **Участники:** Ann\n## Topics\n",   # своя метка шаблона (DS I1)
+    "# М\nУчастники: Анна (Date: 5 ноября)\n## Т\n",                  # «date» внутри значения
+    "# Х\nДата релиза: 10.11\n**Участники:** А\n",                    # своя метка шаблона
+    "# М\n**Участники:** А\n\n**Темы:**\nДата: релиз 3 ноября\n",    # раздел жирным рвёт шапку
+    "# М\n**Участники:** А\n### Решения\nДата: релиз 3 ноября\n",     # «###» рвёт шапку (DS M1)
+    "# М\nВстреча прошла.\nДата: релиз\n",                             # проза рвёт шапку (Sonnet M1)
+])
+def test_other_fields_and_the_body_keep_their_bytes(doc):
+    assert meeting_source.without_date(doc) == doc
+
+
+def test_blank_lines_before_the_title_keep_the_date_under_it():
+    out = meeting_source.with_date("\n# М\n**Участники:** А\n", "2026-10-17 20:00")
+    assert out == "\n# М\n**Дата/время:** 2026-10-17 20:00\n**Участники:** А\n"
+
+
 def test_only_the_head_is_searched():
     """Пункт тела с «Дата:» и слово с «date» внутри — не поле шапки."""
     doc = "# Минутки\n**Updated:** вчера\n## Темы\n- Дата: релиз 3 ноября\n**Дата/время:** в теле\n"
@@ -152,7 +184,3 @@ def test_the_prompt_asks_neither_the_date_nor_who_implements_a_decision(lang, da
     list(client.minutes("[10:00] А: начнём\n"))
     assert date_label not in seen["prompt"] and owner_word not in seen["prompt"]
 
-
-def test_mcp_prompt_does_not_ask_for_a_date():
-    src = (ROOT / "src" / "mcp_server.py").read_text(encoding="utf-8")
-    assert "Составь минутки: участники," in src and "Составь минутки: дата" not in src
