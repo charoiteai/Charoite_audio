@@ -2573,6 +2573,33 @@ def test_вынос_условия_двери_в_другой_модуль_ос�
     assert по_функции.get("unrelated") == {False}, по_функции
 
 
+def test_некритичный_модуль_не_становится_критичным_по_импорту_двери(tmp_path):
+    """№613, круг 1: дверь целым файлом зовёт `x.too_old`, а `x` записан в
+    `mutation_not_critical` — решение человека сильнее расширения, мутанты `x`
+    некритичны. Снятие действует, только если оно есть и в базе: PR, вписавший
+    `x` в некритичные, свои мутанты так не снимает."""
+    door = "from x import too_old\n\n\ndef sweep(p):\n    if too_old(p):\n        p.unlink()\n"
+    x = "def too_old(age):\n    return age > 30\n"
+    зоны = {"mutation_critical": {"door": "дверь"}, "mutation_not_critical": {"x": "условие"}}
+    repo = _git_repo(tmp_path, {"src/door.py": door, "src/x.py": x, mc.ZONES_REL: json.dumps(зоны)})
+    база = _rev(repo, "HEAD")
+    (repo / "src" / "x.py").write_text(x.replace("> 30", ">= 31"), encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка x"], cwd=repo, check=True)
+    plan, _ = mc.plan_for(repo, f"{база}...HEAD")
+    assert plan and not any(m.critical for m in plan), [(m.qualname, m.critical) for m in plan]
+
+    # «не критично» только в голове диапазона — расширение остаётся в силе
+    (tmp_path / "2").mkdir()
+    repo2 = _git_repo(tmp_path / "2", {"src/door.py": door, "src/x.py": x,
+                                       mc.ZONES_REL: json.dumps({"mutation_critical": {"door": "дверь"}})})
+    база2 = _rev(repo2, "HEAD")
+    (repo2 / "src" / "x.py").write_text(x.replace("> 30", ">= 31"), encoding="utf-8")
+    (repo2 / mc.ZONES_REL).write_text(json.dumps(зоны), encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка x и снятие"], cwd=repo2, check=True)
+    plan2, _ = mc.plan_for(repo2, f"{база2}...HEAD")
+    assert plan2 and all(m.critical for m in plan2), [(m.qualname, m.critical) for m in plan2]
+
+
 def test_выживший_в_некритичной_зоне_зелёный_со_списком(tmp_path, monkeypatch, capsys):
     """Опыт №469, пара к `test_jobs_2_находит_тех_же_выживших…` (там критичный —
     красный): те же два выживших вне критичных зон — исход 0, оба названы в отчёте

@@ -1657,7 +1657,8 @@ def _imported_mentions(roots, bindings: dict[str, set[str]],
     return found
 
 
-def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None) -> frozenset[str]:
+def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None,
+                       not_critical=()) -> frozenset[str]:
     """Записи зоны плюс символы других модулей, которые зовёт замыкание двери (№613).
 
     `in_zone` судит по упоминанию внутри ОДНОГО модуля: вынос условия двери
@@ -1676,8 +1677,15 @@ def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None) ->
     среди определений верхнего уровня модуля-цели), `getattr` по строке, сам модуль
     как значение (`x` без атрибута). Инвентарь — той ревизии, чей код ломают
     (`inventory(rev=…)`), не рабочий диск.
+
+    Явное «не критично» (`not_critical`, вторая рука `layout.json`) — решение
+    человека и сильнее расширения: символ модуля, записанного некритичным,
+    записью не становится. Без этого дверь «целым файлом» (`graph_updater`)
+    делала критичными `llm::LLM` со всеми методами — правка `llm.py` давала 41
+    критичного мутанта вместо одного.
     """
     entries = frozenset(entries)
+    not_critical = frozenset(not_critical)
     area = mutation_area(inv) if area is None else area
     mods = modules(inv)
     rel_of = {m: rel for rel in inv.files if (m := module_of(rel)) is not None}
@@ -1718,7 +1726,7 @@ def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None) ->
             symbol = full[len(target) + 1:].split(".")[0]
             if target_rel not in defined:
                 defined[target_rel] = set(_definitions(target_tree)[0])
-            if symbol in defined[target_rel]:
+            if symbol in defined[target_rel] and not _lexical_in_zone(not_critical, target_rel, symbol):
                 added.add(f"{target}::{symbol}")
     return entries | frozenset(added)
 

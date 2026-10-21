@@ -742,6 +742,17 @@ def test_запись_целым_файлом_тянет_импорт_уровн
     assert lm.zones_with_imports({"door::nothing"}, inv) == {"door::nothing"}
 
 
+def test_некритичный_модуль_расширением_не_добавляется(tmp_path):
+    """Явное «не критично» сильнее расширения по импорту: модуль целиком или
+    сам символ в `not_critical` записью зоны не становится (№613, круг 1)."""
+    inv = _ревизия(tmp_path, {
+        "src/door.py": "from x import too_old, Clock\n\n\ndef sweep(p):\n    return too_old(p) or Clock()\n",
+        "src/x.py": _X, "src/y.py": "def age(p):\n    return p\n"})
+    assert lm.zones_with_imports({"door::sweep"}, inv) == {"door::sweep", "x::too_old", "x::Clock"}
+    assert lm.zones_with_imports({"door::sweep"}, inv, None, {"x"}) == {"door::sweep"}
+    assert lm.zones_with_imports({"door::sweep"}, inv, None, {"x::Clock"}) == {"door::sweep", "x::too_old"}
+
+
 def test_грамматика_импорта_одна_на_imports_of_и_привязки():
     """`imports_of` и `import_bindings` читают один разбор: имя, которое связала
     привязка, есть и среди написанных импортов."""

@@ -642,8 +642,19 @@ def zones_for(root: pathlib.Path, rng: str) -> tuple[frozenset[str], str, str]:
     действует сразу, снятие — после мержа (входной круг 2 по №469, Sonnet C2 =
     GLM C2). Ревизии без файла или без ключа — пустой вклад и заметка, а не отказ:
     первый PR №469 сам вводит ключ. Возвращает (записи, дайджест, заметка)."""
+    entries, _, digest, note = _zone_lists(root, rng)
+    return entries, digest, note
+
+
+def _zone_lists(root: pathlib.Path, rng: str) -> tuple[frozenset[str], frozenset[str], str, str]:
+    """Обе руки списка зон диапазона: критичные — объединение базы и головы
+    (`zones_for`), некритичные — пересечение. Явное «не критично» снимает
+    критичность, которую даёт расширение по импорту (№613), и потому действует,
+    только если оно есть в обеих ревизиях: PR не снимает свои мутанты, вписав
+    модуль в некритичные. Возвращает (критичные, некритичные, дайджест, заметка)."""
     left, _, right = split_range(rng)
     entries: set[str] = set()
+    not_critical: set[str] | None = None
     notes: list[str] = []
     for rev in ([left] if left else []) + [right]:
         r = subprocess.run(["git", "show", f"{rev}:{ZONES_REL}"], cwd=root, capture_output=True)
@@ -654,12 +665,15 @@ def zones_for(root: pathlib.Path, rng: str) -> tuple[frozenset[str], str, str]:
             except ValueError:
                 raise PreparationError(f"{ZONES_REL} в {rev[:12]} не разбирается")
         got = data.get(layout_map.ZONE_KEYS[0]) if isinstance(data, dict) else None
+        rest = data.get(layout_map.ZONE_KEYS[1]) if isinstance(data, dict) else None
+        rest = set(rest) if isinstance(rest, dict) else set()
+        not_critical = rest if not_critical is None else not_critical & rest
         if not isinstance(got, dict):
             notes.append(f"в {rev[:12]} списка зон нет")
             continue
         entries.update(got)
     digest = hashlib.sha256("\n".join(sorted(entries)).encode("utf-8")).hexdigest()[:12]
-    return frozenset(entries), digest, "; ".join(notes)
+    return frozenset(entries), frozenset(not_critical or ()), digest, "; ".join(notes)
 
 
 def _round_robin(muts: list[Mutation], n: int) -> list[Mutation]:
@@ -702,7 +716,7 @@ def plan_for(root: pathlib.Path, rng: str, shard: tuple[int, int] | None = None,
     прогона судили бы разные выборки. `totals.planned` — размер выборки (P),
     `totals.full` — полный план.
     """
-    zones, digest, note = zones_for(root, rng)
+    zones, not_critical, digest, note = _zone_lists(root, rng)
     changed = changed_lines(root, rng)
     inv = None
     if changed:
@@ -714,7 +728,7 @@ def plan_for(root: pathlib.Path, rng: str, shard: tuple[int, int] | None = None,
     if inv is not None:
         # Вынос решения двери в другой модуль (№613): символ, который замыкание
         # двери импортирует и зовёт, критичен в своём модуле — по той же ревизии
-        zones = layout_map.zones_with_imports(zones, inv, area)
+        zones = layout_map.zones_with_imports(zones, inv, area, not_critical)
 
     def ours(path: pathlib.Path) -> bool:
         # Вне области — только то, что ревизия знает и разобрала: файл, которого
