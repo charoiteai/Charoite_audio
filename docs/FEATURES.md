@@ -857,8 +857,11 @@ it signals degradation, it does not break the loop.
   confidence (no invented sources). The header carries a live "Ollama
   responding · 0 network calls" chip that turns into a warning when the
   local runtime is silent. On windows ≥760 pt a right column "What memory
-  knows" shows meeting/node/dossier counts and the freshest cores with a
-  status line each — counted from the graph on disk, refreshed at most once
+  knows" shows graph meeting/node/dossier counts (one meeting is one pipeline
+  key: the note and its archive folder count once, a second meeting of the
+  same minute and a "-N" collision count apart; an archive folder takes its
+  key from the manifest, from the folder name only without one) and the
+  freshest cores with a status line each — counted from the graph on disk, refreshed at most once
   a minute. Source parsing, labels and the meta line are a pure
   `MemoryScreenPolicy`, tested without UI.
 - **Text-pair telemetry for the owner's signature** (24.08) — with the
@@ -1313,7 +1316,9 @@ it signals degradation, it does not break the loop.
   sections.
 - **Meeting tasks** — minutes write assignments as checkboxes
   («- [ ] **Name** — what — when»); the Tasks window collects every
-  `- [ ]` across the graph with an open-count badge, ticking writes
+  `- [ ]` across the graph with a "needs attention" badge (overdue + open —
+  the same two numbers as the screen header without a meeting filter; "Stale"
+  is not in the badge, and the stale boundary is a calendar day), ticking writes
   `[x]` straight into markdown — Obsidian and the app always agree.
   A "Mine" section comes first (the bold assignee matches `user_name`
   as a whole word; the pipeline writes the owner one way when it saves
