@@ -1251,6 +1251,9 @@ rebuild; before it the draft and MCP skipped the fact check and the rebuild
 skipped the scrub). The app's minutes parser skips the service tail lines
 (`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
 `fact_check.FOOTNOTE_MARK`).
+The built-in minutes templates and the MCP prompt do not ask the model for
+the meeting date (№738): it used to copy the most prominent date of the talk,
+and every reader takes the date from the file stamp anyway.
 A numeric date in the minutes is checked only as a whole token
 (`fact_check.DATE_NUM_RE`): it starts on a word boundary, so version tails
 like `v1.10` or `Python3.10` are not dates; the suffix "г" counts only right

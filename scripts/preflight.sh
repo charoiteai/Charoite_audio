@@ -41,7 +41,10 @@ FAIL=""
 SKIPPED=""
 T0=$(date +%s)
 SKIP=",${PREFLIGHT_SKIP:-},"
-WORK=$(mktemp -d -t preflight)
+# шаблон с X — и BSD, и GNU (тест шага 4 идёт в CI на Linux); без каталога логи
+# шагов ушли бы в «/» и покраснели без причины (№595, Sonnet I3 = DS I1)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/preflight.XXXXXX") \
+  || { echo "preflight: временный каталог не создаётся (${TMPDIR:-/tmp}) — прогон не стартует"; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
 skipped() { case "$SKIP" in *",$1,"*) SKIPPED="$SKIPPED $1"; printf '   – %s пропущен (PREFLIGHT_SKIP)\n' "$1"; return 0;; esac; return 1; }
 step() { printf '\n── %s\n' "$1"; }
@@ -148,8 +151,15 @@ step "4. мутация изменённых строк ($RANGE)"
 if ! skipped mutation; then
   # корень данных владельца — мутатору явно: сам он берёт корень от своего файла
   # и в worktree не видит лока живой встречи (№339, DS I9 = GLM I1)
+  # PREFLIGHT_FORCE мутатору не передаётся: его `--force` снимает и уступку
+  # встрече и ночи между мутантами, а согласие было только на старт (№595, Haiku I-2)
   CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" > "$WORK/mutation.log" 2>&1; rc=$?
   tail -4 "$WORK/mutation.log" | sed 's/^/   /'
+  # Мутатор отказал занятостью на старте — пропуск вслух, а не дефект. Тот же код 3
+  # у невзятого замка (ФС без flock ожиданием не лечится) — провал. Различаем по
+  # строке старта, пока у занятости нет своего кода (№575; №595, Sonnet I-1 = DS I1).
+  if [ $rc -eq 3 ] && grep -q "мутатор не стартует" "$WORK/mutation.log"; then
+    SKIPPED="$SKIPPED mutation(машина занята)"; else
   case "$(outcome $rc)" in
     ok)      verdict 0 mutation ;;
     nothing) SKIPPED="$SKIPPED mutation(проверять нечего)" ;;
@@ -158,6 +168,7 @@ if ! skipped mutation; then
     unjudged) SKIPPED="$SKIPPED mutation(не проверено ни одного)" ;;
     *)       verdict "$rc" mutation ;;
   esac
+  fi
 fi
 
 printf '\n══ preflight за %s с: ' "$(( $(date +%s) - T0 ))"

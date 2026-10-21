@@ -461,11 +461,33 @@ def test_push_revs_skips_deletions_and_unknown_published_tips(repo):
 
 # ── установка и «нельзя забыть» ─────────────────────────────────────────────
 
-def _owner_env(repo: Repo, **extra: str) -> dict[str, str]:
-    """Машина владельца: список по умолчанию в HOME, CHAROITE_MARKERS не задан."""
+# Заглушка гейта имён графа (№605) — тот же контракт `--people-scan`, что у
+# настоящего: имя ищется подстрокой без регистра, ответ с рукопожатием. Имена —
+# из файла `people.txt` рядом с заглушкой; нет файла — имён нет, ответ чистый.
+STUB_GATE = """import hashlib, json, pathlib, sys
+names = pathlib.Path(__file__).with_name("people.txt")
+names = names.read_text(encoding="utf-8").split("\\n") if names.exists() else []
+recs = json.loads(sys.stdin.read())
+hits = []
+for place, text in recs:
+    for n in filter(None, names):
+        if n.casefold() in text.casefold():
+            line = next((i + 1 for i, s in enumerate(text.split("\\n")) if n.casefold() in s.casefold()), None)
+            hits.append([place, line, n])
+digest = hashlib.sha256(json.dumps(recs, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+print(json.dumps({"v": 1, "records": len(recs), "names": 150, "digest": digest, "hits": hits}))
+sys.exit(1 if hits else 0)
+"""
+
+
+def _owner_env(repo: Repo, gate: str | None = STUB_GATE, **extra: str) -> dict[str, str]:
+    """Машина владельца: список по умолчанию в HOME, CHAROITE_MARKERS не задан;
+    рядом — гейт имён графа (`gate=None` — гейта нет)."""
     lst = repo.tmp / "home" / ".config" / "charoite" / "private_markers.txt"
     lst.parent.mkdir(parents=True, exist_ok=True)
     lst.write_text(f"{MARKER}\n", encoding="utf-8")
+    if gate is not None:
+        (lst.parent / "check_brief.py").write_text(gate, encoding="utf-8")
     env = _env(repo.tmp, markers=False)
     env.update(extra)
     return env
@@ -1063,3 +1085,11 @@ def test_raw_objects_returns_each_object_whole(repo, monkeypatch):
     for sha in (first, second, repo.base):
         want = git(repo.work, "cat-file", "commit", sha, env=repo.env).stdout
         assert got[sha] == want, sha
+
+
+def test_the_label_rule_is_a_tracked_file_of_the_product():
+    """Правило меток страж читает из ветки main по этому пути — путь есть в судимой
+    ревизии в любом checkout, CI тоже (№605 out5, out7)."""
+    assert guard.PLACEHOLDER_RULE == "src/charoite_graph/graph_names.py"
+    assert subprocess.run(["git", "-C", str(REPO), "cat-file", "-e", f"HEAD:{guard.PLACEHOLDER_RULE}"],
+                          capture_output=True).returncode == 0, "правила нет в ревизии, которая станет main"

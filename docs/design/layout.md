@@ -147,6 +147,7 @@
 
 - `src/brain.py` ← scripts/layout_map.py
 - `src/charoite_graph/cli.py` ← scripts/layout_map.py
+- `src/charoite_graph/graph_names.py` ← scripts/check_private_markers.py
 - `src/charoite_graph/graph_search.py` ← scripts/layout_map.py, scripts/memory_bench.py
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/charoite_schema.py` ← .github/workflows/swift-tests.yml
@@ -209,6 +210,7 @@
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/DIARIZATION.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/DIARIZATION.md, docs/zh/ARCHITECTURE.md, docs/zh/DIARIZATION.md
 - `src/charoite_graph/dossier.py` ← docs/FEATURES.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/charoite_graph/frontmatter.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `src/charoite_graph/graph_names.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/zh/CONTRIBUTING.md
 - `src/charoite_graph/graph_nodes.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/charoite_graph/graph_search.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/scripts/README.md, scripts/README.md
 - `src/charoite_graph/redirects.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
