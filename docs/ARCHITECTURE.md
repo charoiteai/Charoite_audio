@@ -1251,15 +1251,14 @@ rebuild; before it the draft and MCP skipped the fact check and the rebuild
 skipped the scrub). The app's minutes parser skips the service tail lines
 (`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
 `fact_check.FOOTNOTE_MARK`). The "Date/time" header line is written by the
-same entry from the meeting stamp (`MeetingSource.began_at`, №738): the model's
-date field is dropped before the fact check (the header is parsed into
-`**label:** value` fields, one key set `DATE_KEYS`; only the date field is
-dropped, from a line where it comes first, between the title and the first
-section — `action_items.ends_section`, the same predicate that closes the
-action-item section; the code line takes its place in one pass), and the
-built-in templates no
-longer ask for it — the model used to copy the most prominent date of the
-talk. An imported recording gets the date only: its stamp is the file time,
+same entry from the meeting stamp (`MeetingSource.began_at`, №738), first under
+the title and after the fact check, so the check never reads the stamp; the
+built-in templates no longer ask the model for a date — it used to copy the most
+prominent date of the talk. The model's own date field is not removed: four
+review rounds in a row found header shapes where removal lost model text, so
+the worst case is a second, model date below the right one. Only the entry's
+own line is dropped on a repeat pass, byte for byte, like the recording note.
+An imported recording gets the date only: its stamp is the file time,
 not the start.
 
 **Why a phone recording stopped is a value that travels with the file.** On

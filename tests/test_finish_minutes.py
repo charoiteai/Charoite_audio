@@ -148,7 +148,7 @@ def test_every_minutes_path_goes_through_the_entry():
         assert "meeting_source.finish_minutes(" in body, f"{name}: мимо входа минуток"
         for step in ("fact_check.annotate(", "without_footnote(", "action_items.normalize(",
                      "finalize_assignees(", "with_note(", "without_note(",
-                     "scrub_local_paths(", "with_date(", "without_date("):
+                     "scrub_local_paths(", "with_date("):
             assert step not in body, f"{name}: свой шаг {step} мимо входа"
         # начало встречи доезжает до входа на каждом пути: источник входа —
         # `of()` по файлу или `live(…, began_at=began_of(…))` (№738, Haiku I4

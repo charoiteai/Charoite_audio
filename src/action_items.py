@@ -78,16 +78,6 @@ def is_section_heading(line: str) -> bool:
     return bool(_SECTION.match(line) or _LEGACY_SECTION.match(line))
 
 
-def ends_section(line: str) -> bool:
-    """Строка закрывает раздел минуток: markdown/жирный заголовок — по форме,
-    голый — только по известному имени секции; пункт списка — никогда. Один
-    предикат на всех читателей: разделы поручений и граница шапки
-    (`meeting_source.without_date`, №738)."""
-    return bool((_OTHER_SECTION.match(line)
-                 or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
-                and not _BULLET.match(line))
-
-
 def normalize(text: str) -> str:
     """Привести пункты раздела «Поручения» к виду «- [ ] …».
 
@@ -105,7 +95,10 @@ def normalize(text: str) -> str:
         if inside:
             # Раздел кончился на следующем заголовке: markdown/жирном — по
             # форме, голом — только по известному имени секции.
-            if ends_section(line):
+            if (_OTHER_SECTION.match(line)
+                    or (_BARE_HEADING.match(line)
+                        and _KNOWN_BARE_SECTION.match(line))) \
+                    and not _BULLET.match(line):
                 inside = False
                 out.append(line)
                 continue
@@ -400,7 +393,9 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
             inside = True
             out.append(line)
             continue
-        if inside and ends_section(line):
+        if inside and ((_OTHER_SECTION.match(line)
+                        or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
+                       and not _BULLET.match(line)):
             inside = False
         # статус, поставленный человеком или контролем (выполнено, возвращено), пометка
         # «не участник» не снимает: она убирает чекбокс (№366)
@@ -537,7 +532,9 @@ def canon_owner(text: str, owner: str) -> str:
             inside = True
             out.append(line)
             continue
-        if inside and ends_section(line):
+        if inside and ((_OTHER_SECTION.match(line)
+                        or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
+                       and not _BULLET.match(line)):
             inside = False
         if inside and _ASSIGNEE_LINE.match(line):
             line = canon_owner_item(line, owner)
