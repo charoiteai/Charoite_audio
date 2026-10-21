@@ -127,7 +127,7 @@ struct WorkspaceView: View {
                 MeetingProcessingPolicy.resolvedState($0) == .error
             }.count
         case .inbox: return ExternalRecordingPolicy.failedCount(importer.items)
-        case .tasks: return tasks.openCount
+        case .tasks: return tasks.attentionCount
         case .today, .memory: return 0
         }
     }

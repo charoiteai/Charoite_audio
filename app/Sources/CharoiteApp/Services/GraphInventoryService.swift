@@ -58,6 +58,67 @@ final class GraphInventoryService: ObservableObject {
             .count ?? 0
     }
 
+    /// Встречи графа, а не файлы: заметка лежит в «Встречи/» файлом, архив той
+    /// же встречи — папкой «Встречи-архив/<дата — тема>/» с минутками внутри.
+    /// Плоский счёт .md не видел архивных папок вовсе (граф владельца 21.10:
+    /// 392 заметки, 409 архивных папок, встреч по ключу — 411; №757, круг in1).
+    /// Одна встреча — один ключ конвейера «ГГГГ-ММ-ДД_ЧЧММ[СС][-N]»
+    /// (`meeting_stamp.graph_key`): секунды получает вторая встреча той же
+    /// минуты, «-N» — встреча-коллизия той же секунды, обе отдельные (круги
+    /// out1–out2). Ключ берётся существующими правилами, а не своим разбором:
+    /// заметка — `MemoryScreenPolicy.stamp(of:)`, архивная папка — `meeting_id`
+    /// манифеста через тот же `stamp(of:)` (префикс: «…_084531_live» →
+    /// «…_084531»; Python `_folders_for` тем же полем только проверяет
+    /// владение, и строго), имя папки «ГГГГ-ММ-ДД ЧЧ-ММ[-СС][-N] — тема»
+    /// (`archive_time`) — когда манифеста нет, он битый или id без штампа.
+    /// Цифры темы («Бюджет 2027») в ключ не попадают. Запись без ключа — одна
+    /// встреча.
+    nonisolated static func meetingIdentity(_ name: String) -> String? {
+        if let key = MemoryScreenPolicy.stamp(of: name) { return key }
+        let ns = name as NSString
+        guard let m = archiveFolderRx.firstMatch(in: name, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let parts = (1..<m.numberOfRanges).map { i -> String in
+            let r = m.range(at: i)
+            return r.location == NSNotFound ? "" : ns.substring(with: r)
+        }
+        return MemoryScreenPolicy.stamp(of: "\(parts[0])_\(parts[1])\(parts[2])\(parts[3])\(parts[4])")
+    }
+
+    nonisolated static func meetingIdentity(folder: URL) -> String? {
+        if let data = try? Data(contentsOf: folder.appendingPathComponent("meeting.meta.json")),
+           let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let id = meta["meeting_id"] as? String,
+           let key = MemoryScreenPolicy.stamp(of: id) {
+            return key
+        }
+        return meetingIdentity(folder.lastPathComponent)
+    }
+
+    // swiftlint:disable:next force_try
+    nonisolated private static let archiveFolderRx = try! NSRegularExpression(
+        pattern: #"^(\d{4}-\d{2}-\d{2}) (\d{2})-(\d{2})(?:-(\d{2}))?(-\d+)?(?![\d-])"#)
+
+    nonisolated static func meetingCount(graph: URL) -> Int {
+        var keys = Set<String>()
+        var keyless = 0
+        for folder in GraphFolders.meetings {
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: graph.appendingPathComponent(folder),
+                includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            for url in entries {
+                let name = url.lastPathComponent
+                guard !name.hasPrefix("."), !GraphFolders.isServiceFile(name) else { continue }
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                guard isDir || url.pathExtension == "md" else { continue }
+                let key = isDir ? meetingIdentity(folder: url) : meetingIdentity(name)
+                if let key { keys.insert(key) } else { keyless += 1 }
+            }
+        }
+        return keys.count + keyless
+    }
+
     /// Папки ядер по контракту — свежие «сквозные темы» для нижнего блока.
     nonisolated private static let coreFolders = GraphFolders.cores
 
@@ -66,7 +127,7 @@ final class GraphInventoryService: ObservableObject {
         // Codex+GLM: две частные таблицы разошлись, en/zh-граф давал нули).
         typealias GC = GraphFolders
         var snap = Snapshot()
-        snap.meetings = GC.meetings.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
+        snap.meetings = meetingCount(graph: graph)
         let plainNodes = GC.nodes.filter { !coreFolders.contains($0) }
         snap.nodes = plainNodes.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
         snap.dossiers = GC.dossiers.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)

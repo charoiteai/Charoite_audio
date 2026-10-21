@@ -44,6 +44,67 @@ final class GraphInventoryTests: XCTestCase {
         XCTAssertEqual(snap.cores.first?.status, "подпись вне CI решена")
     }
 
+    /// Встреча — ключ, а не файл (№757): архив лежит папкой с минутками
+    /// внутри, а заметка той же встречи — файлом в «Встречи/». Плоский счёт .md
+    /// давал 1 на три встречи этого графа.
+    func testMeetingsCountArchiveFoldersOncePerMeeting() throws {
+        let graph = try makeGraph { root in
+            try self.put(root, "Встречи/2026-07-21_1000.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00 — Планирование/Минутки.md")
+            try self.put(root, "Встречи-архив/2026-07-20 09-00 — Ретро/Минутки.md")
+            try self.put(root, "Встречи/2026-07-10_прим_постановка.md")   // без ключа — своя встреча
+            try self.put(root, "Встречи-архив/_ОГЛАВЛЕНИЕ.md")             // служебный
+            try self.put(root, "Встречи/черновик.txt")                     // не заметка
+        }
+        XCTAssertEqual(GraphInventoryService.scan(graph: graph).meetings, 3)
+    }
+
+    /// Вторая встреча той же минуты получает посекундный штамп (конвейер,
+    /// `meeting_stamp.graph_key`) — это другая встреча; цифры темы — не штамп.
+    func testMeetingsKeepSecondMeetingOfTheSameMinute() throws {
+        let graph = try makeGraph { root in
+            try self.put(root, "Встречи/2026-07-21_1000.md")
+            try self.put(root, "Встречи/2026-07-21_100012.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00 — Бюджет 2027/Минутки.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00-12 — Повтор/Минутки.md")
+        }
+        XCTAssertEqual(GraphInventoryService.scan(graph: graph).meetings, 2)
+        XCTAssertEqual(GraphInventoryService.meetingIdentity("2026-07-21 10-00 — Бюджет 2027"), "2026-07-21_1000")
+        XCTAssertEqual(GraphInventoryService.meetingIdentity("2026-07-21_100012.md"), "2026-07-21_100012")
+        XCTAssertNil(GraphInventoryService.meetingIdentity("2026-07-10_прим_постановка.md"))
+    }
+
+    /// «-N» — встреча-коллизия той же секунды (`Transcript.__init__`,
+    /// `archive_time` «12-58-12-1»): отдельная встреча, а не хвост штампа
+    /// (круг out2). Папка «10-00-12» двусмысленна по имени (секунды или
+    /// минута с суффиксом 12) — её решает `meeting_id` манифеста.
+    func testMeetingsKeepCollisionSuffixAndTrustTheManifest() throws {
+        let graph = try makeGraph { root in
+            try self.put(root, "Встречи/2026-07-21_125812.md")
+            try self.put(root, "Встречи/2026-07-21_125812-1.md")
+            try self.put(root, "Встречи-архив/2026-07-21 12-58-12 — Первая/Минутки.md")
+            try self.put(root, "Встречи-архив/2026-07-21 12-58-12-1 — Вторая/Минутки.md")
+            try self.put(root, "Встречи/2026-07-21_100012.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00-12 — Двенадцатая/Минутки.md")
+            try self.put(root, "Встречи-архив/2026-07-21 10-00-12 — Двенадцатая/meeting.meta.json",
+                         #"{"meeting_id": "2026-07-21_1000-12"}"#)
+        }
+        XCTAssertEqual(GraphInventoryService.scan(graph: graph).meetings, 4)
+        XCTAssertNotEqual(GraphInventoryService.meetingIdentity("2026-07-21_125812-1.md"),
+                          GraphInventoryService.meetingIdentity("2026-07-21_125812.md"))
+        XCTAssertEqual(GraphInventoryService.meetingIdentity("2026-07-21 12-58-12-1 — Вторая"),
+                       "2026-07-21_125812-1")
+    }
+
+    func testMeetingsLabelNamesTheGraph() {
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(1),
+                       L.t("1 встреча в графе", "1 meeting in the graph", "1 场图谱中的会议"))
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(2),
+                       L.t("2 встречи в графе", "2 meetings in the graph", "2 场图谱中的会议"))
+        XCTAssertEqual(MemoryScreenPolicy.meetingsLabel(11),
+                       L.t("11 встреч в графе", "11 meetings in the graph", "11 场图谱中的会议"))
+    }
+
     func testCoreStatusIgnoresBodyRuleLines() throws {
         let graph = try makeGraph { root in
             try self.put(root, "Ядра/Тема.md", "# Тема\n\n---\n\nстатус после линейки")
