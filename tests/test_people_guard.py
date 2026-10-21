@@ -75,6 +75,18 @@ def test_commit_all_is_judged_by_its_temporary_index(repo):
     assert p.returncode != 0 and "README.md:2" in p.stderr and repo.head() == before, p.stderr
 
 
+@pytest.mark.parametrize("staged, on_disk, refused", [("чисто", FAKE, False), (FAKE, "чисто", True)])
+def test_pre_commit_judges_the_index_not_the_disk(repo, staged, on_disk, refused):
+    """Имя только в незастейдженной правке не коммитится — проход; имя в индексе
+    при чистом диске — отказ (№605 out9 DS M1: замена `git show :f` чтением диска)."""
+    env = _owner_env(repo)
+    _people(repo, FAKE)
+    _stage(repo, "docs/note.md", f"начало\n{staged}\n")
+    repo.write("docs/note.md", f"начало\n{on_disk}\n")
+    p = guard_run(repo.work, env=env)
+    assert (p.returncode == 1 and "docs/note.md:2" in p.stderr) if refused else p.returncode == 0, p.stderr
+
+
 def test_name_in_a_file_path_hides_the_path(repo):
     env = _owner_env(repo)
     _people(repo, FAKE)
