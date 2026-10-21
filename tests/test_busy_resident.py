@@ -90,6 +90,8 @@ MSK = dt.timezone(dt.timedelta(hours=3))
 @pytest.mark.parametrize("expires, words", [
     ("2026-10-21T17:39:24.402754+03:00", "до 17:39"),
     ("2026-10-21T14:39:24Z", "до 17:39"),           # UTC → местное
+    ("2026-10-21T17:39:24.402754123+03:00", "до 17:39"),  # Go: девять знаков дроби
+    ("9999-12-31T23:59:59-12:00", ""),               # за краем datetime — OverflowError
     ("2026-10-22T09:15:00+03:00", "до 22.10 09:15"),  # другой день — с датой
     ("2318-02-01T00:00:00+03:00", "без срока"),       # keep_alive -1: год далеко вперёд
     ("не дата", ""),
@@ -122,6 +124,18 @@ def test_floor_on_small_machine(tmp_path, monkeypatch):
         assert len(busy) == 1 and "при пороге 8,0 ГБ)" in busy[0]
 
 
+def test_half_memory_floor_on_8gb(tmp_path, monkeypatch):
+    """8 ГиБ: пол не выше половины памяти (4,3 ГБ) — модель 7 ГБ там уже своп, 4b (3,1 ГБ) — нет."""
+    monkeypatch.setattr(busy_signals, "_physical_bytes", lambda: 8 * 2**30)
+    with _fake_ollama(body={"models": [_model("qwen:7b", 7 * GB)]}) as url:
+        _config(tmp_path, url)
+        busy = busy_signals.machine_busy(tmp_path)
+        assert len(busy) == 1 and "при пороге 4,3 ГБ)" in busy[0]
+    with _fake_ollama(body={"models": [_model("gemma4:e4b", 3_100_000_000)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.machine_busy(tmp_path) == []
+
+
 def test_memory_size_unknown(tmp_path, monkeypatch):
     """sysconf не ответил: большая модель — «не читается», а не падение; без моделей объём не нужен."""
     monkeypatch.setattr(busy_signals, "_physical_bytes", lambda: None)
@@ -129,6 +143,9 @@ def test_memory_size_unknown(tmp_path, monkeypatch):
         _config(tmp_path, url)
         assert busy_signals.machine_busy(tmp_path) == [
             "память моделей не читается (объём памяти машины не определён)"]
+    with _fake_ollama(body={"models": [_model("bge-m3", 1_200_000_000)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.machine_busy(tmp_path) == []
     with _fake_ollama(body={"models": []}) as url:
         _config(tmp_path, url)
         assert busy_signals.machine_busy(tmp_path) == []
@@ -232,6 +249,26 @@ def test_broken_config_is_busy(tmp_path):
 
 
 def test_sensor_crash_is_busy_not_free(tmp_path, monkeypatch):
-    monkeypatch.setattr(busy_signals, "resident_busy_reason", lambda root: 1 / 0)
-    assert busy_signals.machine_busy(tmp_path) == ["память моделей не читается (ZeroDivisionError)"]
+    """Сенсор тотален: мутатор зовёт его напрямую, без обёртки `machine_busy`."""
+    monkeypatch.setattr(busy_signals, "resident_models", lambda root: 1 / 0)
+    reason = "память моделей не читается (ZeroDivisionError) — проверьте Ollama"
+    assert busy_signals.resident_busy_reason(tmp_path) == reason
+    assert busy_signals.machine_busy(tmp_path) == [reason]
     assert busy_signals.machine_busy(tmp_path, count_resident=False) == []
+
+
+def test_scalar_llm_section_is_unreadable_not_crash(tmp_path):
+    """`llm: ollama` скаляром — `llm_engine` бросает AttributeError; сенсор отвечает словами."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("llm: ollama\n", encoding="utf-8")
+    assert busy_signals.resident_busy_reason(tmp_path) == (
+        "память моделей не читается (AttributeError) — проверьте Ollama")
+
+
+def test_no_census_endpoint_is_no_signal(tmp_path, ram_64gb):
+    """404 на `/api/ps` — по адресу не Ollama (mlx_lm.server без `engine` в конфиге): сигнала нет,
+    а не вечное «занято»."""
+    with _fake_ollama(status=404, body={"error": "not found"}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.resident_models(tmp_path) == ([], None)
+        assert busy_signals.machine_busy(tmp_path) == []

@@ -140,6 +140,8 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
         with net.open_url(urllib.request.Request(url), timeout=RESIDENT_TIMEOUT_S) as r:
             body = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return [], None  # по адресу не Ollama (или Ollama без переписи) — сигнала нет
         return [], f"{url}: HTTP {e.code}"
     except urllib.error.URLError as e:
         if isinstance(e.reason, ConnectionRefusedError):
@@ -169,7 +171,7 @@ def _until_words(expires: object, now: dt.datetime | None = None) -> str:
     now = now or dt.datetime.now().astimezone()
     try:
         when = dt.datetime.fromisoformat(expires).astimezone(now.tzinfo)
-    except ValueError:
+    except (ValueError, OverflowError):
         return ""
     if when.year > now.year + 1:
         return "без срока"
@@ -185,17 +187,34 @@ def _physical_bytes() -> int | None:
 
 
 def resident_busy_reason(root: pathlib.Path) -> str | None:
-    """Слова «модели держат память» — или None, если держат меньше доли ОЗУ."""
+    """Слова «модели держат память» — или None, если держат меньше порога.
+    Не бросает: сбой сенсора — «не читается», а не «свободно» и не падение
+    вызывающего (мутатор зовёт его между мутантами напрямую)."""
+    try:
+        return _resident_busy_reason(root)
+    except Exception as e:  # noqa: BLE001 — сломанный сенсор памяти не значит «свободно»
+        return f"память моделей не читается ({type(e).__name__}) — проверьте Ollama"
+
+
+def _resident_limit(total: int) -> float:
+    """Порог занятости: доля памяти, но не ниже пола; пол — не выше половины
+    памяти (8 ГиБ: 4,3 ГБ, а не 8 — модель в 7 ГБ там уже своп)."""
+    return max(total * RESIDENT_BUSY_SHARE, min(RESIDENT_BUSY_FLOOR, total / 2))
+
+
+def _resident_busy_reason(root: pathlib.Path) -> str | None:
     models, problem = resident_models(root)
     if problem:
         return f"память моделей не читается ({problem}) — проверьте Ollama"
-    held = sum(size for _, size, _ in models)
-    if held < RESIDENT_BUSY_FLOOR:
+    if not models:
         return None
+    held = sum(size for _, size, _ in models)
     total = _physical_bytes()
     if total is None:
+        if held < RESIDENT_BUSY_FLOOR:
+            return None
         return "память моделей не читается (объём памяти машины не определён)"
-    limit = max(total * RESIDENT_BUSY_SHARE, RESIDENT_BUSY_FLOOR)
+    limit = _resident_limit(total)
     if held < limit:
         return None
     gb = lambda n: f"{n / 1e9:.1f}".replace(".", ",")  # noqa: E731
@@ -230,13 +249,8 @@ def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,
     night = night_busy_reason(root)
     if night:
         busy.append(night)
-    if count_resident:
-        try:
-            resident = resident_busy_reason(root)
-        except Exception as e:  # noqa: BLE001 — сломанный сенсор памяти не роняет агрегат и не значит «свободно»
-            resident = f"память моделей не читается ({type(e).__name__})"
-        if resident:
-            busy.append(resident)
+    if count_resident and (resident := resident_busy_reason(root)):
+        busy.append(resident)
     if count_mutation and mutation_running(root):
         busy.append("мутация тестов")
     return busy

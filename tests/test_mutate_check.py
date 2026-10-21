@@ -1490,29 +1490,48 @@ def test_бюджет_хватает_на_базу_и_k_мутантов(tmp_pat
 def test_модель_в_памяти_прерывает_между_мутантами(tmp_path, monkeypatch, capsys, force):
     """Модель встречи заняла память посреди прогона (№595) — прерываемся между
     мутантами, как при записи и ночи; Ollama спрашиваем не чаще RESIDENT_POLL_S.
-    Мутанты по 30 с: первый опрос — после второго мутанта (60 с с начала цикла).
-    `--force` снимает и этот гвард."""
+    Мутанты по 30 с, опрос раз в 60 с: на 1-м, 3-м и 5-м мутанте. Первые два
+    опроса — свободно, третий — занято: четыре мутанта проверены, причина в
+    отчёте словами сенсора. `--force` снимает и этот гвард."""
     import busy_signals
     import exit_codes
-    plan = _мутанты("scripts/mutate_check.py", 5)
+    monkeypatch.setattr(mc, "RESIDENT_POLL_S", 60.0)
+    plan = _мутанты("scripts/mutate_check.py", 6)
     журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 30})
     опросы = []
 
-    def занято(root):
+    def сенсор(root):
         опросы.append(root)
-        return "локальные модели держат память (qwen 22,5 ГБ)"
-    monkeypatch.setattr(busy_signals, "resident_busy_reason", занято)
+        return "локальные модели держат память (qwen 22,5 ГБ)" if len(опросы) == 3 else None
+    monkeypatch.setattr(busy_signals, "resident_busy_reason", сенсор)
     отчёт = tmp_path / "отчёт.txt"
     argv = ["mutate_check.py", "--range", "HEAD", "--timeout", "100",
             "--report", str(отчёт)] + (["--force"] if force else [])
     if force:
         assert mc.main(argv) == 0
-        assert len(журнал) == 1 + 5 and опросы == [], (журнал, опросы)
+        assert len(журнал) == 1 + 6 and опросы == [], (журнал, опросы)
         return
     assert mc.main(argv) == exit_codes.EXIT_PARTIAL
-    assert len(журнал) == 1 + 2 and len(опросы) == 1, (журнал, опросы)
-    assert "⏹ модели в памяти — прерываюсь (2/5" in capsys.readouterr().out
-    assert "(остановка: модели в памяти)" in отчёт.read_text(encoding="utf-8")
+    assert len(журнал) == 1 + 4 and len(опросы) == 3, (журнал, опросы)
+    причина = "модели в памяти: локальные модели держат память (qwen 22,5 ГБ)"
+    assert f"⏹ {причина} — прерываюсь (4/6" in capsys.readouterr().out
+    assert f"(остановка: {причина})" in отчёт.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("сигнал, причина", [("live_recording", "живая встреча"),
+                                             ("night_running", "ночной цикл")])
+def test_запись_и_ночь_раньше_моделей_в_памяти(tmp_path, monkeypatch, capsys, сигнал, причина):
+    """Идёт встреча или ночь — причина прерывания она, Ollama не спрашиваем."""
+    import busy_signals
+    plan = _мутанты("scripts/mutate_check.py", 2)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 30})
+    опросы = []
+    monkeypatch.setattr(busy_signals, "resident_busy_reason",
+                        lambda root: опросы.append(root) or "модели держат память")
+    monkeypatch.setattr(busy_signals, сигнал, lambda root: True)
+    mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100"])
+    assert f"⏹ {причина} — прерываюсь (0/2" in capsys.readouterr().out
+    assert опросы == []
 
 
 def test_оценка_мутанта_это_замер_его_набора(tmp_path, monkeypatch):

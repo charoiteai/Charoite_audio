@@ -1908,7 +1908,8 @@ def main(argv: list[str]) -> int:
             facts.broken, facts.broken_rc = reason, 2
             save(reason)
             return 2
-        resident_checked = clock()
+        # первый опрос — на первом мутанте: стартовый `machine_busy` был до базы
+        resident_checked = clock() - RESIDENT_POLL_S
         for i, mut in enumerate([] if aborted else todo, 1):
             suite = suite_key(work, mut.path)
             # Бюджет — вне гварда занятости: `--force` идёт поверх встречи, но
@@ -1928,11 +1929,12 @@ def main(argv: list[str]) -> int:
                 elif busy_signals.night_running(data_root):
                     aborted = "ночной цикл"
                 # Модель встречи заняла память (№595): тесты мутантов поверх
-                # неё — своп. Опрос Ollama — не чаще раза в минуту.
+                # неё — своп. Запись и ночь — на каждом мутанте, опрос Ollama —
+                # не чаще раза в минуту.
                 elif clock() - resident_checked >= RESIDENT_POLL_S:
                     resident_checked = clock()
-                    if busy_signals.resident_busy_reason(data_root):
-                        aborted = "модели в памяти"
+                    if reason := busy_signals.resident_busy_reason(data_root):
+                        aborted = f"модели в памяти: {reason}"
             if aborted:
                 print(f"⏹ {aborted} — прерываюсь ({facts.tested}/{len(plan)} "
                       "проверено, остальное не судилось)")
