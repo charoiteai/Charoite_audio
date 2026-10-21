@@ -67,10 +67,12 @@ final class GraphInventoryService: ObservableObject {
     /// минуты, «-N» — встреча-коллизия той же секунды, обе отдельные (круги
     /// out1–out2). Ключ берётся существующими правилами, а не своим разбором:
     /// заметка — `MemoryScreenPolicy.stamp(of:)`, архивная папка — `meeting_id`
-    /// манифеста (как `meeting_archive._folders_for`), имя папки
-    /// «ГГГГ-ММ-ДД ЧЧ-ММ[-СС][-N] — тема» (`archive_time`) — только без
-    /// манифеста. Цифры темы («Бюджет 2027») в ключ не попадают. Запись без
-    /// ключа — одна встреча.
+    /// манифеста через тот же `stamp(of:)` (префикс: «…_084531_live» →
+    /// «…_084531»; Python `_folders_for` тем же полем только проверяет
+    /// владение, и строго), имя папки «ГГГГ-ММ-ДД ЧЧ-ММ[-СС][-N] — тема»
+    /// (`archive_time`) — когда манифеста нет, он битый или id без штампа.
+    /// Цифры темы («Бюджет 2027») в ключ не попадают. Запись без ключа — одна
+    /// встреча.
     nonisolated static func meetingIdentity(_ name: String) -> String? {
         if let key = MemoryScreenPolicy.stamp(of: name) { return key }
         let ns = name as NSString
