@@ -1251,6 +1251,11 @@ rebuild; before it the draft and MCP skipped the fact check and the rebuild
 skipped the scrub). The app's minutes parser skips the service tail lines
 (`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
 `fact_check.FOOTNOTE_MARK`).
+A numeric date in the minutes is checked only as a whole token
+(`fact_check.DATE_NUM_RE`): it starts on a word boundary, so version tails
+like `v1.10` or `Python3.10` are not dates; the suffix "г" counts only right
+after a four-digit year; any horizontal space may separate day and month.
+Chains of numbers and ranges wait for one token parser, not more patterns.
 
 **Why a phone recording stopped is a value that travels with the file.** On
 07.09 one meeting arrived on the Mac as three pieces with no call in between,
