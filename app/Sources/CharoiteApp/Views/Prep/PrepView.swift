@@ -309,9 +309,20 @@ struct PrepView: View {
     }
 
     private func recomputeDebts() {
-        let open = otherOpenTasks
+        var open = otherOpenTasks
+        if nextTopic == nil { open = Self.promised(open, owner: TasksMineStale.owner) }
         debts = Debts(summary: open.isEmpty ? "" : Self.debtsSummary(open.map { ($0.text, $0.dueAnchor) }),
                       urgent: nextTopic == nil ? Self.mostUrgent(open, limit: 3) : [])
+    }
+
+    /// «Что вы обещали» — секция «Мои» экрана задач (`TasksScreenPolicy.split`),
+    /// а не все открытые графа: иначе тройку и сводку занимали чужие поручения
+    /// (№755). Своих не нашлось (имя не задано или не распознано) — прежний
+    /// список целиком: блок не пустеет из-за конфига.
+    static func promised(_ open: [TasksService.Item], owner: String) -> [TasksService.Item] {
+        let mine = TasksScreenPolicy.split(open.map { ($0.text, $0.happenedAt, $0.dueAnchor) },
+                                           owner: owner).mine
+        return mine.isEmpty ? open : mine.map { open[$0] }
     }
 
     /// «2 просрочено · 6 на этой неделе · 15 без срока» — нули не пишем.
@@ -347,10 +358,13 @@ struct PrepView: View {
                 .status(now: now, anchor: item.dueAnchor) { days = -d }
             return (bucket, days, item)
         }
-        // Третий ключ — стабильность: при равных корзинах порядок файла,
-        // а не произвол нестабильной сортировки (ревью 22.08, DeepSeek).
+        // Третий ключ — свежесть встречи: все свои без срока лежат в одной
+        // корзине, и без него тройку решал путь файла (№755). Четвёртый —
+        // стабильность: при равных — порядок файла, а не произвол нестабильной
+        // сортировки (ревью 22.08, DeepSeek).
         return ranked
-            .sorted { ($0.0, $0.1, $0.2.id) < ($1.0, $1.1, $1.2.id) }
+            .sorted { ($0.0, $0.1, -$0.2.happenedAt.timeIntervalSince1970, $0.2.id)
+                < ($1.0, $1.1, -$1.2.happenedAt.timeIntervalSince1970, $1.2.id) }
             .prefix(limit)
             .map(\.2)
     }

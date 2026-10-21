@@ -13,10 +13,10 @@ final class PrepDebtsTests: XCTestCase {
         return Calendar.current.date(from: c)!
     }
 
-    private func item(_ text: String, line: Int) -> TasksService.Item {
+    private func item(_ text: String, line: Int, on day: Date? = nil) -> TasksService.Item {
         TasksService.Item(id: "f#\(line)", file: URL(fileURLWithPath: "/tmp/f.md"), rel: "f.md",
                           lineIndex: line, text: text, done: false,
-                          fileDate: date(2026, 8, 1), sourceLine: "- [ ] \(text)")
+                          fileDate: day ?? date(2026, 8, 1), sourceLine: "- [ ] \(text)")
     }
 
     func testSummaryNamesEveryBucketAndSkipsZeros() {
@@ -40,6 +40,44 @@ final class PrepDebtsTests: XCTestCase {
         ]
         let top = PrepView.mostUrgent(items, limit: 3, now: now).map(\.lineIndex)
         XCTAssertEqual(top, [5, 4, 3], "самое давнее просроченное — первым, потом неделя")
+    }
+    // №755: «Что вы обещали» — те же «Мои», что на экране задач, а не все открытые.
+    func testPromisedKeepsOnlyTheOwnersItemsEvenOldOnes() {
+        let items = [
+            item("**Света** — рассчитать дельты", line: 1),
+            item("**Марк** — зайти в отдел", line: 2, on: date(2026, 5, 1)),
+            item("позвонить в банк", line: 3),
+            item("**Марк Ковалёв** — письмо до 01.08", line: 4),
+        ]
+        let picked = PrepView.promised(items, owner: "Марк").map(\.lineIndex)
+        XCTAssertEqual(picked, [2, 4], "чужие и без исполнителя не входят; своё давнее остаётся — свои не стареют")
+    }
+
+    func testPromisedFallsBackToBaseWhenOwnerIsUnknown() {
+        let items = [item("**Света** — дельты", line: 1), item("позвонить в банк", line: 2)]
+        XCTAssertEqual(PrepView.promised(items, owner: "").map(\.lineIndex), [1, 2],
+                       "имя не задано — список как раньше, блок не пустеет")
+        XCTAssertEqual(PrepView.promised(items, owner: "Марк").map(\.lineIndex), [1, 2],
+                       "своих не нашлось — список как раньше")
+    }
+
+    func testSummaryAndTopCountTheSameOwnedSet() {
+        let now = date(2026, 8, 4)
+        let items = [
+            item("**Света** — отчёт до 24.07", line: 1),
+            item("**Марк** — собрать цифры", line: 2),
+        ]
+        let open = PrepView.promised(items, owner: "Марк")
+        XCTAssertEqual(PrepView.debtsSummary(open.map { ($0.text, $0.dueAnchor) }, now: now), "1 без срока",
+                       "чужая просрочка не попадает в сводку «Что вы обещали»")
+        XCTAssertEqual(PrepView.mostUrgent(open, limit: 3, now: now).map(\.lineIndex), [2])
+    }
+
+    func testMostUrgentPrefersFresherMeetingsInsideOneBucket() {
+        let now = date(2026, 8, 20)
+        let items = (1...5).map { i in item("**Марк** — дело \(i)", line: i, on: date(2026, 8, i)) }
+        XCTAssertEqual(PrepView.mostUrgent(items, limit: 3, now: now).map(\.lineIndex), [5, 4, 3],
+                       "без срока — свежие встречи первыми, а не порядок файла")
     }
 }
 #endif

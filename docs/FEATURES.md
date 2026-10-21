@@ -815,7 +815,11 @@ it signals degradation, it does not break the loop.
   recording cue), "previously on this topic" — three archive hits for the
   next event's title (utility tails like "(weekly)" are trimmed), open
   action items and the last meeting's card. Everything gathers in one
-  window a minute before the call, no tour across four windows.
+  window a minute before the call, no tour across four windows. With no
+  topic to prepare, "What you promised" lists the same items as the "Mine"
+  section of Tasks (the bold assignee matches `user_name`), freshest
+  meetings first; when the name is unset or matches nothing it falls back
+  to all open items.
 - **One meeting workspace** — the macOS app now has one main window with
   Today, Meeting, Meetings, External recording, Tasks and Memory in the
   sidebar. Today follows
