@@ -1087,10 +1087,8 @@ def test_raw_objects_returns_each_object_whole(repo, monkeypatch):
         assert got[sha] == want, sha
 
 
-def test_the_guard_code_root_is_the_main_checkout():
-    """Правило меток страж берёт из основного checkout — того, что называет git
-    (`--git-common-dir`), как и хук pre-push (№605 out4)."""
-    common = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                            capture_output=True, text=True, check=True).stdout.strip()
-    assert guard.canonical_checkout() == pathlib.Path(common).resolve().parent
+def test_the_label_rule_is_a_tracked_file_of_the_product():
+    """Правило меток страж читает из ветки main по этому пути (№605 out5)."""
     assert guard.PLACEHOLDER_RULE == "src/charoite_graph/graph_names.py"
+    assert subprocess.run(["git", "-C", str(REPO), "ls-files", "--error-unmatch", guard.PLACEHOLDER_RULE],
+                          capture_output=True).returncode == 0

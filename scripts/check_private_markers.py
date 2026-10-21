@@ -22,13 +22,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import types
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -478,37 +478,23 @@ def _placeholder(name: str) -> bool:
     без скобок, целиком метка по правилу продукта; любая скобка — человек, при
     сомнении отказ: «Аристарх (Собеседник 4)», «Собеседник 4 (Аристарх Чебуреков)»,
     «Собеседник 3 (муж)» — находки (out1 I1–I2, Opus I1, opus-fix C1: разбор скобок
-    регэкспом пропускал вложенные и не последние). Грузится один файл модуля, без пакета:
-    `__init__.py` в сверку канона не входит и подменил бы правило мимо неё (out1
-    C2 DS); сам модуль импортирует только `re`. Канон сверяется при первом
-    обращении в любом режиме, не только в pre-push (out1 I1 DS)."""
+    регэкспом пропускал вложенные и не последние). Правило читается объектом ветки
+    main (`refs/heads/main:<правило>`), а не с диска: рабочая копия, ветка
+    рабочего дерева или пушимая ветка его не ослабят, и положение стража не нужно
+    (№605 out4–out5). Один файл модуля, без пакета: `__init__.py` подменил бы
+    правило (out1 C2 DS); сам модуль импортирует только `re`."""
     global _rule
     if _rule is None:
-        _placeholder_rule_is_canon()
-        rule = canonical_checkout() / PLACEHOLDER_RULE
-        spec = importlib.util.spec_from_file_location("_charoite_graph_names", rule)
+        src = git("show", f"refs/heads/main:{PLACEHOLDER_RULE}")
+        mod = types.ModuleType("_charoite_graph_names")
         try:
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            exec(compile(src, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
             is_label = mod.is_speaker_placeholder
             def _rule(stem: str) -> bool:           # скобка в имени — человек: при сомнении отказ (Opus I1, opus-fix C1)
                 return not set(stem) & set("()（）") and is_label(stem)
-        except (OSError, ImportError, AttributeError) as e:
+        except (SyntaxError, ImportError, AttributeError) as e:
             raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None
     return _rule(name)
-
-
-def _placeholder_rule_is_canon() -> None:
-    """Правило меток страж берёт из `src/` основного checkout — того же, чей страж
-    зовёт хук pre-push и сверяет с HEAD; незакоммиченная правка там выключила бы
-    источник имён мимо хука (in1 I7) — отказ. Из рабочего дерева или пушимой
-    ветки правило не берётся: ветка не ослабит гейт, через который публикуется."""
-    top = canonical_checkout()
-    rule = PLACEHOLDER_RULE
-    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
-    p = subprocess.run([*_GIT, "-C", str(top), "diff", "--quiet", "HEAD", "--", rule], capture_output=True, env=env)
-    if p.returncode != 0:
-        raise GitError(f"правило меток {rule} в {top} изменено или не читается (код {p.returncode})")
 
 
 def people_hits(records: list[tuple[str, str]]) -> list[tuple[int, int | None]]:
@@ -820,15 +806,9 @@ def hooks_dir() -> pathlib.Path:
                         .decode().strip())
 
 
-def canonical_checkout() -> pathlib.Path:
-    """Корень основного checkout — по git, не по положению файла: подъёма от
-    `__file__` в страже нет, исключения раскладки у него тоже (№605 out4)."""
-    common = git("rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()
-    return pathlib.Path(common).resolve().parent
-
-
 def canonical_guard() -> pathlib.Path:
-    return canonical_checkout() / "scripts" / "check_private_markers.py"
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()
+    return pathlib.Path(common).parent / "scripts" / "check_private_markers.py"
 
 
 def pre_push_problem() -> str | None:
@@ -1026,8 +1006,6 @@ def _run(a: argparse.Namespace) -> int:
     if a.range is not None:
         return run_commits(a.range.split(), need_list=True, identity=False, notes=[])
     if a.pre_push is not None:
-        if owner_machine():
-            _placeholder_rule_is_canon()
         push = push_revs(a.pre_push, sys.stdin.read().splitlines(), a.push_url)
         return run_commits(push.revs, need_list=True, identity=True, notes=push.notes,
                            extra=push.texts, extra_emails=push.emails)

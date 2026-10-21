@@ -49,6 +49,12 @@ def _stage(repo: Repo, name: str, text: str) -> None:
     git(repo.work, "add", "-A", env=repo.env)
 
 
+def _weaken(where: pathlib.Path) -> None:
+    rule = where / "src" / "charoite_graph" / "graph_names.py"
+    rule.write_text(rule.read_text(encoding="utf-8") + "\nis_speaker_placeholder = lambda stem: True\n",
+                    encoding="utf-8")
+
+
 def test_name_from_the_graph_blocks_the_commit_without_quoting_it(repo):
     env = _owner_env(repo)
     _people(repo, FAKE)
@@ -99,19 +105,17 @@ def test_real_name_with_a_label_in_brackets_is_a_person(repo):
     assert p.returncode == 1 and "docs/a.md:1" in p.stderr and "docs/a.md:2" not in p.stderr, p.stderr
 
 
-def test_all_refuses_an_edited_label_rule_when_it_would_drop_a_hit(repo):
-    """Правка правила меток в рабочей копии — отказ в любом режиме, где правило
-    отбрасывает находку, не только в pre-push (out1 I1 DeepSeek)."""
+def test_edited_label_rule_in_the_working_copy_does_not_drop_a_hit(repo):
+    """Правило меток — объект ветки main, а не файл на диске: правка рабочей копии
+    не отбрасывает находку ни в одном режиме (out1 I1 DeepSeek, out5)."""
     env = _owner_env(repo)
     repo.write("docs/old.md", f"{FAKE}\n")
     repo.commit("old")
     _people(repo, FAKE)
-    rule = repo.work / "src" / "charoite_graph" / "graph_names.py"
-    rule.write_text(rule.read_text(encoding="utf-8") + "\nis_speaker_placeholder = lambda stem: True\n",
-                    encoding="utf-8")
+    _weaken(repo.work)
     p = subprocess.run([sys.executable, str(repo.work / "scripts" / "check_private_markers.py"), "--all"],
                        cwd=repo.work, env=env, capture_output=True, text=True)    # страж этого checkout
-    assert p.returncode == 1 and "правило меток" in p.stderr, p.stderr
+    assert p.returncode == 1 and "docs/old.md:1" in p.stderr, p.stderr
 
 
 @pytest.mark.parametrize("named", [f"Собеседник 4 ({FAKE})", f"Собеседник 4 ({FAKE}) (Спикер 2)",
@@ -257,18 +261,61 @@ def test_all_finds_a_published_name_in_the_tree(repo):
     assert p.returncode == 1 and "docs/old.md:2" in p.stderr, p.stderr
 
 
-def test_pre_push_refuses_an_edited_label_rule_in_the_main_checkout(repo):
-    """Метки страж берёт из `src/` основного checkout: правка правила там
-    выключила бы источник мимо хука (in1 I7)."""
+def test_pre_push_ignores_an_edited_label_rule_in_the_main_checkout(repo):
+    """Правка правила в рабочей копии основного checkout не выключает имена на push
+    (in1 I7): правило берётся из ветки main."""
     env = _owner_env(repo)
-    rule = repo.work / "src" / "charoite_graph" / "graph_names.py"
-    rule.write_text(rule.read_text(encoding="utf-8") + "\nis_placeholder_node = lambda stem: True\n",
-                    encoding="utf-8")
+    _people(repo, FAKE)
+    _weaken(repo.work)
     wt = repo.worktree("feat")
-    repo.write("n.md", "чисто\n", wt)
-    repo.commit("ok", wt)
+    repo.write("n.md", f"{FAKE}\n", wt)
+    repo.commit("leak", wt)
     p = git(wt, "push", "origin", "feat", env=env, check=False)
-    assert p.returncode != 0 and "правило меток" in p.stderr, p.stderr
+    assert p.returncode != 0 and "имя человека из графа" in p.stderr, p.stderr
+
+
+def test_rule_of_a_worktree_branch_is_never_used(repo):
+    """Ветка в рабочем дереве закоммитила правило «всё — метка»: `--all` и push оттуда
+    судят правилом main основного checkout (out5 DS I1)."""
+    env = _owner_env(repo)
+    _people(repo, FAKE)
+    wt = repo.worktree("feat")
+    _weaken(wt)
+    repo.write("docs/n.md", f"{FAKE}\n", wt)
+    repo.commit("leak", wt)
+    p = guard_run(wt, "--all", env=env)
+    assert p.returncode == 1 and "docs/n.md:1" in p.stderr, p.stderr
+    p = git(wt, "push", "origin", "feat", env=env, check=False)
+    assert p.returncode != 0 and "имя человека из графа" in p.stderr, p.stderr
+
+
+def test_main_checkout_on_a_weak_branch_still_judges_by_main(repo):
+    """Основной checkout на ветке с ослабленным правилом: судит правило ветки main
+    (out5 Sonnet I1)."""
+    env = _owner_env(repo)
+    _people(repo, FAKE)
+    repo.write("docs/n.md", f"{FAKE}\n")
+    repo.commit("old")
+    git(repo.work, "switch", "-q", "-c", "weak", env=repo.env)
+    _weaken(repo.work)
+    repo.commit("weak rule")
+    p = guard_run(repo.work, "--all", env=env)
+    assert p.returncode == 1 and "docs/n.md:1" in p.stderr, p.stderr
+
+
+def test_no_label_rule_in_main_is_a_refusal(repo):
+    """Правила нет в ветке main (убрано из git, файл на диске остался) — отказ, не
+    правило с диска (out5 Haiku F1)."""
+    env = _owner_env(repo)
+    _people(repo, FAKE)
+    repo.write("docs/n.md", f"{FAKE}\n")
+    repo.commit("old")
+    git(repo.work, "rm", "-q", "--cached", "src/charoite_graph/graph_names.py", env=repo.env)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "commit", "-q", "-m", "rule out of git",
+        env=repo.env)
+    _weaken(repo.work)
+    p = guard_run(repo.work, "--all", env=env)
+    assert p.returncode == 1 and "страж не смог проверить" in p.stderr and "docs/n.md" not in p.stderr, p.stderr
 
 
 def test_pre_push_hides_a_branch_name_with_a_person(repo):
