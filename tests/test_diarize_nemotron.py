@@ -903,6 +903,18 @@ def test_engine_state_says_the_installer_env_is_outdated_without_touching_ready(
     monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.6")
     assert nem.engine_state(tmp_path, {})["outdated"] is None
     assert nem.engine_state(tmp_path / "пусто", {})["outdated"] is None   # окружения нет — это `missing`
+    # Версия неизвестна (второй дистрибутив) — не повод звать переустановку (out1 S I1).
+    _dist(tmp_path, "0.5.6", folder="mlx_audio-0.5.6-копия")
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
+    assert nem.engine_mlx_audio(tmp_path) is None and nem.engine_state(tmp_path, {})["outdated"] is None
+
+
+def test_the_env_version_survives_a_python3_symlink(tmp_path):
+    """`lib/python3` → `python3.12` — один каталог, а не два дистрибутива (out1 DS M4)."""
+    _dist(tmp_path, "0.5.9")
+    lib = nem.engine_dir(tmp_path) / "python" / "lib"
+    (lib / "python3").symlink_to("python3.12")
+    assert nem.engine_mlx_audio(tmp_path) == "0.5.9"
 
 
 def test_engine_state_missing_names_what_is_lacking(tmp_path):

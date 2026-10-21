@@ -13,7 +13,7 @@ enum NemotronActionKind: Equatable {
 enum NemotronDecision: Equatable {
     /// Все условия выполнены — условная запись ключа ещё не делалась.
     case attemptWrite
-    /// Ключ записан.
+    /// Ключ записан (или уже стоял: переустановка включённого движка).
     case written(String)
     /// Ключ не пишется; `offerEnable` — показать «Включить», `offerReinstall` —
     /// «Переставить» (после неудачной пробы, если план разрешает установку).
@@ -43,6 +43,12 @@ enum NemotronDecision: Equatable {
                           "the config changed while this was running — the engine is installed but not enabled",
                           "运行期间配置已被修改——引擎已安装但未启用")
         if r1 != r0 { return .stop(changed, offerEnable: true, offerReinstall: false) }
+        // «Переставить» у включённого движка (окружение не совпадает с продуктом, №758): ключ уже
+        // `nemotron`, писать нечего, а `enable` у такого плана запрещён по праву —
+        // зелёный установщик и есть успех, а не «включать нечего».
+        if kind == .install, r1?.trimmingCharacters(in: .whitespaces).lowercased() == "nemotron" {
+            return .written(L.t("Nemotron переставлен", "Nemotron is reinstalled", "Nemotron 已重新安装"))
+        }
         if !enableAllowed { return .stop(enableReason, offerEnable: false, offerReinstall: false) }
         switch cas {
         case nil:

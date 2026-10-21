@@ -112,6 +112,16 @@ final class NemotronPlanTests: XCTestCase {
         XCTAssertNotEqual(v.warnings.first, "engine_outdated")
         let fresh = visible(.ready(Self.plan("not_installed", install: true)))
         XCTAssertEqual(fresh.install?.title, NemotronVisibleActions.installTitle)
+        // sherpa выбран, движок готов: «Включить» и установка рядом (out1 S I2 = DS I2).
+        let off = visible(.ready(Self.plan("ready_off", install: true, enable: true, warnings: ["engine_outdated"])))
+        XCTAssertEqual(off.install?.title, NemotronVisibleActions.installTitle)
+        XCTAssertNotNil(off.enable)
+        // Установка запрещена (диск): выключенная «Переставить» с причиной, а не одно предупреждение.
+        let disk = visible(.ready(Self.plan("enabled", disable: true, warnings: ["engine_outdated"])))
+        XCTAssertEqual(disk.install, .init(title: NemotronVisibleActions.reinstallTitle, enabled: false,
+                                           note: "нельзя поставить"))
+        let quiet = visible(.ready(Self.plan("enabled", disable: true)))
+        XCTAssertNil(quiet.install)
     }
 
     func testУстановкаСБлокомСогласия() {

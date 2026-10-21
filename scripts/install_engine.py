@@ -667,7 +667,7 @@ def offer(machine: dict, engine: dict, disk: dict, memory: dict, sizes: dict) ->
     backend = engine["backend"]
     ready = engine["ready"]
     custom = engine["nemotron_python_set"]
-    # Своё окружение установщика отстало от лока: переустановка разрешена и у
+    # Своё окружение установщика не совпадает с локом: переустановка разрешена и у
     # включённого движка, «Включить» не запрещается — версию судит проба (№758).
     # `.get`: план из старого `engine_state` поля не несёт.
     outdated = bool(engine.get("outdated")) and not custom
@@ -821,6 +821,9 @@ def check(name: str, root: pathlib.Path) -> int:
     if state["interpreter_reason"]:   # ключ пуст и окружения установщика нет
         print(f"окружения движка нет: {spec.home(root)} — {diarize_nemotron.install_command(root)}")
         return 1
+    if setting.strip() and state["missing"] == "interpreter":   # файла ключа нет или он не исполняемый (out1 S M2)
+        print(f"{state['ready_reason']} — проверьте ключ sufler.nemotron_python")
+        return 1
     python = state["interpreter"]
     out = spec.probe(setting, root=root)
     if not out.ok:
@@ -828,16 +831,18 @@ def check(name: str, root: pathlib.Path) -> int:
         return 1
     installed = out.payload["mlx_audio"]
     print(f"движок {name} на месте: {python}, mlx-audio {installed}, веса {spec.weights(root)}")
-    # Другая ветка mlx-audio уже отказ пробы (`availability` → `version_verdict`). Дрейф
-    # патча — предупреждение с кодом 0: пересборка на нём идёт, выход 0.5.6/0.5.8/0.5.9
-    # совпал 6/6 (№756). Совет — по тому, чей интерпретатор: ключ установщик не обновит.
+    # Другая ветка mlx-audio уже отказ пробы (`availability` → `version_verdict`), отказ
+    # вердикта здесь — тот же отказ, код 1 (out1 DS M5). Дрейф патча в любую сторону —
+    # предупреждение с кодом 0: пересборка на нём идёт, выход 0.5.6/0.5.8/0.5.9 совпал
+    # 6/6 (№756); переустановка ставит ровно пин лока, поэтому «не совпадает», а не
+    # «устарело» (out1 H I-4). Совет — по тому, чей интерпретатор: ключ установщик не обновит.
     recipe = (f"обновите mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION} в окружении ключа "
               "sufler.nemotron_python" if setting.strip()
               else f"переставьте: {diarize_nemotron.install_command(root)}")
     refusal, warning = diarize_nemotron.version_verdict(installed, recipe=recipe)
     if refusal or warning:
-        print(f"окружение устарело: {refusal or warning}")
-    return 0
+        print(f"окружение не совпадает с продуктом: {refusal or warning}")
+    return 1 if refusal else 0
 
 
 # Ключи, которые пишет кнопка Nemotron, и их значения (`verify_config_edit`).

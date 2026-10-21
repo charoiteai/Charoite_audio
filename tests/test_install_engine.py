@@ -338,17 +338,17 @@ def _check_with(tmp_path, monkeypatch, version, *, key=None, probed=None):
 
 def test_check_warns_when_the_installed_env_is_a_patch_behind(tmp_path, monkeypatch, capsys):
     """Выкат поднял MLX_AUDIO_VERSION, окружение установщика осталось на прежнем патче:
-    `--check` говорит «окружение устарело» с командой установщика, код 0 — пересборка на
+    `--check` говорит «окружение не совпадает с продуктом» с командой установщика, код 0 — пересборка на
     той же ветке идёт (`version_verdict`), выход 0.5.6/0.5.9 совпал 6/6 (№758, №756)."""
     monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
     nem.engine_python(tmp_path).parent.mkdir(parents=True)
     nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
     assert _check_with(tmp_path, monkeypatch, "0.5.6") == 0
     out = capsys.readouterr().out
-    assert "окружение устарело: mlx-audio 0.5.6: стык проверен на 0.5.9" in out
+    assert "окружение не совпадает с продуктом: mlx-audio 0.5.6: стык проверен на 0.5.9" in out
     assert f"переставьте: {nem.install_command(tmp_path)}" in out
     assert _check_with(tmp_path, monkeypatch, "0.5.9") == 0
-    assert "устарело" not in capsys.readouterr().out
+    assert "не совпадает" not in capsys.readouterr().out
 
 
 def test_check_probes_the_interpreter_of_the_key_not_the_installer_env(tmp_path, monkeypatch, capsys):
@@ -357,6 +357,9 @@ def test_check_probes_the_interpreter_of_the_key_not_the_installer_env(tmp_path,
     in1: H C3 — «окружения движка нет» и код 1 при рабочем ключе)."""
     monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
     key = tmp_path / "venv" / "bin" / "python"
+    key.parent.mkdir(parents=True)
+    key.write_text("#", encoding="utf-8")
+    key.chmod(0o755)
     probed = []
     assert _check_with(tmp_path, monkeypatch, "0.5.9", key=key, probed=probed) == 0
     assert probed == [str(key)]
@@ -364,6 +367,24 @@ def test_check_probes_the_interpreter_of_the_key_not_the_installer_env(tmp_path,
     assert _check_with(tmp_path, monkeypatch, "0.5.8", key=key) == 0
     out = capsys.readouterr().out
     assert "в окружении ключа sufler.nemotron_python" in out and "install_engine.py" not in out
+
+
+def test_check_refuses_another_branch_and_a_missing_key_file_with_code_one(tmp_path, monkeypatch, capsys):
+    """Отказ `version_verdict` (другая ветка) — код 1, а не строка при коде 0 (№758, out1
+    DS M5). Файла ключа нет — его причина одной строкой без пробы, а не «окружение есть,
+    но движку нечем работать» (out1 S M2)."""
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
+    key = tmp_path / "venv" / "bin" / "python"
+    key.parent.mkdir(parents=True)
+    key.write_text("#", encoding="utf-8")
+    key.chmod(0o755)
+    assert _check_with(tmp_path, monkeypatch, "0.4.0", key=key) == 1
+    assert "окружение не совпадает с продуктом: mlx-audio 0.4.0" in capsys.readouterr().out
+    gone = tmp_path / "нет" / "python"
+    probed = []
+    assert _check_with(tmp_path, monkeypatch, "0.5.9", key=gone, probed=probed) == 1
+    out = capsys.readouterr().out
+    assert f"нет файла интерпретатора {gone}" in out and "нечем работать" not in out and probed == []
 
 
 def test_check_without_the_key_and_the_env_names_the_installer(tmp_path, monkeypatch, capsys):

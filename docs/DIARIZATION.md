@@ -465,8 +465,8 @@ CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --pl
 
 `--check` probes the interpreter the labelling will run with: the
 `sufler.nemotron_python` set in the config or the installer's environment. Another
-mlx-audio branch fails the probe; a patch behind prints «окружение устарело» with
-advice and exits 0.
+mlx-audio branch fails the probe (exit 1); another patch prints «окружение не совпадает
+с продуктом» with advice and exits 0. A missing key file is one line and exit 1.
 
 The installer also installs the missing sherpa voice set (embedding and
 segmentation, via `scripts/get_models.py`) before the environment: the fallback
@@ -528,8 +528,8 @@ good, and the environment directory is not required — an explicit
 `nemotron_python` outranks the installed environment. Whether that interpreter has
 mlx-audio of the right version is not part of readiness: only the probe measures it,
 and the doctor runs the probe when Nemotron is chosen. Separately, `outdated`: with an
-empty key, whether the installer's environment is behind `MLX_AUDIO_VERSION` (the
-version from the distribution metadata in the environment, the verdict from
+empty key, whether the installer's environment differs from `MLX_AUDIO_VERSION` (the
+version from the distribution metadata in the environment; unknown version — `null`, the verdict from
 `version_verdict`, a reason with the installer command or `null`); it does not touch
 `ready`. It never emits a traceback: a broken or
 unreadable user config puts an `error` into `engine`, a directory or unreadable
@@ -589,14 +589,16 @@ and `config_error` (the config cannot be read; all three actions refused with
 `engine.error`). `ready_off` and `enabled` mean ready by layout — the work of the
 engine is checked by `--check`. «Install» needs a fitting machine, enough disk, an
 empty `sufler.nemotron_python`, a known `diarize_backend` and an engine that is not
-already installed and on, unless its environment is behind the app; «Enable» needs a ready engine and `sherpa` chosen;
+already installed and on, unless its environment differs from the app; «Enable» needs a ready engine and `sherpa` chosen;
 «Disable» — anything but `sherpa`. The value of `diarize_backend` in the reasons is
 shown after normalisation: lower case, no outer spaces, as the doctor shows it.
 `offer.install` is the button's policy: the command line installer reads no config
 and still installs when `sufler.nemotron_python` is set. Warnings: `memory`,
 `voice_set_missing` (`nemotron` chosen while the voice set is incomplete, so there is
-nothing to fall back to), `engine_outdated` (the installer's environment is behind the
-app version — «Reinstall»; the rebuild on the same branch goes on) and `live_nemotron` —
+nothing to fall back to), `engine_outdated` (the installer's environment differs from the
+app version — the install button shows next to «Enable» too, «Reinstall» on an enabled
+engine, a disabled button with the reason when install is refused; the rebuild on the
+same branch goes on) and `live_nemotron` —
 the button controls the diarization
 after a meeting, while the live stream has its own key, `sufler.live_nemotron`.
 

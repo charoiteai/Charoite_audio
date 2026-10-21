@@ -65,6 +65,25 @@ final class NemotronDecisionTests: XCTestCase {
         }
     }
 
+    /// «Переставить» у включённого движка: ключ уже `nemotron`, `enable` нового плана
+    /// запрещён («включать нечего»), а зелёный установщик — успех, не отказ (№758, out1 DS C1).
+    func testПереустановкаВключённогоДвижкаУспех() {
+        for r in ["nemotron", " Nemotron "] {
+            let d = NemotronDecision.decide(outcome: outcome(), kind: .install, rootChanged: false, r0: r, r1: r,
+                                            enableAllowed: false, enableReason: "в конфиге выбран не sherpa",
+                                            cas: nil)
+            guard case .written = d else { return XCTFail("\(r): \(d)") }
+            XCTAssertTrue(NemotronEngineService.outcome(of: d).success)
+        }
+        let check = NemotronDecision.decide(outcome: outcome(), kind: .check, rootChanged: false, r0: "nemotron",
+                                            r1: "nemotron", enableAllowed: false, enableReason: "нельзя", cas: nil)
+        XCTAssertEqual(check, .stop("нельзя", offerEnable: false, offerReinstall: false))
+        let failed = NemotronDecision.decide(outcome: outcome(1, stderr: "не поставлено: сеть"), kind: .install,
+                                             rootChanged: false, r0: "nemotron", r1: "nemotron",
+                                             enableAllowed: false, enableReason: "нельзя", cas: nil)
+        guard case .stop("не поставлено: сеть", _, _) = failed else { return XCTFail("\(failed)") }
+    }
+
     func testТаблицаИсходВТекст() {
         let cancelled = NemotronDecision.cancelledText
         let rows: [(String, LongProcessOutcome, String)] = [

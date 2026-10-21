@@ -99,9 +99,9 @@ struct NemotronPlan: Decodable, Equatable {
         case "voice_set_missing":
             return Self.voiceSetMissingText
         case "engine_outdated":
-            return L.t("окружение движка отстало от версии продукта — переставьте движок",
-                       "the engine environment is behind the app version — reinstall the engine",
-                       "引擎环境落后于应用版本——请重新安装引擎")
+            return L.t("окружение движка не совпадает с версией продукта — переставьте движок",
+                       "the engine environment does not match the app version — reinstall the engine",
+                       "引擎环境与应用版本不一致——请重新安装引擎")
         case "live_nemotron":
             return L.t("живой поток во время встречи включён отдельным ключом sufler.live_nemotron, эта кнопка им не управляет",
                        "the live stream during a meeting has its own key, sufler.live_nemotron; this button does not change it",
@@ -362,13 +362,16 @@ extension NemotronVisibleActions {
 
         let enableAllowed = offer.enable.allowed
         var consentShown = false
-        if offer.install.allowed && !enableAllowed {
-            // Включённый движок с отставшим окружением: установка — это переустановка (№758).
-            let title = offer.warnings.contains("engine_outdated") ? reinstallTitle : installTitle
+        // Окружение установщика не совпадает с продуктом (№758): кнопку установки видно и
+        // рядом с «Включить», а у включённого движка она — «Переставить»; запрет (диск,
+        // машина) — выключенной кнопкой с причиной, а не одним текстом предупреждения.
+        let outdated = offer.warnings.contains("engine_outdated")
+        let title = outdated && offer.state == "enabled" ? reinstallTitle : installTitle
+        if offer.install.allowed && (!enableAllowed || outdated) {
             v.install = Button(title: title, enabled: !blocked, note: blockNote)
             consentShown = true
-        } else if !offer.install.allowed && installStates.contains(offer.state) {
-            v.install = Button(title: installTitle, enabled: false, note: offer.install.reason)
+        } else if !offer.install.allowed && (installStates.contains(offer.state) || outdated) {
+            v.install = Button(title: title, enabled: false, note: offer.install.reason)
         }
         if enableAllowed {
             v.enable = Button(title: enableTitle, enabled: !blocked, note: blockNote)

@@ -191,7 +191,9 @@ def engine_mlx_audio(root: pathlib.Path) -> str | None:
     (`importlib.metadata.version`), а не имя каталога `*.dist-info`: строкой
     «0.5.10» меньше «0.5.9». Не ровно один дистрибутив (нет, два после ручного
     pip, несколько `python3.*`) — `None`: версию не сверить (№758, вход in1)."""
-    sites = [str(p) for p in (engine_dir(root) / "python" / "lib").glob("python3*/site-packages")]
+    # Один каталог дважды (симлинк `python3` → `python3.12`) дал бы два «разных»
+    # дистрибутива и ложное «не ровно один» (№758, out1 DS M4).
+    sites = sorted({str(p.resolve()) for p in (engine_dir(root) / "python" / "lib").glob("python3*/site-packages")})
     found = list(importlib.metadata.distributions(name="mlx-audio", path=sites)) if sites else []
     return found[0].version if len(found) == 1 else None
 
@@ -899,9 +901,11 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
         интерпретаторе mlx-audio нужной версии, готовность не проверяет: контракт
         модуля — «без запуска движка», и это меряет только проба, которую доктор
         зовёт при выбранном Nemotron;
-      * `outdated` — своё окружение установщика отстало от `MLX_AUDIO_VERSION`:
-        причина с командой установщика или `None`. Считается только при пустом
-        ключе и годном интерпретаторе установщика; версия — `engine_mlx_audio`,
+      * `outdated` — версия mlx-audio своего окружения установщика не совпадает
+        с `MLX_AUDIO_VERSION`: причина с командой установщика или `None`.
+        Считается только при пустом ключе, годном интерпретаторе установщика и
+        прочитанной версии (`engine_mlx_audio` не `None`): неизвестная версия
+        не повод звать переустановку, которая её не прояснит (№758, out1 S I1);
         вердикт — `version_verdict` (одна политика с пересборкой). На `ready`
         не влияет: на той же ветке пересборка идёт с предупреждением (№758);
       * `missing` — чего не хватает для готовности: `None` — готов;
@@ -937,9 +941,9 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
         missing, ready_reason = None, None
     ready = missing is None
     outdated = None
-    if not setting.strip() and missing in (None, "weights"):
-        refusal_v, warning_v = version_verdict(engine_mlx_audio(root),
-                                               recipe=f"переставьте: {install_command(root)}")
+    installed = engine_mlx_audio(root) if not setting.strip() and missing in (None, "weights") else None
+    if installed is not None:
+        refusal_v, warning_v = version_verdict(installed, recipe=f"переставьте: {install_command(root)}")
         outdated = refusal_v or warning_v
     return {
         "backend": normalize_engine_key(sufler.get("diarize_backend")),
