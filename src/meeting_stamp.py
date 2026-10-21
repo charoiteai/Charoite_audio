@@ -98,12 +98,19 @@ def now() -> str:
 
 
 def started_at(stamp: str) -> dt.datetime | None:
-    """Момент начала встречи по штампу. None — имя не наше, дальше незачем."""
+    """Момент начала встречи по штампу. None — имя не наше, дальше незачем.
+
+    Невозможная дата (`2026-02-30_1200`, имя импорта собрано из аргументов) —
+    тоже None: регексп проверяет только цифры, а вызывающие ждут None, не
+    исключение из `strptime` (№738)."""
     m = _RE.match(stamp)
     if not m:
         return None
     core = m.group(1)
-    return dt.datetime.strptime(core, FMT if len(core) == 17 else _FMT_LEGACY)
+    try:
+        return dt.datetime.strptime(core, FMT if len(core) == 17 else _FMT_LEGACY)
+    except ValueError:
+        return None
 
 
 def is_stamp(key: object) -> bool:

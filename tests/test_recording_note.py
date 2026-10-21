@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import re
 import sys
 
 import pytest
@@ -268,6 +269,8 @@ def test_mcp_minutes_take_the_speech_the_note_and_leave_a_passport(tmp_path, mon
     out = mcp_server.sufler_make_minutes()
     assert "📌 КТ: смета" not in seen["fit"] and "реплика" in seen["fit"], "в свёртку — только речь"
     assert seen["prompt"].count(NOTE) == 1 and seen["prompt"].index(NOTE) > seen["prompt"].index("[сжато: сводки частей]")
+    # дату встречи модель не пишет: её берут из штампа файла (№738)
+    assert not re.search(r"(?<!\w)(?:дат[аыу]|date)(?!\w)", seen["prompt"].replace(NOTE, ""), re.IGNORECASE)
     doc = (tdir / "2026-09-13_1200_minutes.md").read_text(encoding="utf-8")
     assert doc.count(NOTE) == 1
     meta = live_sidecar.read(f)

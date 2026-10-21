@@ -27,7 +27,7 @@ import sys
 import typing
 
 from charoite_paths import resolve_root
-from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph_key, stamp_of
+from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph_key, started_at, stamp_of
 import channel_trace
 import live_sidecar
 import meeting_source
@@ -592,10 +592,10 @@ def build_manifest(folder: pathlib.Path, stamp: str, title: str) -> dict:
             ("debrief", "Разбор.md"),
         ) if (folder / name).exists()
     }
-    started = None
-    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(?:\d{2})?", stamp)
-    if match:
-        started = f"{match.group(1)}T{match.group(2)}:{match.group(3)}:00"
+    # момент — из грамматики штампа, не своим регекспом: тот на штампе
+    # коллизии «…_120312-1» давал null (DS C3 входа №738)
+    moment = started_at(stamp)
+    started = f"{moment:%Y-%m-%dT%H:%M}:00" if moment else None
     return {
         "schema_version": 1,
         "meeting_id": stamp,
