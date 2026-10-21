@@ -385,8 +385,8 @@ grammatical case, word order, across a line break or with invisible
 characters, and answers with the record, the line and the matched name; the
 guard uses the name only for the label rule below and never prints it. A people node whose name is a bare
 diarization label ("Speaker N", by the product rule in
-`src/charoite_graph/graph_names.py`, read from the `main` branch, never from the
-working copy) is not a person; a name with any bracket is. The check fails closed: no gate, an older gate, a partly read graph or an
+`src/charoite_graph/graph_names.py`, read from the local `main` branch, never from the
+working copy; a clone without a local `main` refuses) is not a person; a name with any bracket is. The check fails closed: no gate, an older gate, a partly read graph or an
 answer that does not match the request refuses the commit or the push.
 The check is switched on by the private marker list, not by the graph:
 without the list (contributors, CI) it never runs.

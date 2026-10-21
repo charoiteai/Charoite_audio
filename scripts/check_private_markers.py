@@ -485,16 +485,39 @@ def _placeholder(name: str) -> bool:
     правило (out1 C2 DS); сам модуль импортирует только `re`."""
     global _rule
     if _rule is None:
-        src = git("show", f"refs/heads/main:{PLACEHOLDER_RULE}")
-        mod = types.ModuleType("_charoite_graph_names")
-        try:
-            exec(compile(src, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
-            is_label = mod.is_speaker_placeholder
-            def _rule(stem: str) -> bool:           # скобка в имени — человек: при сомнении отказ (Opus I1, opus-fix C1)
-                return not set(stem) & set("()（）") and is_label(stem)
-        except (SyntaxError, ImportError, AttributeError) as e:
-            raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None
+        _rule = _label_rule()
     return _rule(name)
+
+
+# Окружение, которым git выбирает чужой репозиторий: правило меток читается из
+# репозитория, где запущен страж, а не из того, на который указала переменная (out6 DS C1).
+_FOREIGN_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
+
+
+def _label_rule():
+    """Правило меток ветки main как проверенная функция; любой сбой правила —
+    `PeopleGateError`, в том числе `SystemExit` из его кода: отказ не станет проходом
+    (out6 Sonnet M1)."""
+    env = {k: v for k, v in os.environ.items() if k not in _FOREIGN_REPO_ENV}
+    p = subprocess.run([*_GIT, "show", f"refs/heads/main:{PLACEHOLDER_RULE}"], capture_output=True, env=env)
+    if p.returncode != 0:
+        raise PeopleGateError(f"нет правила меток продукта в ветке main (git show, код {p.returncode})")
+    mod = types.ModuleType("_charoite_graph_names")
+    try:
+        exec(compile(p.stdout, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
+        is_label = mod.is_speaker_placeholder
+    except (Exception, SystemExit) as e:
+        raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None
+    if not callable(is_label):
+        raise PeopleGateError("правило меток продукта не функция")
+
+    def rule(stem: str) -> bool:                    # скобка в имени — человек: при сомнении отказ (Opus I1, opus-fix C1)
+        try:
+            return not set(stem) & set("()（）") and is_label(stem) is True
+        except (Exception, SystemExit) as e:
+            raise PeopleGateError(f"правило меток продукта упало ({type(e).__name__})") from None
+    return rule
 
 
 def people_hits(records: list[tuple[str, str]]) -> list[tuple[int, int | None]]:

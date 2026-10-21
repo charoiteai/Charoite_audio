@@ -318,6 +318,37 @@ def test_no_label_rule_in_main_is_a_refusal(repo):
     assert p.returncode == 1 and "страж не смог проверить" in p.stderr and "docs/n.md" not in p.stderr, p.stderr
 
 
+@pytest.mark.parametrize("var", ["GIT_DIR", "GIT_COMMON_DIR"])
+def test_git_env_pointing_at_another_repo_does_not_pick_the_rule(repo, var):
+    """Переменная git на чужой клон с ослабленным правилом в main: правило берётся
+    из репозитория, где запущен страж (out6 DS C1)."""
+    env = _owner_env(repo)
+    _people(repo, FAKE)
+    repo.write("docs/n.md", f"{FAKE}\n")
+    repo.commit("old")
+    evil = repo.tmp / "evil"
+    git(repo.tmp, "clone", "-q", str(repo.work), str(evil), env=repo.env)
+    _weaken(evil)
+    repo.commit("weak rule", evil)
+    p = guard_run(repo.work, "--all", env={**env, var: str(evil / ".git")})
+    assert p.returncode == 1 and "docs/n.md:1" in p.stderr, p.stderr
+
+
+@pytest.mark.parametrize("body", ["raise SystemExit(0)\n", "is_speaker_placeholder = 1\n",
+                                  "def is_speaker_placeholder(stem):\n    raise SystemExit(0)\n"])
+def test_label_rule_that_breaks_is_a_refusal_not_a_pass(repo, body):
+    """Правило ветки main, которое выходит, падает или не функция, — отказ стража,
+    а не rc 0 мимо находки (out6 Sonnet M1)."""
+    env = _owner_env(repo)
+    _people(repo, FAKE)
+    rule = repo.work / "src" / "charoite_graph" / "graph_names.py"
+    rule.write_text(rule.read_text(encoding="utf-8") + "\n" + body, encoding="utf-8")
+    repo.write("docs/n.md", f"{FAKE}\n")
+    repo.commit("broken rule")
+    p = guard_run(repo.work, "--all", env=env)
+    assert p.returncode == 1 and "страж не смог проверить" in p.stderr, p.stderr
+
+
 def test_pre_push_hides_a_branch_name_with_a_person(repo):
     """Имя ссылки — запись гейта; отказ не печатает его ни строкой имени, ни
     строкой маркера (out1 C1 обеих голов)."""
