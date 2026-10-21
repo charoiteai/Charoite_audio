@@ -912,7 +912,26 @@ it signals degradation, it does not break the loop.
   and yields between mutants the moment a recording or the night starts;
   the night, in turn, waits for the mutation lock exactly like it waits
   for meeting processing, and refreshes its running status on every step
-  so a long night never turns invisible. Since 28.09 the mutation lock is
+  so a long night never turns invisible. Since №595 the vocabulary also
+  counts what the local model server holds in memory: the census of
+  `/api/ps` (address only through `privacy.llm_base_url`, this machine
+  only, read only when the data root has its own `config/config.yaml`)
+  marks the machine busy once resident models reach 1/6 of physical memory
+  (never below 8 GB or half of memory, whichever is smaller, so a 4b on a
+  16 GB Mac stays quiet and a 7 GB model on an 8 GB Mac does not) — the app's chat
+  and side stands publish no leases, yet a 32b/35b left resident pushed a
+  heavy run into 11.7 GB of swap. The reason names each model with its
+  unload time and the command that frees memory at once (`ollama stop`).
+  A server that is not listening means no models; an answer that cannot be
+  read means busy. Ollama is counted whatever the chat engine is (`mlx-server`
+  and the cloud have their own addresses, while the embedder, side stands and
+  the cloud fallback live on Ollama); a model held by `mlx-server` itself is
+  not visible here, and a server without `/api/ps` (404) gives no signal. A
+  broken config is not a passing busy state: the engine installer refuses
+  with code 1 and names the config instead of "busy, wait". Between mutants the mutator checks a recording and the
+  night every time and the resident models at most once a minute.
+  The night's own wait (`wait_for_idle`) does not count it: the night loads
+  the 35b itself. Since 28.09 the mutation lock is
   shared: several mutators may run at once (`--jobs N` shares, a second
   run beside the first), another mutator is no reason to refuse, and the
   night waits while any of them holds the lock.

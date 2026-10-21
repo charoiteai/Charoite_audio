@@ -800,6 +800,20 @@ def test_machine_fitness_is_decided_before_the_machine_being_busy(tmp_path, monk
     assert "Apple Silicon" in err and "занято" not in err
 
 
+def test_a_broken_config_is_a_refusal_not_busy(tmp_path, monkeypatch, capsys):
+    """Сломанный конфиг корня данных (раздел `llm` скаляром) — отказ кодом 1 с адресом
+    конфига, а не «занято» (12): ждать его конца нечего, повтор упрётся в тот же
+    конфиг (№595 out4, DeepSeek I1)."""
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "check_machine", lambda lock: None)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("llm: ollama\n", encoding="utf-8")
+    assert ie.main(["nemotron"]) == 1
+    err = capsys.readouterr().err
+    assert "раздел llm не словарь" in err and "почините" in err and "занято" not in err
+    assert not nem.engine_dir(tmp_path).exists()
+
+
 def test_a_free_machine_lets_the_install_proceed(tmp_path, monkeypatch):
     """Свободная машина — занятости нет, установка идёт (общий вердикт её не выдумывает)."""
     _mocked_steps(tmp_path, monkeypatch, [])
