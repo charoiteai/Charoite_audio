@@ -108,7 +108,7 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     «тихо» при резидентной 32b/35b. Три исхода, не два:
     - сигнала нет — `([], None)`: у корня нет своего `config/config.yaml` (голый
       каталог, тест, CI — без фолбэка на пример, иначе тест спросил бы живую
-      Ollama владельца), движок не Ollama, адрес не этой машины или не разрешён
+      Ollama владельца), движок mlx-server, адрес не этой машины или не разрешён
       (`/api/ps` чужого сервера о нашей памяти ничего не говорит), сервер не
       слушает (моделей нет), 404 на `/api/ps` (по адресу не Ollama);
     - модели — `([(имя, байт, срок словами)], None)`;
@@ -119,22 +119,13 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     Считается только Ollama: модель движка mlx-server живёт отдельным процессом
     без переписи и здесь не видна (долг №615).
     """
-    path = root / CONFIG_REL
-    if not path.is_file():
-        return [], None
-    try:
-        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, ValueError, yaml.YAMLError) as e:
-        return [], f"конфиг {path} не читается: {type(e).__name__}"
-    if not isinstance(cfg, dict):
-        return [], f"конфиг {path} не словарь"
-    if not isinstance(cfg.get("llm") or {}, dict):
-        return [], f"конфиг {path}: раздел llm не словарь"
-    try:
-        engine = privacy.llm_engine(cfg)
-    except privacy.PrivacyRefused as e:
-        return [], f"конфиг {path}: {e}"
-    if engine != "ollama":
+    cfg, problem = _census_config(root)
+    if problem or cfg is None:
+        return [], problem
+    # mlx-server держит модель своим процессом — переписи у него нет (долг №615).
+    # Облако — не повод молчать: без тумблера, под рубильником и в запасном пути
+    # чат сидит на Ollama по `llm_base_url` (llm.py, `chat_model_url`).
+    if privacy.llm_engine(cfg) == "mlx-server":
         return [], None
     try:
         base = privacy.llm_base_url(cfg)
@@ -168,6 +159,36 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
             return [], f"{url}: у модели нет размера"
         out.append((str(m.get("name") or "?"), size, _until_words(m.get("expires_at"))))
     return out, None
+
+
+def _census_config(root: pathlib.Path) -> tuple[dict | None, str | None]:
+    """Свой конфиг корня данных для переписи: `(cfg, None)`; нет файла — `(None, None)`;
+    сломан — `(None, причина)`: не читается, не словарь, раздел `llm` не словарь,
+    неизвестный движок. Отсутствие раздела `llm` — не поломка: умолчание Ollama."""
+    path = root / CONFIG_REL
+    if not path.is_file():
+        return None, None
+    try:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        return None, f"конфиг {path} не читается: {type(e).__name__}"
+    if not isinstance(cfg, dict):
+        return None, f"конфиг {path} не словарь"
+    llm = cfg.get("llm")
+    if llm is not None and not isinstance(llm, dict):
+        return None, f"конфиг {path}: раздел llm не словарь"
+    try:
+        privacy.llm_engine(cfg)
+    except privacy.PrivacyRefused as e:
+        return None, f"конфиг {path}: {e}"
+    return cfg, None
+
+
+def resident_config_problem(root: pathlib.Path) -> str | None:
+    """Поломка конфига, из-за которой перепись не прочесть, — или None.
+    Не переходящая занятость: ждать её конца нечего, чинить надо конфиг —
+    установщик отказывает по ней сразу, а не кодом «занято» (№595 out4)."""
+    return _census_config(root)[1]
 
 
 def _until_words(expires: object, now: dt.datetime | None = None) -> str:
@@ -211,6 +232,8 @@ def _resident_limit(total: int) -> float:
 
 
 def _resident_busy_reason(root: pathlib.Path) -> str | None:
+    if problem := resident_config_problem(root):
+        return f"память моделей не читается ({problem}) — почините {CONFIG_REL}"
     models, problem = resident_models(root)
     if problem:
         return f"память моделей не читается ({problem}) — проверьте Ollama"

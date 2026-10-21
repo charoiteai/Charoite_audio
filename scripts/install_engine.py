@@ -754,6 +754,9 @@ def install(name: str, root: pathlib.Path) -> int:
     enter_process_group()
     spec = ENGINES[name]
     check_machine(spec.lock)
+    # Сломанный конфиг — тоже детерминированный отказ: «занято» по нему не кончится
+    if problem := busy_signals.resident_config_problem(root):
+        raise Refused(f"{problem} — почините его и повторите установку")
     busy = busy_now(root)
     if busy:
         raise InstallBusy(", ".join(busy) + " — дождитесь конца и повторите установку")

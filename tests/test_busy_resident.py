@@ -263,6 +263,30 @@ def test_scalar_llm_section_is_unreadable_not_crash(tmp_path):
     (tmp_path / "config" / "config.yaml").write_text("llm: ollama\n", encoding="utf-8")
     reason = busy_signals.resident_busy_reason(tmp_path)
     assert reason.startswith("память моделей не читается (конфиг ") and "раздел llm не словарь" in reason
+    assert reason.endswith("— почините config/config.yaml"), reason
+
+
+@pytest.mark.parametrize("llm", ["[]", "false", "0", "''"])
+def test_falsy_llm_section_is_broken_not_default(tmp_path, monkeypatch, llm):
+    """`llm: []`/`false`/`0`/`''` — чат с таким конфигом не стартует (`l["model"]`), а сенсор
+    не вправе подставить умолчание 127.0.0.1:11434, которого владелец не задавал."""
+    def boom(*a, **k):
+        raise AssertionError("спросили адрес по умолчанию")
+    monkeypatch.setattr(busy_signals.net, "open_url", boom)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(f"llm: {llm}\n", encoding="utf-8")
+    assert "раздел llm не словарь" in busy_signals.resident_config_problem(tmp_path)
+    assert busy_signals.resident_models(tmp_path)[0] == []
+
+
+@pytest.mark.parametrize("extra", ["  engine: cloud\n", "  engine: cloud\nsufler:\n  cloud_engine: true\n"])
+def test_cloud_engine_still_counts_local_ollama(tmp_path, ram_64gb, extra):
+    """`engine: cloud` — не повод молчать: без тумблера, под рубильником и в запасном пути
+    чат сидит на Ollama по `llm.base_url` (№595 out4, Critical DeepSeek)."""
+    with _fake_ollama(body={"models": [_model("qwen3.6:35b-mlx", 22_493_923_824)]}) as url:
+        _config(tmp_path, url, extra)
+        busy = busy_signals.machine_busy(tmp_path)
+        assert len(busy) == 1 and busy[0].startswith("локальные модели держат память (qwen3.6:35b-mlx")
 
 
 def test_unknown_engine_is_unreadable_not_free(tmp_path, monkeypatch):

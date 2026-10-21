@@ -923,9 +923,11 @@ it signals degradation, it does not break the loop.
   heavy run into 11.7 GB of swap. The reason names each model with its
   unload time and the command that frees memory at once (`ollama stop`).
   A server that is not listening means no models; an answer that cannot be
-  read means busy. Only the Ollama engine is counted: a model held by
-  `mlx-server` is not visible here, and a server without `/api/ps` (404)
-  gives no signal. Between mutants the mutator checks a recording and the
+  read means busy. A model held by `mlx-server` is not visible here (the
+  cloud engine is still counted: without its switch or on fallback the chat
+  sits on Ollama), and a server without `/api/ps` (404) gives no signal. A
+  broken config is not a passing busy state: the engine installer refuses
+  with code 1 and names the config instead of "busy, wait". Between mutants the mutator checks a recording and the
   night every time and the resident models at most once a minute.
   The night's own wait (`wait_for_idle`) does not count it: the night loads
   the 35b itself. Since 28.09 the mutation lock is
