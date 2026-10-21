@@ -821,8 +821,10 @@ def check(name: str, root: pathlib.Path) -> int:
     if state["interpreter_reason"]:   # ключ пуст и окружения установщика нет
         print(f"окружения движка нет: {spec.home(root)} — {diarize_nemotron.install_command(root)}")
         return 1
-    if setting.strip() and state["missing"] == "interpreter":   # файла ключа нет или он не исполняемый (out1 S M2)
-        print(f"{state['ready_reason']} — проверьте ключ sufler.nemotron_python")
+    if state["missing"] == "interpreter":   # файла нет или он не исполняемый (out1 S M2, out2 S M1)
+        advice = ("проверьте ключ sufler.nemotron_python" if setting.strip()
+                  else f"переставьте: {diarize_nemotron.install_command(root)}")
+        print(f"{state['ready_reason']} — {advice}")
         return 1
     python = state["interpreter"]
     out = spec.probe(setting, root=root)

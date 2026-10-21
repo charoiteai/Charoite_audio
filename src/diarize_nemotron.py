@@ -184,17 +184,21 @@ def engine_python(root: pathlib.Path) -> pathlib.Path:
     return engine_dir(root) / "python" / "bin" / "python3"
 
 
-def engine_mlx_audio(root: pathlib.Path) -> str | None:
+def engine_mlx_audio(root: pathlib.Path) -> str | None | bool:
     """Версия mlx-audio в установленном окружении — по раскладке, без запуска.
 
     Источник — поле `Version:` метаданных дистрибутива, как у пробы
     (`importlib.metadata.version`), а не имя каталога `*.dist-info`: строкой
     «0.5.10» меньше «0.5.9». Не ровно один дистрибутив (нет, два после ручного
-    pip, несколько `python3.*`) — `None`: версию не сверить (№758, вход in1)."""
+    pip, несколько `python3.*`) — `None`: версию не сверить (№758, вход in1).
+    Каталог site-packages есть, а дистрибутива нет — `False`: пакет не поставлен
+    или без метаданных, проба на нём откажет так же (out2 DS M5)."""
     # Один каталог дважды (симлинк `python3` → `python3.12`) дал бы два «разных»
     # дистрибутива и ложное «не ровно один» (№758, out1 DS M4).
     sites = sorted({str(p.resolve()) for p in (engine_dir(root) / "python" / "lib").glob("python3*/site-packages")})
     found = list(importlib.metadata.distributions(name="mlx-audio", path=sites)) if sites else []
+    if sites and not found:
+        return False
     return found[0].version if len(found) == 1 else None
 
 
@@ -942,8 +946,8 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
     ready = missing is None
     outdated = None
     installed = engine_mlx_audio(root) if not setting.strip() and missing in (None, "weights") else None
-    if installed is not None:
-        refusal_v, warning_v = version_verdict(installed, recipe=f"переставьте: {install_command(root)}")
+    if installed is not None:   # `False` — дистрибутива нет: вердикт «без метаданных»
+        refusal_v, warning_v = version_verdict(installed or None, recipe=f"переставьте: {install_command(root)}")
         outdated = refusal_v or warning_v
     return {
         "backend": normalize_engine_key(sufler.get("diarize_backend")),

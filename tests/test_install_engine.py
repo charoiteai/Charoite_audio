@@ -317,6 +317,7 @@ def test_check_reports_without_the_network(tmp_path, monkeypatch, capsys):
     assert "окружения движка нет" in capsys.readouterr().out and probe == []
     nem.engine_python(tmp_path).parent.mkdir(parents=True)
     nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
+    nem.engine_python(tmp_path).chmod(0o755)   # окружение установщика исполняемое, как в бою
     assert ie.check("nemotron", tmp_path) == 0
     assert "mlx-audio 0.5.6" in capsys.readouterr().out and probe == [("", tmp_path)]
 
@@ -343,6 +344,7 @@ def test_check_warns_when_the_installed_env_is_a_patch_behind(tmp_path, monkeypa
     monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
     nem.engine_python(tmp_path).parent.mkdir(parents=True)
     nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
+    nem.engine_python(tmp_path).chmod(0o755)   # окружение установщика исполняемое, как в бою
     assert _check_with(tmp_path, monkeypatch, "0.5.6") == 0
     out = capsys.readouterr().out
     assert "окружение не совпадает с продуктом: mlx-audio 0.5.6: стык проверен на 0.5.9" in out
@@ -380,6 +382,14 @@ def test_check_refuses_another_branch_and_a_missing_key_file_with_code_one(tmp_p
     key.chmod(0o755)
     assert _check_with(tmp_path, monkeypatch, "0.4.0", key=key) == 1
     assert "окружение не совпадает с продуктом: mlx-audio 0.4.0" in capsys.readouterr().out
+    # Ключ пуст, python установщика без бита исполнения — та же строка, совет — установщик (out2 S M1).
+    other = tmp_path / "пустой"
+    nem.engine_python(other).parent.mkdir(parents=True)
+    nem.engine_python(other).write_text("#", encoding="utf-8")
+    probed = []
+    assert _check_with(other, monkeypatch, "0.5.9", probed=probed) == 1
+    out = capsys.readouterr().out
+    assert "не исполняемый файл" in out and nem.install_command(other) in out and probed == []
     gone = tmp_path / "нет" / "python"
     probed = []
     assert _check_with(tmp_path, monkeypatch, "0.5.9", key=gone, probed=probed) == 1
@@ -496,6 +506,7 @@ def test_check_says_when_the_env_is_there_but_the_engine_cannot_work(tmp_path, m
     monkeypatch.setitem(ie.ENGINES, "nemotron", spec)
     nem.engine_python(tmp_path).parent.mkdir(parents=True)
     nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
+    nem.engine_python(tmp_path).chmod(0o755)   # окружение установщика исполняемое, как в бою
     assert ie.check("nemotron", tmp_path) == 1
     assert "движку нечем работать (unavailable): нет каталога весов" in capsys.readouterr().out
 

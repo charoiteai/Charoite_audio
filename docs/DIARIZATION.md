@@ -466,7 +466,7 @@ CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --pl
 `--check` probes the interpreter the labelling will run with: the
 `sufler.nemotron_python` set in the config or the installer's environment. Another
 mlx-audio branch fails the probe (exit 1); another patch prints «окружение не совпадает
-с продуктом» with advice and exits 0. A missing key file is one line and exit 1.
+с продуктом» with advice and exits 0. A missing or non-executable interpreter is one line and exit 1.
 
 The installer also installs the missing sherpa voice set (embedding and
 segmentation, via `scripts/get_models.py`) before the environment: the fallback
@@ -529,7 +529,8 @@ good, and the environment directory is not required — an explicit
 mlx-audio of the right version is not part of readiness: only the probe measures it,
 and the doctor runs the probe when Nemotron is chosen. Separately, `outdated`: with an
 empty key, whether the installer's environment differs from `MLX_AUDIO_VERSION` (the
-version from the distribution metadata in the environment; unknown version — `null`, the verdict from
+version from the distribution metadata in the environment; several distributions — `null`,
+none at all — the «no metadata» verdict, the verdict from
 `version_verdict`, a reason with the installer command or `null`); it does not touch
 `ready`. It never emits a traceback: a broken or
 unreadable user config puts an `error` into `engine`, a directory or unreadable
@@ -596,8 +597,8 @@ shown after normalisation: lower case, no outer spaces, as the doctor shows it.
 and still installs when `sufler.nemotron_python` is set. Warnings: `memory`,
 `voice_set_missing` (`nemotron` chosen while the voice set is incomplete, so there is
 nothing to fall back to), `engine_outdated` (the installer's environment differs from the
-app version — the install button shows next to «Enable» too, «Reinstall» on an enabled
-engine, a disabled button with the reason when install is refused; the rebuild on the
+app version — the install button shows next to «Enable» too, «Reinstall» when
+`diarize_backend` is already `nemotron` (the success line is then «Nemotron is installed»), a disabled button with the reason when install is refused; the rebuild on the
 same branch goes on) and `live_nemotron` —
 the button controls the diarization
 after a meeting, while the live stream has its own key, `sufler.live_nemotron`.

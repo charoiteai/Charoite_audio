@@ -250,6 +250,8 @@ extension NemotronVisibleActions {
 
     /// Состояния, где установка осмысленна, даже если сейчас запрещена.
     private static let installStates: Set<String> = ["not_installed", "broken", "enabled_broken"]
+    /// Состояния, где ключ уже `nemotron`: установка ключ не пишет — это переустановка (out2 H I1).
+    private static let keyOnStates: Set<String> = ["enabled", "enabled_broken"]
 
     private static func mb(_ v: Double) -> String {
         "\(Int(v.rounded())) " + L.t("МБ", "MB", "MB")
@@ -366,7 +368,7 @@ extension NemotronVisibleActions {
         // рядом с «Включить», а у включённого движка она — «Переставить»; запрет (диск,
         // машина) — выключенной кнопкой с причиной, а не одним текстом предупреждения.
         let outdated = offer.warnings.contains("engine_outdated")
-        let title = outdated && offer.state == "enabled" ? reinstallTitle : installTitle
+        let title = outdated && keyOnStates.contains(offer.state) ? reinstallTitle : installTitle
         if offer.install.allowed && (!enableAllowed || outdated) {
             v.install = Button(title: title, enabled: !blocked, note: blockNote)
             consentShown = true
@@ -380,7 +382,8 @@ extension NemotronVisibleActions {
             v.disable = Button(title: disableTitle, enabled: !busy && !configError,
                                note: busy ? EngineInstallActivity.busyText : nil)
         }
-        if case .outcome(let o) = action, o.offerReinstall, offer.install.allowed {
+        // Одна кнопка на действие установки: при видимой установке вторая не нужна (out2 DS M2).
+        if case .outcome(let o) = action, o.offerReinstall, offer.install.allowed, v.install == nil {
             v.reinstall = Button(title: reinstallTitle, enabled: !blocked, note: blockNote)
             consentShown = true
         }

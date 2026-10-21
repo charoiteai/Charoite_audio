@@ -122,6 +122,17 @@ final class NemotronPlanTests: XCTestCase {
                                            note: "нельзя поставить"))
         let quiet = visible(.ready(Self.plan("enabled", disable: true)))
         XCTAssertNil(quiet.install)
+        // Ключ уже `nemotron`, веса битые — тоже переустановка (out2 H I1).
+        let broken = visible(.ready(Self.plan("enabled_broken", install: true, disable: true,
+                                              warnings: ["engine_outdated"])))
+        XCTAssertEqual(broken.install?.title, NemotronVisibleActions.reinstallTitle)
+        // Неудачная проба рядом с видимой установкой — одна кнопка, а не две (out2 DS M2).
+        let failed = NemotronEngineService.Action.outcome(.init(text: "проба не прошла", success: false,
+                                                                offerReinstall: true))
+        let one = visible(.ready(Self.plan("ready_off", install: true, enable: true, warnings: ["engine_outdated"])),
+                          action: failed)
+        XCTAssertNotNil(one.install)
+        XCTAssertNil(one.reinstall)
     }
 
     func testУстановкаСБлокомСогласия() {

@@ -72,9 +72,23 @@ final class NemotronDecisionTests: XCTestCase {
             let d = NemotronDecision.decide(outcome: outcome(), kind: .install, rootChanged: false, r0: r, r1: r,
                                             enableAllowed: false, enableReason: "в конфиге выбран не sherpa",
                                             cas: nil)
-            guard case .written = d else { return XCTFail("\(r): \(d)") }
+            XCTAssertEqual(d, .written(NemotronDecision.installedText), r)
             XCTAssertTrue(NemotronEngineService.outcome(of: d).success)
         }
+        // Отмена в окне фиксации замены: окружение поставлено, ключ и так `nemotron` —
+        // успех, а не липкое «поставлено, не включено» без кнопки «Включить» (out2 DS M4).
+        let late = NemotronDecision.decide(outcome: outcome(cancel: true), kind: .install, rootChanged: false,
+                                           r0: "nemotron", r1: "nemotron", enableAllowed: false,
+                                           enableReason: "нельзя", cas: nil)
+        XCTAssertEqual(late, .written(NemotronDecision.installedText))
+        let lateSherpa = NemotronDecision.decide(outcome: outcome(cancel: true), kind: .install, rootChanged: false,
+                                                 r0: "sherpa", r1: "sherpa", enableAllowed: true,
+                                                 enableReason: "", cas: nil)
+        guard case .stop(_, true, _) = lateSherpa else { return XCTFail("\(lateSherpa)") }
+        let moved = NemotronDecision.decide(outcome: outcome(), kind: .install, rootChanged: true,
+                                            r0: "nemotron", r1: "nemotron", enableAllowed: false,
+                                            enableReason: "нельзя", cas: nil)
+        guard case .stop = moved else { return XCTFail("\(moved)") }
         let check = NemotronDecision.decide(outcome: outcome(), kind: .check, rootChanged: false, r0: "nemotron",
                                             r1: "nemotron", enableAllowed: false, enableReason: "нельзя", cas: nil)
         XCTAssertEqual(check, .stop("нельзя", offerEnable: false, offerReinstall: false))
