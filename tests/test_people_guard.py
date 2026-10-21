@@ -64,6 +64,17 @@ def test_name_from_the_graph_blocks_the_commit_without_quoting_it(repo):
     assert "Чебуреков" not in p.stdout + p.stderr, "страж процитировал имя"
 
 
+def test_commit_all_is_judged_by_its_temporary_index(repo):
+    """`git commit -a` отдаёт pre-commit временный индекс через GIT_INDEX_FILE: имена
+    ищутся в нём, а не в .git/index, где правки нет (№605 out8 DS I1). Маркеры этот
+    опыт не различают — их ловит и проход по диску."""
+    _people(repo, FAKE)
+    repo.write("README.md", f"начало\n{FAKE}\n")
+    before = repo.head()
+    p = git(repo.work, "commit", "-q", "-a", "-m", "names", env=_owner_env(repo), check=False)
+    assert p.returncode != 0 and "README.md:2" in p.stderr and repo.head() == before, p.stderr
+
+
 def test_name_in_a_file_path_hides_the_path(repo):
     env = _owner_env(repo)
     _people(repo, FAKE)
@@ -321,7 +332,7 @@ def test_no_label_rule_in_main_is_a_refusal(repo):
 def test_git_dir_pointing_at_another_repo_does_not_pick_the_rule(repo):
     """GIT_DIR на чужой клон с ослабленным правилом в main: правило берётся из
     репозитория, где запущен страж (out6 DS C1). GIT_COMMON_DIR и GIT_NAMESPACE без
-    GIT_DIR правило `git show` не меняют (замер out7) — их держит тест списка ниже."""
+    GIT_DIR — их снятие держит тест списка ниже, поведение git здесь не замеряется."""
     env = _owner_env(repo)
     _people(repo, FAKE)
     repo.write("docs/n.md", f"{FAKE}\n")
@@ -335,8 +346,8 @@ def test_git_dir_pointing_at_another_repo_does_not_pick_the_rule(repo):
 
 
 def test_own_repo_git_drops_every_repo_selecting_variable(monkeypatch):
-    """Каждая переменная выбора репозитория снимается для чтения канона — список
-    держится тестом целиком, а не двумя опытами (out7 DS M1)."""
+    """Каждая переменная выбора репозитория снимается для чтения канона; список
+    закреплён литералом, а не своей же копией (out7 DS M1, out8 DS C1)."""
     seen = {}
     def fake_run(cmd, **kw):
         seen.update(kw.get("env") or {})
@@ -346,8 +357,9 @@ def test_own_repo_git_drops_every_repo_selecting_variable(monkeypatch):
     monkeypatch.setattr(guard.subprocess, "run", fake_run)
     guard.git("show", "refs/heads/main:x", own_repo=True)
     assert seen and not set(seen) & set(guard._FOREIGN_REPO_ENV)
-    assert {"GIT_DIR", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES"} <= set(guard._FOREIGN_REPO_ENV)
+    assert guard._FOREIGN_REPO_ENV == (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
 
 
 @pytest.mark.parametrize("body", ["raise SystemExit(0)\n", "is_speaker_placeholder = 1\n",

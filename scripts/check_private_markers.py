@@ -501,8 +501,9 @@ def _placeholder(name: str) -> bool:
 def _label_rule():
     """Правило меток ветки main как проверенная функция; исключение или `SystemExit`
     из его кода — `PeopleGateError`: ошибка в правиле не станет проходом (out6
-    Sonnet M1). Код правила в main доверен так же, как сам страж из main, — от
-    умысла там (`os._exit`) защиты нет и не нужно: коммит в main меняет и страж."""
+    Sonnet M1). Код правила в main доверен, как страж pre-push из main (pre-commit
+    берёт страж рабочего дерева — он строже не бывает), — от умысла там (`os._exit`)
+    защиты нет и не нужно: коммит в main меняет и страж."""
     src = git("show", f"refs/heads/main:{PLACEHOLDER_RULE}", own_repo=True)
     mod = types.ModuleType("_charoite_graph_names")
     try:
