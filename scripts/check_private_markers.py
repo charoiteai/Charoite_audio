@@ -469,13 +469,15 @@ def people_gate() -> pathlib.Path:
 
 
 PLACEHOLDER_RULE = "src/charoite_graph/graph_names.py"
+_BRACKET_TAIL = re.compile(r"[(（]([^()（）]*)[)）]\s*$")
 _rule = None
 
 
 def _placeholder(name: str) -> bool:
     """Метка диаризации («Собеседник 3») в Люди — дефект графа, а в коде продукта —
     законная строка. Правило меток — продукта, гейт его не знает. Метка — всё имя
-    узла после снятия метки в скобках: «Аристарх (Собеседник 4)» — человек и остаётся
+    узла после снятия метки в скобках, и в хвостовой скобке тоже метка: «Аристарх
+    (Собеседник 4)» и «Собеседник 4 (Аристарх Чебуреков)» — люди и остаются
     находкой (out1 I1–I2: `is_placeholder_node` — правило миграции, оно такой
     узел тоже считает меткой). Грузится один файл модуля, без пакета:
     `__init__.py` в сверку канона не входит и подменил бы правило мимо неё (out1
@@ -490,7 +492,10 @@ def _placeholder(name: str) -> bool:
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             is_label, strip = mod.is_speaker_placeholder, mod.strip_speaker_label
-            _rule = lambda stem: is_label(strip(stem))      # noqa: E731
+            def _rule(stem: str) -> bool:
+                bare = strip(stem)
+                tail = _BRACKET_TAIL.search(bare)       # «Метка (Имя Фамилия)» — человек (Opus I1)
+                return is_label(bare) and (tail is None or is_label(tail.group(1)))
         except (OSError, ImportError, AttributeError) as e:
             raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None
     return _rule(name)
@@ -524,7 +529,8 @@ def people_hits(records: list[tuple[str, str]]) -> list[tuple[int, int | None]]:
     except subprocess.TimeoutExpired:
         raise PeopleGateError(f"гейт имён не ответил за {PEOPLE_TIMEOUT} с") from None
     if p.returncode not in (0, 1):
-        raise PeopleGateError(f"гейт имён не смог проверить (код {p.returncode}) — причина: "
+        raise PeopleGateError(f"гейт имён не смог проверить (код {p.returncode}) — причину смотри в своём "
+                              f"терминале, не в фоновой сессии (stderr гейта — пути графа с именами): "
                               f"echo '[]' | python3 {gate} --people-scan")
     try:
         r = json.loads(p.stdout)

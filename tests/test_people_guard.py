@@ -114,6 +114,27 @@ def test_all_refuses_an_edited_label_rule_when_it_would_drop_a_hit(repo):
     assert p.returncode == 1 and "правило меток" in p.stderr, p.stderr
 
 
+def test_label_with_a_full_name_in_brackets_is_a_person(repo):
+    """«Собеседник 4 (Аристарх Чебуреков)» — метка с полным именем в скобках:
+    правило продукта срезает хвостовую скобку и видит метку, но в узле —
+    человек; находка остаётся (финальный Opus I1)."""
+    env = _owner_env(repo)
+    named = f"Собеседник 4 ({FAKE})"
+    _people(repo, named)
+    _stage(repo, "docs/a.md", f"{named} сказал\n")
+    p = guard_run(repo.work, env=env)
+    assert p.returncode == 1 and "docs/a.md:1" in p.stderr, p.stderr
+    assert "Чебуреков" not in p.stdout + p.stderr
+
+
+def test_label_with_a_label_in_brackets_stays_a_label(repo):
+    """«Собеседник 4 (Спикер 2)» — метка целиком, не человек."""
+    env = _owner_env(repo)
+    _people(repo, "Собеседник 4 (Спикер 2)")
+    _stage(repo, "docs/a.md", "Собеседник 4 (Спикер 2) сказал\n")
+    assert guard_run(repo.work, env=env).returncode == 0
+
+
 def test_synthetic_name_outside_the_graph_passes(repo):
     env = _owner_env(repo)
     _people(repo, FAKE)
@@ -134,6 +155,46 @@ def test_owner_machine_without_a_working_gate_is_refused(repo, gate):
     _stage(repo, "docs/a.md", "раз\n")
     p = guard_run(repo.work, env=env)
     assert p.returncode == 1 and "страж не смог проверить" in p.stderr, p.stderr
+
+
+_HANDSHAKE_GATE = """import hashlib, json, sys
+recs = json.loads(sys.stdin.read())
+hits = [[p, 1, "Аристарх" + " Чебуреков"] for p, t in recs if "Чебуреков" in t]
+r = {"v": 1, "records": len(recs), "names": 150, "hits": hits,
+     "digest": hashlib.sha256(json.dumps(recs, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
+code = 1 if hits else 0
+%s
+print(json.dumps(r))
+sys.exit(code)
+"""
+
+
+@pytest.mark.parametrize("spoil", [
+    'r["names"] = 0',                                   # граф не найден, гейт не распознал
+    'r["v"] = 2',
+    'r["records"] += 1',
+    'code = 1; r["hits"] = []',                         # «нашёл», но не сказал где
+    'code = 0',                                         # «чисто» при находках
+    'r["hits"][0][0] = str(len(recs))',                 # индекс за границей
+    'r["hits"][0][1] = 0',
+    'r["hits"][0][1] = True',
+    'r["hits"][0][2] = 5',
+])
+def test_each_handshake_check_holds_on_its_own(repo, spoil):
+    """Валидный ответ из фактического входа, испорчено ровно одно поле — отказ:
+    каждая проверка рукопожатия несущая сама по себе (финальный Opus I2)."""
+    env = _owner_env(repo, gate=_HANDSHAKE_GATE % spoil)
+    _stage(repo, "docs/a.md", f"созвон {FAKE}\n")
+    p = guard_run(repo.work, env=env)
+    assert p.returncode == 1 and "страж не смог проверить" in p.stderr, p.stderr
+
+
+def test_handshake_gate_unspoiled_finds_the_name(repo):
+    """Контроль таблицы: неиспорченный ответ — обычная находка, не отказ гейта."""
+    env = _owner_env(repo, gate=_HANDSHAKE_GATE % "pass")
+    _stage(repo, "docs/a.md", f"созвон {FAKE}\n")
+    p = guard_run(repo.work, env=env)
+    assert p.returncode == 1 and "docs/a.md:1" in p.stderr and "страж не смог" not in p.stderr, p.stderr
 
 
 def test_ci_and_markers_env_do_not_switch_the_owner_source_off(repo):
