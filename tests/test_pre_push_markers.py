@@ -461,11 +461,32 @@ def test_push_revs_skips_deletions_and_unknown_published_tips(repo):
 
 # ── установка и «нельзя забыть» ─────────────────────────────────────────────
 
-def _owner_env(repo: Repo, **extra: str) -> dict[str, str]:
-    """Машина владельца: список по умолчанию в HOME, CHAROITE_MARKERS не задан."""
+# Заглушка гейта имён графа (№605) — тот же контракт `--people-scan`, что у
+# настоящего: имя ищется подстрокой без регистра, ответ с рукопожатием. Имена —
+# из файла `people.txt` рядом с заглушкой; нет файла — имён нет, ответ чистый.
+STUB_GATE = """import json, pathlib, sys
+names = pathlib.Path(__file__).with_name("people.txt")
+names = names.read_text(encoding="utf-8").split("\\n") if names.exists() else []
+recs = json.loads(sys.stdin.read())
+hits = []
+for place, text in recs:
+    for n in filter(None, names):
+        if n.casefold() in text.casefold():
+            line = next((i + 1 for i, s in enumerate(text.split("\\n")) if n.casefold() in s.casefold()), None)
+            hits.append([place, line, n])
+print(json.dumps({"v": 1, "records": len(recs), "names": 150, "hits": hits}))
+sys.exit(1 if hits else 0)
+"""
+
+
+def _owner_env(repo: Repo, gate: str | None = STUB_GATE, **extra: str) -> dict[str, str]:
+    """Машина владельца: список по умолчанию в HOME, CHAROITE_MARKERS не задан;
+    рядом — гейт имён графа (`gate=None` — гейта нет)."""
     lst = repo.tmp / "home" / ".config" / "charoite" / "private_markers.txt"
     lst.parent.mkdir(parents=True, exist_ok=True)
     lst.write_text(f"{MARKER}\n", encoding="utf-8")
+    if gate is not None:
+        (lst.parent / "check_brief.py").write_text(gate, encoding="utf-8")
     env = _env(repo.tmp, markers=False)
     env.update(extra)
     return env

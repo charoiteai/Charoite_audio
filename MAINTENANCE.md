@@ -67,7 +67,11 @@ is built:
 - A **pre-commit anonymization gate** (`scripts/check_private_markers.py`)
   blocks names, employers, internal system names, and transcript
   fragments from ever reaching the public repository; a format-based
-  second line in CI also covers pull requests from forks.
+  second line in CI also covers pull requests from forks. On the
+  maintainer's machine the gate also checks commits, pushes and the
+  published tree against the names of people in the local meeting graph,
+  in any grammatical case, without printing them; if that check cannot
+  run, the commit is refused.
 - When an external model is used for decorrelated review, it sees a
   **clean checkout of the public tree only** — never user data, never
   gitignored local state (recordings, transcripts, configs).
@@ -80,4 +84,4 @@ External contributions are welcome and reviewed with the same pipeline —
 see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go through
 [SECURITY.md](SECURITY.md); they are read by the owner, not just the AI.
 
-*Last updated: 2026-09-27.*
+*Last updated: 2026-10-21.*
