@@ -159,30 +159,39 @@ def test_every_minutes_path_goes_through_the_entry():
 
 def _entry_sources(path: pathlib.Path, name: str) -> list[ast.expr]:
     """Источник каждого вызова `finish_minutes` в функции: выражение второго
-    аргумента, а имя — значение его присваивания в той же функции."""
+    аргумента; имя разворачивается в значение его присваивания (и аннотированного)
+    в той же функции."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
     assigned = {t.id: n.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
                 for t in n.targets if isinstance(t, ast.Name)}
-    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
-             and isinstance(n.func, ast.Attribute) and n.func.attr == "finish_minutes"]
+    assigned |= {n.target.id: n.value for n in ast.walk(fn)
+                 if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value}
+    resolve = lambda e: assigned.get(e.id, e) if isinstance(e, ast.Name) else e   # noqa: E731
+    calls = [n for n in ast.walk(fn) if _is_call(n, "finish_minutes")]
     assert calls, f"{name}: нет вызова входа"
     out = []
     for call in calls:
         arg = call.args[1] if len(call.args) > 1 else next(k.value for k in call.keywords if k.arg == "source")
-        out.append(assigned.get(arg.id, arg) if isinstance(arg, ast.Name) else arg)
+        source = resolve(arg)
+        if _is_call(source, "live"):
+            source.keywords = [ast.keyword(arg=k.arg, value=resolve(k.value)) for k in source.keywords]
+        out.append(source)
     return out
 
 
+def _is_call(node: ast.AST, attr: str) -> bool:
+    """Вызов `meeting_source.<attr>(…)` — получатель тоже проверяется (out2, Sonnet M4)."""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == attr
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "meeting_source")
+
+
 def _carries_start(source: ast.expr) -> bool:
-    if not (isinstance(source, ast.Call) and isinstance(source.func, ast.Attribute)):
-        return False
-    if source.func.attr == "of":
+    if _is_call(source, "of"):
         return True
-    began = next((k.value for k in source.keywords if k.arg == "began_at"), None)
-    return (source.func.attr == "live" and isinstance(began, ast.Call)
-            and isinstance(began.func, ast.Attribute) and began.func.attr == "began_of")
+    began = next((k.value for k in getattr(source, "keywords", []) if k.arg == "began_at"), None)
+    return _is_call(source, "live") and _is_call(began, "began_of")
 
 
 def test_app_tail_marks_mirror_the_python_writers():

@@ -106,16 +106,29 @@ def began_of(live: pathlib.Path) -> str | None:
 DATE_LABEL = {"ru": "**Дата/время:**", "en": "**Date/time:**", "zh": "**日期/时间：**"}
 #: ключи поля даты в шапке: свои подписи и короткие, которые писала модель
 #: (MCP-промпт просил «дата»); ключ — метка без звёзд и двоеточия, строчными
-DATE_KEYS = frozenset({"дата/время", "дата", "date/time", "date", "日期/时间", "日期"})
+DATE_KEYS = frozenset({"дата/время", "дата и время", "дата", "date/time", "date and time", "date",
+                       "日期/时间", "日期和时间", "日期"})
+#: голые метки шапки (без звёзд) — закрытый набор, как список `.ignored` в
+#: приложении: открытая грамматика «до 40 знаков и двоеточие» принимала прозу
+#: за поле («Итог: ок», «Вот минутки:») и не видела метку посреди строки
+#: (выход №738 out2, Sonnet I1/I3 = Haiku C1)
+HEAD_KEYS = DATE_KEYS | {"участники", "participants", "参会人", "参与者"}
 # Шапка разбирается на поля, а не ищется регэкспом по прозе (выход №738: три
 # головы сошлись — регэксп угадывал границы поля и шапки и то съедал
 # участников, то калечил «**Meeting date:**», то оставлял вторую дату). Поле —
 # метка и значение до следующей метки: жирная метка «**М:**» / «**М**:» где
 # угодно в строке (старый шаблон писал «**Дата/время:** … **Участники:** …»),
-# голая «М:» — только в начале строки или куска после «|».
-_BOLD_LABEL = re.compile(r"\*\*(?P<label>[^*\n]{1,40}?)[ \t]*(?:[:：][ \t]*\*\*|\*\*[ \t]*[:：])")
-_PLAIN_LABEL = re.compile(r"[ \t]*(?P<label>[^\W\d_][^:：*|\n]{0,39}?)[ \t]*[:：]")
-_LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
+# голая — из `HEAD_KEYS`, в начале куска или после «,» / «;».
+_BOLD_LABEL = re.compile(r"\*{2,3}(?P<label>[^*\n]{1,40}?)[ \t]*(?:[:：][ \t]*\*{2,3}|\*{2,3}[ \t]*[:：])")
+_PLAIN_LABEL = re.compile(
+    r"(?:^|(?<=[,;]))[ \t]*(?P<label>"
+    + "|".join(re.escape(k) for k in sorted(HEAD_KEYS, key=len, reverse=True))
+    + r")(?![\w/])[ \t]*[:：]", re.IGNORECASE)
+_LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+•]|\d+[.)])[ \t]+")
+# украшение перед меткой: эмодзи или значок («📅 **Дата:**», выход out2 DS M1)
+_DECOR = re.compile(r"^[ \t]*[^\w\s*#<>|\[\]()\-+]{1,2}[ \t]+")
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]")
+_COMMENT = re.compile(r"^[ \t]*<!--.*-->[ \t]*$")
 
 
 def _key(label: str) -> str:
@@ -125,10 +138,11 @@ def _key(label: str) -> str:
 def _fields(chunk: str) -> list[tuple[str | None, str]]:
     """Поля куска строки: (ключ метки, текст поля с меткой). Текст до первой
     метки — с ключом None: это не поле."""
-    marks = [(m.start(), _key(m["label"])) for m in _BOLD_LABEL.finditer(chunk)]
-    plain = _PLAIN_LABEL.match(chunk)
-    if plain and (not marks or plain.end() <= marks[0][0]):
-        marks.insert(0, (0, _key(plain["label"])))
+    bold = [(m.start(), m.end(), _key(m["label"])) for m in _BOLD_LABEL.finditer(chunk)]
+    marks = [(a, k) for a, _b, k in bold]
+    marks += [(m.start("label"), _key(m["label"])) for m in _PLAIN_LABEL.finditer(chunk)
+              if not any(a <= m.start("label") < b for a, b, _k in bold)]
+    marks.sort()
     out: list[tuple[str | None, str]] = []
     if not marks or marks[0][0] > 0:
         out.append((None, chunk[:marks[0][0] if marks else len(chunk)]))
@@ -137,63 +151,120 @@ def _fields(chunk: str) -> list[tuple[str | None, str]]:
     return out
 
 
+def _is_section(name: str) -> bool:
+    """Название раздела минуток — по тому же закрытому списку, что закрывает
+    разделы поручений (`action_items`), а не своей грамматикой."""
+    name = _key(name.strip(" \t#*:："))
+    return name not in HEAD_KEYS and bool(action_items._KNOWN_BARE_SECTION.match(name)
+                                          or action_items.is_section_heading("## " + name))
+
+
 def _head_field(line: str) -> list[tuple[str | None, str]] | None:
     """Поля строки шапки или None, если строка не поле: не начинается с метки
-    (после маркера списка) или это заголовок раздела — метка без значения
-    («**Решения:**», «Темы:»), кроме пустого поля даты."""
-    body = line[len(m.group(0)):] if (m := _LIST_ITEM.match(line)) else line
-    fields = _fields(body)
+    (после маркера списка), раздел-метка без значения («**Решения:**») или
+    метка известного раздела («**Темы:** …»), кроме полей `HEAD_KEYS`."""
+    fields = _fields(_body(line)[1])
     if not fields or fields[0][0] is None:
         return None
-    if len(fields) == 1 and fields[0][0] not in DATE_KEYS:
-        text = fields[0][1]
-        label = _BOLD_LABEL.match(text) or _PLAIN_LABEL.match(text)
-        if not text[label.end():].strip():
-            return None
+    key, text = fields[0]
+    if key not in HEAD_KEYS and (_is_section(key) or (len(fields) == 1 and not _value(text))):
+        return None
     return fields
+
+
+def _value(field: str) -> str:
+    """Значение поля без метки."""
+    label = _BOLD_LABEL.match(field) or _PLAIN_LABEL.match(field)
+    return field[label.end():].strip() if label else field.strip()
+
+
+def _body(line: str) -> tuple[str, str]:
+    """(маркер пункта или украшение, текст строки после него)."""
+    m = _LIST_ITEM.match(line) or _DECOR.match(line)
+    return (m.group(0), line[m.end():]) if m else ("", line.lstrip())
+
+
+def _head_start(lines: list[str]) -> tuple[int, int]:
+    """(первая строка шапки, место строки даты). Заголовок — первый «#» любого
+    уровня, если он не раздел («## Черновик минуток» у черновика демона);
+    комментарии и проза над ним — преамбула, её не трогаем (выход out2, DS C1
+    = Haiku C2: строка «<!-- … -->» над «# » отключала снятие). Заголовка нет —
+    шапка с первой строки содержания, под комментариями; заголовок прозой
+    («Протокол встречи» без «#», черновики 08–10.2026) — до двух строк прозы
+    перед первым полем."""
+    first = None
+    prose = 0
+    for j, line in enumerate(lines):
+        if not line.strip() or _COMMENT.match(line):
+            continue
+        first = j if first is None else first
+        if _HEADING.match(line):
+            if _is_section(line):
+                break
+            return j + 1, j + 1
+        if _head_field(line) is not None:
+            if 0 < prose <= 2:
+                return j, j
+            break
+        prose += 1
+    first = len(lines) if first is None else first
+    return first, first
 
 
 def without_date(doc: str) -> str:
     """Снять поле даты из шапки — и написанное моделью, и строку `with_date`.
-    Шапка — строки под заголовком «# …» подряд, пока каждая начинается с
-    метки (пустые строки не рвут); раздел, «## », пункт без метки — конец.
-    Прочие поля строки («**Участники:** …») остаются как были; строка без
-    полей уходит; строка без поля даты — те же байты."""
+    Шапка — строки под заголовком подряд, пока каждая начинается с метки
+    (пустые строки не рвут); раздел, любой «#», проза — конец. Прочие поля
+    строки («**Участники:** …») остаются; строка без полей уходит; строка без
+    поля даты — те же байты."""
     lines = doc.split("\n")
-    i = 0
-    while i < len(lines) and not lines[i].strip():
-        i += 1
-    if i < len(lines) and lines[i].startswith("# "):
-        i += 1
-    out = lines[:i]
-    for j in range(i, len(lines)):
+    start, _at = _head_start(lines)
+    out = lines[:start]
+    as_items = None                  # форма шапки — по первому полю: пункты или строки
+    j = start
+    while j < len(lines):
         line = lines[j]
         if not line.strip():
             out.append(line)
+            j += 1
             continue
-        if line.lstrip().startswith("#") or _head_field(line) is None:
+        item = bool(_LIST_ITEM.match(line))
+        as_items = item if as_items is None else as_items
+        # пункт под полями-строками — уже тело (выход out2, DS I2)
+        if _HEADING.match(line) or item != as_items or _head_field(line) is None:
             return "\n".join(out + lines[j:])
-        marker = m.group(0) if (m := _LIST_ITEM.match(line)) else ""
-        chunks = line[len(marker):].split("|")
-        kept = ["".join(t for k, t in _fields(c) if k not in DATE_KEYS).strip() for c in chunks]
-        if all(k not in DATE_KEYS for c in chunks for k, _t in _fields(c)):
+        marker, body = _body(line)
+        chunks = [_fields(c) for c in body.split("|")]
+        if all(k not in DATE_KEYS for c in chunks for k, _t in c):
             out.append(line)
-        elif any(kept):
+            j += 1
+            continue
+        # куски без метки в строке с датой — её значение («| 20:00», DS M2)
+        kept = ["".join(t for k, t in c if k not in DATE_KEYS).strip().rstrip(",;").strip()
+                for c in chunks if any(k is not None and k not in DATE_KEYS for k, _t in c)]
+        if any(kept):
             out.append(marker + " | ".join(x for x in kept if x))
+        # пустое поле даты, значение строкой ниже («**Дата/время:**\n26 октября», Sonnet M2)
+        empty = all(not _value(t) for c in chunks for k, t in c if k in DATE_KEYS)
+        nxt = lines[j + 1] if j + 1 < len(lines) else ""
+        if empty and nxt.strip() and _head_field(nxt) is None and not _HEADING.match(nxt) \
+                and len(nxt.strip()) <= 40 and any(ch.isdigit() for ch in nxt):
+            j += 1
+        j += 1
     return "\n".join(out)
 
 
 def with_date(doc: str, began_at: str | None, lang: str = "ru") -> str:
-    """Строка «Дата/время» от кода: под заголовком «# …», иначе первой.
-    Прежнее поле снимается, повтор даёт те же байты. Без начала — документ
-    как есть: дату модели не трогаем, если своей нет."""
+    """Строка «Дата/время» от кода: под заголовком, иначе первой строкой
+    содержания. Прежнее поле снимается, повтор даёт те же байты. Без начала —
+    документ как есть: дату модели не трогаем, если своей нет."""
     if not began_at:
         return doc
     doc = without_date(doc)
     line = f"{DATE_LABEL.get(lang, DATE_LABEL['ru'])} {began_at}"
     lines = doc.split("\n")
-    at = next((i for i, x in enumerate(lines) if x.strip()), 0)
-    at = at + 1 if at < len(lines) and lines[at].startswith("# ") else 0
+    _start, at = _head_start(lines)
+    at = min(at, len(lines))
     return "\n".join(lines[:at] + [line] + lines[at:])
 
 
