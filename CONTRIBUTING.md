@@ -377,6 +377,20 @@ piece of config, log or path from a work machine.
 A colleague's name in a comment is caught **only by the local hook**. Install
 it — `pre-commit install`, once per clone.
 
+**On the maintainer's machine the guard also knows the people.** Names of the
+people nodes of the local meeting graph are a second private source: the
+guard sends the lines it checks to the local gate
+`~/.config/charoite/check_brief.py --people-scan`, which finds a name in any
+grammatical case, word order, across a line break or with invisible
+characters, and answers with the record, the line and the matched name; the
+guard uses the name only for the label rule below and never prints it. A people node whose name is a bare
+diarization label ("Speaker N", by the product rule in
+`src/charoite_graph/graph_names.py`, read from the local `main` branch, never from the
+working copy; a clone without a local `main` refuses once a name is found) is not a person; a name with any bracket is. The check fails closed: no gate, an older gate, a partly read graph or an
+answer that does not match the request refuses the commit or the push.
+The check is switched on by the private marker list, not by the graph:
+without the list (contributors, CI) it never runs.
+
 **Every pushed commit is checked, not only the final state.** An intermediate
 commit of a public repository is published for good, even if the next commit
 removes the leak. `pre-commit install` also sets up a pre-push stage

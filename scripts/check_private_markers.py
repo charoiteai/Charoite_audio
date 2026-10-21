@@ -21,11 +21,14 @@ macOS; `[[:<:]]` — наоборот. Страж, который врёт, бы
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import types
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -89,8 +92,17 @@ def _clip(text: str, limit: int = 60) -> str:
     return text[:limit]
 
 
-def git(*args: str, stdin: bytes | None = None) -> bytes:
-    p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin)
+# Окружение, которым git выбирает чужой репозиторий. Глобально его не вычистить: в
+# pre-commit `git commit -a` отдаёт хуку временный индекс через GIT_INDEX_FILE, и
+# дифф стража должен читать именно его. Вычищает тот, кто читает канон (`own_repo`).
+_FOREIGN_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
+
+
+def git(*args: str, stdin: bytes | None = None, own_repo: bool = False) -> bytes:
+    """`own_repo` — репозиторий, где запущен страж, без переменных выбора чужого (out6 DS C1)."""
+    env = {k: v for k, v in os.environ.items() if k not in _FOREIGN_REPO_ENV} if own_repo else None
+    p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin, env=env)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip()
         raise GitError(f"git {' '.join(args[:2])}: {_clip(err, 300) or f'код {p.returncode}'}")
@@ -423,14 +435,141 @@ def extra_headers(raw: str) -> list[tuple[str, str]]:
     return [(k, v) for k, v in found if k not in _KNOWN_HEADERS]
 
 
+# ── Имена людей графа владельца (№605) ─────────────────────────────────────
+#
+# Статический список не знает людей графа: их сотни, граф растёт каждый день —
+# так полные имена шести человек прошли в main и жили там два месяца (№604).
+# Имена, их формы (падежи, порядок слов) и сверку держит гейт брифа внешних
+# голов `~/.config/charoite/check_brief.py --people-scan` — одна реализация на
+# оба выхода наружу; страж зовёт его подпроцессом и в репо его не тащит. Гейт
+# есть только на машине владельца, там же и граф: в CI и у контрибьютора этого
+# источника нет, как нет списка маркеров.
+
+PEOPLE_TIMEOUT = 300        # обход графа ~1 с, дерево репо ~8 с (замер 21.10); дольше — iCloud завис
+PEOPLE_SCAN_VERSION = 1
+_PEOPLE_FIX = ("имя человека из графа владельца: обезличь; не человек (группа, тема) — узел не место в Люди, "
+               "перенеси его в графе")
+
+
+class PeopleGateError(Exception):
+    """Источник имён графа на машине владельца не ответил: проверка не сделана."""
+
+
+# Пути и имена ссылок, в которых гейт нашёл имя человека. Любая строка отчёта
+# стража идёт через `_scrub` — и находки маркеров, и сбои: путь с именем не
+# печатается нигде, а не только в строках самих имён (out1 C1, C2).
+_HIDDEN: set[str] = set()
+
+
+def _scrub(line: str) -> str:
+    for s in sorted(_HIDDEN, key=len, reverse=True):
+        line = line.replace(s, "(скрыто)")
+    return line
+
+
+def owner_machine() -> bool:
+    """Машина владельца — есть список маркеров по умолчанию. Один предикат включает
+    все источники: ни `CI`, ни `CHAROITE_MARKERS` его не выключают (№605 in1 I1)."""
+    return default_markers_path().exists()
+
+
+def people_gate() -> pathlib.Path:
+    return pathlib.Path.home() / ".config" / "charoite" / "check_brief.py"
+
+
+PLACEHOLDER_RULE = "src/charoite_graph/graph_names.py"
+_rule = None
+
+
+def _placeholder(name: str) -> bool:
+    """Метка диаризации («Собеседник 3») в Люди — дефект графа, а в коде продукта —
+    законная строка. Правило меток — продукта, гейт его не знает. Метка — имя узла
+    без скобок, целиком метка по правилу продукта; любая скобка — человек, при
+    сомнении отказ: «Аристарх (Собеседник 4)», «Собеседник 4 (Аристарх Чебуреков)»,
+    «Собеседник 3 (муж)» — находки (out1 I1–I2, Opus I1, opus-fix C1: разбор скобок
+    регэкспом пропускал вложенные и не последние). Правило читается объектом ветки
+    main (`refs/heads/main:<правило>`), а не с диска: рабочая копия, ветка
+    рабочего дерева или пушимая ветка, кроме самой main, его не ослабят, и положение стража не нужно
+    (№605 out4–out5). Один файл модуля, без пакета: `__init__.py` подменил бы
+    правило (out1 C2 DS); сам модуль импортирует только `re`."""
+    global _rule
+    if _rule is None:
+        _rule = _label_rule()
+    return _rule(name)
+
+
+def _label_rule():
+    """Правило меток ветки main как проверенная функция; исключение или `SystemExit`
+    из его кода — `PeopleGateError`: ошибка в правиле не станет проходом (out6
+    Sonnet M1). Код правила в main доверен, как страж pre-push из основного checkout
+    на main (см. `PRE_PUSH_HOOK`): от умысла там (`os._exit`, ослабленное правило в
+    пушимой main) защиты нет и не нужно — коммит в main меняет и сам страж (№605 out9)."""
+    src = git("show", f"refs/heads/main:{PLACEHOLDER_RULE}", own_repo=True)
+    mod = types.ModuleType("_charoite_graph_names")
+    try:
+        # nosemgrep — код правила из локальной main, доверен как страж pre-push (докстринг)
+        exec(compile(src, f"main:{PLACEHOLDER_RULE}", "exec"), mod.__dict__)
+        is_label = mod.is_speaker_placeholder
+    except (Exception, SystemExit) as e:  # noqa: BLE001 — сбой правила — отказ, не проход
+        raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None
+    if not callable(is_label):
+        raise PeopleGateError("правило меток продукта не функция")
+
+    def rule(stem: str) -> bool:                    # скобка в имени — человек: при сомнении отказ (Opus I1, opus-fix C1)
+        try:
+            return not set(stem) & set("()（）") and is_label(stem) is True
+        except (Exception, SystemExit) as e:  # noqa: BLE001 — сбой правила — отказ, не проход
+            raise PeopleGateError(f"правило меток продукта упало ({type(e).__name__})") from None
+    return rule
+
+
+def people_hits(records: list[tuple[str, str]]) -> list[tuple[int, int | None]]:
+    """(место, текст) → [(номер записи, строка в её тексте или None)] — где имя
+    человека из графа. Имён наружу не отдаёт: вывод стража уходит в журналы.
+    Ответ гейта сверяется рукопожатием (версия, число записей); любой иной
+    ответ — `PeopleGateError`, его stderr не печатается: там пути графа."""
+    gate = people_gate()
+    if not gate.is_file():
+        raise PeopleGateError(f"нет гейта имён {gate}")
+    payload = [[str(i), text] for i, (_place, text) in enumerate(records)]
+    digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    try:
+        p = subprocess.run([sys.executable, "-I", str(gate), "--people-scan"], input=json.dumps(payload),
+                           capture_output=True, text=True, timeout=PEOPLE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise PeopleGateError(f"гейт имён не ответил за {PEOPLE_TIMEOUT} с") from None
+    if p.returncode not in (0, 1):
+        raise PeopleGateError(f"гейт имён не смог проверить (код {p.returncode}) — причину смотри в своём "
+                              f"терминале, не в фоновой сессии (stderr гейта — пути графа с именами): "
+                              f"echo '[]' | python3 {gate} --people-scan")
+    try:
+        r = json.loads(p.stdout)
+        found = [(int(i), line, name) for i, line, name in r["hits"]]
+        ok = (r["v"] == PEOPLE_SCAN_VERSION and r["records"] == len(records) and r["names"] > 0
+              and r["digest"] == digest
+              and (p.returncode == 1) == bool(found)
+              and all(0 <= i < len(records) and (line is None or type(line) is int and line >= 1) and isinstance(name, str)
+                      for i, line, name in found))
+    except (ValueError, KeyError, TypeError):
+        ok = False
+    if not ok:
+        raise PeopleGateError(f"ответ гейта имён не сходится с запросом (код {p.returncode}) — гейт старый? "
+                              "обнови ~/.config/charoite")
+    return sorted({(i, line) for i, line, name in found if not _placeholder(name)},
+                  key=lambda x: (x[0], x[1] or 0))
+
+
 def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: bool,
                  extra: list[tuple[str, str]] = (),
-                 extra_emails: list[tuple[str, str]] = ()) -> tuple[int, list[str]]:
+                 extra_emails: list[tuple[str, str]] = (),
+                 people: bool = False) -> tuple[int, list[str]]:
     """Что публикует каждый коммит набора — строки, имена файлов, сообщение,
     имена и почты — против обоих наборов; двоичное вне медиа — отказ, если его
     блоба нет в списке владельца; плюс `extra`
-    (имена ссылок, аннотации тегов) и почты тегеров. Возвращает (число
-    коммитов, находки).
+    (имена ссылок, аннотации тегов) и почты тегеров. `people` — те же тексты
+    ещё и против имён людей графа (`people_hits`, №605): добавленные строки
+    файла коммита идут одним текстом, имя через перенос строки не теряется.
+    Возвращает (число коммитов, находки).
 
     Находка — место без цитаты: вывод уходит в журналы фоновых сессий; путь,
     в котором сработал формат или маркер, печатается с маской.
@@ -452,7 +591,11 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         return name
 
     hits: list[str] = []
+    texts: list[tuple[str, str]] = []           # (место, текст) для имён графа
+    refs: dict[int, str] = {}                  # номер записи → имя ссылки (в месте записи)
     for field, text in extra:
+        refs[len(texts)] = field.rsplit(" ", 1)[-1]   # в имени ссылки git пробелов не допускает
+        texts.append((f"{mask(field)}", text))
         for k in kinds(text):
             hits.append(f"{mask(field)}: {k}")
     if identity:
@@ -464,6 +607,7 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         short = m.sha[:9]
         for field, text in (("сообщение", m.message), ("автор", f"{m.author} <{m.author_email}>"),
                             ("коммитер", f"{m.committer} <{m.committer_email}>")):
+            texts.append((f"{short} {field}", text))
             for k in kinds(text):
                 hits.append(f"{short} {field}: {k}")
         if identity:
@@ -471,18 +615,27 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
                 if email != MAINTAINER_EMAIL:
                     hits.append(f"{short} {field}: почта не {MAINTAINER_EMAIL}")
     if not metas:
+        hits += _people_report(texts, {}, refs=refs, mask=mask) if people else []
         return 0, hits
     for sha, raw in raw_objects([m.sha for m in metas]).items():
         for key, text in extra_headers(raw):
+            texts.append((f"{sha[:9]} заголовок {key}", text))
             for k in kinds(text):
                 hits.append(f"{sha[:9]} заголовок {key}: {k}")
     present = added_paths(revs)
+    paths: dict[int, tuple[str, str]] = {}      # номер записи → (коммит, путь): путь с именем не печатается
     for sha, name in present:
+        paths[len(texts)] = (sha, name)
+        texts.append((f"{sha[:9]} имя файла", name))
         for k in kinds(name):
             hits.append(f"{sha[:9]} имя файла {mask(name)}: {k}")
+    groups: dict[tuple[str, str], list[tuple[int, str]]] = {}
     for sha, name, lineno, text in added_lines(revs):
+        groups.setdefault((sha, name), []).append((lineno, text))
         for k in kinds(text):
             hits.append(f"{sha[:9]} {mask(name)}:{lineno}: {k}")
+    if people:
+        hits += _people_report(texts, paths, groups, mask, refs)
     kept = set(present)
     allowed: set[str] | None = None
     fresh: set[str] | None = None
@@ -501,6 +654,41 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
             hits.append(f"{sha[:9]} {mask(name)} (двоичный): содержимое не проверить — "
                         f"сопровождающий пропускает версию строкой {blob} в {blob_allow_path()}")
     return len(metas), hits
+
+
+def _people_report(texts: list[tuple[str, str]], paths: dict[int, tuple[str, str]],
+                   groups: dict[tuple[str, str], list[tuple[int, str]]] | None = None,
+                   mask=lambda name: name, refs: dict[int, str] | None = None) -> list[str]:
+    """Находки имён графа для `scan_commits`: записи — тексты, пути, затем по одной
+    на файл коммита (его добавленные строки через перевод строки). Путь, в котором
+    имя, нигде не печатается — ни как находка, ни как место строки (in1 I3)."""
+    groups = groups or {}
+    records = list(texts)
+    spans: dict[int, tuple[str, str, list[int]]] = {}
+    for (sha, name), lines in groups.items():
+        spans[len(records)] = (sha, name, [n for n, _t in lines])
+        records.append(("", "\n".join(t for _n, t in lines)))
+    if not records:
+        return []
+    found = people_hits(records)
+    hidden = {paths[i] for i, _line in found if i in paths}
+    for _sha, name in hidden:
+        _HIDDEN.update((name, mask(name)))
+    for i, _line in found:
+        if i in (refs or {}):
+            _HIDDEN.update((refs[i], mask(refs[i])))
+    out: list[str] = []
+    for i, line in found:
+        if i in paths:
+            out.append(f"{paths[i][0][:9]} имя файла (путь скрыт): {_PEOPLE_FIX}")
+        elif i in spans:
+            sha, name, nums = spans[i]
+            where = "(путь скрыт)" if (sha, name) in hidden else mask(name)
+            at = f"{nums[line - 1]}" if line and line <= len(nums) else f"{nums[0]}–{nums[-1]}"
+            out.append(f"{sha[:9]} {where}:{at}: {_PEOPLE_FIX}")
+        else:
+            out.append(f"{records[i][0]}: {_PEOPLE_FIX}")
+    return out
 
 
 def _zero(sha: str) -> bool:
@@ -720,10 +908,46 @@ def install_hooks(force: bool) -> int:
     return rc
 
 
+def _people_files(files: list[pathlib.Path], read, also_paths: list[pathlib.Path] = ()) -> list[str]:
+    """Пути и тексты файлов против имён людей графа → «путь:строка» без цитаты;
+    путь, в котором имя, не печатается. Двоичное и медиа — только путь;
+    `also_paths` — только путь (дерево в pre-commit: его пути печатает проход маркеров)."""
+    records: list[tuple[str, str]] = []
+    where: list[tuple[pathlib.Path, bool]] = []          # (файл, запись — путь)
+    own = set(files)
+    for f in also_paths:
+        if f not in own:
+            records.append(("", f.as_posix()))
+            where.append((f, True))
+    for f in files:
+        records.append(("", f.as_posix()))
+        where.append((f, True))
+        if f.suffix.lower() in SKIP_SUFFIX:
+            continue
+        try:
+            text = read(f)
+        except (OSError, UnicodeDecodeError, GitError):
+            continue        # бинарь или удалённый файл — как в scan_files
+        if "\0" not in text[:8192]:
+            records.append(("", text))
+            where.append((f, False))
+    found = people_hits(records) if records else []
+    hidden = {where[i][0] for i, _line in found if where[i][1]}
+    _HIDDEN.update(f.as_posix() for f in hidden)
+    out = []
+    for i, line in found:
+        f, is_path = where[i]
+        if is_path:
+            out.append(f"имя файла (путь скрыт): {_PEOPLE_FIX}")
+        else:
+            out.append(f"{'(путь скрыт)' if f in hidden else f}:{line or '?'}: {_PEOPLE_FIX}")
+    return out
+
+
 def _report(title: str, hits: list[str]) -> None:
     print(f"❌ {title}: {len(hits)}", file=sys.stderr)
     for h in hits[:50]:
-        print(f"  {h}", file=sys.stderr)
+        print(f"  {_scrub(h)}", file=sys.stderr)
     if len(hits) > 50:
         print(f"  … ещё {len(hits) - 50}", file=sys.stderr)
 
@@ -755,7 +979,7 @@ def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
     if revs is None:
         print("нечего проверять: push только удаляет ветки")
         return 0
-    count, hits = scan_commits(revs, private, identity, extra, extra_emails)
+    count, hits = scan_commits(revs, private, identity, extra, extra_emails, people=owner_machine())
     missing = private is None and need_list
     if hits:
         _report("PUSH ЗАБЛОКИРОВАН — уходящие коммиты публикуют приватное", hits)
@@ -767,6 +991,7 @@ def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
     if hits or missing:
         return 1
     what = "оба набора" if private else "публичные форматы (списка маркеров нет)"
+    what += " и имена людей графа" if owner_machine() else ""
     print(f"коммитов проверено: {count}, {what}: чисто")
     return 0
 
@@ -791,8 +1016,8 @@ def main() -> int:
     a = ap.parse_args()
     try:
         return _run(a)
-    except GitError as e:
-        print(f"❌ страж не смог проверить — отказ: {e}", file=sys.stderr)
+    except (GitError, PeopleGateError) as e:
+        print(f"❌ страж не смог проверить — отказ: {_scrub(str(e))}", file=sys.stderr)
         return 1
 
 
@@ -825,10 +1050,12 @@ def _run(a: argparse.Namespace) -> int:
             return 1
         print("публичные шаблоны: чисто")
         return 0
-    path = markers_path()
+    owner = owner_machine()
+    path = default_markers_path() if owner else markers_path()
     if not path.exists():
         # fail-closed на машине автора и мягкий пропуск в CI и у контрибьюторов:
-        # приватного списка у них нет и быть не должно.
+        # приватного списка у них нет и быть не должно. На машине владельца сюда
+        # не попасть: `CI` и `CHAROITE_MARKERS` её не выключают (№605 in1 I1).
         if os.environ.get("CI"):
             print("список маркеров недоступен в CI — проверка пропущена")
             return 0
@@ -841,6 +1068,24 @@ def _run(a: argparse.Namespace) -> int:
         return 1
     pattern = build_pattern(markers)
 
+    # Имена людей графа — первыми: строки маркеров ниже печатают пути, а путь с
+    # именем не печатается нигде (out1 C2). Pre-commit — изменённые файлы целиком
+    # и пути всего дерева (дёшево); тексты дерева — в `--all` (in1 I4: +8 с на
+    # каждом коммите, опубликованное он не вернёт).
+    if owner:
+        if full_only:
+            bad = _people_files(tracked_files(), lambda f: f.read_text(encoding="utf-8"))
+            title = "имена людей графа в опубликованном дереве"
+        else:
+            staged = [pathlib.Path(n) for n in git("diff", "--cached", "--name-only", "-z", "--no-renames",
+                                                    "--diff-filter=d").decode("utf-8", "replace").split("\0") if n]
+            bad = _people_files(staged, lambda f: git("show", f":{f.as_posix()}").decode("utf-8"),
+                                also_paths=tracked_files())
+            title = "КОММИТ ЗАБЛОКИРОВАН — имена людей графа"
+        if bad:
+            _report(title, bad)
+            return 1
+
     # Полный проход по дереву. Диф-проверка ловит то, что пишут сейчас, а это —
     # то, что уже опубликовано: маркер, попавший в main до пополнения списка,
     # иначе не всплывёт никогда. Стоит миллисекунды на двух сотнях файлов.
@@ -849,12 +1094,14 @@ def _run(a: argparse.Namespace) -> int:
         print(f"❌ приватные маркеры в опубликованном дереве: {len(stale)}",
               file=sys.stderr)
         for place in stale[:10]:
-            print(f"  {place}", file=sys.stderr)
+            print(f"  {_scrub(place)}", file=sys.stderr)
         print("Обезличь эти строки. Полный список мест: "
               "python3 scripts/check_private_markers.py --all", file=sys.stderr)
         return 1
     if full_only:
-        print(f"дерево чисто: {len(tracked_files())} файлов, маркеров нет")
+        files = tracked_files()
+        print(f"дерево чисто: {len(files)} файлов, маркеров нет"
+              + (", имён людей графа нет" if owner else ""))
         return 0
 
     diff = git("diff", "--cached", "-U0", "--no-renames", "--no-ext-diff", "--no-textconv",
@@ -867,13 +1114,13 @@ def _run(a: argparse.Namespace) -> int:
         print(f"❌ КОММИТ ЗАБЛОКИРОВАН: {len(hits)} строк с личными/банковскими маркерами:",
               file=sys.stderr)
         for place in hits[:5]:
-            print(f"  {place}", file=sys.stderr)
+            print(f"  {_scrub(place)}", file=sys.stderr)
         print(f"Обезличь (имена/системы/пути) и повтори. Список: {path}", file=sys.stderr)
         return 1
 
     author = subprocess.run(["git", "config", "user.email"],
                             capture_output=True, text=True).stdout.strip()
-    if not os.environ.get("CI") and author != MAINTAINER_EMAIL:
+    if (owner or not os.environ.get("CI")) and author != MAINTAINER_EMAIL:
         print(f"❌ Автор коммита {author} ≠ {MAINTAINER_EMAIL} (публичный репо!)",
               file=sys.stderr)
         return 1

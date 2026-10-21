@@ -201,6 +201,17 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
         "без замера корней правило не судит вовсе — ни нарушителей, ни исключения"
 
 
+def test_the_markers_guard_has_no_root_exemption():
+    """Страж берёт корень основного checkout у git, а не от `__file__`: исключения
+    раскладки у него нет, и любой подъём от положения файла гейт видит как в любом
+    модуле (№605 out4 — четыре круга текстовых пинов одного подъёма находили
+    следующее написание)."""
+    layout = json.loads((ROOT / "docs" / "design" / "layout.json").read_text(encoding="utf-8"))
+    assert "scripts/check_private_markers.py" not in layout["root_exemptions"]
+    tree = ast.parse((ROOT / "scripts" / "check_private_markers.py").read_text(encoding="utf-8"))
+    assert lm._any_file(tree) == []
+
+
 def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
     """Форма «модуль распоряжается своим положением» проверяется НАЗНАЧЕНИЕМ
     узла, а не написанием выражения вокруг него.
