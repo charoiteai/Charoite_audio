@@ -469,17 +469,16 @@ def people_gate() -> pathlib.Path:
 
 
 PLACEHOLDER_RULE = "src/charoite_graph/graph_names.py"
-_BRACKET_TAIL = re.compile(r"[(（]([^()（）]*)[)）]\s*$")
 _rule = None
 
 
 def _placeholder(name: str) -> bool:
     """Метка диаризации («Собеседник 3») в Люди — дефект графа, а в коде продукта —
-    законная строка. Правило меток — продукта, гейт его не знает. Метка — всё имя
-    узла после снятия метки в скобках, и в хвостовой скобке тоже метка: «Аристарх
-    (Собеседник 4)» и «Собеседник 4 (Аристарх Чебуреков)» — люди и остаются
-    находкой (out1 I1–I2: `is_placeholder_node` — правило миграции, оно такой
-    узел тоже считает меткой). Грузится один файл модуля, без пакета:
+    законная строка. Правило меток — продукта, гейт его не знает. Метка — имя узла
+    без скобок, целиком метка по правилу продукта; любая скобка — человек, при
+    сомнении отказ: «Аристарх (Собеседник 4)», «Собеседник 4 (Аристарх Чебуреков)»,
+    «Собеседник 3 (муж)» — находки (out1 I1–I2, Opus I1, opus-fix C1: разбор скобок
+    регэкспом пропускал вложенные и не последние). Грузится один файл модуля, без пакета:
     `__init__.py` в сверку канона не входит и подменил бы правило мимо неё (out1
     C2 DS); сам модуль импортирует только `re`. Канон сверяется при первом
     обращении в любом режиме, не только в pre-push (out1 I1 DS)."""
@@ -491,11 +490,9 @@ def _placeholder(name: str) -> bool:
         try:
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            is_label, strip = mod.is_speaker_placeholder, mod.strip_speaker_label
-            def _rule(stem: str) -> bool:
-                bare = strip(stem)
-                tail = _BRACKET_TAIL.search(bare)       # «Метка (Имя Фамилия)» — человек (Opus I1)
-                return is_label(bare) and (tail is None or is_label(tail.group(1)))
+            is_label = mod.is_speaker_placeholder
+            def _rule(stem: str) -> bool:           # скобка в имени — человек: при сомнении отказ (Opus I1, opus-fix C1)
+                return not set(stem) & set("()（）") and is_label(stem)
         except (OSError, ImportError, AttributeError) as e:
             raise PeopleGateError(f"нет правила меток продукта ({type(e).__name__})") from None
     return _rule(name)

@@ -114,12 +114,14 @@ def test_all_refuses_an_edited_label_rule_when_it_would_drop_a_hit(repo):
     assert p.returncode == 1 and "правило меток" in p.stderr, p.stderr
 
 
-def test_label_with_a_full_name_in_brackets_is_a_person(repo):
-    """«Собеседник 4 (Аристарх Чебуреков)» — метка с полным именем в скобках:
-    правило продукта срезает хвостовую скобку и видит метку, но в узле —
-    человек; находка остаётся (финальный Opus I1)."""
+@pytest.mark.parametrize("named", [f"Собеседник 4 ({FAKE})", f"Собеседник 4 ({FAKE}) (Спикер 2)",
+                                   "Собеседник 4 (Аристарх (Чебуреков))", "Собеседник 4 (Спикер 2)"])
+def test_label_with_brackets_is_a_person(repo, named):
+    """Скобка в имени узла — человек, при сомнении отказ: правило продукта
+    срезает хвостовую скобку и видит метку, разбор скобок пропускал вложенные и
+    не последние (финальный Opus I1, opus-fix C1). Даже «метка (метка)» —
+    находка: цена fail-closed."""
     env = _owner_env(repo)
-    named = f"Собеседник 4 ({FAKE})"
     _people(repo, named)
     _stage(repo, "docs/a.md", f"{named} сказал\n")
     p = guard_run(repo.work, env=env)
@@ -127,11 +129,11 @@ def test_label_with_a_full_name_in_brackets_is_a_person(repo):
     assert "Чебуреков" not in p.stdout + p.stderr
 
 
-def test_label_with_a_label_in_brackets_stays_a_label(repo):
-    """«Собеседник 4 (Спикер 2)» — метка целиком, не человек."""
+def test_label_without_brackets_stays_a_label(repo):
+    """«Собеседник 4» без скобок — метка, не находка."""
     env = _owner_env(repo)
-    _people(repo, "Собеседник 4 (Спикер 2)")
-    _stage(repo, "docs/a.md", "Собеседник 4 (Спикер 2) сказал\n")
+    _people(repo, "Собеседник 4")
+    _stage(repo, "docs/a.md", "Собеседник 4 сказал\n")
     assert guard_run(repo.work, env=env).returncode == 0
 
 
