@@ -1110,6 +1110,12 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   and an MCP client does not show a dying server's stderr. The error is a
   subclass of the package's own `ToolError`: mcp 2.x would otherwise replace the
   text with "Error executing tool …", dropping the reason and the recipe.
+  A string reply from any tool passes through `privacy.scrub_local_paths`
+  before it reaches the client: the home directory becomes `~`, and a data root
+  outside the home becomes the `‹данные Чароита›` mark, so the model never
+  receives an absolute path of this machine. The registration recipe is the
+  deliberate exception — its server-code path travels in a tool error, not in
+  a reply.
 
 ## Surviving a crash
 
