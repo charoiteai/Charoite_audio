@@ -365,17 +365,11 @@ set, the bench prints the exact folder):
   refuses another branch before the run), run
   `.venv/bin/python scripts/lock_runtime_deps.py nemotron` (needs `uv`) and
   update the recipes in `docs/DIARIZATION.md` and `docs/ru/DIARIZATION.md`.
-  Then check the seam by hand before merging (CI does not run it): install the
-  engine from the branch and from `main` (the old side) into two clean data
-  folders with the install command of
-  [Post-meeting pass on Nemotron](#post-meeting-pass-on-nemotron) — it needs the
-  python of a built Charoite.app, the venv is refused; `--check` of both
-  folders must name different mlx-audio versions; on the same
-  recordings run each tree's `src/diarize_nemotron.py <wav> --model <weights>`
-  and `--stream --model <weights>` (s16le 16 kHz on stdin) with its
-  environment's python. Outputs must be equal, the stream lines without the
-  process price (`live_nemotron.FRONT_PRICE_KEYS`), and equal again under a
-  `deny network*` sandbox. `requirements-nemotron.in` and the lock are
+  Before merging the seam is checked by hand, CI does not run it: on the same
+  recordings the engine on the new version gives the same offline and
+  `--stream` output as on the old one (stream lines without the process price,
+  `live_nemotron.FRONT_PRICE_KEYS`), and the same again with no network.
+  `requirements-nemotron.in` and the lock are
   generated: Dependabot edits only `.in`, so its PR is red until the constant,
   the lock and the recipes are raised.
 - **Network.** The loader accepts only a local folder with `config.json` and

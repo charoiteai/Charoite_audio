@@ -536,11 +536,17 @@ def test_availability_names_a_version_other_than_the_checked_one(tmp_path, monke
 #: Соседи проверенной версии выводятся из константы тем же `_branch`, что судит её в
 #: `version_verdict`: подъём MLX_AUDIO_VERSION, и на другую ветку тоже, тестов не трогает
 #: (выходные круги 1–2 по №756).
-_MAJOR, _MINOR = nem._branch(nem.MLX_AUDIO_VERSION)
+_MAJOR, _MINOR = nem._branch(nem.MLX_AUDIO_VERSION) or (-1, -1)
 SAME_BRANCH = f"{_MAJOR}.{_MINOR}.9999"
 NEXT_BRANCH = f"{_MAJOR}.{_MINOR + 1}.0"
 PREV_BRANCH = f"{_MAJOR}.{_MINOR - 1}.0" if _MINOR else f"{_MAJOR - 1}.0.0"
-assert nem._branch(PREV_BRANCH) not in (None, (_MAJOR, _MINOR)), f"соседа ниже {nem.MLX_AUDIO_VERSION} нет"
+
+
+def test_the_derived_neighbours_are_real_branches():
+    """Соседи выше годятся, только пока константа читается и ниже неё есть ветка; иначе
+    падает этот тест, а не сбор всего модуля (выходной круг 4 по №756)."""
+    assert nem._branch(nem.MLX_AUDIO_VERSION) == (_MAJOR, _MINOR), "MLX_AUDIO_VERSION не читается как major.minor"
+    assert nem._branch(PREV_BRANCH) not in (None, (_MAJOR, _MINOR)), f"соседа ниже {nem.MLX_AUDIO_VERSION} нет"
 
 
 @pytest.mark.parametrize("installed, refused, warned", [
