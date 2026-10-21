@@ -184,6 +184,18 @@ def engine_python(root: pathlib.Path) -> pathlib.Path:
     return engine_dir(root) / "python" / "bin" / "python3"
 
 
+def engine_mlx_audio(root: pathlib.Path) -> str | None:
+    """Версия mlx-audio в установленном окружении — по раскладке, без запуска.
+
+    Источник — поле `Version:` метаданных дистрибутива, как у пробы
+    (`importlib.metadata.version`), а не имя каталога `*.dist-info`: строкой
+    «0.5.10» меньше «0.5.9». Не ровно один дистрибутив (нет, два после ручного
+    pip, несколько `python3.*`) — `None`: версию не сверить (№758, вход in1)."""
+    sites = [str(p) for p in (engine_dir(root) / "python" / "lib").glob("python3*/site-packages")]
+    found = list(importlib.metadata.distributions(name="mlx-audio", path=sites)) if sites else []
+    return found[0].version if len(found) == 1 else None
+
+
 def app_python() -> str:
     """Python приложения рядом с кодом — или "", если код лежит не в бандле.
 
@@ -887,6 +899,11 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
         интерпретаторе mlx-audio нужной версии, готовность не проверяет: контракт
         модуля — «без запуска движка», и это меряет только проба, которую доктор
         зовёт при выбранном Nemotron;
+      * `outdated` — своё окружение установщика отстало от `MLX_AUDIO_VERSION`:
+        причина с командой установщика или `None`. Считается только при пустом
+        ключе и годном интерпретаторе установщика; версия — `engine_mlx_audio`,
+        вердикт — `version_verdict` (одна политика с пересборкой). На `ready`
+        не влияет: на той же ветке пересборка идёт с предупреждением (№758);
       * `missing` — чего не хватает для готовности: `None` — готов;
         `"environment"` — ключ пуст и `engine_interpreter` не нашёл, чем
         запускать (окружение не установлено); `"interpreter"` — выбранного
@@ -919,6 +936,11 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
     else:
         missing, ready_reason = None, None
     ready = missing is None
+    outdated = None
+    if not setting.strip() and missing in (None, "weights"):
+        refusal_v, warning_v = version_verdict(engine_mlx_audio(root),
+                                               recipe=f"переставьте: {install_command(root)}")
+        outdated = refusal_v or warning_v
     return {
         "backend": normalize_engine_key(sufler.get("diarize_backend")),
         "nemotron_python": setting,
@@ -930,6 +952,7 @@ def engine_state(root: pathlib.Path, cfg: dict) -> dict:
         "weights_reason": weights_problem,
         "ready": ready,
         "ready_reason": ready_reason,
+        "outdated": outdated,
         "missing": missing,
         "live_mode": normalize_live_mode(sufler.get("live_nemotron")),
     }

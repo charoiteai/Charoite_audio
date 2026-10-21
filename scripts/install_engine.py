@@ -667,13 +667,17 @@ def offer(machine: dict, engine: dict, disk: dict, memory: dict, sizes: dict) ->
     backend = engine["backend"]
     ready = engine["ready"]
     custom = engine["nemotron_python_set"]
+    # Своё окружение установщика отстало от лока: переустановка разрешена и у
+    # включённого движка, «Включить» не запрещается — версию судит проба (№758).
+    # `.get`: план из старого `engine_state` поля не несёт.
+    outdated = bool(engine.get("outdated")) and not custom
     known = backend in diarize_nemotron.ENGINE_BACKENDS
     install = _action(_first_refusal(
         (not machine["ok"], machine["reason"]),
         (not disk["ok"], disk["reason"]),
         (custom, REASON_INSTALL_CUSTOM),
         (not known, REASON_INSTALL_UNKNOWN.format(backend=backend)),
-        (ready and backend == "nemotron", REASON_INSTALL_DONE),
+        (ready and backend == "nemotron" and not outdated, REASON_INSTALL_DONE),
     ))
     enable = _action(_first_refusal(
         (backend != "sherpa", REASON_ENABLE_NOT_SHERPA),
@@ -693,6 +697,8 @@ def offer(machine: dict, engine: dict, disk: dict, memory: dict, sizes: dict) ->
     else:
         state, reason = "broken", engine["ready_reason"]
     warnings = []
+    if outdated:
+        warnings.append("engine_outdated")
     if memory["warn"] and (install["allowed"] or enable["allowed"] or backend == "nemotron"):
         warnings.append("memory")
     if sizes["voice_set"] > 0 and backend == "nemotron":
@@ -801,15 +807,36 @@ def check(name: str, root: pathlib.Path) -> int:
     enter_process_group()
     spec = ENGINES[name]
     lock_platform(spec.lock)   # лок читают и установка, и проверка: «нет лока» не ждёт до установки (№489)
-    python = spec.python(root)
-    if not python.exists():
+    # «Включить» в приложении зовёт `--check` и при заданном `sufler.nemotron_python`:
+    # проба обязана судить тот интерпретатор, которым пойдёт разметка, а не окружение
+    # установщика (№758, вход in1: ключ на рабочий python давал «окружения движка нет»).
+    # Ключ разбирает `engine_state`, как у `--plan`.
+    try:
+        cfg = config_loader.load_user_or_example(root) or {}
+    except Exception as e:  # noqa: BLE001 — одна строка причины, как у `--plan`
+        print(f"конфиг не прочитан: {e}")
+        return 1
+    state = diarize_nemotron.engine_state(root, cfg)
+    setting = state["nemotron_python"]
+    if state["interpreter_reason"]:   # ключ пуст и окружения установщика нет
         print(f"окружения движка нет: {spec.home(root)} — {diarize_nemotron.install_command(root)}")
         return 1
-    out = spec.probe("", root=root)
+    python = state["interpreter"]
+    out = spec.probe(setting, root=root)
     if not out.ok:
-        print(f"окружение {spec.home(root)} есть, но движку нечем работать ({out.kind}): {out.reason}")
+        print(f"окружение {python} есть, но движку нечем работать ({out.kind}): {out.reason}")
         return 1
-    print(f"движок {name} на месте: {python}, mlx-audio {out.payload['mlx_audio']}, веса {spec.weights(root)}")
+    installed = out.payload["mlx_audio"]
+    print(f"движок {name} на месте: {python}, mlx-audio {installed}, веса {spec.weights(root)}")
+    # Другая ветка mlx-audio уже отказ пробы (`availability` → `version_verdict`). Дрейф
+    # патча — предупреждение с кодом 0: пересборка на нём идёт, выход 0.5.6/0.5.8/0.5.9
+    # совпал 6/6 (№756). Совет — по тому, чей интерпретатор: ключ установщик не обновит.
+    recipe = (f"обновите mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION} в окружении ключа "
+              "sufler.nemotron_python" if setting.strip()
+              else f"переставьте: {diarize_nemotron.install_command(root)}")
+    refusal, warning = diarize_nemotron.version_verdict(installed, recipe=recipe)
+    if refusal or warning:
+        print(f"окружение устарело: {refusal or warning}")
     return 0
 
 

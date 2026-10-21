@@ -321,6 +321,65 @@ def test_check_reports_without_the_network(tmp_path, monkeypatch, capsys):
     assert "mlx-audio 0.5.6" in capsys.readouterr().out and probe == [("", tmp_path)]
 
 
+def _check_with(tmp_path, monkeypatch, version, *, key=None, probed=None):
+    """`check` на подставной пробе с ответом `version`; `key` — `sufler.nemotron_python`."""
+    events = []
+    _, spec = _spec(tmp_path, events)
+    probed = [] if probed is None else probed
+    spec = ie.EngineSpec(**{**spec.__dict__, "probe": lambda setting, *, root: probed.append(setting) or
+                            fp.Outcome(fp.OK, payload={"mlx_audio": version})})
+    monkeypatch.setitem(ie.ENGINES, "nemotron", spec)
+    if key is not None:
+        (tmp_path / "config").mkdir(exist_ok=True)
+        (tmp_path / "config" / "config.yaml").write_text(
+            f"sufler:\n  diarize_backend: sherpa\n  nemotron_python: {key}\n", encoding="utf-8")
+    return ie.check("nemotron", tmp_path)
+
+
+def test_check_warns_when_the_installed_env_is_a_patch_behind(tmp_path, monkeypatch, capsys):
+    """Выкат поднял MLX_AUDIO_VERSION, окружение установщика осталось на прежнем патче:
+    `--check` говорит «окружение устарело» с командой установщика, код 0 — пересборка на
+    той же ветке идёт (`version_verdict`), выход 0.5.6/0.5.9 совпал 6/6 (№758, №756)."""
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
+    nem.engine_python(tmp_path).parent.mkdir(parents=True)
+    nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
+    assert _check_with(tmp_path, monkeypatch, "0.5.6") == 0
+    out = capsys.readouterr().out
+    assert "окружение устарело: mlx-audio 0.5.6: стык проверен на 0.5.9" in out
+    assert f"переставьте: {nem.install_command(tmp_path)}" in out
+    assert _check_with(tmp_path, monkeypatch, "0.5.9") == 0
+    assert "устарело" not in capsys.readouterr().out
+
+
+def test_check_probes_the_interpreter_of_the_key_not_the_installer_env(tmp_path, monkeypatch, capsys):
+    """«Включить» зовёт `--check` и при заданном `sufler.nemotron_python`: проба судит
+    интерпретатор ключа, а не окружение установщика, которого может не быть (№758, вход
+    in1: H C3 — «окружения движка нет» и код 1 при рабочем ключе)."""
+    monkeypatch.setattr(nem, "MLX_AUDIO_VERSION", "0.5.9")
+    key = tmp_path / "venv" / "bin" / "python"
+    probed = []
+    assert _check_with(tmp_path, monkeypatch, "0.5.9", key=key, probed=probed) == 0
+    assert probed == [str(key)]
+    assert "окружения движка нет" not in capsys.readouterr().out
+    assert _check_with(tmp_path, monkeypatch, "0.5.8", key=key) == 0
+    out = capsys.readouterr().out
+    assert "в окружении ключа sufler.nemotron_python" in out and "install_engine.py" not in out
+
+
+def test_check_without_the_key_and_the_env_names_the_installer(tmp_path, monkeypatch, capsys):
+    probed = []
+    assert _check_with(tmp_path, monkeypatch, "0.5.9", key="''", probed=probed) == 1
+    assert "окружения движка нет" in capsys.readouterr().out and probed == []
+
+
+def test_check_with_a_broken_config_is_one_line_and_code_one(tmp_path, monkeypatch, capsys):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("sufler: [", encoding="utf-8")
+    probed = []
+    assert _check_with(tmp_path, monkeypatch, "0.5.9", probed=probed) == 1
+    assert "конфиг не прочитан" in capsys.readouterr().out and probed == []
+
+
 def test_main_answers_help_before_any_work(capsys):
     with pytest.raises(SystemExit) as e:
         ie.main(["--help"])
@@ -1669,6 +1728,26 @@ def test_offer_follows_the_decision_table(row):
         assert got[action] == {"allowed": code == "", "reason": _why(code, engine)}, (n, action)
     if backend is None:
         assert got["warnings"] == []
+
+
+@pytest.mark.parametrize("backend", ["nemotron", "sherpa"])
+def test_an_outdated_installer_env_offers_reinstall_and_warns(backend):
+    """Окружение установщика отстало от версии продукта: у включённого движка установка
+    разрешена (не «движок поставлен и включён»), предупреждение `engine_outdated`;
+    «Включить» не запрещается — версию судит проба (№758). При заданном ключе поле
+    не значит ничего: ключ ведёт свою версию сам."""
+    engine = {**_engine(backend, None), "outdated": "mlx-audio 0.5.6: стык проверен на 0.5.9"}
+    got = ie.offer(_M[True], engine, _D[True], _MEM_OK, _READY_SIZES)
+    assert got["install"] == {"allowed": True, "reason": ""}
+    assert "engine_outdated" in got["warnings"]
+    assert got["enable"]["allowed"] is (backend == "sherpa")
+    fresh = ie.offer(_M[True], {**engine, "outdated": None}, _D[True], _MEM_OK, _READY_SIZES)
+    assert "engine_outdated" not in fresh["warnings"]
+    assert fresh["install"]["allowed"] is (backend == "sherpa")
+    custom = ie.offer(_M[True], {**_engine(backend, None, custom=True), "outdated": "x"}, _D[True], _MEM_OK,
+                      _READY_SIZES)
+    assert "engine_outdated" not in custom["warnings"]
+    assert custom["install"]["reason"] == ie.REASON_INSTALL_CUSTOM
 
 
 def test_unknown_values_are_named_normalized_and_quoted():

@@ -98,6 +98,10 @@ struct NemotronPlan: Decodable, Equatable {
             return memory?.reason ?? code
         case "voice_set_missing":
             return Self.voiceSetMissingText
+        case "engine_outdated":
+            return L.t("окружение движка отстало от версии продукта — переставьте движок",
+                       "the engine environment is behind the app version — reinstall the engine",
+                       "引擎环境落后于应用版本——请重新安装引擎")
         case "live_nemotron":
             return L.t("живой поток во время встречи включён отдельным ключом sufler.live_nemotron, эта кнопка им не управляет",
                        "the live stream during a meeting has its own key, sufler.live_nemotron; this button does not change it",
@@ -113,7 +117,7 @@ struct NemotronPlan: Decodable, Equatable {
             "已选择 Nemotron，但声音集不完整——无法回退到 sherpa")
     }
 
-    static let warningCodes = ["memory", "voice_set_missing", "live_nemotron"]
+    static let warningCodes = ["memory", "voice_set_missing", "live_nemotron", "engine_outdated"]
 
     // MARK: разбор
 
@@ -359,7 +363,9 @@ extension NemotronVisibleActions {
         let enableAllowed = offer.enable.allowed
         var consentShown = false
         if offer.install.allowed && !enableAllowed {
-            v.install = Button(title: installTitle, enabled: !blocked, note: blockNote)
+            // Включённый движок с отставшим окружением: установка — это переустановка (№758).
+            let title = offer.warnings.contains("engine_outdated") ? reinstallTitle : installTitle
+            v.install = Button(title: title, enabled: !blocked, note: blockNote)
             consentShown = true
         } else if !offer.install.allowed && installStates.contains(offer.state) {
             v.install = Button(title: installTitle, enabled: false, note: offer.install.reason)

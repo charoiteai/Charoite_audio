@@ -102,6 +102,18 @@ final class NemotronPlanTests: XCTestCase {
 
     // MARK: 3. что видно
 
+    /// Включённый движок с отставшим окружением: кнопка установки — «Переставить», а
+    /// предупреждение подписано словами, не кодом (№758).
+    func testОтставшееОкружениеПредлагаетПереставить() {
+        let v = visible(.ready(Self.plan("enabled", install: true, disable: true, warnings: ["engine_outdated"])))
+        XCTAssertEqual(v.install, .init(title: NemotronVisibleActions.reinstallTitle, enabled: true, note: nil))
+        XCTAssertNotNil(v.consent)
+        XCTAssertEqual(v.warnings.count, 1)
+        XCTAssertNotEqual(v.warnings.first, "engine_outdated")
+        let fresh = visible(.ready(Self.plan("not_installed", install: true)))
+        XCTAssertEqual(fresh.install?.title, NemotronVisibleActions.installTitle)
+    }
+
     func testУстановкаСБлокомСогласия() {
         let v = visible(.ready(Self.plan(install: true)))
         XCTAssertEqual(v.install, .init(title: NemotronVisibleActions.installTitle, enabled: true, note: nil))
