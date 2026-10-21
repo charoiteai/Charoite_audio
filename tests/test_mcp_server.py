@@ -503,11 +503,14 @@ def test_no_root_refusal_scrubs_the_reason_but_keeps_the_recipe(monkeypatch, tmp
     assert mcp_server._recipe() in out, out
 
 
+@pytest.mark.skipif(sys.version_info >= (3, 13),
+                    reason="с 3.13 нестрогий resolve() петлю не бросает — сбоя нет")
 def test_root_check_failure_passes_the_seam(monkeypatch, tmp_path):
     """Проверка корня может упасть не отказом, а сбоем: петля симлинков в
-    `CHAROITE_ROOT` → `RuntimeError` с путём. Скраб спрашивает корень тем же
-    путём и падает так же — наружу не уходит ни путь, ни сырое исключение
-    мимо шва, а ошибка инструмента с типом сбоя (№762)."""
+    `CHAROITE_ROOT` → `RuntimeError` с путём (до 3.13). Скраб спрашивает корень
+    тем же путём и падает так же — наружу не уходит ни путь, ни сырое исключение
+    мимо шва, а ошибка инструмента с типом сбоя (№762). Без версии интерпретатора
+    тот же отказ скраба держит тест ниже."""
     петля = tmp_path / "петля"
     петля.mkdir()
     (петля / "a").symlink_to(петля / "b")
@@ -521,6 +524,48 @@ def test_root_check_failure_passes_the_seam(monkeypatch, tmp_path):
     assert _ошибка(ответ), out
     assert "RuntimeError" in out, out
     assert str(петля) not in out, out
+
+
+def _скраб_падает(текст):
+    raise RuntimeError(f"Symlink loop from {текст!r}")
+
+
+def test_scrub_failure_hides_the_exception_text(tmp_path, monkeypatch):
+    """Скраб упал на тексте исключения — наружу уходит тип сбоя и пометка
+    «не проверено», ни слова исходного текста (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def сбой():
+        raise OSError(f"нет файла {home}/x.md")
+
+    monkeypatch.setattr(mcp_server, "_latest", сбой)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(f"OSError: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
+    assert "нет файла" not in out and str(home) not in out, out
+
+
+def test_scrub_failure_hides_the_answer(tmp_path, monkeypatch):
+    """Скраб упал на рабочем ответе — ответ не показан, отказ инструмента
+    вместо непроверенного текста (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(f"ответ не показан: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
 
 
 def test_tool_error_from_the_body_keeps_its_text(tmp_path, monkeypatch):

@@ -240,7 +240,9 @@ def _чисто(текст: str) -> str | None:
     из исходного текста."""
     try:
         return privacy.scrub_local_paths(текст)[0]
-    except Exception:  # noqa: BLE001 — любой сбой скраба: текст не проверен, наружу его нельзя
+    except Exception as сбой:  # noqa: BLE001 — любой сбой скраба: текст не проверен, наружу его нельзя
+        # причину — владельцу в журнал сервера, без текста: в нём пути
+        print(f"[privacy] скраб не отработал: {type(сбой).__name__}", file=sys.stderr)
         return None
 
 
