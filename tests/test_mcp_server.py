@@ -503,6 +503,7 @@ def test_no_root_refusal_scrubs_the_reason_but_keeps_the_recipe(monkeypatch, tmp
     assert mcp_server._recipe() in out, out
 
 
+@pytest.mark.корень_называет_тест
 @pytest.mark.skipif(sys.version_info >= (3, 13),
                     reason="с 3.13 нестрогий resolve() петлю не бросает — сбоя нет")
 def test_root_check_failure_passes_the_seam(monkeypatch, tmp_path):
@@ -566,6 +567,46 @@ def test_scrub_failure_hides_the_answer(tmp_path, monkeypatch):
     out = _текст(ответ)
     assert _ошибка(ответ), out
     assert out.endswith(f"ответ не показан: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
+
+
+def test_scrub_failure_hides_the_tool_error_text(tmp_path, monkeypatch):
+    """Скраб упал на тексте отказа `ToolError` — наружу только пометка (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def отказ():
+        raise mcp_server.ToolError(f"встреча {home}/x.md занята")
+
+    monkeypatch.setattr(mcp_server, "_latest", отказ)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(mcp_server._НЕ_ПРОВЕРЕНО) and "занята" not in out, out
+
+
+def test_scrub_failure_hides_the_no_root_reason(tmp_path, monkeypatch):
+    """Скраб упал на причине отказа без корня — причина скрыта, рецепт остаётся
+    (№762)."""
+    home = _fake_home(tmp_path, monkeypatch)
+
+    def нет_корня():
+        raise charoite_paths.RootNotNamed(f"корень данных {home}/Чароит.app/данные внутри бандла")
+
+    monkeypatch.setattr(mcp_server, "_root", нет_корня)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_status"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert f"sufler_status не выполнен: {mcp_server._НЕ_ПРОВЕРЕНО}" in out, out
+    assert "внутри бандла" not in out, out
+    assert mcp_server._recipe() in out, out
 
 
 def test_tool_error_from_the_body_keeps_its_text(tmp_path, monkeypatch):
