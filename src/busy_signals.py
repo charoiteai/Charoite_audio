@@ -47,6 +47,8 @@ RESIDENT_BUSY_FLOOR = 8 * 10**9
 #: Потолок переписи моделей: `/api/ps` отвечает за 10–20 мс и во время загрузки
 #: модели (замеры 17.10 и 21.10); дольше — сервер не в себе, и это «не читается».
 RESIDENT_TIMEOUT_S = 2.0
+#: Потолок тела переписи: десяток моделей — единицы КБ.
+RESIDENT_MAX_BYTES = 1_000_000
 
 
 def live_recording(root: pathlib.Path) -> bool:
@@ -108,25 +110,24 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     «тихо» при резидентной 32b/35b. Три исхода, не два:
     - сигнала нет — `([], None)`: у корня нет своего `config/config.yaml` (голый
       каталог, тест, CI — без фолбэка на пример, иначе тест спросил бы живую
-      Ollama владельца), движок mlx-server, адрес не этой машины или не разрешён
+      Ollama владельца), адрес не этой машины или не разрешён
       (`/api/ps` чужого сервера о нашей памяти ничего не говорит), сервер не
       слушает (моделей нет), 404 на `/api/ps` (по адресу не Ollama);
     - модели — `([(имя, байт, срок словами)], None)`;
     - не читается — `([], причина)`: таймаут, иной не-200, обрыв ответа, тело без
-      `models`/`size`, битый конфиг, раздел `llm` не словарь, неизвестный движок.
+      `models`/`size`, битый конфиг, раздел `llm` не словарь, неизвестный движок,
+      адрес без схемы или с битой грамматикой.
       Сломанный сигнал — не свободная машина.
     Адрес — только из `privacy.llm_base_url`: сырой `llm.base_url` проект не читает.
-    Считается только Ollama: модель движка mlx-server живёт отдельным процессом
-    без переписи и здесь не видна (долг №615).
+    Считается Ollama этой машины при любом движке чата; модель самого mlx-server
+    живёт отдельным процессом без переписи и здесь не видна (долг №615).
     """
     cfg, problem = _census_config(root)
     if problem or cfg is None:
         return [], problem
-    # mlx-server держит модель своим процессом — переписи у него нет (долг №615).
-    # Облако — не повод молчать: без тумблера, под рубильником и в запасном пути
-    # чат сидит на Ollama по `llm_base_url` (llm.py, `chat_model_url`).
-    if privacy.llm_engine(cfg) == "mlx-server":
-        return [], None
+    # Вопрос — что держит Ollama этой машины, а не на чём сидит чат: `llm_base_url`
+    # — адрес Ollama при любом движке (у mlx-server свой `mlx_base_url`, у облака
+    # свой шлюз; эмбеддер, стенды и запасной путь облака живут на Ollama).
     try:
         base = privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused:
@@ -135,8 +136,7 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
         return [], None
     url = base.rstrip("/") + "/api/ps"
     try:
-        with net.open_url(urllib.request.Request(url), timeout=RESIDENT_TIMEOUT_S) as r:
-            body = json.loads(r.read().decode("utf-8"))
+        body = json.loads(_read_bounded(url).decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return [], None  # по адресу не Ollama (или Ollama без переписи) — сигнала нет
@@ -161,6 +161,26 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     return out, None
 
 
+def _read_bounded(url: str) -> bytes:
+    """Тело ответа целиком за RESIDENT_TIMEOUT_S и не больше RESIDENT_MAX_BYTES:
+    таймаут `urlopen` — на каждую операцию сокета, и сервер, отдающий тело по
+    байту, держал бы сторожа сколько угодно (Opus по №595)."""
+    deadline = time.monotonic() + RESIDENT_TIMEOUT_S
+    chunks, size = [], 0
+    with net.open_url(urllib.request.Request(url), timeout=RESIDENT_TIMEOUT_S) as r:
+        read = getattr(r, "read1", r.read)
+        while chunk := read(65536):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > RESIDENT_MAX_BYTES:
+                raise ValueError(f"ответ больше {RESIDENT_MAX_BYTES} байт")
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"ответ дольше {RESIDENT_TIMEOUT_S} с")
+        if getattr(r, "length", None):  # read1 не проверяет Content-Length — обрыв тела
+            raise http.client.IncompleteRead(b"".join(chunks), r.length)
+    return b"".join(chunks)
+
+
 def _census_config(root: pathlib.Path) -> tuple[dict | None, str | None]:
     """Свой конфиг корня данных для переписи: `(cfg, None)`; нет файла — `(None, None)`;
     сломан — `(None, причина)`: не читается, не словарь, раздел `llm` не словарь,
@@ -181,6 +201,13 @@ def _census_config(root: pathlib.Path) -> tuple[dict | None, str | None]:
         privacy.llm_engine(cfg)
     except privacy.PrivacyRefused as e:
         return None, f"конфиг {path}: {e}"
+    try:
+        privacy.llm_base_url(cfg)
+    except privacy.PrivacyRefused as e:
+        # Битая грамматика адреса — поломка конфига; чужая машина, рубильник,
+        # открытый http — политика, «не наша память» (решает resident_models).
+        if getattr(e.__cause__, "kind", None) in ("scheme", "ambiguous"):
+            return None, f"конфиг {path}: {e}"
     return cfg, None
 
 

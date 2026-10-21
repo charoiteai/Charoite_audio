@@ -474,14 +474,15 @@ engine needs it, and both files are fetched by the same loader. It prints the
 weight licence (NVIDIA OpenMDW 1.1, with its link) in the network block, before
 connecting. The outcome is honest: **0** — installed and the probe is green;
 **`EXIT_INSTALL_BUSY` (12)** — the machine is busy (a meeting being processed, a
-live recording, the night cycle, a test mutation), another install is running, or
+live recording, the night cycle, a test mutation, local models holding memory in
+Ollama — the reason ends with the `ollama stop` that frees it), another install is running, or
 another process holds the download of the same model file and it has not
 progressed for several minutes (a live download is waited for);
 the refusal names the reasons and asks to wait for them to finish — the
 night-cycle reason carries the status file and how many minutes ago it was
 updated, so an abandoned `running` is told from a night actually under way; the
 deterministic refusals (a machine the engine does not work on, a lock that will
-not be read) are decided before the transient ones, so a machine that will never
+not be read, a broken `config/config.yaml`) are decided before the transient ones, so a machine that will never
 suit gets code 1, not 12, even while the night cycle runs; **
 `EXIT_INSTALL_CANCELLED` (13)** — SIGTERM/SIGHUP/Ctrl-C; **1** — a refusal (wrong
 machine, volume without flock, the weight loader's refusal). A signal inherited as

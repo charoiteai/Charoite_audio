@@ -148,8 +148,13 @@ step "4. мутация изменённых строк ($RANGE)"
 if ! skipped mutation; then
   # корень данных владельца — мутатору явно: сам он берёт корень от своего файла
   # и в worktree не видит лока живой встречи (№339, DS I9 = GLM I1)
-  CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" > "$WORK/mutation.log" 2>&1; rc=$?
+  # согласие идти поверх занятой машины (PREFLIGHT_FORCE) действует и на мутатор:
+  # иначе шаг 0 пропущен, а мутатор отказывает той же занятостью (Opus по №595)
+  force=""; [ -n "${PREFLIGHT_FORCE:-}" ] && force="--force"
+  CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" $force > "$WORK/mutation.log" 2>&1; rc=$?
   tail -4 "$WORK/mutation.log" | sed 's/^/   /'
+  # код 3 мутатора — «машина занята» (старт или замок), а не дефект: пропуск вслух
+  if [ $rc -eq 3 ]; then SKIPPED="$SKIPPED mutation(машина занята)"; else
   case "$(outcome $rc)" in
     ok)      verdict 0 mutation ;;
     nothing) SKIPPED="$SKIPPED mutation(проверять нечего)" ;;
@@ -158,6 +163,7 @@ if ! skipped mutation; then
     unjudged) SKIPPED="$SKIPPED mutation(не проверено ни одного)" ;;
     *)       verdict "$rc" mutation ;;
   esac
+  fi
 fi
 
 printf '\n══ preflight за %s с: ' "$(( $(date +%s) - T0 ))"

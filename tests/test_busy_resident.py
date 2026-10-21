@@ -25,7 +25,7 @@ GB = 10**9
 
 
 @contextlib.contextmanager
-def _fake_ollama(status=200, body=None, delay=0.0, short=0):
+def _fake_ollama(status=200, body=None, delay=0.0, short=0, drip=0.0):
     """Подставной сервер `/api/ps` на 127.0.0.1:<свободный порт>. `short` —
     объявить на столько байт больше, чем отдать: ответ оборвётся."""
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -37,7 +37,13 @@ def _fake_ollama(status=200, body=None, delay=0.0, short=0):
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload) + short))
                 self.end_headers()
-                self.wfile.write(payload)
+                if drip:
+                    for i in range(len(payload)):
+                        self.wfile.write(payload[i:i + 1])
+                        self.wfile.flush()
+                        time.sleep(drip)
+                else:
+                    self.wfile.write(payload)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # клиент ушёл по таймауту — так и задумано
 
@@ -158,14 +164,26 @@ def test_physical_bytes_sysconf_failure(monkeypatch):
     assert busy_signals._physical_bytes() is None
 
 
-def test_not_ollama_engine_is_not_asked(tmp_path, monkeypatch):
-    """mlx-server: по адресу движка нет `/api/ps` — 404 читался бы «занято» вечно.
-    Модель mlx-server здесь не видна (ограничение, долг №615)."""
+def test_mlx_engine_still_counts_ollama(tmp_path, ram_64gb):
+    """mlx-server: у движка свой `mlx_base_url`, а `llm.base_url` — по-прежнему Ollama, где
+    живут эмбеддер, стенды и ручной `ollama run` (Opus по №595). Модель самого mlx-server
+    здесь не видна (долг №615)."""
+    with _fake_ollama(body={"models": [_model("qwen3.6:35b-mlx", 22_493_923_824)]}) as url:
+        _config(tmp_path, url, "  engine: mlx-server\n  mlx_base_url: http://127.0.0.1:8080\n")
+        busy = busy_signals.machine_busy(tmp_path)
+        assert len(busy) == 1 and busy[0].startswith("локальные модели держат память (qwen3.6:35b-mlx")
+
+
+def test_address_grammar_is_a_config_problem(tmp_path, monkeypatch):
+    """`base_url: localhost:11434` без схемы — поломка конфига (установщик откажет кодом 1),
+    а не «не наша память» и не «свободно»."""
     def boom(*a, **k):
-        raise AssertionError("спросили не Ollama")
+        raise AssertionError("спросили битый адрес")
     monkeypatch.setattr(busy_signals.net, "open_url", boom)
-    _config(tmp_path, "http://127.0.0.1:8080", "  engine: mlx-server\n")
-    assert busy_signals.resident_models(tmp_path) == ([], None)
+    _config(tmp_path, "localhost:11434")
+    problem = busy_signals.resident_config_problem(tmp_path)
+    assert problem and problem.startswith("конфиг ") and "llm.base_url" in problem
+    assert busy_signals.machine_busy(tmp_path)[0].endswith("— почините config/config.yaml")
 
 
 def test_small_resident_model_is_not_busy(tmp_path, ram_64gb):
@@ -208,6 +226,26 @@ def test_cut_answer_is_busy(tmp_path, ram_64gb):
         _config(tmp_path, url)
         busy = busy_signals.machine_busy(tmp_path)
         assert len(busy) == 1 and "IncompleteRead" in busy[0] and busy[0].endswith("проверьте Ollama")
+
+
+def test_dripping_server_is_cut_at_the_deadline(tmp_path, ram_64gb, monkeypatch):
+    """Тело по байту раз в 0,1 с — таймаут сокета не срабатывает ни разу, а дедлайн
+    на всю перепись срабатывает: «не читается» за ~0,5 с, а не за минуты."""
+    monkeypatch.setattr(busy_signals, "RESIDENT_TIMEOUT_S", 0.5)
+    with _fake_ollama(body={"models": [_model("x", 1)] * 20}, drip=0.1) as url:
+        _config(tmp_path, url)
+        t0 = time.monotonic()
+        models, problem = busy_signals.resident_models(tmp_path)
+        assert time.monotonic() - t0 < 2.0
+        assert models == [] and problem.endswith("TimeoutError")
+
+
+def test_oversized_answer_is_unreadable(tmp_path, ram_64gb, monkeypatch):
+    monkeypatch.setattr(busy_signals, "RESIDENT_MAX_BYTES", 10)
+    with _fake_ollama(body={"models": []}) as url:
+        _config(tmp_path, url)
+        models, problem = busy_signals.resident_models(tmp_path)
+        assert models == [] and problem.endswith("ValueError")
 
 
 def test_hanging_server_is_busy_within_timeout(tmp_path, ram_64gb, monkeypatch):
