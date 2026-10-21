@@ -525,19 +525,21 @@ def test_availability_names_a_version_other_than_the_checked_one(tmp_path, monke
     """Стык проверен на одной ветке mlx-audio: другая ветка — строка с рецептом до
     прогона (круг 2 по #648, DS I2; ветка вместо строгого равенства — круг 3)."""
     monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.4.9")
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: PREV_BRANCH)
     d = _model_dir(tmp_path)
     problem = nem.availability(d, warn=lambda line: pytest.fail(f"другая ветка — не предупреждение: {line}"))
-    assert problem and "mlx-audio 0.4.9" in problem and nem.MLX_AUDIO_VERSION in problem
+    assert problem and f"mlx-audio {PREV_BRANCH}" in problem and nem.MLX_AUDIO_VERSION in problem
     monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: nem.MLX_AUDIO_VERSION)
     assert nem.availability(d) is None
 
 
-#: Соседи проверенной версии выводятся из константы: подъём MLX_AUDIO_VERSION, и
-#: на другую ветку тоже, тестов не трогает (выходной круг №756, DS M2).
-_MAJOR, _MINOR, _PATCH = (int(x) for x in nem.MLX_AUDIO_VERSION.split(".")[:3])
-SAME_BRANCH = f"{_MAJOR}.{_MINOR}.{_PATCH + 1}"
+#: Соседи проверенной версии выводятся из константы тем же `_branch`, что судит её в
+#: `version_verdict`: подъём MLX_AUDIO_VERSION, и на другую ветку тоже, тестов не трогает
+#: (выходные круги 1–2 по №756).
+_MAJOR, _MINOR = nem._branch(nem.MLX_AUDIO_VERSION)
+SAME_BRANCH = f"{_MAJOR}.{_MINOR}.9999"
 NEXT_BRANCH = f"{_MAJOR}.{_MINOR + 1}.0"
+PREV_BRANCH = f"{_MAJOR}.{_MINOR - 1}.0" if _MINOR else f"{_MAJOR - 1}.0.0"
 
 
 @pytest.mark.parametrize("installed, refused, warned", [
@@ -547,7 +549,7 @@ NEXT_BRANCH = f"{_MAJOR}.{_MINOR + 1}.0"
     (f"{SAME_BRANCH}.dev0+g1a2b3c", False, True),
     (f"{SAME_BRANCH}+local", False, True),
     (NEXT_BRANCH, True, False),
-    ("0.4.9", True, False),
+    (PREV_BRANCH, True, False),
     ("мусор", True, False),
     (None, True, False),
 ])

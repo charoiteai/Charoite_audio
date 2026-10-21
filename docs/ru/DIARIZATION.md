@@ -352,16 +352,17 @@ DER (diarization error rate): долю времени речи, подписан
   (другой ветке движок отказывает до прогона), запускается
   `.venv/bin/python scripts/lock_runtime_deps.py nemotron` (нужен `uv`) и
   обновляются рецепты в `docs/DIARIZATION.md` и `docs/ru/DIARIZATION.md`.
-  Потом до мержа проверяется стык: движок ставится в два чистых каталога
-  `CHAROITE_ROOT` python бандла приложения
-  (`<app>/Contents/Resources/python/bin/python3 scripts/install_engine.py nemotron`),
-  из ветки и из `main` как старая сторона; на тех же записях гоняются
-  `src/diarize_nemotron.py <wav> --model <веса>` и `--stream --model <веса>`
-  (s16le 16 кГц на stdin) своего дерева python своего окружения. Выходы
-  обязаны совпасть (строки потока без `cpu_s`, `rss_mb`, `phys_mb`) и совпасть
-  снова в песочнице `deny network*`. `requirements-nemotron.in` и лок —
-  генерат: Dependabot правит только `.in`, поэтому его PR красный, пока этого
-  не сделают.
+  Потом до мержа стык проверяется руками (CI его не гоняет): движок ставится из
+  ветки и из `main` (старая сторона) в два чистых каталога данных командой
+  установки из раздела
+  [Проход после встречи на Nemotron](#проход-после-встречи-на-nemotron); на тех
+  же записях гоняются `src/diarize_nemotron.py <wav> --model <веса>` и
+  `--stream --model <веса>` (s16le 16 кГц на stdin) своего дерева python своего
+  окружения. Выходы обязаны совпасть, строки потока — без цены процесса
+  (`live_nemotron.FRONT_PRICE_KEYS`), и совпасть снова в песочнице
+  `deny network*`. `requirements-nemotron.in` и лок — генерат: Dependabot
+  правит только `.in`, поэтому его PR красный, пока не подняты константа, лок и
+  рецепты.
 - **Сеть.** Загрузчик принимает только локальный каталог с `config.json` и
   весами и передаёт в mlx-audio `pathlib.Path` — для Path библиотека на хаб не
   ходит. Идентификатор репозитория — отказ с рецептом загрузки, а не загрузка.
