@@ -1933,8 +1933,9 @@ def main(argv: list[str]) -> int:
                 # не чаще раза в минуту.
                 elif clock() - resident_checked >= RESIDENT_POLL_S:
                     resident_checked = clock()
-                    if reason := busy_signals.resident_busy_reason(data_root):
-                        aborted = f"модели в памяти: {reason}"
+                    # причина — словами сенсора: «модели держат память» или
+                    # «не читается», без своего ярлыка поверх
+                    aborted = busy_signals.resident_busy_reason(data_root) or ""
             if aborted:
                 print(f"⏹ {aborted} — прерываюсь ({facts.tested}/{len(plan)} "
                       "проверено, остальное не судилось)")

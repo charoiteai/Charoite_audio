@@ -38,10 +38,9 @@ NIGHTLY_REL = pathlib.Path("logs") / "nightly.json"
 #: nightly.json со state=running старше этого — брошенный (ребут посреди ночи)
 NIGHT_STALE_S = 8 * 3600
 CONFIG_REL = pathlib.Path("config") / "config.yaml"
-#: Порог «машина занята» по моделям в памяти Ollama (№595): большее из доли
-#: физической памяти и пола. Mac 64 ГиБ → 11,5 ГБ (десятичные, как в `ollama ps`):
-#: 35b (22,5 ГБ) и 32b (~20 ГБ) — занято, эмбеддер bge-m3 (0,7–1,2 ГБ) — нет. Пол —
-#: для машин 16–32 ГиБ: без него 4b (~3 ГБ) на 16 ГиБ уже держала бы прогоны.
+#: Порог «машина занята» по моделям в памяти Ollama (№595) — правило в
+#: `_resident_limit`. Mac 64 ГиБ → 11,5 ГБ (десятичные, как в `ollama ps`):
+#: 35b (22,5 ГБ) и 32b (~20 ГБ) — занято, эмбеддер bge-m3 (0,7–1,2 ГБ) — нет.
 #: Своп 11,7 ГБ 02.10 — вторая большая модель поверх первой.
 RESIDENT_BUSY_SHARE = 1 / 6
 RESIDENT_BUSY_FLOOR = 8 * 10**9
@@ -109,11 +108,13 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     «тихо» при резидентной 32b/35b. Три исхода, не два:
     - сигнала нет — `([], None)`: у корня нет своего `config/config.yaml` (голый
       каталог, тест, CI — без фолбэка на пример, иначе тест спросил бы живую
-      Ollama владельца), адрес не этой машины или не разрешён (`/api/ps` чужого
-      сервера о нашей памяти ничего не говорит), сервер не слушает (моделей нет);
+      Ollama владельца), движок не Ollama, адрес не этой машины или не разрешён
+      (`/api/ps` чужого сервера о нашей памяти ничего не говорит), сервер не
+      слушает (моделей нет), 404 на `/api/ps` (по адресу не Ollama);
     - модели — `([(имя, байт, срок словами)], None)`;
-    - не читается — `([], причина)`: таймаут, не-200, обрыв ответа, тело без
-      `models`/`size`, битый конфиг. Сломанный сигнал — не свободная машина.
+    - не читается — `([], причина)`: таймаут, иной не-200, обрыв ответа, тело без
+      `models`/`size`, битый конфиг, раздел `llm` не словарь, неизвестный движок.
+      Сломанный сигнал — не свободная машина.
     Адрес — только из `privacy.llm_base_url`: сырой `llm.base_url` проект не читает.
     Считается только Ollama: модель движка mlx-server живёт отдельным процессом
     без переписи и здесь не видна (долг №615).
@@ -127,12 +128,18 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
         return [], f"конфиг {path} не читается: {type(e).__name__}"
     if not isinstance(cfg, dict):
         return [], f"конфиг {path} не словарь"
+    if not isinstance(cfg.get("llm") or {}, dict):
+        return [], f"конфиг {path}: раздел llm не словарь"
     try:
-        if privacy.llm_engine(cfg) != "ollama":
-            return [], None
+        engine = privacy.llm_engine(cfg)
+    except privacy.PrivacyRefused as e:
+        return [], f"конфиг {path}: {e}"
+    if engine != "ollama":
+        return [], None
+    try:
         base = privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused:
-        return [], None
+        return [], None  # адрес запрещён политикой — не наша память
     if not privacy.is_loopback_url(base):
         return [], None
     url = base.rstrip("/") + "/api/ps"
@@ -187,7 +194,8 @@ def _physical_bytes() -> int | None:
 
 
 def resident_busy_reason(root: pathlib.Path) -> str | None:
-    """Слова «модели держат память» — или None, если держат меньше порога.
+    """Слова «модели держат память» или «память моделей не читается» — или None:
+    держат меньше порога либо сигнала нет (`resident_models`).
     Не бросает: сбой сенсора — «не читается», а не «свободно» и не падение
     вызывающего (мутатор зовёт его между мутантами напрямую)."""
     try:

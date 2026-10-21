@@ -1513,8 +1513,27 @@ def test_модель_в_памяти_прерывает_между_мутант
         return
     assert mc.main(argv) == exit_codes.EXIT_PARTIAL
     assert len(журнал) == 1 + 4 and len(опросы) == 3, (журнал, опросы)
-    причина = "модели в памяти: локальные модели держат память (qwen 22,5 ГБ)"
+    причина = "локальные модели держат память (qwen 22,5 ГБ)"
     assert f"⏹ {причина} — прерываюсь (4/6" in capsys.readouterr().out
+    assert f"(остановка: {причина})" in отчёт.read_text(encoding="utf-8")
+
+
+def test_модель_в_памяти_на_первом_мутанте(tmp_path, monkeypatch, capsys):
+    """Первый опрос — на первом мутанте: модель села в память за время базы —
+    ни одного мутанта, `EXIT_UNJUDGED`, причина словами сенсора (и «не читается» тоже)."""
+    import busy_signals
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 3)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 30})
+    опросы = []
+    причина = "память моделей не читается (TimeoutError) — проверьте Ollama"
+    monkeypatch.setattr(busy_signals, "resident_busy_reason",
+                        lambda root: опросы.append(root) or причина)
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100",
+                    "--report", str(отчёт)]) == exit_codes.EXIT_UNJUDGED
+    assert len(журнал) == 1 and len(опросы) == 1, (журнал, опросы)
+    assert f"⏹ {причина} — прерываюсь (0/3" in capsys.readouterr().out
     assert f"(остановка: {причина})" in отчёт.read_text(encoding="utf-8")
 
 

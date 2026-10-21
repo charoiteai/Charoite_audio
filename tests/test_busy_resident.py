@@ -258,11 +258,21 @@ def test_sensor_crash_is_busy_not_free(tmp_path, monkeypatch):
 
 
 def test_scalar_llm_section_is_unreadable_not_crash(tmp_path):
-    """`llm: ollama` скаляром — `llm_engine` бросает AttributeError; сенсор отвечает словами."""
+    """`llm: ollama` скаляром — не падение и не «Ollama сломана»: причина называет конфиг."""
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "config.yaml").write_text("llm: ollama\n", encoding="utf-8")
-    assert busy_signals.resident_busy_reason(tmp_path) == (
-        "память моделей не читается (AttributeError) — проверьте Ollama")
+    reason = busy_signals.resident_busy_reason(tmp_path)
+    assert reason.startswith("память моделей не читается (конфиг ") and "раздел llm не словарь" in reason
+
+
+def test_unknown_engine_is_unreadable_not_free(tmp_path, monkeypatch):
+    """Опечатка в движке — сломанный конфиг, а не «сигнала нет»: Ollama держит память при любом движке."""
+    def boom(*a, **k):
+        raise AssertionError("спросили сеть при неизвестном движке")
+    monkeypatch.setattr(busy_signals.net, "open_url", boom)
+    _config(tmp_path, "http://127.0.0.1:11434", "  engine: ollam\n")
+    models, problem = busy_signals.resident_models(tmp_path)
+    assert models == [] and problem and "неизвестный движок" in problem
 
 
 def test_no_census_endpoint_is_no_signal(tmp_path, ram_64gb):
