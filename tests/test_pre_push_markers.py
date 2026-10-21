@@ -1085,3 +1085,9 @@ def test_raw_objects_returns_each_object_whole(repo, monkeypatch):
     for sha in (first, second, repo.base):
         want = git(repo.work, "cat-file", "commit", sha, env=repo.env).stdout
         assert got[sha] == want, sha
+
+
+def test_the_guard_code_root_is_the_checkout():
+    """Подъём стража ведёт к корню КОДА того же checkout — значение, а не написание
+    (№605 out2, DS)."""
+    assert guard._code_top() == REPO
