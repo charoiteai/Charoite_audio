@@ -711,6 +711,10 @@ def plan_for(root: pathlib.Path, rng: str, shard: tuple[int, int] | None = None,
         except layout_map.LayoutError as e:
             raise PreparationError(f"область мутатора не собралась: {e}")
     area = layout_map.mutation_area(inv) if inv is not None else set()
+    if inv is not None:
+        # Вынос решения двери в другой модуль (№613): символ, который замыкание
+        # двери импортирует и зовёт, критичен в своём модуле — по той же ревизии
+        zones = layout_map.zones_with_imports(zones, inv, area)
 
     def ours(path: pathlib.Path) -> bool:
         # Вне области — только то, что ревизия знает и разобрала: файл, которого

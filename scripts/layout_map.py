@@ -760,27 +760,28 @@ def package_of(rel: str) -> str:
     return form(rel).package
 
 
-def imports_of(rel: str, tree: ast.Module) -> set[str]:
-    """Дерево модуля → имена, которые он импортирует, КАК ИХ НАПИСАЛ АВТОР.
+def _import_forms(rel: str, tree: ast.Module):
+    """Грамматика импорта: (написанное имя, локальное имя, к чему оно привязано).
 
-    Единственное место, которое знает, как читать импорт. Две формы раньше
-    терялись молча, и обе — основные после упаковки:
+    Единственное место, которое разбирает узлы `Import`/`ImportFrom`; из него
+    читают `imports_of` (что импортировано) и `import_bindings` (какое имя в
+    модуле что значит). Локальное имя None — у самой базы `from x import …` и
+    у `*`: имени они не связывают.
 
-    * точечное имя обрезалось до первого сегмента (`alias.name.split(".")[0]`),
-      поэтому `from charoite_graph import graphs` в точке входа не давало
-      ребра вовсе: `charoite_graph` в списке модулей нет, а `graphs` не
-      искали;
-    * относительные импорты не рассматривались (`node.level == 0`), а внутри
-      пакета `from . import graph_names` — обычный стиль.
-
-    Резолв «имя → модуль продукта» здесь НЕ делается: это знание графа, и
-    живёт оно в `import_graph`. Здесь — только грамматика импорта.
+    * `import a.b` связывает `a` с `a` (обращение потом `a.b.f`);
+    * `import a.b as m` связывает `m` с `a.b`;
+    * `from x import y as z` связывает `z` с `x.y`, относительный импорт
+      поднимается от пакета файла.
     """
     пакет = package_of(rel)
-    имена: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            имена.update(a.name for a in node.names)
+            for a in node.names:
+                if a.asname:
+                    yield a.name, a.asname, a.name
+                else:
+                    первый = a.name.split(".")[0]
+                    yield a.name, первый, первый
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 корень = пакет.split(".") if пакет else []
@@ -793,9 +794,45 @@ def imports_of(rel: str, tree: ast.Module) -> set[str]:
             else:
                 база = node.module or ""
             if база:
-                имена.add(база)
-            имена.update(f"{база}.{a.name}" if база else a.name for a in node.names)
-    return имена
+                yield база, None, None
+            for a in node.names:
+                полное = f"{база}.{a.name}" if база else a.name
+                if a.name == "*":
+                    yield полное, None, None
+                else:
+                    yield полное, a.asname or a.name, полное
+
+
+def imports_of(rel: str, tree: ast.Module) -> set[str]:
+    """Дерево модуля → имена, которые он импортирует, КАК ИХ НАПИСАЛ АВТОР.
+
+    Читает единственную грамматику импорта (`_import_forms`). Две формы раньше
+    терялись молча, и обе — основные после упаковки:
+
+    * точечное имя обрезалось до первого сегмента (`alias.name.split(".")[0]`),
+      поэтому `from charoite_graph import graphs` в точке входа не давало
+      ребра вовсе: `charoite_graph` в списке модулей нет, а `graphs` не
+      искали;
+    * относительные импорты не рассматривались (`node.level == 0`), а внутри
+      пакета `from . import graph_names` — обычный стиль.
+
+    Резолв «имя → модуль продукта» здесь НЕ делается: это знание графа, и
+    живёт оно в `import_graph`. Здесь — только грамматика импорта.
+    """
+    return {написано for написано, _, _ in _import_forms(rel, tree)}
+
+
+def import_bindings(rel: str, tree: ast.Module) -> dict[str, set[str]]:
+    """Локальное имя модуля → полные имена, к которым его привязал импорт.
+
+    Импорт внутри функции тоже связывает: область видимости не разбирается, как
+    и затенение в `in_zone` — лишнее имя дешевле пропуска. `*` имени не даёт.
+    """
+    out: dict[str, set[str]] = {}
+    for _, имя, к_чему in _import_forms(rel, tree):
+        if имя is not None:
+            out.setdefault(имя, set()).add(к_чему)
+    return out
 
 
 def _module_by_name(имя: str, mods: set[str]) -> str | None:
@@ -1566,9 +1603,13 @@ def in_zone(entries, rel: str, qualname: str, tree: ast.AST | None = None) -> bo
     замыкание — производная дерева. `mutation_not_critical` из замыкания не
     вычитается.
 
-    Не следует: другой модуль, `getattr` по строке, `globals()`, реестр,
-    который заполняется во время работы, атрибут значения неизвестного класса
-    (`hub.drop(...)`). Вынос в другой модуль — отдельная карточка.
+    Сама функция не выходит за файл: другой модуль сюда приходит готовыми
+    записями `модуль::символ`, которые мутатор добавляет до плана
+    (`zones_with_imports`, №613: символ, импортированный модулем двери и
+    упомянутый её замыканием, — один шаг между модулями). Сторож зон зовёт
+    `in_zone` без этого расширения.
+    Не следует: `getattr` по строке, `globals()`, реестр, который заполняется
+    во время работы, атрибут значения неизвестного класса (`hub.drop(...)`).
     Не каталог эффектов (`unlink`, `write_text`): узкого признака писца нет,
     и вынесенное условие («удалять ли») из каталога выпадает. Не весь модуль:
     `daemon` и `rebuild_transcript` решены функцией специально. Не только
@@ -1579,6 +1620,107 @@ def in_zone(entries, rel: str, qualname: str, tree: ast.AST | None = None) -> bo
     if tree is None:
         return False
     return _covers(qualname, _delegated(entries, rel, tree))
+
+
+def _imported_mentions(roots, bindings: dict[str, set[str]],
+                       mod_values: dict[str, list[ast.AST]]) -> set[str]:
+    """Полные имена импортов, упомянутые в `roots`: голое имя (`too_old`) и
+    цепочка атрибутов от него (`x.too_old`, `m.Cls.method`). Модульная переменная
+    раскрывается её значениями, как в `_collect_mentions`; цикл обрывает `seen`.
+    Аннотация не упоминание; вложенные `def`/`class` — свои узлы замыкания."""
+    found: set[str] = set()
+    seen: set[str] = set()
+    stack: list[ast.AST] = list(roots)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.AnnAssign):
+            if node.value is not None:
+                stack.append(node.value)
+            continue
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            хвост: list[str] = []
+            cur: ast.AST = node
+            while isinstance(cur, ast.Attribute):
+                хвост.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name) and cur.id in bindings:
+                путь = ".".join(reversed(хвост))
+                found.update(f"{b}.{путь}" for b in bindings[cur.id])
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            found.update(bindings.get(node.id, ()))
+            if node.id in mod_values and node.id not in seen:
+                seen.add(node.id)
+                stack.extend(mod_values[node.id])
+        stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def zones_with_imports(entries, inv: Inventory, area: set[str] | None = None) -> frozenset[str]:
+    """Записи зоны плюс символы других модулей, которые зовёт замыкание двери (№613).
+
+    `in_zone` судит по упоминанию внутри ОДНОГО модуля: вынос условия двери
+    («старше ли порога») в `x.py::too_old` под `from x import too_old` оставлял
+    мутанта `x.py` некритичным, и выживший мерж не держал. Здесь для каждого файла
+    с записями зоны берётся то же замыкание, что даёт `_delegated` (лексические
+    записи и всё, что они упоминают внутри модуля), в нём ищутся упомянутые
+    импортированные имена (`import_bindings`: `from x import y`, `as`,
+    относительный импорт, `import x` с `x.y`), и символ верхнего уровня модуля
+    продукта из области мутатора становится записью `модуль::символ`. Дальше
+    внутри того модуля работает обычный `_delegated` — записи остаются строками.
+
+    Один шаг между модулями: что зовёт `x::too_old` в третьем модуле, не
+    добавляется — транзитивность по модулям сделала бы любую дверь половиной
+    репозитория. Не следует: `from x import *`, переэкспорт (символ, которого нет
+    среди определений верхнего уровня модуля-цели), `getattr` по строке, сам модуль
+    как значение (`x` без атрибута). Инвентарь — той ревизии, чей код ломают
+    (`inventory(rev=…)`), не рабочий диск.
+    """
+    entries = frozenset(entries)
+    area = mutation_area(inv) if area is None else area
+    mods = modules(inv)
+    rel_of = {m: rel for rel in inv.files if (m := module_of(rel)) is not None}
+    door_rels = {rel for entry in entries
+                 if (rel := zone_rel(zone_split(entry)[0], inv.files)) is not None}
+    added: set[str] = set()
+    defined: dict[str, set[str]] = {}
+    for rel in sorted(door_rels):
+        tree = inv.files[rel].tree
+        if tree is None:
+            continue
+        bindings = import_bindings(rel, tree)
+        if not bindings:
+            continue
+        kinds, fns, _ = _definitions(tree)
+        closure = {qual for qual, ks in kinds.items()
+                   if "fn" in ks and _lexical_in_zone(entries, rel, qual)}
+        closure |= _delegated(entries, rel, tree)
+        roots: list[ast.AST] = []
+        for qual in closure:
+            for fn in fns.get(qual, ()):
+                roots.extend(_mention_roots(fn))
+        if _lexical_in_zone(entries, rel, ""):
+            # запись — весь файл: код уровня модуля тоже дверь
+            roots.extend(n for n in getattr(tree, "body", [])
+                         if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+        own = module_of(rel)
+        for full in _imported_mentions(roots, bindings, _module_values(tree)):
+            target = _module_by_name(full, mods)
+            if target is None or target == own or len(full) <= len(target):
+                continue
+            target_rel = rel_of.get(target)
+            if target_rel is None or target_rel not in area:
+                continue
+            target_tree = inv.files[target_rel].tree
+            if target_tree is None:
+                continue
+            symbol = full[len(target) + 1:].split(".")[0]
+            if target_rel not in defined:
+                defined[target_rel] = set(_definitions(target_tree)[0])
+            if symbol in defined[target_rel]:
+                added.add(f"{target}::{symbol}")
+    return entries | frozenset(added)
 
 
 def zone_signal(rel: str, tree: ast.AST) -> str | None:

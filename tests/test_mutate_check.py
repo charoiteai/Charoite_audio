@@ -2553,6 +2553,26 @@ def test_зоны_судятся_по_базе_и_голове(tmp_path):
     assert plan and not any(m.critical for m in plan)
 
 
+def test_вынос_условия_двери_в_другой_модуль_остаётся_критичным(tmp_path):
+    """№613: дверь `door::sweep` зовёт условие из `x.py` (`from x import too_old`).
+    Правка `x.too_old` даёт критичных мутантов, правка соседней `x.unrelated` — нет:
+    расширение записей идёт по той же ревизии, что и мутанты."""
+    door = "from x import too_old\n\n\ndef sweep(p):\n    if too_old(p):\n        p.unlink()\n"
+    x = ("def too_old(age):\n    return age > 30\n\n\n"
+         "def unrelated(age):\n    return age > 1\n")
+    repo = _git_repo(tmp_path, {"src/door.py": door, "src/x.py": x,
+                                mc.ZONES_REL: json.dumps({"mutation_critical": {"door::sweep": "дверь"}})})
+    база = _rev(repo, "HEAD")
+    (repo / "src" / "x.py").write_text(x.replace("> 30", ">= 31").replace("> 1", ">= 2"), encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка x"], cwd=repo, check=True)
+    plan, _ = mc.plan_for(repo, f"{база}...HEAD")
+    по_функции = {}
+    for m in plan:
+        по_функции.setdefault(m.qualname, set()).add(m.critical)
+    assert по_функции.get("too_old") == {True}, по_функции
+    assert по_функции.get("unrelated") == {False}, по_функции
+
+
 def test_выживший_в_некритичной_зоне_зелёный_со_списком(tmp_path, monkeypatch, capsys):
     """Опыт №469, пара к `test_jobs_2_находит_тех_же_выживших…` (там критичный —
     красный): те же два выживших вне критичных зон — исход 0, оба названы в отчёте
