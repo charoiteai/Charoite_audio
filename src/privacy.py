@@ -358,6 +358,9 @@ def is_loopback_url(url: str) -> bool:
 #: не должно остаться ни каталога, ни имени учётки.
 DATA_ROOT_MARK = "‹данные Чароита›"
 
+#: Каталог графа — для ``extra`` шва MCP: имя графа называет сферу встреч.
+GRAPH_MARK = "‹граф›"
+
 
 #: Наборы незакодированных знаков процентной формы. Первый — ``quote`` по
 #: умолчанию. Второй — ``URL(fileURLWithPath:).absoluteString`` на macOS:
@@ -366,7 +369,7 @@ DATA_ROOT_MARK = "‹данные Чароита›"
 _PERCENT_SAFE = ("/", "/!$&'()*+,;=:@")
 
 
-def _needles() -> list[tuple[str, str, str]]:
+def _needles(extra: dict[str, str] | None = None) -> list[tuple[str, str, str]]:
     """Иглы этого вызова: (форма, «plain»|«percent», замена). Длинные — первыми.
 
     Считаются заново: тесты подменяют домашний каталог и корень данных.
@@ -377,6 +380,9 @@ def _needles() -> list[tuple[str, str, str]]:
     Корень данных и его ``realpath`` — игла, только когда путь не равен
     домашнему и не лежит в нём (и то же для ``realpath`` домашнего). Вложенный
     корень закрывает игла дома: замена та же, отдельная игла не нужна.
+
+    ``extra`` — путь → метка, иглой всегда (и его ``realpath``): путь под
+    домом длиннее иглы дома и заменяется раньше неё, целиком своей меткой.
     """
     # pathlib и realpath отдают путь без «/» в конце; «/» отсеивает put.
     home = pathlib.Path.home()
@@ -405,6 +411,9 @@ def _needles() -> list[tuple[str, str, str]]:
         if any(path == home or path.startswith(home + "/") for home in homes):
             continue
         put(path, DATA_ROOT_MARK)
+    for path, replacement in (extra or {}).items():
+        for text in (path, os.path.realpath(path)):
+            put(text, replacement)
 
     forms: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -462,7 +471,7 @@ def _percent_equal(segment: str, form: str) -> bool:
     return _PERCENT_ESCAPE.sub(lambda m: m.group().upper(), segment) == form
 
 
-def scrub_local_paths(text: str) -> tuple[str, int]:
+def scrub_local_paths(text: str, extra: dict[str, str] | None = None) -> tuple[str, int]:
     """Убрать из текста встречи абсолютные пути этой машины.
 
     Домашний каталог (и его ``realpath``) становится ``~``. Корень данных вне
@@ -474,10 +483,11 @@ def scrub_local_paths(text: str) -> tuple[str, int]:
     «/», NUL или любой знак, кроме буквы, цифры, ``_``, ``-`` и точки внутри
     имени. Формы: NFC, NFD и процентная запись в любом месте текста.
     Длинная игла заменяется раньше короткой. Повторный вызов ничего не меняет.
+    ``extra`` — свои пути с метками (см. ``_needles``).
     """
     if "/" not in text:
         return text, 0
-    needles = _needles()
+    needles = _needles(extra)
     out: list[str] = []
     index = 0
     count = 0
@@ -515,5 +525,11 @@ def scrub_local_paths(text: str) -> tuple[str, int]:
         return text, 0
     # Только число: сам путь в журнал не пишем. В stderr: stdout демона —
     # построчный JSON для приложения, а скраб зовут его нити мимо замка emit.
-    print(f"[privacy] пути машины в тексте встречи заменены: {count}", file=sys.stderr)
+    # Без stderr print ушёл бы в stdout (у сервера MCP там кадры протокола), а
+    # сбой записи отнял бы у вызывающего уже очищенный текст.
+    if sys.stderr is not None:
+        try:
+            print(f"[privacy] пути машины в тексте встречи заменены: {count}", file=sys.stderr)
+        except Exception:  # noqa: BLE001 — журнал не важнее ответа
+            pass
     return "".join(out), count

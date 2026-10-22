@@ -22,10 +22,12 @@ from charoite_graph import safe_write
 import action_items
 import transcript
 
+import graphs
 import live_gate
 import live_sidecar
 import meeting_source
 import meeting_stamp
+import privacy
 from config_loader import fingerprint, load_user_or_example
 from llm import LLM, LLMHTTPError, forget_fit
 
@@ -172,10 +174,11 @@ class _ОтказБезКорня(ToolError):
     """Отказ инструмента без названного корня данных — с причиной и рецептом.
 
     Свой подкласс `ToolError`, а не голый `RuntimeError`: клиент отличает отказ
-    от ответа по `isError`, а mcp 2.x любое исключение, кроме `ToolError`,
+    от ответа по `isError`, а mcp 2.1+ любое исключение, кроме `ToolError`,
     подменяет на `UnexpectedToolError("Error executing tool <имя>")` — причина и
-    рецепт до клиента не доходят. На 1.x текст доходит и у голого исключения,
-    но подкласс там безвреден.
+    рецепт до клиента не доходят (замер 22.10: 2.3.0 — подменяет, 2.0.0 из
+    `requirements-runtime.lock` и 1.x — нет, текст доходит и у голого
+    исключения; подкласс там безвреден).
     """
 
 
@@ -198,12 +201,94 @@ def _tool(fn):
     """
     @functools.wraps(fn)
     def с_корнем(*args, **kwargs):
+        # Единственный шов всех инструментов: клиент MCP отдаёт текст модели, а
+        # в нём бывали пути этой машины (вывод ребёнка, корень данных в отказе).
+        # Дом → «~», корень данных вне дома → метка. Не строку не трогаем.
+        # Наружу два канала — ответ и текст исключения (на mcp 1.x и 2.0 он доходит
+        # до клиента как есть: `[Errno 2] … '/Users/…'`), чистятся оба, и
+        # проверка корня стоит под тем же перехватом, что и тело.
         try:
             _root()
+            ответ = fn(*args, **kwargs)
         except RootNotNamed as отказ:
-            raise _ОтказБезКорня(f"{fn.__name__} не выполнен: {отказ}\n\n{_recipe()}") from отказ
-        return fn(*args, **kwargs)
+            # Причина отказа может назвать корень (внутри бандла и т. п.) — её
+            # чистим; рецепт называет путь к коду сервера намеренно.
+            причина = _чисто(str(отказ))
+            if причина is None:
+                причина = _НЕ_ПРОВЕРЕНО
+            raise _ОтказБезКорня(f"{fn.__name__} не выполнен: {причина}\n\n{_recipe()}") from отказ
+        except _ОтветСкрыт:
+            raise                       # свой текст без путей: скрабить нечего
+        except ToolError as отказ:
+            # Отказ, адресованный клиенту, — его текст без имени класса впереди.
+            текст = _чисто(str(отказ))
+            raise ToolError(_НЕ_ПРОВЕРЕНО if текст is None else текст) from отказ
+        except Exception as сбой:
+            текст = _чисто(f"{type(сбой).__name__}: {сбой}")
+            if текст is None:
+                текст = f"{type(сбой).__name__}: {_НЕ_ПРОВЕРЕНО}"
+            raise ToolError(текст) from сбой
+        if isinstance(ответ, str):
+            чистый = _чисто(ответ)
+            if чистый is None:
+                raise _ОтветСкрыт()
+            ответ = чистый
+        return ответ
     return mcp.tool()(с_корнем)
+
+
+_НЕ_ПРОВЕРЕНО = "текст скрыт — пути в нём не проверены"
+
+
+class _ОтветСкрыт(ToolError):
+    """Скраб рабочего ответа упал — отказ с постоянным текстом, в нём путей нет."""
+
+    def __init__(self) -> None:
+        super().__init__(f"ответ не показан: {_НЕ_ПРОВЕРЕНО}")
+
+
+def _срез(текст: str, часть: slice) -> str:
+    """Срез текста после скраба: срез до скраба режет путь, и игла его уже не
+    узнаёт (`/Users/an` в начале, `ers/имя/…` в хвосте уходят наружу).
+
+    Сбой скраба — отказ, как в шве: пометка строкой ушла бы рабочим ответом
+    (в ней нет «/», внешний скраб её пропускает)."""
+    чистый = _чисто(текст)
+    if чистый is None:
+        raise _ОтветСкрыт()
+    return чистый[часть]
+
+
+def _чисто(текст: str) -> str | None:
+    """Текст без путей машины или None, если скраб сам упал.
+
+    Скраб спрашивает корень данных тем же путём, что и `_root()`: петля
+    симлинков в `CHAROITE_ROOT` роняет его тем же `RuntimeError` с путём, и
+    исключение из обработчика ушло бы мимо шва. Тогда наружу не идёт ничего
+    из исходного текста."""
+    try:
+        return privacy.scrub_local_paths(текст, extra=_иглы_шва())[0]
+    except Exception as сбой:  # noqa: BLE001 — любой сбой скраба: текст не проверен, наружу его нельзя
+        # причину — владельцу в журнал сервера, без текста: в нём пути. Без
+        # stderr print ушёл бы в stdout — транспорт протокола; сбой записи
+        # (закрытый канал) не должен уронить шов
+        if sys.stderr is not None:
+            try:
+                print(f"[privacy] скраб не отработал: {type(сбой).__name__}", file=sys.stderr)
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
+
+def _иглы_шва() -> dict[str, str] | None:
+    """Каталог графа — меткой: ребёнок `graph_updater` печатает пути узлов, а
+    граф бывает вне дома и корня данных. Граф не назван или конфиг не
+    прочитан — иглы нет, дом и корень скраб чистит и без неё."""
+    try:
+        каталог = graphs.graph_dir(_cfg())
+    except Exception:  # noqa: BLE001 — без иглы графа, но не без ответа
+        return None
+    return {str(каталог): privacy.GRAPH_MARK} if каталог is not None else None
 
 
 # Производные файлы, которые пишутся ПОЗЖЕ стенограммы и не должны считаться
@@ -255,7 +340,7 @@ def sufler_live_transcript(max_chars: int = 6000) -> str:
     # граница заметок — канон transcript.notes_start: самодельный split("---") резал
     # стенограмму на первом же «---» внутри сказанного (аудит 13.09, DS M4)
     body = text[:transcript.notes_start(text)]
-    return f"[{f.name}]\n" + (body[-max_chars:] if len(body) > max_chars else body)
+    return f"[{f.name}]\n" + _срез(body, slice(-max_chars, None))
 
 
 @_tool
@@ -317,7 +402,7 @@ def sufler_make_minutes() -> str:
             timeout=600)
     except LLMHTTPError as e:
         return (f"модель ответила {e.status} — минутки НЕ тронуты "
-                f"({mpath.name}). Проверьте настройку модели: {e.detail[:200]}")
+                f"({mpath.name}). Проверьте настройку модели: {_срез(e.detail, slice(None, 200))}")
     except ValueError:
         return f"модель вернула не JSON — минутки НЕ тронуты ({mpath.name})"
     except requests.RequestException as e:
@@ -354,7 +439,7 @@ def sufler_make_minutes() -> str:
         # изменились. Хеш источника — тем же объектом, что у пересборки.
         tail = "" if wrote.state == live_sidecar.FRESH else (
             "\n(паспорт производной не подтверждён: проверьте сайдкар стенограммы)")
-        return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
+        return f"Минутки сохранены: {mpath.name}{tail}\n\n{_срез(out, slice(None, 2000))}"
     finally:
         # Сводки частей снимаются на ЛЮБОМ исходе ПОСЛЕ ответа модели — это
         # решение в пользу приватности: кэш свёртки хранит речь встречи и без
@@ -371,7 +456,7 @@ def sufler_hints() -> str:
     if not f:
         return "Стенограмм нет."
     h = f.with_name(f.stem + "_hints.md")
-    return h.read_text(encoding="utf-8")[-4000:] if h.exists() else "Подсказок пока нет."
+    return _срез(h.read_text(encoding="utf-8"), slice(-4000, None)) if h.exists() else "Подсказок пока нет."
 
 
 @_tool

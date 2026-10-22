@@ -388,6 +388,428 @@ def test_the_answer_helpers_read_the_installed_mcp():
     assert hasattr(mcp_server.mcp, "_mcp_server") == ветка_1x, mcp_server.FastMCP.__module__
 
 
+def _fake_home(tmp_path, monkeypatch):
+    """Домашний каталог внутри tmp_path, отдельный от корня данных."""
+    home = tmp_path / "дом"
+    home.mkdir()
+    monkeypatch.setattr(pathlib.Path, "home", lambda _cls=None: home)
+    return home
+
+
+def _no_machine_paths(out, root, home):
+    assert str(root) not in out, out
+    assert str(home) not in out, out
+    assert os.path.realpath(root) not in out, out
+
+
+def test_saved_minutes_answer_names_no_machine_path(tmp_path, monkeypatch):
+    """Успех `sufler_make_minutes` говорит имя файла встречи, а не путь машины
+    (№762): ответ уходит модели клиента MCP."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    tdir = _transcripts(root, monkeypatch)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("llm:\n  model: проба\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+    _minutes_client(monkeypatch, lambda: "## Темы\n- смета\n")
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert out.startswith("Минутки сохранены: 2026-09-13_1200_minutes.md"), out
+    assert (tdir / "2026-09-13_1200_minutes.md").exists()
+    _no_machine_paths(out, root, home)
+
+
+def test_unreadable_config_answer_names_no_machine_path(tmp_path, monkeypatch):
+    """Отказ «конфиг не прочитан» зовёт файл по имени `config.yaml`, но не
+    называет корень данных этой машины (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("llm:\n  engine: ollama\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "конфиг не прочитан" in out and "config.yaml" in out, out
+    _no_machine_paths(out, root, home)
+
+
+def test_update_graph_answer_scrubs_paths_printed_by_the_child(tmp_path, monkeypatch):
+    """Ребёнок печатает путь под домом (в stdout и в stderr) — модель клиента
+    видит `~` (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    charoite_paths.use_data_root(root, replace=True)
+
+    def run(*a, **k):
+        return subprocess.CompletedProcess(
+            a[0], 0, stdout=f"узел записан: {home}/graph/a.md\n",
+            stderr=f"Traceback: File \"{home}/code/src/graph_updater.py\", line 959\n")
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", run)
+
+    out = mcp_server.sufler_update_graph()
+
+    assert "~/graph/a.md" in out and "~/code/src/graph_updater.py" in out, out
+    assert str(home) not in out, out
+
+
+@pytest.mark.parametrize("под_домом", [False, True])
+def test_update_graph_answer_names_the_graph_by_its_mark(tmp_path, monkeypatch, под_домом):
+    """Граф вне дома и корня данных (внешний диск) — его путь в выводе ребёнка
+    не узнала бы ни одна игла. Под домом «~/…» назвал бы сам граф. Оба раза
+    модель видит метку (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    граф = (home if под_домом else tmp_path / "диск") / "Сфера_встреч"
+    граф.mkdir(parents=True)
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(граф))
+
+    def run(*a, **k):
+        return subprocess.CompletedProcess(a[0], 0, stdout=f"узел записан: {граф}/Люди/a.md\n", stderr="")
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", run)
+
+    out = mcp_server.sufler_update_graph()
+
+    assert out == f"узел записан: {mcp_server.privacy.GRAPH_MARK}/Люди/a.md", out
+    assert "Сфера_встреч" not in out, out
+
+
+def test_model_error_detail_is_cut_after_the_scrub(tmp_path, monkeypatch):
+    """Подробность отказа модели режется после скраба: срез до него оставлял
+    начало пути, которое игла уже не узнаёт (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("llm:\n  model: проба\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+    подробно = "x" * 190 + f"{home}/models/a.gguf"
+
+    def отказ():
+        raise llm.LLMHTTPError(500, подробно)
+
+    _minutes_client(monkeypatch, отказ)
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert out.endswith("x" * 190 + "~/models/a"), out
+    assert str(home)[:10] not in out, out
+
+
+@pytest.mark.parametrize("инструмент", ["sufler_live_transcript", "sufler_hints", "sufler_make_minutes"])
+def test_answer_cut_lands_after_the_scrub(tmp_path, monkeypatch, инструмент):
+    """Граница среза ответа попадает внутрь пути под домом: срез до скраба
+    отдал бы конец пути с именем учётки, иглой не узнаваемый (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    хвост = f"{home}/doc.md"
+    if инструмент == "sufler_live_transcript":
+        _transcripts(root, monkeypatch, text=f"# Встреча\nтело {хвост}")
+        out = mcp_server.sufler_live_transcript(max_chars=len("/doc.md") + 6)
+    elif инструмент == "sufler_hints":
+        tdir = _transcripts(root, monkeypatch)
+        (tdir / "2026-09-13_1200_hints.md").write_text("x" * 5000 + хвост, encoding="utf-8")
+        out = mcp_server.sufler_hints()
+    else:
+        _transcripts(root, monkeypatch)
+        (root / "config").mkdir()
+        (root / "config" / "config.yaml").write_text("llm:\n  model: проба\n", encoding="utf-8")
+        monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+        _minutes_client(monkeypatch, lambda: "## Темы\n" + "x" * 1990 + хвост)
+        out = mcp_server.sufler_make_minutes()
+    assert home.name not in out, out
+    if инструмент != "sufler_make_minutes":
+        assert out.endswith("~/doc.md"), out
+
+
+def test_scrub_failure_inside_a_cut_is_a_refusal(tmp_path, monkeypatch):
+    """Скраб падает только на полном тексте (в срезанном хвосте «/» нет) —
+    клиент видит отказ, а не пометку рабочим ответом (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    tdir = _transcripts(root, monkeypatch)
+    (tdir / "2026-09-13_1200_hints.md").write_text("/a " + "x" * 4100, encoding="utf-8")
+
+    def скраб(текст, **_):
+        if "/" in текст:
+            raise RuntimeError("x")
+        return текст, 0
+
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", скраб)
+
+    ответ = asyncio.run(_вызвать("sufler_hints"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(f"ответ не показан: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
+
+
+def test_real_scrub_without_stderr_keeps_the_answer(tmp_path, monkeypatch, capsys):
+    """Настоящий скраб пишет число замен в stderr. Без stderr строка ушла бы в
+    stdout (кадры протокола), сломанный stderr отнимал ответ (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    class Сломан:
+        def write(self, _):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    for поток in (None, Сломан()):
+        monkeypatch.setattr(mcp_server.privacy.sys, "stderr", поток)
+        assert mcp_server._чисто(f"файл {home}/a.md") == "файл ~/a.md"
+    assert capsys.readouterr().out == ""
+    # пустой текст — пустой срез, а не отказ
+    assert mcp_server._срез("", slice(-4000, None)) == ""
+
+
+def test_tool_exception_text_names_no_machine_path(tmp_path, monkeypatch):
+    """Исключение тела инструмента — второй канал наружу: на mcp 1.x его текст
+    доходит до клиента как есть (`[Errno 2] … '<путь>'`). Файл встречи пропал
+    между `_latest` и чтением (ретеншн) — модель видит отказ с причиной, но без
+    пути машины (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    tdir = _transcripts(root, monkeypatch)
+    пропал = tdir / "2026-09-13_1200.md"
+    пропал.unlink()
+    monkeypatch.setattr(mcp_server, "_latest", lambda: пропал)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "FileNotFoundError" in out and "2026-09-13_1200.md" in out, out
+    _no_machine_paths(out, root, home)
+
+
+def test_no_root_refusal_scrubs_the_reason_but_keeps_the_recipe(monkeypatch, tmp_path):
+    """Причина отказа без корня может назвать путь машины — она чистится;
+    рецепт регистрации называет путь к коду сервера намеренно и остаётся (№762).
+    Код и интерпретатор — под подставным домом: иначе скраб рецепта его бы не
+    тронул, и тест не увидел бы «~» в команде, которую клиент не раскроет."""
+    home = _fake_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_server, "CODE", home / "код")
+    monkeypatch.setattr(mcp_server.sys, "executable", str(home / "код" / ".venv" / "bin" / "python"))
+
+    def нет_корня():
+        raise charoite_paths.RootNotNamed(f"корень данных {home}/Чароит.app/данные внутри бандла")
+
+    monkeypatch.setattr(mcp_server, "_root", нет_корня)
+
+    ответ = asyncio.run(_вызвать("sufler_status"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "~/Чароит.app/данные внутри бандла" in out, out
+    assert f"{home}/Чароит.app" not in out, out
+    assert mcp_server._recipe() in out, out
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.skipif(sys.version_info >= (3, 13),
+                    reason="с 3.13 нестрогий resolve() петлю не бросает — сбоя нет")
+def test_root_check_failure_passes_the_seam(monkeypatch, tmp_path):
+    """Проверка корня может упасть не отказом, а сбоем: петля симлинков в
+    `CHAROITE_ROOT` → `RuntimeError` с путём (до 3.13). Скраб спрашивает корень
+    тем же путём и падает так же — наружу не уходит ни путь, ни сырое исключение
+    мимо шва, а ошибка инструмента с типом сбоя (№762). Без версии интерпретатора
+    тот же отказ скраба держит тест ниже."""
+    петля = tmp_path / "петля"
+    петля.mkdir()
+    (петля / "a").symlink_to(петля / "b")
+    (петля / "b").symlink_to(петля / "a")
+    monkeypatch.setattr(charoite_paths, "_given", None)
+    monkeypatch.setenv("CHAROITE_ROOT", str(петля / "a"))
+
+    ответ = asyncio.run(_вызвать("sufler_status"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "RuntimeError" in out, out
+    assert str(петля) not in out, out
+
+
+def _скраб_падает(текст, **_):
+    raise RuntimeError(f"Symlink loop from {текст!r}")
+
+
+def test_scrub_failure_hides_the_exception_text(tmp_path, monkeypatch, capsys):
+    """Скраб упал на тексте исключения — наружу уходит тип сбоя и пометка
+    «не проверено», ни слова исходного текста (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def сбой():
+        raise OSError(f"нет файла {home}/x.md")
+
+    monkeypatch.setattr(mcp_server, "_latest", сбой)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(f"OSError: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
+    assert "нет файла" not in out and str(home) not in out, out
+    журнал = capsys.readouterr().err
+    assert "скраб не отработал: RuntimeError" in журнал, журнал
+    assert str(home) not in журнал and "Symlink" not in журнал, журнал
+
+
+def test_scrub_failure_survives_a_closed_stderr(tmp_path, monkeypatch, capsys):
+    """Журнал сбоя скраба не роняет шов: без stderr строки нет совсем (не в
+    stdout — там протокол), сломанный stderr молчит (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    class Сломан:
+        def write(self, _):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    for поток in (None, Сломан()):
+        monkeypatch.setattr(mcp_server.sys, "stderr", поток)
+        assert mcp_server._чисто("текст") is None
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("канал", ["ToolError", "RootNotNamed", "ответ"])
+def test_empty_refusal_text_is_not_marked_unchecked(tmp_path, monkeypatch, канал):
+    """Пометка «не проверено» — только когда скраб упал; пустой текст отказа
+    проверять нечего, он остаётся пустым (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def отказ():
+        raise mcp_server.ToolError("") if канал == "ToolError" else charoite_paths.RootNotNamed("")
+
+    if канал == "ответ":
+        # пустой рабочий ответ — раздел заметок есть, а в нём ничего: не отказ
+        (tmp_path / "второй").mkdir()
+        _transcripts(tmp_path / "второй", monkeypatch,
+                     text=f"# Встреча\nтело\n\n## {mcp_server.transcript.NOTES_TITLE}\n")
+        ответ = asyncio.run(_вызвать("sufler_notes"))
+        assert not _ошибка(ответ), _текст(ответ)
+        assert _текст(ответ) == ""
+        return
+    if канал == "ToolError":
+        monkeypatch.setattr(mcp_server, "_latest", отказ)
+    else:
+        monkeypatch.setattr(mcp_server, "_root", отказ)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert mcp_server._НЕ_ПРОВЕРЕНО not in out, out
+
+
+def test_scrub_failure_hides_the_answer(tmp_path, monkeypatch):
+    """Скраб упал на рабочем ответе — ответ не показан, отказ инструмента
+    вместо непроверенного текста (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(f"ответ не показан: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
+    assert "тело" not in out and "2026-09-13_1200" not in out, out
+
+
+def test_scrub_failure_hides_the_tool_error_text(tmp_path, monkeypatch):
+    """Скраб упал на тексте отказа `ToolError` — наружу только пометка (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def отказ():
+        raise mcp_server.ToolError(f"встреча {home}/x.md занята")
+
+    monkeypatch.setattr(mcp_server, "_latest", отказ)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(mcp_server._НЕ_ПРОВЕРЕНО) and "занята" not in out, out
+
+
+def test_scrub_failure_hides_the_no_root_reason(tmp_path, monkeypatch):
+    """Скраб упал на причине отказа без корня — причина скрыта, рецепт остаётся
+    (№762)."""
+    home = _fake_home(tmp_path, monkeypatch)
+
+    def нет_корня():
+        raise charoite_paths.RootNotNamed(f"корень данных {home}/Чароит.app/данные внутри бандла")
+
+    monkeypatch.setattr(mcp_server, "_root", нет_корня)
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", _скраб_падает)
+
+    ответ = asyncio.run(_вызвать("sufler_status"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert f"sufler_status не выполнен: {mcp_server._НЕ_ПРОВЕРЕНО}" in out, out
+    assert "внутри бандла" not in out, out
+    assert mcp_server._recipe() in out, out
+
+
+def test_tool_error_from_the_body_keeps_its_text(tmp_path, monkeypatch):
+    """Отказ, который тело адресует клиенту (`ToolError`), уходит своим текстом,
+    чистым и без имени класса впереди (№762). Тип до клиента не доходит —
+    транспорт несёт только текст и `isError`."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    def отказ():
+        raise mcp_server.ToolError(f"встреча {home}/x.md занята")
+
+    monkeypatch.setattr(mcp_server, "_latest", отказ)
+
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert "встреча ~/x.md занята" in out, out
+    assert "ToolError:" not in out, out
+
+
 @pytest.mark.корень_называет_тест
 def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
     """Реестр по поведению, путём клиента MCP — то, что видит владелец. Без
