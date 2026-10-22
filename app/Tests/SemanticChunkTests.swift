@@ -207,6 +207,8 @@ final class IndexOwnershipTests: XCTestCase {
             await marks.markCancelled(Task.isCancelled)
             return texts.map { _ in [1, 0] }
         }
+        // упавший тест не оставит писателя в воротах: блок идёт раньше закрытия
+        addTeardownBlock { await gate.release() }
         let started = await index.refreshInBackground(
             files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], pruneMissing: false)
         guard started else { return XCTFail("первый снимок не принят") }
@@ -223,6 +225,11 @@ final class IndexOwnershipTests: XCTestCase {
             await index.close()
             await marks.markCloseReturned()
         }
+        // ворота открываются только после того, как close() запросил отмену
+        let closingStarted = await finishesWithin(seconds: 10) {
+            while !(await index.isClosedForTests) { await Task.yield() }
+        }
+        guard closingStarted else { return XCTFail("close() не начался за 10 с") }
         // писатель стоит в воротах: правильный close() вернуться не может
         try await Task.sleep(nanoseconds: 200_000_000)
         let early = await marks.closeReturned
@@ -243,10 +250,13 @@ final class IndexOwnershipTests: XCTestCase {
     /// собран целиком — закрытый экземпляр не пишет и его.
     func testClosedIndexDoesNotWriteBatchesBuiltBeforeTheCancelledRequest() async throws {
         let store = tempIndexStore()
+        let small = "# A\n\nкороткий узел"
         let section = String(repeating: "слово текста ", count: 130)
         let big = (1...8).map { "## Раздел \($0)\n\n\(section)" }.joined(separator: "\n\n")
-        guard Chunker.chunks(of: big, title: "B").count == 8 else {
-            return XCTFail("файл B должен дать 8 блоков: A (1) + B (8) — две пачки по 8")
+        // A целиком в первой пачке (8 блоков), хвост B — во второй (1 блок)
+        guard Chunker.chunks(of: small, title: "A").count == 1,
+              Chunker.chunks(of: big, title: "B").count == 8 else {
+            return XCTFail("раскладка сломана: нужны A — 1 блок и B — 8 блоков, пачки 8 и 1")
         }
         let entered = AsyncStream<Void>.makeStream()
         let hold = AsyncStream<Void>.makeStream()
@@ -259,7 +269,7 @@ final class IndexOwnershipTests: XCTestCase {
             return nil
         }
         let started = await index.refreshInBackground(
-            files: [(path: "A.md", mtime: 1, text: "# A\n\nкороткий узел"),
+            files: [(path: "A.md", mtime: 1, text: small),
                     (path: "B.md", mtime: 1, text: big)], pruneMissing: false)
         guard started else { return XCTFail("снимок не принят") }
         let stream = entered.stream

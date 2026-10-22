@@ -93,6 +93,10 @@ actor SemanticIndex {
     static let unclaimedTestStore = FileManager.default.temporaryDirectory
         .appendingPathComponent("charoite_unclaimed_index_\(UUID().uuidString).bin")
 
+    /// `close()` начался: флаг ставится в одном синхронном отрезке с отменой
+    /// писателя — увидевший `true` знает, что отмена уже запрошена.
+    var isClosedForTests: Bool { closed }
+
     /// Дождаться фоновой доиндексации: тест проверяет её результат.
     func drainForTests() async {
         while let running = inFlight { await running.value }

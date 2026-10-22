@@ -167,9 +167,10 @@ and refreshes by mtime (see docs/SETUP — `ollama pull bge-m3`). If the optiona
 brain server is up (port 8100), search goes there; with neither — pure lexical.
 An index instance has one writer: a background refresh starts only when none
 is running (a newer snapshot is skipped, not queued). Tests and probes create
-their own instances and close them in teardown. Only the BuildRealIndex probe
-writes the app's index file: it rebuilds it by design and refuses to run while
-Charoite is open (a check of running apps, not a file lock).
+their own instances and close them in teardown. The app's index file is
+written by the app itself; of the tests and probes, only BuildRealIndex writes
+it: it rebuilds the file by design and refuses to run while Charoite is open (a
+check of running apps, not a file lock).
 
 ## What leaves the Mac
 
