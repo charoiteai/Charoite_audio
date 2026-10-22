@@ -95,19 +95,19 @@ enum ProbeTurn {
         let dir = (try reportPath("index") as NSString).deletingLastPathComponent
         let copy = URL(fileURLWithPath: dir)
             .appendingPathComponent("charoite_probe_index_\(UUID().uuidString).bin")
-        let index = SemanticIndex(store: copy, loadStore: true, embedder: nil)
         // уборка — до копии: упавший setAttributes не оставит копию с превью встреч
-        test.addTeardownBlock {
-            // сначала закрыть индекс — иначе хвостовой persist воссоздаст копию после уборки
-            await index.close()
-            try? FileManager.default.removeItem(at: copy)
-        }
+        test.addTeardownBlock { try? FileManager.default.removeItem(at: copy) }
         let live = SemanticIndex.liveStoreURL
         if FileManager.default.fileExists(atPath: live.path) {
             try FileManager.default.copyItem(at: live, to: copy)
             // копия хранит превью встреч — права не по файлу приложения
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: copy.path)
         }
+        // экземпляр — после копии: loadStore читает уже готовый файл
+        let index = SemanticIndex(store: copy, loadStore: true, embedder: nil)
+        // teardown-блоки идут в обратном порядке: индекс закрыт до уборки копии,
+        // хвостовой persist её не воссоздаст
+        test.addTeardownBlock { await index.close() }
         return Index(index)
     }
 

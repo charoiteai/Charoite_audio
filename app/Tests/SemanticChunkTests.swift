@@ -171,20 +171,27 @@ extension SemanticChunkTests {
 /// иначе хвост persist воссоздавал удалённую копию индекса с превью встреч.
 final class IndexOwnershipTests: XCTestCase {
     func testClosedIndexDoesNotWriteAfterLateEmbedder() async throws {
+        actor Seen {
+            private(set) var left = false
+            func markLeft() { left = true }
+        }
         let store = tempIndexStore()
-        defer { try? FileManager.default.removeItem(at: store) }
         let entered = AsyncStream<Void>.makeStream()
         let hold = AsyncStream<Void>.makeStream()
+        let seen = Seen()
         // эмбеддер висит, пока его не отпустят или не отменят, — потом отвечает
-        let index = SemanticIndex(store: store) { texts in
+        let index = makeTestIndex(store: store) { texts in
             entered.continuation.yield(())
             for await _ in hold.stream { break }
+            await seen.markLeft()
             return texts.map { _ in [1, 0] }
         }
         let started = await index.refreshInBackground(
             files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], pruneMissing: false)
-        XCTAssertTrue(started)
-        for await _ in entered.stream { break }
+        guard started else { return XCTFail("первый снимок не принят") }
+        let stream = entered.stream
+        let inside = await finishesWithin(seconds: 10) { for await _ in stream { break } }
+        guard inside else { return XCTFail("эмбеддер не вызван за 10 с") }
 
         // пока задача идёт, второй снимок пропускается, а не ставит второго писателя
         let second = await index.refreshInBackground(
@@ -192,6 +199,8 @@ final class IndexOwnershipTests: XCTestCase {
         XCTAssertFalse(second)
 
         await index.close()    // отмена отпускает эмбеддер — он отвечает векторами
+        let left = await seen.left
+        XCTAssertTrue(left, "close() вернулся, не дождавшись писателя")
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.path),
                        "закрытый экземпляр записал файл индекса после ответа эмбеддера")
         let afterClose = await index.refreshInBackground(

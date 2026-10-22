@@ -80,7 +80,7 @@ final class BuildRealIndex: XCTestCase {
         let t0 = Date()
         var left = await pending()
         while left > 0 {
-            await index.refresh(files: files)
+            guard await index.refresh(files: files) else { XCTFail("индекс закрыт — прохода не было"); break }
             let now = await pending()
             guard now < left else { break }   // Ollama не отвечает — дальше не сдвинемся
             left = now

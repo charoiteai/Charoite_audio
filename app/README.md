@@ -165,10 +165,13 @@ The semantic layer (bge-m3 via your Ollama) works in the built-in search
 too: the index keeps a vector per block of each file, builds in the background
 and refreshes by mtime (see docs/SETUP — `ollama pull bge-m3`). If the optional
 brain server is up (port 8100), search goes there; with neither — pure lexical.
-The index has one writer: a background refresh starts only when none is
-running (a newer snapshot is skipped, not queued). Tests and probes build their
-own index instance with its own file and embedder and close it in teardown, so
-they never touch the app's index file.
+An index instance has one writer: a background refresh starts only when none
+is running (a newer snapshot is skipped, not queued). Tests build their own
+instance with a temporary file and a stub embedder; search probes work on a
+temporary copy of the app's index with the real embedder. Both close the
+instance in teardown. The exception is the BuildRealIndex probe: it rebuilds
+the app's index file by design and refuses to run while Charoite is open (a
+check of running apps, not a file lock).
 
 ## What leaves the Mac
 

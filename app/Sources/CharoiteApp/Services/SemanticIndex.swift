@@ -88,7 +88,8 @@ actor SemanticIndex {
         loaded = !loadStore    // true — не подтягивать файл с диска
     }
 
-    /// Файл процесса тестов, тронувших `shared`: живой индекс тесты берут только явно.
+    /// Страховка: тест, всё же тронувший `shared`, пишет в этот файл процесса,
+    /// а не в индекс приложения. Тесты и пробы строят свои экземпляры (№534).
     static let unclaimedTestStore = FileManager.default.temporaryDirectory
         .appendingPathComponent("charoite_unclaimed_index_\(UUID().uuidString).bin")
 
@@ -235,14 +236,17 @@ actor SemanticIndex {
     /// задачи и делает свой проход: после возврата его файлы прошли один
     /// проход доиндексации — с тем же капом блоков и с остановкой на отказе
     /// эмбеддера, что и фоновый. Отмена вызывающего отменяет и проход.
-    /// Продукт зовёт только `refreshInBackground`.
+    /// `false` — экземпляр закрыт, прохода не было. Продукт зовёт только
+    /// `refreshInBackground`.
     #if DEBUG
+    @discardableResult
     func refresh(files: [(path: String, mtime: Double, text: String)],
-                 pruneMissing: Bool = false) async {
+                 pruneMissing: Bool = false) async -> Bool {
         while let running = inFlight { await running.value }
         guard let task = start(files: files, pruneMissing: pruneMissing,
-                               priority: Task.currentPriority) else { return }
+                               priority: Task.currentPriority) else { return false }
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        return true
     }
     #endif
 

@@ -77,7 +77,7 @@ extension XCTestCase {
 }
 
 /// `true`, если `work` закончилась раньше потолка. Повисшую работу не ждёт.
-private func finishesWithin(seconds: UInt64, _ work: @escaping @Sendable () async -> Void) async -> Bool {
+func finishesWithin(seconds: UInt64, _ work: @escaping @Sendable () async -> Void) async -> Bool {
     actor Once {
         private var done = false
         func claim() -> Bool { defer { done = true }; return !done }
