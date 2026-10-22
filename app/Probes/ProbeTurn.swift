@@ -36,7 +36,7 @@ enum ProbeTurn {
         fileprivate init(_ index: SemanticIndex) { self.index = index }
     }
 
-    /// Поиск фоном зовёт `SemanticIndex.refresh(pruneMissing: true)` по графу
+    /// Поиск фоном зовёт `SemanticIndex.refreshInBackground(pruneMissing: true)` по графу
     /// пробы: на индексе приложения проба на чужом графе стирает его
     /// (18.10: синтетика из трёх встреч оставила в нём одну). Поэтому поиск
     /// пробы идёт только по индексу из `isolateIndex`.
