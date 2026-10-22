@@ -5,6 +5,24 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.99.0](https://github.com/charoiteai/Charoite_audio/compare/v0.98.1...v0.99.0) (2026-10-22)
+
+
+### Features
+
+* **privacy:** guard checks graph people names on the maintainer machine ([#841](https://github.com/charoiteai/Charoite_audio/issues/841)) ([da82f93](https://github.com/charoiteai/Charoite_audio/commit/da82f93fa6126cc9bcc037dd8c7be775ae477b8a))
+
+
+### Bug Fixes
+
+* **app:** task badge and memory meeting count match the screens they open ([#838](https://github.com/charoiteai/Charoite_audio/issues/838)) ([42c6389](https://github.com/charoiteai/Charoite_audio/commit/42c63890c48d0477004423d188cf9c4d3fb590a6))
+* **busy:** resident local models count as a busy machine ([#595](https://github.com/charoiteai/Charoite_audio/issues/595)) ([#839](https://github.com/charoiteai/Charoite_audio/issues/839)) ([0e036c7](https://github.com/charoiteai/Charoite_audio/commit/0e036c708f72c4911a1143bdd8f6604cdce986ac))
+* **fact-check:** numeric dates without version tails, year suffix only after a year ([#762](https://github.com/charoiteai/Charoite_audio/issues/762)) ([#845](https://github.com/charoiteai/Charoite_audio/issues/845)) ([a191890](https://github.com/charoiteai/Charoite_audio/commit/a1918907cb5e76beb996b780d9f59830d4ab1ce6))
+* **mcp:** tool answers and errors pass one path scrub ([#762](https://github.com/charoiteai/Charoite_audio/issues/762)) ([#844](https://github.com/charoiteai/Charoite_audio/issues/844)) ([2cd3d94](https://github.com/charoiteai/Charoite_audio/commit/2cd3d94ba27210a82b537246b4f83a433fd8253d))
+* **minutes:** the model no longer writes the meeting date ([#840](https://github.com/charoiteai/Charoite_audio/issues/840)) ([5380779](https://github.com/charoiteai/Charoite_audio/commit/5380779ca8025ac063f034972296b8bcabd67e40))
+* **mutate:** a door decision moved to another module stays critical ([#762](https://github.com/charoiteai/Charoite_audio/issues/762)) ([#846](https://github.com/charoiteai/Charoite_audio/issues/846)) ([6485f78](https://github.com/charoiteai/Charoite_audio/commit/6485f788f0f5314ab8e124b2f4be8b4e4aed998c))
+* **nemotron:** engine check compares mlx-audio with the product and probes the interpreter in use ([#836](https://github.com/charoiteai/Charoite_audio/issues/836)) ([87f02db](https://github.com/charoiteai/Charoite_audio/commit/87f02db0da372e4b8c7ca9aeb510350279490e94))
+
 ## [0.98.1](https://github.com/charoiteai/Charoite_audio/compare/v0.98.0...v0.98.1) (2026-10-21)
 
 
