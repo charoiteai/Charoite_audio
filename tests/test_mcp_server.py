@@ -506,6 +506,56 @@ def test_model_error_detail_is_cut_after_the_scrub(tmp_path, monkeypatch):
     assert str(home)[:10] not in out, out
 
 
+@pytest.mark.parametrize("инструмент", ["sufler_live_transcript", "sufler_hints", "sufler_make_minutes"])
+def test_answer_cut_lands_after_the_scrub(tmp_path, monkeypatch, инструмент):
+    """Граница среза ответа попадает внутрь пути под домом: срез до скраба
+    отдал бы конец пути с именем учётки, иглой не узнаваемый (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    хвост = f"{home}/doc.md"
+    if инструмент == "sufler_live_transcript":
+        _transcripts(root, monkeypatch, text=f"# Встреча\nтело {хвост}")
+        out = mcp_server.sufler_live_transcript(max_chars=len("/doc.md") + 6)
+    elif инструмент == "sufler_hints":
+        tdir = _transcripts(root, monkeypatch)
+        (tdir / "2026-09-13_1200_hints.md").write_text("x" * 5000 + хвост, encoding="utf-8")
+        out = mcp_server.sufler_hints()
+    else:
+        _transcripts(root, monkeypatch)
+        (root / "config").mkdir()
+        (root / "config" / "config.yaml").write_text("llm:\n  model: проба\n", encoding="utf-8")
+        monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+        _minutes_client(monkeypatch, lambda: "## Темы\n" + "x" * 1990 + хвост)
+        out = mcp_server.sufler_make_minutes()
+    assert home.name not in out, out
+    if инструмент != "sufler_make_minutes":
+        assert out.endswith("~/doc.md"), out
+
+
+def test_scrub_failure_inside_a_cut_is_a_refusal(tmp_path, monkeypatch):
+    """Скраб падает только на полном тексте (в срезанном хвосте «/» нет) —
+    клиент видит отказ, а не пометку рабочим ответом (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    _fake_home(tmp_path, monkeypatch)
+    tdir = _transcripts(root, monkeypatch)
+    (tdir / "2026-09-13_1200_hints.md").write_text("/a " + "x" * 4100, encoding="utf-8")
+
+    def скраб(текст, **_):
+        if "/" in текст:
+            raise RuntimeError("x")
+        return текст, 0
+
+    monkeypatch.setattr(mcp_server.privacy, "scrub_local_paths", скраб)
+
+    ответ = asyncio.run(_вызвать("sufler_hints"))
+
+    out = _текст(ответ)
+    assert _ошибка(ответ), out
+    assert out.endswith(f"ответ не показан: {mcp_server._НЕ_ПРОВЕРЕНО}"), out
+
+
 def test_real_scrub_without_stderr_keeps_the_answer(tmp_path, monkeypatch, capsys):
     """Настоящий скраб пишет число замен в stderr. Без stderr строка ушла бы в
     stdout (кадры протокола), сломанный stderr отнимал ответ (№762)."""
@@ -525,7 +575,7 @@ def test_real_scrub_without_stderr_keeps_the_answer(tmp_path, monkeypatch, capsy
         monkeypatch.setattr(mcp_server.privacy.sys, "stderr", поток)
         assert mcp_server._чисто(f"файл {home}/a.md") == "файл ~/a.md"
     assert capsys.readouterr().out == ""
-    # пустой текст — пустой срез, а не пометка «не проверено»
+    # пустой текст — пустой срез, а не отказ
     assert mcp_server._срез("", slice(-4000, None)) == ""
 
 
