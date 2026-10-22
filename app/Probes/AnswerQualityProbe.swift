@@ -26,7 +26,7 @@ final class AnswerQualityProbe: XCTestCase {
         var report = ProbeTurn.header("ПРОБА ОТВЕТОВ")
         var unanswered = 0, emptySearch = 0
         for q in questions {
-            let outcome = try await ProbeTurn.search(q, params: params, root: graph, index: index)
+            let outcome = await ProbeTurn.search(q, params: params, root: graph, index: index)
             report += "\n──────── ВОПРОС: \(q)\nИСТОЧНИКИ (\(outcome.text.count) знаков):\n"
             for s in outcome.rels ?? [] { report += "   · \(s)\n" }
             // ответ без источников — из весов модели, качество памяти он не показывает

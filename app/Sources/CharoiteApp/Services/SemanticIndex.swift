@@ -46,7 +46,6 @@ actor SemanticIndex {
     /// ждал запись опросом по часам (№534, №412). Теперь задача — собственность
     /// экземпляра: её можно дождаться и закрыть.
     private var inFlight: Task<Void, Never>?
-    private var inFlightTicket = 0
     private var closed = false
     /// Сколько знаков блока держим для показа в выдаче.
     private static let previewChars = 700
@@ -235,33 +234,36 @@ actor SemanticIndex {
     /// Прямой вызов (тесты, проба BuildRealIndex) дожидается идущей фоновой
     /// задачи и делает свой проход: после возврата его файлы прошли один
     /// проход доиндексации — с тем же капом блоков и с остановкой на отказе
-    /// эмбеддера, что и фоновый.
+    /// эмбеддера, что и фоновый. Отмена вызывающего отменяет и проход.
+    /// Продукт зовёт только `refreshInBackground`.
+    #if DEBUG
     func refresh(files: [(path: String, mtime: Double, text: String)],
                  pruneMissing: Bool = false) async {
         while let running = inFlight { await running.value }
-        // между проверкой ячейки и start нет await — второй писатель не встанет
         guard let task = start(files: files, pruneMissing: pruneMissing,
                                priority: Task.currentPriority) else { return }
-        await task.value
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
+    #endif
 
     /// Доиндексация после поиска: ответ её не ждёт. Идущая задача не
-    /// дублируется — снимок этого поиска пропускается, хвост доедет со
-    /// следующим (дозировка общей с подсказками Ollama). Задача
-    /// регистрируется до возврата, поэтому тест может её дождаться.
+    /// дублируется — снимок этого поиска пропускается (`false`), хвост
+    /// доедет со следующим (дозировка общей с подсказками Ollama). Принятая
+    /// задача регистрируется до возврата — тест может её дождаться.
+    @discardableResult
     func refreshInBackground(files: [(path: String, mtime: Double, text: String)],
-                             pruneMissing: Bool) {
-        guard inFlight == nil else { return }
-        _ = start(files: files, pruneMissing: pruneMissing, priority: .background)
+                             pruneMissing: Bool) -> Bool {
+        start(files: files, pruneMissing: pruneMissing, priority: .background) != nil
     }
 
+    /// Единственная точка старта писателя: занятая ячейка или закрытый
+    /// экземпляр — задачи нет. Один писатель держит она, а не договорённость
+    /// вызывающих (out1, DS К1).
     private func start(files: [(path: String, mtime: Double, text: String)],
                        pruneMissing: Bool, priority: TaskPriority) -> Task<Void, Never>? {
-        guard !closed else { return nil }
-        inFlightTicket += 1
-        let ticket = inFlightTicket
+        guard !closed, inFlight == nil else { return nil }
         let task = Task.detached(priority: priority) { [self] in
-            await self.run(files: files, pruneMissing: pruneMissing, ticket: ticket)
+            await self.run(files: files, pruneMissing: pruneMissing)
         }
         inFlight = task
         return task
@@ -271,9 +273,9 @@ actor SemanticIndex {
     private var mayWrite: Bool { !closed && !Task.isCancelled }
 
     private func run(files: [(path: String, mtime: Double, text: String)],
-                     pruneMissing: Bool, ticket: Int) async {
-        // ячейку обнуляет только её владелец
-        defer { if inFlightTicket == ticket { inFlight = nil } }
+                     pruneMissing: Bool) async {
+        // ячейка занята только этой задачей — `start` второго не ставит
+        defer { inFlight = nil }
         guard mayWrite else { return }   // отменена до первого шага
         loadIfNeeded()
 

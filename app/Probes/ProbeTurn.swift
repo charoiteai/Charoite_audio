@@ -41,7 +41,7 @@ enum ProbeTurn {
     /// (18.10: синтетика из трёх встреч оставила в нём одну). Поэтому поиск
     /// пробы идёт только по индексу из `isolateIndex`.
     static func search(_ query: String, params: ChatRetrieval.Params,
-                       root: URL, index: Index) async throws -> ArchiveSearch.Outcome {
+                       root: URL, index: Index) async -> ArchiveSearch.Outcome {
         // под окно хода, как в чате: бенч мерит то, что получит модель (№743)
         ChatRetrieval.fit(await ArchiveSearch.localSearchOutcome(
             query: ChatRetrieval.query(from: [.init(role: "user", text: query)]), limit: params.limit, snippet: params.snippet, budget: params.budget,

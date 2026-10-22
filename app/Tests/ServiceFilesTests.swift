@@ -66,9 +66,7 @@ final class ServiceFilesTests: XCTestCase {
     }
 
     func testLocalSearchLeavesFolderIndexesOutAndKeepsTheMap() async throws {
-        let store = FileManager.default.temporaryDirectory
-            .appendingPathComponent("charoite-svc-index-\(UUID().uuidString).json")
-        let index = makeTestIndex(store: store) { _ in nil }
+        let index = makeTestIndex { _ in nil }
         let graph = try makeGraph([
             // карта и указатель повторяют слова запроса гуще, чем узел
             "_MOC.md": "# Карта\nПлатёжный шлюз, платёжный шлюз, провайдер, провайдер.",
@@ -86,9 +84,7 @@ final class ServiceFilesTests: XCTestCase {
     /// Brain отдал одни указатели — чат идёт в локальный поиск и получает узел;
     /// с узлом в ответе brain локальный поиск не зовётся (out5, DS I2).
     func testIndexOnlyBrainAnswerFallsThroughToLocalSearch() async throws {
-        let store = FileManager.default.temporaryDirectory
-            .appendingPathComponent("charoite-svc-index-\(UUID().uuidString).json")
-        let index = makeTestIndex(store: store) { _ in nil }
+        let index = makeTestIndex { _ in nil }
         let graph = try makeGraph([
             "Ядра/_ЯДРА.md": "- [[Ядра/Платёжный шлюз]] — провайдер выбран",
             "Ядра/Платёжный шлюз.md": "# Платёжный шлюз\nПровайдер выбран после теста.",
@@ -172,9 +168,7 @@ final class ServiceFilesTests: XCTestCase {
     /// Гейт обхода судит каноническую rel: симлинк с обычным именем на
     /// указатель папки указателем и остаётся (out1, Haiku I1).
     func testSymlinkToAFolderIndexIsStillAnIndex() async throws {
-        let store = FileManager.default.temporaryDirectory
-            .appendingPathComponent("charoite-svc-link-\(UUID().uuidString).json")
-        let index = makeTestIndex(store: store) { _ in nil }
+        let index = makeTestIndex { _ in nil }
         let graph = try makeGraph([
             "Ядра/_ЯДРА.md": "- [[Ядра/Шлюз]] — платёжный шлюз провайдер выбран",
             "Ядра/Шлюз.md": "# Шлюз\nПлатёжный провайдер выбран.",
@@ -190,9 +184,7 @@ final class ServiceFilesTests: XCTestCase {
     /// Карта в корне — симлинк на файл вне графа: картой её делает место
     /// ссылки, а не цели — источником остаётся (out7, Haiku C1).
     func testRootMapSymlinkedOutsideTheGraphStaysASource() async throws {
-        let store = FileManager.default.temporaryDirectory
-            .appendingPathComponent("charoite-svc-maplink-\(UUID().uuidString).json")
-        let index = makeTestIndex(store: store) { _ in nil }
+        let index = makeTestIndex { _ in nil }
         let graph = try makeGraph(["Люди/М.md": "# М\nНичего по теме."])
         let outside = try makeGraph(["_MOC.md": "- платёжный шлюз провайдер выбран"])
         try FileManager.default.createSymbolicLink(

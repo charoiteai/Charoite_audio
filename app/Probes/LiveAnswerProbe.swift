@@ -14,7 +14,7 @@ final class LiveAnswerProbe: XCTestCase {
         let index = try await ProbeTurn.isolateIndex(self)   // семантика как в чате, запись — в копию
 
         let params = ProbeTurn.arm.params
-        let outcome = try await ProbeTurn.search("что решили по витрине сертификации",
+        let outcome = await ProbeTurn.search("что решили по витрине сертификации",
                                              params: params, root: graph, index: index)
         let out = outcome.text
         let rels = outcome.rels ?? []

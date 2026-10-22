@@ -53,7 +53,7 @@ final class MemoryBench: XCTestCase {
         var falseRefusal: [ArchiveSearch.Verdict: Int] = [:]
         var abstainOK = 0, abstainTotal = 0
         for c in cases {
-            let outcome = try await ProbeTurn.search(c.q, params: params, root: graph, index: index)
+            let outcome = await ProbeTurn.search(c.q, params: params, root: graph, index: index)
             let found = outcome.text
             if found.isEmpty && !c.abstain { emptyFound += 1 }
             dump += "=== \(c.q) [\(outcome.verdict.rawValue)]\n\(found)\n\n"

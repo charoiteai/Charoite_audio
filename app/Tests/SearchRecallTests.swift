@@ -52,7 +52,8 @@ func tempIndexStore() -> URL {
 /// следующего. Без `store` — свежий путь в tmp; `loadStore: true` — начать с
 /// содержимого файла (перезапуск). В teardown экземпляр закрывается: идущая
 /// задача отменена и дождана, после этого файл удаляется — хвост persist
-/// не воссоздаёт его. Потолок закрытия 300 с: дольше — повисший эмбеддер.
+/// не воссоздаёт его. Потолок закрытия 60 с: `close()` отменяет эмбеддер,
+/// дольше — повисшая задача, и тест называет себя в отказе.
 extension XCTestCase {
     func makeTestIndex(store: URL? = nil, loadStore: Bool = false,
                        file: StaticString = #filePath, line: UInt = #line,
@@ -63,10 +64,11 @@ extension XCTestCase {
                           "loadStore без файла — тест проверял бы пустой индекс", file: file, line: line)
         }
         let index = SemanticIndex(store: path, loadStore: loadStore, embedder: embedder)
+        let test = name
         addTeardownBlock {
-            let closed = await finishesWithin(seconds: 300) { await index.close() }
+            let closed = await finishesWithin(seconds: 60) { await index.close() }
             if !closed {
-                XCTFail("фоновая доиндексация не закончилась за 300 с", file: file, line: line)
+                XCTFail("\(test): фоновая доиндексация не закончилась за 60 с", file: file, line: line)
             }
             try? FileManager.default.removeItem(at: path)
         }

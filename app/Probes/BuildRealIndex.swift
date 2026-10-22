@@ -56,7 +56,7 @@ final class BuildRealIndex: XCTestCase {
         // писатель затирает записи другого (out11). Какой файл у приложения,
         // извне не узнать — у него своё окружение (`CFFIXED_USER_HOME`, out13),
         // поэтому отказ при любом открытом; `swift run` идёт без bundle id (out12).
-        // Замок писателя на файле индекса — №534.
+        // Замок писателя на файле индекса — №640.
         let appOpen = NSWorkspace.shared.runningApplications.contains {
             $0.bundleIdentifier == "ai.charoite.app" || $0.executableURL?.lastPathComponent == "CharoiteApp"
         }

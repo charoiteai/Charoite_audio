@@ -165,3 +165,37 @@ extension SemanticChunkTests {
                              "частичный снимок вычистил файл без флага pruneMissing")
     }
 }
+
+/// Владение писателем (№534): фоновая задача — собственность экземпляра.
+/// Закрытый экземпляр не пишет, даже если эмбеддер ответил после `close()`:
+/// иначе хвост persist воссоздавал удалённую копию индекса с превью встреч.
+final class IndexOwnershipTests: XCTestCase {
+    func testClosedIndexDoesNotWriteAfterLateEmbedder() async throws {
+        let store = tempIndexStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let entered = AsyncStream<Void>.makeStream()
+        let hold = AsyncStream<Void>.makeStream()
+        // эмбеддер висит, пока его не отпустят или не отменят, — потом отвечает
+        let index = SemanticIndex(store: store) { texts in
+            entered.continuation.yield(())
+            for await _ in hold.stream { break }
+            return texts.map { _ in [1, 0] }
+        }
+        let started = await index.refreshInBackground(
+            files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], pruneMissing: false)
+        XCTAssertTrue(started)
+        for await _ in entered.stream { break }
+
+        // пока задача идёт, второй снимок пропускается, а не ставит второго писателя
+        let second = await index.refreshInBackground(
+            files: [(path: "D.md", mtime: 1, text: "# D\n\nдругое")], pruneMissing: true)
+        XCTAssertFalse(second)
+
+        await index.close()    // отмена отпускает эмбеддер — он отвечает векторами
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.path),
+                       "закрытый экземпляр записал файл индекса после ответа эмбеддера")
+        let afterClose = await index.refreshInBackground(
+            files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], pruneMissing: false)
+        XCTAssertFalse(afterClose, "закрытый экземпляр принял новую задачу")
+    }
+}
