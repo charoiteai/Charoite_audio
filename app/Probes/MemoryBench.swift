@@ -39,7 +39,7 @@ final class MemoryBench: XCTestCase {
         let kind = withModel ? "_answers" : ""
         let reportPath = try ProbeTurn.reportPath("bench_\(armName)\(kind)")
         let foundPath = try ProbeTurn.reportPath("bench_\(armName)\(kind)_found")
-        try await ProbeTurn.isolateIndex(self)
+        let index = try await ProbeTurn.isolateIndex(self)
         var report = ProbeTurn.header(withModel
             ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез тем же ходом, что чат)"
             : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)")
@@ -53,7 +53,7 @@ final class MemoryBench: XCTestCase {
         var falseRefusal: [ArchiveSearch.Verdict: Int] = [:]
         var abstainOK = 0, abstainTotal = 0
         for c in cases {
-            let outcome = try await ProbeTurn.search(c.q, params: params, root: graph)
+            let outcome = try await ProbeTurn.search(c.q, params: params, root: graph, index: index)
             let found = outcome.text
             if found.isEmpty && !c.abstain { emptyFound += 1 }
             dump += "=== \(c.q) [\(outcome.verdict.rawValue)]\n\(found)\n\n"

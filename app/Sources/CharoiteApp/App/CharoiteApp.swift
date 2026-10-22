@@ -146,7 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // уложиться в таймаут запроса — первый вопрос пользователя падал на
         // медленный локальный фолбэк. Пустой запрос строит кэш заранее.
         Task.detached(priority: .background) {
-            _ = await ArchiveSearch.search(query: "прогрев", limit: 1, snippet: 100)
+            _ = await ArchiveSearch.search(query: "прогрев", limit: 1, snippet: 100,
+                                          semanticIndex: .shared)
         }
         // Встречи — в системный Spotlight (индекс локальный, машину не покидает).
         SpotlightIndexService.shared.enable()

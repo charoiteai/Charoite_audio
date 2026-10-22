@@ -68,7 +68,7 @@ final class ServiceFilesTests: XCTestCase {
     func testLocalSearchLeavesFolderIndexesOutAndKeepsTheMap() async throws {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("charoite-svc-index-\(UUID().uuidString).json")
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = makeTestIndex(store: store) { _ in nil }
         let graph = try makeGraph([
             // карта и указатель повторяют слова запроса гуще, чем узел
             "_MOC.md": "# Карта\nПлатёжный шлюз, платёжный шлюз, провайдер, провайдер.",
@@ -76,7 +76,7 @@ final class ServiceFilesTests: XCTestCase {
             "Ядра/Платёжный шлюз.md": "# Платёжный шлюз\nПровайдер выбран после теста.",
         ])
         let out = await ArchiveSearch.localSearchOutcome(
-            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph, semanticIndex: index)
         let rels = try XCTUnwrap(out.rels)
         XCTAssertEqual(Set(rels), ["_MOC.md", "Ядра/Платёжный шлюз.md"])
         XCTAssertFalse(out.text.contains("_ЯДРА.md"),
@@ -88,13 +88,13 @@ final class ServiceFilesTests: XCTestCase {
     func testIndexOnlyBrainAnswerFallsThroughToLocalSearch() async throws {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("charoite-svc-index-\(UUID().uuidString).json")
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = makeTestIndex(store: store) { _ in nil }
         let graph = try makeGraph([
             "Ядра/_ЯДРА.md": "- [[Ядра/Платёжный шлюз]] — провайдер выбран",
             "Ядра/Платёжный шлюз.md": "# Платёжный шлюз\nПровайдер выбран после теста.",
         ])
         let local = { await ArchiveSearch.localSearchOutcome(
-            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph) }
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph, semanticIndex: index) }
         let fell = await ArchiveSearch.choose(brain: "• g/Ядра/_ЯДРА.md\n  …провайдер…",
                                               folder: "g", local: local)
         XCTAssertEqual(fell.rels, ["Ядра/Платёжный шлюз.md"])
@@ -174,7 +174,7 @@ final class ServiceFilesTests: XCTestCase {
     func testSymlinkToAFolderIndexIsStillAnIndex() async throws {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("charoite-svc-link-\(UUID().uuidString).json")
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = makeTestIndex(store: store) { _ in nil }
         let graph = try makeGraph([
             "Ядра/_ЯДРА.md": "- [[Ядра/Шлюз]] — платёжный шлюз провайдер выбран",
             "Ядра/Шлюз.md": "# Шлюз\nПлатёжный провайдер выбран.",
@@ -183,7 +183,7 @@ final class ServiceFilesTests: XCTestCase {
             atPath: graph.appendingPathComponent("Ядра/Обзор.md").path,
             withDestinationPath: "_ЯДРА.md")
         let out = await ArchiveSearch.localSearchOutcome(
-            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph, semanticIndex: index)
         XCTAssertEqual(try XCTUnwrap(out.rels), ["Ядра/Шлюз.md"])
     }
 
@@ -192,14 +192,14 @@ final class ServiceFilesTests: XCTestCase {
     func testRootMapSymlinkedOutsideTheGraphStaysASource() async throws {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("charoite-svc-maplink-\(UUID().uuidString).json")
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = makeTestIndex(store: store) { _ in nil }
         let graph = try makeGraph(["Люди/М.md": "# М\nНичего по теме."])
         let outside = try makeGraph(["_MOC.md": "- платёжный шлюз провайдер выбран"])
         try FileManager.default.createSymbolicLink(
             atPath: graph.appendingPathComponent("_MOC.md").path,
             withDestinationPath: outside.appendingPathComponent("_MOC.md").path)
         let out = await ArchiveSearch.localSearchOutcome(
-            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph)
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: graph, semanticIndex: index)
         XCTAssertEqual(try XCTUnwrap(out.rels), ["_MOC.md"])
         // Не в корне — не карта: «Встречи/_MOC.md» наружу отсекается. Свой
         // граф без корневой карты: у файла вне графа rel — голое имя, обе
@@ -211,14 +211,14 @@ final class ServiceFilesTests: XCTestCase {
             atPath: nested.appendingPathComponent("Встречи/_MOC.md").path,
             withDestinationPath: outside.appendingPathComponent("_MOC.md").path)
         let none = await ArchiveSearch.localSearchOutcome(
-            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: nested)
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: nested, semanticIndex: index)
         XCTAssertEqual(none.rels, [])
         // Корень графа сам симлинк — та же выдача.
         let alias = FileManager.default.temporaryDirectory
             .appendingPathComponent("graph-alias-\(UUID().uuidString)")
         try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: graph.path)
         let viaAlias = await ArchiveSearch.localSearchOutcome(
-            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: alias)
+            query: "платёжный шлюз провайдер", limit: 5, snippet: 400, root: alias, semanticIndex: index)
         XCTAssertEqual(try XCTUnwrap(viaAlias.rels), ["_MOC.md"])
     }
 

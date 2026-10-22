@@ -39,8 +39,15 @@ actor SemanticIndex {
 
     private var index: [String: FileVecs] = [:]
     private var loaded = false
-    private var indexing = false
-    private var generation = 0                 // растёт в useForTests: осиротевший refresh умирает
+    /// Единственный писатель индекса и файла. Фоновую доиндексацию раньше
+    /// ставил поиск своим `Task.detached` без ручки, а актор узнавал о ней,
+    /// только когда она в него входила: поздняя задача прошлого теста брала
+    /// поколение следующего и прунила его индекс снимком чужого графа, а тест
+    /// ждал запись опросом по часам (№534, №412). Теперь задача — собственность
+    /// экземпляра: её можно дождаться и закрыть.
+    private var inFlight: Task<Void, Never>?
+    private var inFlightTicket = 0
+    private var closed = false
     /// Сколько знаков блока держим для показа в выдаче.
     private static let previewChars = 700
     /// Кап фоновой доиндексации за вызов, В БЛОКАХ. Первый поиск на большом
@@ -59,57 +66,49 @@ actor SemanticIndex {
     }
     private static let batchSize = 8
 
-    // Тестовый шов: подменный эмбеддер и отдельный файл индекса. Продовый
-    // путь без useForTests() не меняется. Тесты обязаны подменять ОБА конца:
-    // иначе swift test на машине разработчика с поднятой Ollama писал бы
-    // эмбеддинги тестовых корпусов в настоящий индекс пользователя.
-    private var embedOverride: (([String]) async -> [[Float]]?)?
-    private var storeOverride: URL?
+    // Файл и эмбеддер экземпляр получает при рождении и больше не меняет.
+    // Раньше тесты подменяли их у общего `shared` (useForTests), и хвост
+    // одного теста писал в сессию другого; теперь тест и проба строят свой
+    // экземпляр, а `shared` знает только приложение. nil — правило
+    // `storeURL` / настоящая Ollama.
+    private let storeOverride: URL?
+    private let embedOverride: (([String]) async -> [[Float]]?)?
+
+    private init() {
+        storeOverride = nil
+        embedOverride = nil
+    }
 
     #if DEBUG
-    /// `embedder: nil` — настоящий эмбеддер (живые пробы); `loadStore` — начать
-    /// с содержимого `store`, а не с пустого индекса.
-    func useForTests(store: URL, loadStore: Bool = false,
-                     embedder: (([String]) async -> [[Float]]?)?) async {
-        // Актор реентерабелен, а localSearch порождает НЕструктурированный
-        // Task.detached с refresh — хвост прошлого теста может жить прямо
-        // сейчас, вися на await эмбеддера и держа флаг indexing. gen-токен
-        // убивает его ЗАПИСИ, но свежий refresh нового теста дропнулся бы
-        // об занятый флаг (guard !indexing) — молча и не каждый раз: ровно
-        // так выглядел зелёный push-прогон при красном PR-прогоне того же
-        // дерева. Поэтому подмена сначала осиротляет чужой refresh, потом
-        // ДОЖИДАЕТСЯ его смерти — тест начинается с тихого индекса.
-        generation += 1
-        // Ждём смерти чужого refresh, но НЕ бесконечно: раньше здесь стоял
-        // голый `while indexing { await Task.yield() }`, и если предыдущий
-        // прогон оставлял флаг поднятым, следующий тест вставал намертво —
-        // не падал с внятной ошибкой, а висел до таймаута CI. Генерация уже
-        // увеличена, так что чужие записи всё равно отбрасываются: ждать
-        // вечно незачем.
-        for _ in 0..<1000 where indexing { await Task.yield() }
-        indexing = false
+    /// Экземпляр тестов и проб. `embedder: nil` — настоящий эмбеддер (живые
+    /// пробы); `loadStore` — начать с содержимого `store`, а не с пустого индекса.
+    init(store: URL, loadStore: Bool = false,
+         embedder: (([String]) async -> [[Float]]?)?) {
         storeOverride = store
         embedOverride = embedder
-        index = [:]
         loaded = !loadStore    // true — не подтягивать файл с диска
     }
 
-    /// Файл процесса тестов, не заявивших свой store: живой индекс тесты берут только явно.
+    /// Файл процесса тестов, тронувших `shared`: живой индекс тесты берут только явно.
     static let unclaimedTestStore = FileManager.default.temporaryDirectory
         .appendingPathComponent("charoite_unclaimed_index_\(UUID().uuidString).bin")
 
-    /// Конец подмены: refresh, ждущий эмбеддер, не запишет файл после уборки
-    /// теста, а запоздавший — уйдёт в файл процесса, не в чужую копию (круг 8).
-    func endTestSession() {
-        generation += 1
-        storeOverride = nil
-        embedOverride = nil
-        index = [:]
-        loaded = false
+    /// Дождаться фоновой доиндексации: тест проверяет её результат.
+    func drainForTests() async {
+        while let running = inFlight { await running.value }
     }
 
-    /// Пишет ли индекс в подменный файл — гейт живых проб.
-    var usesTestStore: Bool { storeOverride != nil }
+    /// Конец жизни тестового экземпляра — до удаления его файла: идущая задача
+    /// отменяется (запрос к Ollama обрывается) и дожидается, после чего ни
+    /// она, ни новая не пишут. Без этого хвост persist воссоздавал удалённую
+    /// копию индекса с превью встреч (раньше это делал endTestSession).
+    func close() async {
+        closed = true
+        while let running = inFlight {
+            running.cancel()
+            await running.value
+        }
+    }
 
     /// Сохранённый mtime записи — проверки инвалидации в тестах.
     func storedMtime(of path: String) -> Double? {
@@ -137,7 +136,7 @@ actor SemanticIndex {
     private var storeURL: URL {
         if let storeOverride { return storeOverride }
         #if DEBUG
-        // Под XCTest без useForTests — не файл приложения: тест демо-графа через
+        // Под XCTest `shared` — не файл приложения: тест демо-графа через
         // localSearch прунил живой индекс до своей фикстуры (№740, опыт 18.10:
         // 141 КБ → 8 байт за один прогон ArchiveLinksTests).
         if NSClassFromString("XCTestCase") != nil { return Self.unclaimedTestStore }
@@ -232,13 +231,51 @@ actor SemanticIndex {
     /// `Application Support/Charoite/semantic_index_v2.bin` (аудит 16.08).
     /// Флаг обязателен: звать с частичным списком и чистить «остальное»
     /// значит стереть индекс целиком.
+    ///
+    /// Прямой вызов (тесты, проба BuildRealIndex) дожидается идущей фоновой
+    /// задачи и делает свой проход: после возврата его файлы прошли один
+    /// проход доиндексации — с тем же капом блоков и с остановкой на отказе
+    /// эмбеддера, что и фоновый.
     func refresh(files: [(path: String, mtime: Double, text: String)],
                  pruneMissing: Bool = false) async {
+        while let running = inFlight { await running.value }
+        // между проверкой ячейки и start нет await — второй писатель не встанет
+        guard let task = start(files: files, pruneMissing: pruneMissing,
+                               priority: Task.currentPriority) else { return }
+        await task.value
+    }
+
+    /// Доиндексация после поиска: ответ её не ждёт. Идущая задача не
+    /// дублируется — снимок этого поиска пропускается, хвост доедет со
+    /// следующим (дозировка общей с подсказками Ollama). Задача
+    /// регистрируется до возврата, поэтому тест может её дождаться.
+    func refreshInBackground(files: [(path: String, mtime: Double, text: String)],
+                             pruneMissing: Bool) {
+        guard inFlight == nil else { return }
+        _ = start(files: files, pruneMissing: pruneMissing, priority: .background)
+    }
+
+    private func start(files: [(path: String, mtime: Double, text: String)],
+                       pruneMissing: Bool, priority: TaskPriority) -> Task<Void, Never>? {
+        guard !closed else { return nil }
+        inFlightTicket += 1
+        let ticket = inFlightTicket
+        let task = Task.detached(priority: priority) { [self] in
+            await self.run(files: files, pruneMissing: pruneMissing, ticket: ticket)
+        }
+        inFlight = task
+        return task
+    }
+
+    /// Писать вправе только живая задача незакрытого экземпляра.
+    private var mayWrite: Bool { !closed && !Task.isCancelled }
+
+    private func run(files: [(path: String, mtime: Double, text: String)],
+                     pruneMissing: Bool, ticket: Int) async {
+        // ячейку обнуляет только её владелец
+        defer { if inFlightTicket == ticket { inFlight = nil } }
+        guard mayWrite else { return }   // отменена до первого шага
         loadIfNeeded()
-        guard !indexing else { return }
-        indexing = true
-        defer { indexing = false }
-        let gen = generation
 
         if pruneMissing {
             let alive = Set(files.map(\.path))
@@ -280,9 +317,9 @@ actor SemanticIndex {
         for batch in batches {
             guard let embs = await embedTexts(batch.map(\.chunk.embeddingText)),
                   embs.count == batch.count else { break }   // Ollama лежит/нет модели
-            // за await эмбеддера индекс могли подменить (useForTests) —
-            // осиротевший снапшот не имеет права писать в чужой store
-            guard gen == generation else { return }
+            // за await эмбеддера экземпляр могли закрыть — запись после уборки
+            // воссоздала бы удалённый файл
+            guard mayWrite else { return }
             for (item, emb) in zip(batch, embs) {
                 started.insert(item.path)
                 built[item.path, default: (item.mtime, [])].chunks.append(
@@ -291,9 +328,9 @@ actor SemanticIndex {
                              vec: Self.unit(emb)))
             }
         }
-        // Ранний выход по отказу эмбеддера минует проверку в цикле, а за его
-        // await индекс могли подменить — готовые батчи не пишем в чужой store (круг 8).
-        guard gen == generation else { return }
+        // Ранний выход по отказу эмбеддера минует проверку в цикле, а отмена
+        // обрывает запрос как отказ — готовые батчи закрытого экземпляра не пишем.
+        guard mayWrite else { return }
         // Файл записываем, только если проиндексированы ВСЕ его блоки: иначе
         // mtime сохранится при половине блоков, и оставшиеся не доедут уже
         // никогда — файл будет считаться свежим.

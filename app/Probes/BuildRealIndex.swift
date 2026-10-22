@@ -64,30 +64,30 @@ final class BuildRealIndex: XCTestCase {
             XCTFail("Чароит открыт и может писать тот же индекс — закрой приложение и повтори"); return
         }
 
-        // живой индекс под XCTest — только явной подменой (№740)
+        // живой индекс под XCTest — только явным экземпляром на его файле (№740, №534)
         _ = FileManager.default.createPrivateDirectory(at: SemanticIndex.liveStoreURL.deletingLastPathComponent())
-        await SemanticIndex.shared.useForTests(store: SemanticIndex.liveStoreURL, loadStore: true, embedder: nil)
-        addTeardownBlock { await SemanticIndex.shared.endTestSession() }
+        let index = SemanticIndex(store: SemanticIndex.liveStoreURL, loadStore: true, embedder: nil)
+        addTeardownBlock { await index.close() }
         // refresh берёт за вызов не больше потолка блоков фонового поиска (48):
         // гоняем, пока очередь убывает; файлы без блоков в индекс не попадают никогда.
         let wanted = files.filter { !Chunker.chunks(of: $0.text, title: ($0.path as NSString).deletingPathExtension).isEmpty }
         guard !wanted.isEmpty else { XCTFail("ни в одном файле графа нет блоков: \(graph.path)"); return }
         func pending() async -> Int {
             var n = 0
-            for f in wanted where await SemanticIndex.shared.storedMtime(of: f.path) != f.mtime { n += 1 }
+            for f in wanted where await index.storedMtime(of: f.path) != f.mtime { n += 1 }
             return n
         }
         let t0 = Date()
         var left = await pending()
         while left > 0 {
-            await SemanticIndex.shared.refresh(files: files)
+            await index.refresh(files: files)
             let now = await pending()
             guard now < left else { break }   // Ollama не отвечает — дальше не сдвинемся
             left = now
         }
         let dt = Date().timeIntervalSince(t0)
-        let indexed = await SemanticIndex.shared.count()
-        let chunks = await SemanticIndex.shared.totalChunks()
+        let indexed = await index.count()
+        let chunks = await index.totalChunks()
         print("INDEX: готово за \(Int(dt)) с — файлов \(indexed), блоков \(chunks), не проиндексировано \(left)")
         XCTAssertEqual(left, 0, "не проиндексировано \(left) из \(wanted.count) — Ollama недоступна или нет модели bge-m3")
         // память — не диск: persist глотает ошибку записи, а открытое приложение

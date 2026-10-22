@@ -22,11 +22,11 @@ final class AnswerQualityProbe: XCTestCase {
         let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
         let (armName, params) = ProbeTurn.arm
         let out = try ProbeTurn.reportPath("answer_probe_\(armName)")
-        try await ProbeTurn.isolateIndex(self)
+        let index = try await ProbeTurn.isolateIndex(self)
         var report = ProbeTurn.header("ПРОБА ОТВЕТОВ")
         var unanswered = 0, emptySearch = 0
         for q in questions {
-            let outcome = try await ProbeTurn.search(q, params: params, root: graph)
+            let outcome = try await ProbeTurn.search(q, params: params, root: graph, index: index)
             report += "\n──────── ВОПРОС: \(q)\nИСТОЧНИКИ (\(outcome.text.count) знаков):\n"
             for s in outcome.rels ?? [] { report += "   · \(s)\n" }
             // ответ без источников — из весов модели, качество памяти он не показывает

@@ -139,10 +139,14 @@ enum ArchiveSearch {
     /// Сначала пробуем brain (:8100, гибрид с семантикой), иначе — локально.
     /// CHAROITE_GRAPH_DIR (демо/тесты) — строго файловый поиск: brain этой
     /// машины индексирует ДРУГОЙ граф и молча отвечал бы не по подменённому.
+    ///
+    /// `semanticIndex` — без значения по умолчанию: `.shared` называет только
+    /// корень приложения, тест и проба передают свой экземпляр (№534).
     static func search(query: String, limit: Int = 5, snippet: Int = 1200,
-                       budget: Int = defaultBudget) async -> String {
+                       budget: Int = defaultBudget,
+                       semanticIndex: SemanticIndex) async -> String {
         await searchStructured(query: query, limit: limit, snippet: snippet,
-                               budget: budget).text
+                               budget: budget, semanticIndex: semanticIndex).text
     }
 
     /// Результат поиска для потребителей, которым важно «ЧТО подмешали», а
@@ -213,7 +217,8 @@ enum ArchiveSearch {
     static func searchStructured(query: String, limit: Int = 5,
                                  snippet: Int = 1200,
                                  budget: Int = defaultBudget,
-                                 includeLinked: Bool = true) async -> Outcome {
+                                 includeLinked: Bool = true,
+                                 semanticIndex: SemanticIndex) async -> Outcome {
         let graphOverridden = AppSettings.graphDirEnvNames.contains { name in
             !(ProcessInfo.processInfo.environment[name] ?? "")
                 .trimmingCharacters(in: .whitespaces).isEmpty
@@ -223,7 +228,8 @@ enum ArchiveSearch {
         return await choose(brain: viaBrain, folder: AppSettings.graphDir?.lastPathComponent ?? "") {
             await localSearchOutcome(query: query, limit: limit,
                                      snippet: snippet, budget: budget,
-                                     includeLinked: includeLinked)
+                                     includeLinked: includeLinked,
+                                     semanticIndex: semanticIndex)
         }
     }
 
@@ -372,7 +378,7 @@ enum ArchiveSearch {
     static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200,
                             budget: Int = defaultBudget,
                             root: URL? = nil,
-                            semanticIndex: SemanticIndex = .shared) async -> String {
+                            semanticIndex: SemanticIndex) async -> String {
         await localSearchOutcome(query: query, limit: limit, snippet: snippet,
                                  budget: budget, root: root, semanticIndex: semanticIndex).text
     }
@@ -382,7 +388,7 @@ enum ArchiveSearch {
                                    budget: Int = defaultBudget,
                                    root: URL? = nil,
                                    includeLinked: Bool = true,
-                                   semanticIndex: SemanticIndex = .shared) async -> Outcome {
+                                   semanticIndex: SemanticIndex) async -> Outcome {
         guard var graph = root ?? AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path)
         else { return Outcome(text: "", rels: [], verdict: .unavailable) }
@@ -610,12 +616,13 @@ enum ArchiveSearch {
         // НАСТОЯЩИЙ mtime: dateTs у встреч — дата из имени, она не меняется
         // при правке, и правленый файл никогда не переиндексировался бы
         let snapshot = all.map { (path: $0.rel, mtime: $0.mtime, text: $0.text) }
-        Task.detached(priority: .background) {
-            // pruneMissing: снимок здесь — ВЕСЬ граф, поэтому чего в нём нет,
-            // того больше нет и на диске. Так забытая встреча уходит и из
-            // индекса, а не живёт там превью-блоками (аудит 16.08).
-            await semanticIndex.refresh(files: snapshot, pruneMissing: true)
-        }
+        // pruneMissing: снимок здесь — ВЕСЬ граф, поэтому чего в нём нет,
+        // того больше нет и на диске. Так забытая встреча уходит и из
+        // индекса, а не живёт там превью-блоками (аудит 16.08).
+        // Задачу ставит сам индекс — она его собственность, её можно
+        // дождаться и закрыть (№534). Хоп на актор окна ожидания не добавляет:
+        // similarChecked выше уже ждал тот же актор.
+        await semanticIndex.refreshInBackground(files: snapshot, pruneMissing: true)
 
         // разнообразие: одна встреча (заметка+архив+стенограмма) ≤ 1-2 слота
         var shown = diversify(merged, limit: limit)
