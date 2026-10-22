@@ -459,6 +459,76 @@ def test_update_graph_answer_scrubs_paths_printed_by_the_child(tmp_path, monkeyp
     assert str(home) not in out, out
 
 
+@pytest.mark.parametrize("под_домом", [False, True])
+def test_update_graph_answer_names_the_graph_by_its_mark(tmp_path, monkeypatch, под_домом):
+    """Граф вне дома и корня данных (внешний диск) — его путь в выводе ребёнка
+    не узнала бы ни одна игла. Под домом «~/…» назвал бы сам граф. Оба раза
+    модель видит метку (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    граф = (home if под_домом else tmp_path / "диск") / "Сфера_встреч"
+    граф.mkdir(parents=True)
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(граф))
+
+    def run(*a, **k):
+        return subprocess.CompletedProcess(a[0], 0, stdout=f"узел записан: {граф}/Люди/a.md\n", stderr="")
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", run)
+
+    out = mcp_server.sufler_update_graph()
+
+    assert out == f"узел записан: {mcp_server.privacy.GRAPH_MARK}/Люди/a.md", out
+    assert "Сфера_встреч" not in out, out
+
+
+def test_model_error_detail_is_cut_after_the_scrub(tmp_path, monkeypatch):
+    """Подробность отказа модели режется после скраба: срез до него оставлял
+    начало пути, которое игла уже не узнаёт (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("llm:\n  model: проба\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+    подробно = "x" * 190 + f"{home}/models/a.gguf"
+
+    def отказ():
+        raise llm.LLMHTTPError(500, подробно)
+
+    _minutes_client(monkeypatch, отказ)
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert out.endswith("x" * 190 + "~/models/a"), out
+    assert str(home)[:10] not in out, out
+
+
+def test_real_scrub_without_stderr_keeps_the_answer(tmp_path, monkeypatch, capsys):
+    """Настоящий скраб пишет число замен в stderr. Без stderr строка ушла бы в
+    stdout (кадры протокола), сломанный stderr отнимал ответ (№762)."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    home = _fake_home(tmp_path, monkeypatch)
+    _transcripts(root, monkeypatch)
+
+    class Сломан:
+        def write(self, _):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    for поток in (None, Сломан()):
+        monkeypatch.setattr(mcp_server.privacy.sys, "stderr", поток)
+        assert mcp_server._чисто(f"файл {home}/a.md") == "файл ~/a.md"
+    assert capsys.readouterr().out == ""
+    # пустой текст — пустой срез, а не пометка «не проверено»
+    assert mcp_server._срез("", slice(-4000, None)) == ""
+
+
 def test_tool_exception_text_names_no_machine_path(tmp_path, monkeypatch):
     """Исключение тела инструмента — второй канал наружу: на mcp 1.x его текст
     доходит до клиента как есть (`[Errno 2] … '<путь>'`). Файл встречи пропал
@@ -527,7 +597,7 @@ def test_root_check_failure_passes_the_seam(monkeypatch, tmp_path):
     assert str(петля) not in out, out
 
 
-def _скраб_падает(текст):
+def _скраб_падает(текст, **_):
     raise RuntimeError(f"Symlink loop from {текст!r}")
 
 
@@ -578,7 +648,7 @@ def test_scrub_failure_survives_a_closed_stderr(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-@pytest.mark.parametrize("канал", ["ToolError", "RootNotNamed"])
+@pytest.mark.parametrize("канал", ["ToolError", "RootNotNamed", "ответ"])
 def test_empty_refusal_text_is_not_marked_unchecked(tmp_path, monkeypatch, канал):
     """Пометка «не проверено» — только когда скраб упал; пустой текст отказа
     проверять нечего, он остаётся пустым (№762)."""
@@ -590,6 +660,15 @@ def test_empty_refusal_text_is_not_marked_unchecked(tmp_path, monkeypatch, ка�
     def отказ():
         raise mcp_server.ToolError("") if канал == "ToolError" else charoite_paths.RootNotNamed("")
 
+    if канал == "ответ":
+        # пустой рабочий ответ — раздел заметок есть, а в нём ничего: не отказ
+        (tmp_path / "второй").mkdir()
+        _transcripts(tmp_path / "второй", monkeypatch,
+                     text=f"# Встреча\nтело\n\n## {mcp_server.transcript.NOTES_TITLE}\n")
+        ответ = asyncio.run(_вызвать("sufler_notes"))
+        assert not _ошибка(ответ), _текст(ответ)
+        assert _текст(ответ) == ""
+        return
     if канал == "ToolError":
         monkeypatch.setattr(mcp_server, "_latest", отказ)
     else:

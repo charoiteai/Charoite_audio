@@ -22,6 +22,7 @@ from charoite_graph import safe_write
 import action_items
 import transcript
 
+import graphs
 import live_gate
 import live_sidecar
 import meeting_source
@@ -236,6 +237,13 @@ def _tool(fn):
 _НЕ_ПРОВЕРЕНО = "текст скрыт — пути в нём не проверены"
 
 
+def _срез(текст: str, часть: slice) -> str:
+    """Срез текста после скраба: срез до скраба режет путь, и игла его уже не
+    узнаёт (`/Users/an` в начале, `ers/имя/…` в хвосте уходят наружу)."""
+    чистый = _чисто(текст)
+    return _НЕ_ПРОВЕРЕНО if чистый is None else чистый[часть]
+
+
 def _чисто(текст: str) -> str | None:
     """Текст без путей машины или None, если скраб сам упал.
 
@@ -244,7 +252,7 @@ def _чисто(текст: str) -> str | None:
     исключение из обработчика ушло бы мимо шва. Тогда наружу не идёт ничего
     из исходного текста."""
     try:
-        return privacy.scrub_local_paths(текст)[0]
+        return privacy.scrub_local_paths(текст, extra=_иглы_шва())[0]
     except Exception as сбой:  # noqa: BLE001 — любой сбой скраба: текст не проверен, наружу его нельзя
         # причину — владельцу в журнал сервера, без текста: в нём пути. Без
         # stderr print ушёл бы в stdout — транспорт протокола; сбой записи
@@ -255,6 +263,17 @@ def _чисто(текст: str) -> str | None:
             except Exception:  # noqa: BLE001
                 pass
         return None
+
+
+def _иглы_шва() -> dict[str, str] | None:
+    """Каталог графа — меткой: ребёнок `graph_updater` печатает пути узлов, а
+    граф бывает вне дома и корня данных. Граф не назван или конфиг не
+    прочитан — иглы нет, дом и корень скраб чистит и без неё."""
+    try:
+        каталог = graphs.graph_dir(_cfg())
+    except Exception:  # noqa: BLE001 — без иглы графа, но не без ответа
+        return None
+    return {str(каталог): privacy.GRAPH_MARK} if каталог is not None else None
 
 
 # Производные файлы, которые пишутся ПОЗЖЕ стенограммы и не должны считаться
@@ -368,7 +387,7 @@ def sufler_make_minutes() -> str:
             timeout=600)
     except LLMHTTPError as e:
         return (f"модель ответила {e.status} — минутки НЕ тронуты "
-                f"({mpath.name}). Проверьте настройку модели: {e.detail[:200]}")
+                f"({mpath.name}). Проверьте настройку модели: {_срез(e.detail, slice(None, 200))}")
     except ValueError:
         return f"модель вернула не JSON — минутки НЕ тронуты ({mpath.name})"
     except requests.RequestException as e:
@@ -405,7 +424,7 @@ def sufler_make_minutes() -> str:
         # изменились. Хеш источника — тем же объектом, что у пересборки.
         tail = "" if wrote.state == live_sidecar.FRESH else (
             "\n(паспорт производной не подтверждён: проверьте сайдкар стенограммы)")
-        return f"Минутки сохранены: {mpath.name}{tail}\n\n{out[:2000]}"
+        return f"Минутки сохранены: {mpath.name}{tail}\n\n{_срез(out, slice(None, 2000))}"
     finally:
         # Сводки частей снимаются на ЛЮБОМ исходе ПОСЛЕ ответа модели — это
         # решение в пользу приватности: кэш свёртки хранит речь встречи и без
@@ -422,7 +441,7 @@ def sufler_hints() -> str:
     if not f:
         return "Стенограмм нет."
     h = f.with_name(f.stem + "_hints.md")
-    return h.read_text(encoding="utf-8")[-4000:] if h.exists() else "Подсказок пока нет."
+    return _срез(h.read_text(encoding="utf-8"), slice(-4000, None)) if h.exists() else "Подсказок пока нет."
 
 
 @_tool
