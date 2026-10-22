@@ -230,7 +230,8 @@ final class LocalChatService: ObservableObject {
             // Выдача — под окно хода: куски целиком, чипы по оставшимся (№743)
             let outcome = ChatRetrieval.fit(await ArchiveSearch.searchStructured(
                 query: topic, limit: params.limit, snippet: params.snippet, budget: params.budget,
-                includeLinked: inferenceIsLocal), system: system, turn: window)
+                includeLinked: inferenceIsLocal, semanticIndex: .shared),
+                system: system, turn: window)
             guard !Task.isCancelled else { return }
             let context = ChatRetrieval.contextBlock(outcome)
             let vault = context.text

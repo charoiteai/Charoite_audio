@@ -21,14 +21,19 @@ final class SearchPerfProbe: XCTestCase {
         }
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("perf-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: store) }
         // Семантику отключаем: меряем именно лексический проход по графу.
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = SemanticIndex(store: store) { _ in nil }
+        // закрыть до удаления — иначе хвостовой persist воссоздаст файл
+        addTeardownBlock {
+            await index.close()
+            try? FileManager.default.removeItem(at: store)
+        }
 
         for query in ["что решили по витрине", "пилот LLM статус", "блокеры по доступу"] {
             let t0 = Date()
             let out = await ArchiveSearch.localSearch(query: query, limit: 5,
-                                                     snippet: 1200, root: graph)
+                                                     snippet: 1200, root: graph,
+                                                     semanticIndex: index)
             let dt = Date().timeIntervalSince(t0)
             print("PERF «\(query)»: \(String(format: "%.2f", dt)) с, выдача \(out.count) знаков")
             XCTAssertLessThan(dt, 30, "поиск дольше 30 секунд — непригодно")

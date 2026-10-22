@@ -11,11 +11,11 @@ final class LiveAnswerProbe: XCTestCase {
         guard let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
               !raw.isEmpty else { throw XCTSkip("CHAROITE_GRAPH_DIR не задан") }
         let graph = try ProbeTurn.graphDir(raw)
-        try await ProbeTurn.isolateIndex(self)   // семантика как в чате, запись — в копию
+        let index = try await ProbeTurn.isolateIndex(self)   // семантика как в чате, запись — в копию
 
         let params = ProbeTurn.arm.params
-        let outcome = try await ProbeTurn.search("что решили по витрине сертификации",
-                                             params: params, root: graph)
+        let outcome = await ProbeTurn.search("что решили по витрине сертификации",
+                                             params: params, root: graph, index: index)
         let out = outcome.text
         let rels = outcome.rels ?? []
         print(ProbeTurn.header("=== ЧТО ПОЛУЧАЕТ МОДЕЛЬ (\(out.count) знаков, \(rels.count) источников) ==="))

@@ -198,14 +198,9 @@ final class TasksServiceTests: XCTestCase {
 
 /// Интеграция: гибридный поиск на демо-графе из репозитория.
 final class DemoGraphSearchTests: XCTestCase {
-    override func setUp() async throws {
-        // Пустой индекс во временном файле и эмбеддер «Ollama лежит»: тест
-        // детерминирован (чистая лексика, как в CI) и не пишет эмбеддинги
-        // демо-графа в настоящий индекс на машине с поднятой Ollama.
-        let store = FileManager.default.temporaryDirectory
-            .appendingPathComponent("charoite-demo-index-\(UUID().uuidString).json")
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
-    }
+    // Каждый тест ищет со своим пустым индексом и эмбеддером «Ollama лежит»:
+    // тест детерминирован (чистая лексика, как в CI) и не пишет эмбеддинги
+    // демо-графа в настоящий индекс на машине с поднятой Ollama.
 
     private var demoGraph: URL {
         // app/Tests/… → корень репо → demo/graph
@@ -217,9 +212,10 @@ final class DemoGraphSearchTests: XCTestCase {
     }
 
     func testDecisionQuestionFindsPaymentNodes() async {
+        let index = makeTestIndex { _ in nil }
         let out = await ArchiveSearch.localSearch(
             query: "что решили по платёжному провайдеру?", limit: 5, snippet: 600,
-            root: demoGraph)
+            root: demoGraph, semanticIndex: index)
         XCTAssertTrue(out.contains("платёжного провайдера") || out.contains("Платёжный шлюз"),
                       "ожидали узлы про платёжного провайдера, получили: \(out.prefix(200))")
         XCTAssertTrue(out.lowercased().contains("юpay".lowercased()),
@@ -227,14 +223,16 @@ final class DemoGraphSearchTests: XCTestCase {
     }
 
     func testBlockerQuestionFindsBlockerNode() async {
+        let index = makeTestIndex { _ in nil }
         let out = await ArchiveSearch.localSearch(
-            query: "какие блокеры сейчас?", limit: 3, snippet: 400, root: demoGraph)
+            query: "какие блокеры сейчас?", limit: 3, snippet: 400, root: demoGraph, semanticIndex: index)
         XCTAssertTrue(out.contains("Блокеры/"), "узел блокера должен быть в выдаче")
     }
 
     func testOffTopicGetsLowConfidenceOrEmpty() async {
+        let index = makeTestIndex { _ in nil }
         let out = await ArchiveSearch.localSearch(
-            query: "рецепт борща с пампушками", limit: 3, snippet: 300, root: demoGraph)
+            query: "рецепт борща с пампушками", limit: 3, snippet: 300, root: demoGraph, semanticIndex: index)
         XCTAssertTrue(out.isEmpty || out.hasPrefix(ArchiveSearch.lowConfidenceMarker),
                       "офтопик обязан быть пустым или с «⚠», получили: \(out.prefix(120))")
     }
@@ -242,12 +240,7 @@ final class DemoGraphSearchTests: XCTestCase {
 
 /// Английский поиск: en-стемминг и e2e по английскому демо-графу.
 final class EnglishSearchTests: XCTestCase {
-    override func setUp() async throws {
-        // см. DemoGraphSearchTests.setUp — те же причины
-        let store = FileManager.default.temporaryDirectory
-            .appendingPathComponent("charoite-demo-index-\(UUID().uuidString).json")
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
-    }
+    // индекс — как в DemoGraphSearchTests
 
     func testEnglishStemming() {
         XCTAssertEqual(ArchiveSearch.stem("decided"), "decid")
@@ -264,17 +257,19 @@ final class EnglishSearchTests: XCTestCase {
     }
 
     func testEnglishDecisionQuestion() async {
+        let index = makeTestIndex { _ in nil }
         let out = await ArchiveSearch.localSearch(
             query: "what did we decide about the payment provider?",
-            limit: 5, snippet: 600, root: demoGraphEn)
+            limit: 5, snippet: 600, root: demoGraphEn, semanticIndex: index)
         XCTAssertTrue(out.contains("Payment"), "payment nodes expected: \(out.prefix(200))")
         XCTAssertTrue(out.contains("YuPay"), "the factual answer must reach snippets")
     }
 
     func testEnglishBlockerQuestion() async {
+        let index = makeTestIndex { _ in nil }
         let out = await ArchiveSearch.localSearch(
             query: "what are the current blockers?", limit: 3, snippet: 400,
-            root: demoGraphEn)
+            root: demoGraphEn, semanticIndex: index)
         XCTAssertTrue(out.contains("Blockers/"), "blocker node expected")
     }
 
@@ -287,10 +282,11 @@ final class EnglishSearchTests: XCTestCase {
     /// синтезу не доверять найденному. Продукт объявлял безответным вопрос,
     /// ответ на который лежал в первом же сниппете.
     func testOnTopicQuestionIsNotFlaggedLowConfidence() async {
+        let index = makeTestIndex { _ in nil }
         for query in ["what did we decide about the payment provider?",
                       "what are the current blockers?"] {
             let out = await ArchiveSearch.localSearch(
-                query: query, limit: 5, snippet: 600, root: demoGraphEn)
+                query: query, limit: 5, snippet: 600, root: demoGraphEn, semanticIndex: index)
             XCTAssertFalse(out.hasPrefix(ArchiveSearch.lowConfidenceMarker),
                            "вопрос по существу помечен как безответный: \(query)")
         }

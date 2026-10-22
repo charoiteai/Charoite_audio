@@ -28,19 +28,24 @@ enum ProbeTurn {
         MemoryScreenPolicy.inferenceIsLocal(base: AppSettings.ollamaURL)
     }
 
-    /// Поиск фоном зовёт `SemanticIndex.refresh(pruneMissing: true)` по графу
-    /// пробы: без подмены файла индекса проба на чужом графе стирает индекс
-    /// приложения (18.10: синтетика из трёх встреч оставила в нём одну).
-    /// Поэтому поиск пробы — только после `isolateIndex`.
+    /// Индекс пробы. Построить его может только `isolateIndex` — поиск пробы
+    /// без изолированного индекса не собирается (раньше это проверял флаг
+    /// подмены `shared` во время работы, №534).
+    struct Index {
+        let index: SemanticIndex
+        fileprivate init(_ index: SemanticIndex) { self.index = index }
+    }
+
+    /// Поиск фоном зовёт `SemanticIndex.refreshInBackground(pruneMissing: true)` по графу
+    /// пробы: на индексе приложения проба на чужом графе стирает его
+    /// (18.10: синтетика из трёх встреч оставила в нём одну). Поэтому поиск
+    /// пробы идёт только по индексу из `isolateIndex`.
     static func search(_ query: String, params: ChatRetrieval.Params,
-                       root: URL) async throws -> ArchiveSearch.Outcome {
-        guard await SemanticIndex.shared.usesTestStore else {
-            throw SetupError(description: "индекс приложения не подменён — сначала ProbeTurn.isolateIndex")
-        }
+                       root: URL, index: Index) async -> ArchiveSearch.Outcome {
         // под окно хода, как в чате: бенч мерит то, что получит модель (№743)
-        return ChatRetrieval.fit(await ArchiveSearch.localSearchOutcome(
+        ChatRetrieval.fit(await ArchiveSearch.localSearchOutcome(
             query: ChatRetrieval.query(from: [.init(role: "user", text: query)]), limit: params.limit, snippet: params.snippet, budget: params.budget,
-            root: root, includeLinked: inferenceIsLocal),
+            root: root, includeLinked: inferenceIsLocal, semanticIndex: index.index),
             system: ChatRetrieval.baseSystem(inferenceIsLocal: inferenceIsLocal), prompt: query)
     }
 
@@ -86,23 +91,24 @@ enum ProbeTurn {
 
     /// Индекс пробы — копия файла приложения во временном каталоге, эмбеддер
     /// настоящий: семантика как в чате, запись и прунинг — только в копию.
-    static func isolateIndex(_ test: XCTestCase) async throws {
+    static func isolateIndex(_ test: XCTestCase) async throws -> Index {
         let dir = (try reportPath("index") as NSString).deletingLastPathComponent
         let copy = URL(fileURLWithPath: dir)
             .appendingPathComponent("charoite_probe_index_\(UUID().uuidString).bin")
         // уборка — до копии: упавший setAttributes не оставит копию с превью встреч
-        test.addTeardownBlock {
-            // сначала закрыть сессию — иначе хвостовой persist воссоздаст копию после уборки
-            await SemanticIndex.shared.endTestSession()
-            try? FileManager.default.removeItem(at: copy)
-        }
+        test.addTeardownBlock { try? FileManager.default.removeItem(at: copy) }
         let live = SemanticIndex.liveStoreURL
         if FileManager.default.fileExists(atPath: live.path) {
             try FileManager.default.copyItem(at: live, to: copy)
             // копия хранит превью встреч — права не по файлу приложения
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: copy.path)
         }
-        await SemanticIndex.shared.useForTests(store: copy, loadStore: true, embedder: nil)
+        // экземпляр — после копии: loadStore читает уже готовый файл
+        let index = SemanticIndex(store: copy, loadStore: true, embedder: nil)
+        // teardown-блоки идут в обратном порядке: индекс закрыт до уборки копии,
+        // хвостовой persist её не воссоздаст
+        test.addTeardownBlock { await index.close() }
+        return Index(index)
     }
 
     /// Папка графа из окружения — абсолютный путь к существующему каталогу,

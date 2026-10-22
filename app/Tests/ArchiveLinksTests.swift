@@ -25,6 +25,7 @@ final class ArchiveLinksTests: XCTestCase {
     }
 
     func testArchiveSearchIncludesLinkedSourceInPackedOutcome() async throws {
+        let index = makeTestIndex { _ in nil }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         for folder in ["People", "Meetings"] {
@@ -32,7 +33,7 @@ final class ArchiveLinksTests: XCTestCase {
         }
         try "# Иван\n## Встречи\n[[Meetings/One]]".write(to: root.appendingPathComponent("People/Иван.md"), atomically: true, encoding: .utf8)
         try "# Обсуждение\nВыбрали провайдера Б для запуска.".write(to: root.appendingPathComponent("Meetings/One.md"), atomically: true, encoding: .utf8)
-        let outcome = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 2, snippet: 400, root: root)
+        let outcome = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 2, snippet: 400, root: root, semanticIndex: index)
         XCTAssertTrue(outcome.text.contains("Выбрали провайдера Б"))
         XCTAssertTrue(outcome.rels?.contains("Meetings/One.md") == true)
     }
@@ -40,23 +41,25 @@ final class ArchiveLinksTests: XCTestCase {
     /// Опыт O4 (№695, постфактум-2 по #776): выдача полна — сосед по ссылке без
     /// слов запроса не вытесняет настоящее совпадение.
     func testLinkedSourceNeverDisplacesARealHit() async throws {
+        let index = makeTestIndex { _ in nil }
         let root = try linkedGraph()
         defer { try? FileManager.default.removeItem(at: root) }
         try "# Иван в системе\nИван отвечает за систему".write(to: root.appendingPathComponent("Systems/CRM.md"),
                                                                atomically: true, encoding: .utf8)
-        let outcome = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 2, snippet: 800, root: root)
+        let outcome = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 2, snippet: 800, root: root, semanticIndex: index)
         XCTAssertEqual(Set(outcome.rels ?? []), ["People/Иван.md", "Systems/CRM.md"])
         XCTAssertFalse(outcome.text.contains("Пароль от сейфа"))
     }
 
     /// Модель не на этом Mac — соседа по ссылке без слов запроса в контексте нет.
     func testLinkedSourceIsLeftOutWhenAsked() async throws {
+        let index = makeTestIndex { _ in nil }
         let root = try linkedGraph()
         defer { try? FileManager.default.removeItem(at: root) }
-        let linked = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 8, snippet: 800, root: root)
+        let linked = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 8, snippet: 800, root: root, semanticIndex: index)
         XCTAssertTrue(linked.text.contains("Пароль от сейфа"))
         let plain = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 8, snippet: 800, root: root,
-                                                           includeLinked: false)
+                                                           includeLinked: false, semanticIndex: index)
         XCTAssertEqual(plain.rels, ["People/Иван.md"])
         XCTAssertFalse(plain.text.contains("Пароль от сейфа"))
     }

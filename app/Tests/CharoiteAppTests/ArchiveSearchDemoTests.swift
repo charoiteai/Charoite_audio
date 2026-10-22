@@ -3,13 +3,14 @@ import XCTest
 
 final class ArchiveSearchDemoTests: XCTestCase {
     func testEnglishDemoGraphFindsPaymentProvider() async {
+        let index = makeTestIndex { _ in nil }
         let demo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("demo/graph_en")
         let out = await ArchiveSearch.localSearch(
             query: "what did we decide about the payment provider?",
-            limit: 5, snippet: 400, root: demo)
+            limit: 5, snippet: 400, root: demo, semanticIndex: index)
         print("OUT >>>", out.prefix(300))
         XCTAssertTrue(out.lowercased().contains("payment"), "пусто или мимо: \(out.prefix(200))")
     }
@@ -19,13 +20,14 @@ final class ArchiveSearchDemoTests: XCTestCase {
     /// Замер 19.08 на демо-графах: китайский 0 попаданий против 3 из 3 у
     /// английского, при том что факты в графе лежат.
     func testChineseDemoGraphFindsPaymentProvider() async {
+        let index = makeTestIndex { _ in nil }
         let demo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("demo/graph_zh")
         let out = await ArchiveSearch.localSearch(
             query: "支付服务商最后定了哪一家？",
-            limit: 5, snippet: 400, root: demo)
+            limit: 5, snippet: 400, root: demo, semanticIndex: index)
         XCTAssertTrue(out.contains("YuPay"), "пусто или мимо: \(out.prefix(200))")
     }
 

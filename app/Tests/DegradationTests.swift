@@ -26,12 +26,11 @@ final class DegradationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("degr-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: store) }
         // Эмбеддер молчит — ровно как при выключенной Ollama.
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = makeTestIndex(store: store) { _ in nil }
 
         let out = await ArchiveSearch.localSearch(query: "когда запуск витрины сертификации",
-                                                  limit: 5, snippet: 400, root: root)
+                                                  limit: 5, snippet: 400, root: root, semanticIndex: index)
         XCTAssertTrue(out.contains("сентябрь"),
                       "без эмбеддингов поиск замолчал — обещание мягкой деградации нарушено")
     }
@@ -39,29 +38,30 @@ final class DegradationTests: XCTestCase {
     func testIndexingFailureDoesNotPoisonTheIndex() async throws {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("degr2-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: store) }
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = makeTestIndex(store: store) { _ in nil }
 
-        await SemanticIndex.shared.refresh(files: [("Ядра/А.md", 1, "# А\n\nтекст узла")])
+        await index.refresh(files: [("Ядра/А.md", 1, "# А\n\nтекст узла")])
 
-        let count = await SemanticIndex.shared.count()
+        let count = await index.count()
         XCTAssertEqual(count, 0, "неудачная индексация записала пустышку — файл будет считаться свежим")
     }
 
     func testEmptyGraphDoesNotCrash() async {
+        let index = makeTestIndex { _ in nil }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("charoite-empty-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let out = await ArchiveSearch.localSearch(query: "что угодно", limit: 5,
-                                                  snippet: 400, root: root)
+                                                  snippet: 400, root: root, semanticIndex: index)
         XCTAssertTrue(out.isEmpty)
     }
 
     func testMissingGraphDoesNotCrash() async {
+        let index = makeTestIndex { _ in nil }
         let out = await ArchiveSearch.localSearch(
             query: "что угодно", limit: 5, snippet: 400,
-            root: URL(fileURLWithPath: "/nonexistent/graph/path"))
+            root: URL(fileURLWithPath: "/nonexistent/graph/path"), semanticIndex: index)
         XCTAssertTrue(out.isEmpty)
     }
 }
@@ -91,11 +91,10 @@ final class MalformedInputTests: XCTestCase {
 
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("weird-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: store) }
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        let index = makeTestIndex(store: store) { _ in nil }
 
         let out = await ArchiveSearch.localSearch(query: "когда запуск витрины",
-                                                  limit: 5, snippet: 400, root: root)
+                                                  limit: 5, snippet: 400, root: root, semanticIndex: index)
         XCTAssertTrue(out.contains("сентябре"),
                       "нормальный файл потерялся среди битых:\n\(out)")
     }
