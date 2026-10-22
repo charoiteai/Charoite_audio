@@ -165,6 +165,10 @@ The semantic layer (bge-m3 via your Ollama) works in the built-in search
 too: the index keeps a vector per block of each file, builds in the background
 and refreshes by mtime (see docs/SETUP — `ollama pull bge-m3`). If the optional
 brain server is up (port 8100), search goes there; with neither — pure lexical.
+The index has one writer: a background refresh starts only when none is
+running (a newer snapshot is skipped, not queued). Tests and probes build their
+own index instance with its own file and embedder and close it in teardown, so
+they never touch the app's index file.
 
 ## What leaves the Mac
 
