@@ -167,23 +167,44 @@ extension SemanticChunkTests {
 }
 
 /// Владение писателем (№534): фоновая задача — собственность экземпляра.
-/// Закрытый экземпляр не пишет, даже если эмбеддер ответил после `close()`:
-/// иначе хвост persist воссоздавал удалённую копию индекса с превью встреч.
+/// `close()` отменяет писателя и ждёт его; закрытый экземпляр не пишет,
+/// даже если эмбеддер ответил после `close()`: иначе хвост persist
+/// воссоздавал удалённую копию индекса с превью встреч.
 final class IndexOwnershipTests: XCTestCase {
-    func testClosedIndexDoesNotWriteAfterLateEmbedder() async throws {
-        actor Seen {
-            private(set) var left = false
-            func markLeft() { left = true }
+    /// Ворота, которые отмена не открывает: эмбеддер отвечает только после
+    /// `release()` — то есть заведомо после начала `close()`.
+    private actor Gate {
+        private var open = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        func wait() async {
+            if open { return }
+            await withCheckedContinuation { waiters.append($0) }
         }
+        func release() {
+            open = true
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
+    }
+
+    private actor Marks {
+        private(set) var cancelled = false
+        private(set) var closeReturned = false
+        private(set) var calls = 0
+        func markCancelled(_ value: Bool) { cancelled = value }
+        func markCloseReturned() { closeReturned = true }
+        func nextCall() -> Int { calls += 1; return calls }
+    }
+
+    func testCloseCancelsAndWaitsForTheWriter() async throws {
         let store = tempIndexStore()
         let entered = AsyncStream<Void>.makeStream()
-        let hold = AsyncStream<Void>.makeStream()
-        let seen = Seen()
-        // эмбеддер висит, пока его не отпустят или не отменят, — потом отвечает
+        let gate = Gate()
+        let marks = Marks()
         let index = makeTestIndex(store: store) { texts in
             entered.continuation.yield(())
-            for await _ in hold.stream { break }
-            await seen.markLeft()
+            await gate.wait()
+            await marks.markCancelled(Task.isCancelled)
             return texts.map { _ in [1, 0] }
         }
         let started = await index.refreshInBackground(
@@ -191,20 +212,65 @@ final class IndexOwnershipTests: XCTestCase {
         guard started else { return XCTFail("первый снимок не принят") }
         let stream = entered.stream
         let inside = await finishesWithin(seconds: 10) { for await _ in stream { break } }
-        guard inside else { return XCTFail("эмбеддер не вызван за 10 с") }
+        guard inside else { entered.continuation.finish(); return XCTFail("эмбеддер не вызван за 10 с") }
 
         // пока задача идёт, второй снимок пропускается, а не ставит второго писателя
         let second = await index.refreshInBackground(
             files: [(path: "D.md", mtime: 1, text: "# D\n\nдругое")], pruneMissing: true)
         XCTAssertFalse(second)
 
-        await index.close()    // отмена отпускает эмбеддер — он отвечает векторами
-        let left = await seen.left
-        XCTAssertTrue(left, "close() вернулся, не дождавшись писателя")
+        let closing = Task {
+            await index.close()
+            await marks.markCloseReturned()
+        }
+        // писатель стоит в воротах: правильный close() вернуться не может
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let early = await marks.closeReturned
+        XCTAssertFalse(early, "close() вернулся, пока писатель ждёт эмбеддер")
+        await gate.release()    // эмбеддер отвечает векторами — уже после close()
+        let closed = await finishesWithin(seconds: 10) { await closing.value }
+        guard closed else { return XCTFail("close() не вернулся за 10 с после ответа эмбеддера") }
+        let cancelled = await marks.cancelled
+        XCTAssertTrue(cancelled, "close() не отменил писателя")
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.path),
                        "закрытый экземпляр записал файл индекса после ответа эмбеддера")
         let afterClose = await index.refreshInBackground(
             files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], pruneMissing: false)
         XCTAssertFalse(afterClose, "закрытый экземпляр принял новую задачу")
+    }
+
+    /// Отмена обрывает запрос как отказ (`nil`), а файл из первой пачки уже
+    /// собран целиком — закрытый экземпляр не пишет и его.
+    func testClosedIndexDoesNotWriteBatchesBuiltBeforeTheCancelledRequest() async throws {
+        let store = tempIndexStore()
+        let section = String(repeating: "слово текста ", count: 130)
+        let big = (1...8).map { "## Раздел \($0)\n\n\(section)" }.joined(separator: "\n\n")
+        guard Chunker.chunks(of: big, title: "B").count == 8 else {
+            return XCTFail("файл B должен дать 8 блоков: A (1) + B (8) — две пачки по 8")
+        }
+        let entered = AsyncStream<Void>.makeStream()
+        let hold = AsyncStream<Void>.makeStream()
+        let marks = Marks()
+        let index = makeTestIndex(store: store) { texts in
+            if await marks.nextCall() == 1 { return texts.map { _ in [1, 0] } }
+            entered.continuation.yield(())
+            for await _ in hold.stream { break }    // отпускает только отмена
+            await marks.markCancelled(Task.isCancelled)
+            return nil
+        }
+        let started = await index.refreshInBackground(
+            files: [(path: "A.md", mtime: 1, text: "# A\n\nкороткий узел"),
+                    (path: "B.md", mtime: 1, text: big)], pruneMissing: false)
+        guard started else { return XCTFail("снимок не принят") }
+        let stream = entered.stream
+        let inside = await finishesWithin(seconds: 10) { for await _ in stream { break } }
+        guard inside else { entered.continuation.finish(); return XCTFail("вторая пачка не дошла до эмбеддера за 10 с") }
+
+        let closed = await finishesWithin(seconds: 10) { await index.close() }
+        XCTAssertTrue(closed, "close() не вернулся за 10 с")
+        let cancelled = await marks.cancelled
+        XCTAssertTrue(cancelled, "вторую пачку отпустила не отмена")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.path),
+                       "закрытый экземпляр записал файл, собранный до отменённого запроса")
     }
 }
