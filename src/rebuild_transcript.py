@@ -68,6 +68,7 @@ import speech_gate  # noqa: E402
 import live_gate  # noqa: E402
 import file_locks  # noqa: E402
 import meeting_stamp  # noqa: E402
+import meeting_tail  # noqa: E402
 from diarize import VETO_BELOW, diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from diarize_live import LIVE_MAX_SPEAKERS  # noqa: E402 — потолок мест канала живого трекера
 import diarize_nemotron  # noqa: E402 — Nemotron процессом чужого интерпретатора (№473)
@@ -886,6 +887,35 @@ def resolve_channel_segments(
     return segments, chan, unsupported_labels
 
 
+AFTER_CALL_NOTE = ("Запись шла после конца звонка ({end}): это не часть встречи — в протокол, "
+                   "разбор, граф и архив она не идёт. Подписи голосов не проверялись.")
+
+
+def after_call_path(live: pathlib.Path) -> pathlib.Path:
+    """Файл записи после конца звонка рядом со стенограммой (№733)."""
+    return live.with_name(live.stem + meeting_stamp.AFTER_CALL_SUFFIX + ".md")
+
+
+def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
+                     lines: list[tuple[float, float, str, str]], fmt) -> None:
+    """Записать реплики после конца звонка отдельным файлом — стенограмма не
+    теряет ни слова, а речь встречи их не содержит. Подписи — метки разметки:
+    имена встречи сюда не переносятся, голос из комнаты не должен получить имя
+    собеседника. Хвоста нет — прежний файл не трогаем: его могли править."""
+    path = after_call_path(live)
+    if not lines or end is None:
+        if path.exists():
+            log(f"запись после звонка не выделена, прежний {path.name} оставлен")
+        return
+    body = [f"# После звонка {stamp}", "", AFTER_CALL_NOTE.format(end=fmt(end)), ""]
+    for s, e, spk, text in lines:
+        span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
+        body += [f"**{spk}** [{span}]:", text, ""]
+    text, _ = privacy.scrub_local_paths("\n".join(body).rstrip() + "\n")
+    safe_write.write_text(path, text)
+    log(f"после звонка: {len(lines)} реплик → {path.name}")
+
+
 def paragraphs(segments: list[tuple[float, float, str]], gap: float = 2.0) -> list[list]:
     """Склейка соседних кусков одного голоса (зазор < gap) — цельные абзацы.
 
@@ -1593,6 +1623,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     # базовая метка — не владелец, переподписи не бывает, а строка о молчащем
     # всю встречу канале на каждой очной выглядела бы как сбой (№269).
     unsupported: list[tuple[float, float]] = []
+    channel_doubt = ""             # почему не верить концу звонка по каналу (№733)
     if bh_p is not None and mic_p is not None:
         runs = speech_gate.zero_runs(bh, bh_sr, 10.0)
         log(f"нули канала собеседников: серий ≥ 10 с — {len(runs)}, "
@@ -1605,6 +1636,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
                 log(f"отрезки без опоры: {spans} — микрофон размечен sherpa, "
                     f"подпись как на базе")
                 unsupported = []
+                channel_doubt = "отрезки без опоры, микрофон размечен не Nemotron"
     # Подпись владельца читается из настроек, только когда микрофон размечен
     # (длинный неразмеченный до сюда не доходит): без микрофона пересборка
     # конфиг здесь не читала и не читает.
@@ -1624,7 +1656,23 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     if collapsed:
         log(f"⚠️ разметка микрофона свела всех в одну метку при живых голосах {live_count} "
             f"({silence}) — имена ей не переносятся и модели не отдаются")
-    merged = paragraphs(segments)
+    # Запись после конца звонка (№733) — отдельно от встречи и до абзацев:
+    # `paragraphs` иначе слил бы прощание владельца с первой бытовой фразой.
+    if not channel_doubt and channel_trace.lost_till_end(
+            channel_trace.events_of(live), "blackhole"):
+        channel_doubt = "канал собеседников пропал и не вернулся до конца"
+    # Звонок — тот же признак, что у подписи владельца: порог гейта и метки
+    # канала собеседников (`call and bool(bh_segs)` в resolve_channel_segments).
+    tail = meeting_tail.split(segments, chan,
+                              call=gate_call and "bh" in chan.values(),
+                              unsupported=unsupported,
+                              unsupported_labels=unsupported_labels, doubt=channel_doubt)
+    if tail.after:
+        log(f"после звонка: {len(tail.after)} отрезков микрофона — {tail.why}; "
+            f"в стенограмму не идут")
+    elif gate_call and tail.why:
+        log(f"запись после звонка не выделена: {tail.why}")
+    merged = paragraphs(tail.meeting)
     log(f"итог: {len(merged)} абзацев")
 
     # STT по абзацам (какой канал брать — по метке)
@@ -1633,17 +1681,24 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     mic_a = load_wav(mic_p)[0] if mic_p is not None else None
     bh_a = load_wav(bh_p)[0] if bh_p is not None else None
     t0 = time.time()
-    lines: list[tuple[float, float, str, str]] = []
-    for s, e, spk in merged:
-        src = mic_a if chan.get(spk, "mic") == "mic" else bh_a
-        if src is None:
-            src = mic_a if mic_a is not None else bh_a
-        if src is None:
-            continue
-        text = stt_segment(stt, src[int(s * sr_cfg):int(e * sr_cfg)], sr_cfg)
-        if text:
-            lines.append((s, e, spk, text))
-    log(f"STT: {len(lines)} абзацев за {time.time() - t0:.0f}с")
+
+    def recognize(paras: list[list]) -> list[tuple[float, float, str, str]]:
+        out: list[tuple[float, float, str, str]] = []
+        for s, e, spk in paras:
+            src = mic_a if chan.get(spk, "mic") == "mic" else bh_a
+            if src is None:
+                src = mic_a if mic_a is not None else bh_a
+            if src is None:
+                continue
+            text = stt_segment(stt, src[int(s * sr_cfg):int(e * sr_cfg)], sr_cfg)
+            if text:
+                out.append((s, e, spk, text))
+        return out
+
+    lines = recognize(merged)
+    after_lines = recognize(paragraphs(tail.after)) if tail.after else []
+    log(f"STT: {len(lines)} абзацев за {time.time() - t0:.0f}с"
+        + (f", после звонка {len(after_lines)}" if tail.after else ""))
     if not lines:
         return None
 
@@ -1728,6 +1783,9 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     # «крам» → «КРАМ» — только по подтверждённым алиасам узлов; похожие
     # слова без алиаса не трогаются, а уходят в отчёт-кандидаты.
     final_text = canonize(final_text, cfg)
+    # Запись после звонка — до финала: упади пересборка между ними, на диске
+    # останется живая стенограмма целиком, а не финал без хвоста и без файла.
+    write_after_call(live, stamp, tail.end, after_lines, fmt)
     write_final(live, final_text, live_text)
     _finish(live, final_text, meta, cfg)
     return live
@@ -2077,7 +2135,11 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         # стенограммы (Critical GLM входного круга по №309)
         log("минутки уже собраны по этой речи — модель не зову")
         return "fresh"
-    if len(speech) < MINUTES_MIN_CHARS:
+    # Черновик демона собран по живой ленте, где запись после звонка ещё
+    # внутри (№733): перештамповать его — значит отдать быт в протокол. При
+    # таком файле короткий финал всё равно идёт в модель.
+    after_call = after_call_path(live).exists()
+    if len(speech) < MINUTES_MIN_CHARS and not (after_call and current is not None):
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
         # прежнее поведение №146, перештамповка.

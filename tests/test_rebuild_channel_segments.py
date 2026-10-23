@@ -1928,3 +1928,66 @@ def test_a_room_on_sherpa_builds_no_unsupported_spans(meeting, monkeypatch):
     assert seen == [[]]
     assert any("нули канала собеседников" in line for line in said), said
     assert not any("без опоры" in line for line in said), said
+
+
+# --------------------------------------------- запись после конца звонка (№733)
+
+def _stt_by_length(stt, chunk, sr):
+    return f"реплика {len(chunk) // sr} с"
+
+
+def test_owner_speech_after_the_call_goes_to_its_own_file_not_the_transcript(meeting, monkeypatch):
+    """Собеседники кончили на 20-й секунде, владелец говорит дальше: эти слова —
+    файл `_после_звонка` рядом, в стенограмме их нет, имён встречи там нет."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    after = rt.after_call_path(out).read_text(encoding="utf-8")
+    assert "реплика 22 с" in text and "реплика 9 с" not in text
+    assert "реплика 9 с" in after and f"**{OWNER}**" in after
+    assert after.startswith("# После звонка ") and "не часть встречи" in after
+    assert "Собеседник" not in after
+
+
+def test_owner_answer_and_after_call_speech_are_not_glued_into_one_paragraph(meeting, monkeypatch):
+    """Зазор меньше `paragraphs(gap=2.0)`: без раздельных абзацев прощание и первая
+    фраза после звонка слились бы в один блок встречи (синтетика 17.10)."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (39.0, 41.0, 3), (42.0, 49.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert "реплика 2 с" in text and "реплика 7 с" not in text
+    assert "реплика 7 с" in rt.after_call_path(out).read_text(encoding="utf-8")
+
+
+def test_unsupported_spans_on_sherpa_keep_everything_in_the_transcript(meeting, monkeypatch):
+    """Канал собеседников замолк на 20-й секунде до конца записи, а микрофон размечен
+    не Nemotron — переподписи нет, и собеседники могли звучать в микрофоне под
+    подписью владельца: конца звонка нет, файла `_после_звонка` нет."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["len"] = {"mic": 130, "blackhole": 130}
+    meeting["bh_zeros"] = [(40.5, 130.0)]   # серия ≥ UNSUPPORTED_MIN_S до конца записи
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    assert "реплика 9 с" in out.read_text(encoding="utf-8")
+    assert not rt.after_call_path(out).exists()
+
+
+def test_call_channel_lost_till_the_end_keeps_everything_in_the_transcript(meeting, monkeypatch):
+    """След канала: системный звук пропал и не вернулся до конца — конец звонка
+    по нему не доказан, файла `_после_звонка` нет."""
+    import json
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    events = [{"label": "blackhole", "kind": "lost", "stopped_at": 40.0}]
+    live = meeting["live"]
+    live.with_name(live.name + ".live.json").write_text(
+        json.dumps({"channel_events": json.dumps(events)}), encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(live, CFG)
+    assert "реплика 9 с" in out.read_text(encoding="utf-8")
+    assert not rt.after_call_path(out).exists()

@@ -27,7 +27,8 @@ import sys
 import typing
 
 from charoite_paths import resolve_root
-from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph_key, started_at, stamp_of
+from meeting_stamp import (archive_time, derivative_path, files_with_stamp, graph_key, publishable,
+                           started_at, stamp_of)
 import channel_trace
 import live_sidecar
 import meeting_source
@@ -278,7 +279,7 @@ def plan_materials(tdir: pathlib.Path, key: str, expected_debrief: pathlib.Path 
     """
     plan: dict[str, pathlib.Path] = {}
     exact: set[str] = set()
-    for f in files_with_stamp(tdir, key, suffix=".md"):
+    for f in publishable(files_with_stamp(tdir, key, suffix=".md")):
         dest, suffix = "Стенограмма.md", ".md"
         for suf, nice in NICE:
             if f.name.endswith(suf):

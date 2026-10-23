@@ -448,3 +448,25 @@ def test_missing_minutes_are_built_when_transcript_is_long_enough(tmp_path, monk
     rebuild_transcript.finalize_minutes(live2, "**Инга** [11:00]:\nПривет.\n", {}, {}, {})
     assert _FakeLLM.calls == [] and not live2.with_name("2026-09-02_1100_minutes.md").exists(), \
         "короткая встреча минуток не заслуживает"
+
+
+def test_short_final_with_after_call_record_regenerates_the_draft(tmp_path, monkeypatch):
+    """№733: черновик демона собран по живой ленте, где запись после звонка ещё
+    внутри. Рядом есть файл записи после звонка — короткий финал всё равно идёт в
+    модель: перештамповка отдала бы быт после звонка в протокол."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    short = "**Инга** [10:21]:\nСмету пришлю.\n"
+    owned = rebuild_transcript.finalize_minutes(live, short, meta, {}, {"Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert owned != "human" and _FakeLLM.calls == [short.rstrip("\n")]
+    assert "ужин" not in out and "- [ ] **Инга** — прислать смету" in out
+
+
+def test_short_final_with_after_call_record_and_no_draft_builds_nothing(tmp_path, monkeypatch):
+    """Порог создания с нуля не меняется: минуток не было — короткий финал их не создаёт."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    rebuild_transcript.finalize_minutes(live, "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {})
+    assert _FakeLLM.calls == [] and not mpath.exists()
