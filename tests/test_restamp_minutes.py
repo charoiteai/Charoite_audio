@@ -521,6 +521,43 @@ def test_model_refusal_moves_minutes_built_from_another_final_away(tmp_path, mon
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == built
 
 
+def test_minutes_built_from_a_cut_final_survive_a_refusal_on_an_edited_final(tmp_path, monkeypatch):
+    """Haiku-C1 = Sonnet I1 out4: минутки собраны из финала со срезом — чистые.
+    Человек поправил стенограмму (срез унаследован), модель отказала —
+    минутки остаются перештамповкой, а не уходят в .prev/. Признак пишет паспорт."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    final = _cut("**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n")
+    outcome = rebuild_transcript.finalize_minutes(live, final, meta, {}, {})
+    assert outcome == "regenerated"
+    rebuild_transcript.record_minutes_passport(live, mpath, outcome, final, {})
+    passport = live_sidecar.read(live)
+    assert passport["minutes_cut_source_sha256"] == passport["minutes_source_sha256"]
+    built = mpath.read_text(encoding="utf-8")
+    _FakeLLM.fail = True
+    edited = final.replace("Смету пришлю.", "Смету пришлю!", 1)
+    owned = rebuild_transcript.finalize_minutes(live, edited, passport, {}, {})
+    assert owned == "restamped" and mpath.read_text(encoding="utf-8") == built
+    assert not (tmp_path / ".prev" / mpath.name).exists()
+
+
+def test_regeneration_from_a_final_without_the_cut_breaks_the_proof(tmp_path, monkeypatch):
+    """Последняя регенерация шла из финала без среза (сомнение в канале — хвост
+    в речи): ключи паспорта расходятся, отказ при новом срезе уносит минутки в .prev/."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    first = _cut("**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n")
+    rebuild_transcript.record_minutes_passport(
+        live, mpath, rebuild_transcript.finalize_minutes(live, first, meta, {}, {}), first, {})
+    whole = "**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n**Марк** [10:53]:\nужин и мусор\n"
+    passport = live_sidecar.read(live)
+    rebuild_transcript.record_minutes_passport(
+        live, mpath, rebuild_transcript.finalize_minutes(live, whole, passport, {}, {}), whole, {})
+    passport = live_sidecar.read(live)
+    assert passport["minutes_cut_source_sha256"] != passport["minutes_source_sha256"]
+    _FakeLLM.fail = True
+    owned = rebuild_transcript.finalize_minutes(live, first, passport, {}, {})
+    assert owned == "human" and not mpath.exists() and (tmp_path / ".prev" / mpath.name).exists()
+
+
 def test_cut_in_the_final_is_the_only_sign_even_without_the_after_call_file(tmp_path, monkeypatch):
     """Critical Sonnet out3: строка среза в финале есть, файла хвоста нет (STT пуст,
     старая версия) — черновик живой ленты всё равно не перештамповывается."""
@@ -542,6 +579,7 @@ def test_refusal_with_a_failing_move_keeps_the_file_and_does_not_raise(tmp_path,
     def boom(*a, **k):
         raise OSError("read-only")
     monkeypatch.setattr(rebuild_transcript.os, "replace", boom)
+    (tmp_path / ".prev").write_text("не каталог", encoding="utf-8")   # mkdir тоже падает (M1 out4)
     owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
     assert owned == "human" and mpath.read_text(encoding="utf-8") == draft
 

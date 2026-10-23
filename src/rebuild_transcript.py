@@ -963,6 +963,11 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
         return
     notes = _merged_after_call_notes(path, list(notes))
     body = [f"# После звонка {stamp}", "", AFTER_CALL_NOTE.format(end=fmt(end)), ""]
+    prior = _after_call_body(path) if not lines else ""
+    if prior:
+        # STT хвоста в этом проходе пуст — реплики прежнего файла (и правки
+        # человека в них) не затираются (I2 Sonnet out4)
+        body = [prior, ""]
     for s, e, spk, text in lines:
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
         body += [f"**{spk}** [{span}]:", text, ""]
@@ -971,6 +976,16 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
     text, _ = privacy.scrub_local_paths("\n".join(body).rstrip() + "\n")
     safe_write.write_text(path, text)
     log(f"после звонка: {len(lines)} реплик, {sum(n.startswith('> ') for n in notes)} заметок → {path.name}")
+
+
+def _after_call_body(path: pathlib.Path) -> str:
+    """Прежний файл `_после_звонка` без раздела снятых заметок."""
+    try:
+        old = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    at = old.find(f"\n## {transcript.NOTES_TITLE} после звонка\n")
+    return (old[:at] if at >= 0 else old).rstrip("\n")
 
 
 def _merged_after_call_notes(path: pathlib.Path, notes: list[str]) -> list[str]:
@@ -2119,6 +2134,22 @@ def _remember_sha(live: pathlib.Path, key: str, sha: str) -> bool:
     return ok
 
 
+def _has_after_call_cut(final_text: str) -> bool:
+    """В финале строка среза записи после звонка (№733) — единственный признак."""
+    return any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(final_text))
+
+
+def _built_from_a_cut_final(meta) -> bool:
+    """Минутки последней регенерации собраны из финала со срезом: паспорт
+    записал хеш источника под обоими ключами (`record_minutes_passport`).
+    Регенерация из финала без среза меняет `minutes_source_sha256`, и ключи
+    расходятся; перештамповка не трогает ни один (Haiku-C1 = Sonnet I1 out4)."""
+    if not isinstance(meta, dict):
+        return False
+    cut = meta.get("minutes_cut_source_sha256")
+    return live_sidecar.valid_sha(cut) and cut == meta.get("minutes_source_sha256")
+
+
 def record_minutes_passport(live: pathlib.Path, mpath: pathlib.Path, outcome: str,
                             final_text: str, cfg: dict) -> None:
     """Канонизация и паспорт минуток после `finalize_minutes` — одна тройка
@@ -2141,8 +2172,12 @@ def record_minutes_passport(live: pathlib.Path, mpath: pathlib.Path, outcome: st
         # источник — речь + оговорка о записи, тем же объектом, что читает
         # fresh-проверка в finalize_minutes: писатель и читатель физически не
         # могут разъехаться (Critical DS / Important GLM входного круга по №317)
-        if outcome == "regenerated" and not _remember_sha(live, "minutes_source_sha256",
-                                                          meeting_source.of(live, final_text).sha()):
+        source_sha = meeting_source.of(live, final_text).sha()
+        if (outcome == "regenerated" and _has_after_call_cut(final_text)
+                and not _remember_sha(live, "minutes_cut_source_sha256", source_sha)):
+            log("признак «минутки собраны из финала со срезом» не записан — "
+                "при отказе модели они уйдут в .prev/ и соберутся заново")
+        if outcome == "regenerated" and not _remember_sha(live, "minutes_source_sha256", source_sha):
             # Без этого хеша minutes_names сочтёт минутки живыми и следующая
             # перештамповка возьмёт имена live.json на нумерацию пересборки
             # (DS I3 по #551): сказать громко, пока минутки нетронуты
@@ -2221,7 +2256,7 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # по этой речи (свежие вышли выше): перештамповать их — значит, возможно,
     # отдать быт в протокол. Признак один — строка среза в этом финале.
     # При нём короткий финал всё равно идёт в модель.
-    after_call = any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(final_text))
+    after_call = _has_after_call_cut(final_text)
     if len(speech) < MINUTES_MIN_CHARS and not (after_call and current is not None):
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
@@ -2238,12 +2273,12 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
         log(f"минутки не пересобраны ({type(e).__name__}: {e})")
         if after_call:
-            return _defer_live_draft(mpath, before, current, live)
+            return _defer_live_draft(mpath, before, current, live, meta, live_names)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if not doc:
         log("минутки не пересобраны (модель промолчала)")
         if after_call:
-            return _defer_live_draft(mpath, before, current, live)
+            return _defer_live_draft(mpath, before, current, live, meta, live_names)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     # Те же шаги, что у кнопки «Протокол», — общим входом минуток (№732):
     # сверка по тому множеству, что видела модель (речь + оговорка, DS I5),
@@ -2271,7 +2306,8 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     return "regenerated"
 
 
-def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pathlib.Path) -> str:
+def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pathlib.Path,
+                      meta: dict, live_names: dict[str, str]) -> str:
     """Отказ модели при записи после звонка (№733): машинные минутки собраны
     не по этой речи — черновик живой ленты или финал прохода, который хвост
     не вынес; они уходят в .prev/, файла минуток нет.
@@ -2283,16 +2319,22 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pa
     его собирают и следующая пересборка, и ретро-обход (`POLICY_RETRO`).
     «Собраны из финала» (`minutes_source_sha256`) чистоты не доказывает:
     прежний финал мог хвост не вынести (до №733, сомнение в канале) — Critical
-    DS и Important Sonnet out3. Опубликованные копии не отзываются — №609.
+    DS и Important Sonnet out3. Доказывает другое — паспорт: последняя
+    регенерация шла из финала со срезом (`_built_from_a_cut_final`); такие
+    минутки чисты, им прежняя перештамповка (правленый финал, ретро-обход,
+    сменившаяся оговорка — Haiku-C1 out4). Опубликованные копии не
+    отзываются — №609.
     """
+    if _built_from_a_cut_final(meta):
+        return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if current is None or safe_write.stat_snapshot(mpath) != before:
         if current is not None:
             log("минутки сменились под пересборкой — оставлены как есть")
         return "human"
     prev_dir = live.parent / ".prev"
-    prev_dir.mkdir(exist_ok=True)
     # перенос, а не удаление: проиграй гонку — в .prev/ уедут чужие байты, но не пропадут
     try:
+        prev_dir.mkdir(exist_ok=True)
         os.replace(mpath, prev_dir / mpath.name)
     except OSError as exc:              # стенограмма уже записана — прогон не падает (M6 out3)
         log(f"минутки: не перенесены в .prev/ ({exc}) — оставлены как есть")
