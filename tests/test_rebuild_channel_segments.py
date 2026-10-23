@@ -2158,6 +2158,8 @@ def test_unreadable_after_call_file_does_not_break_the_final(tmp_path):
     rt.write_after_call(live, "new", "14:31", [], lambda t: t, ["> 14:33 💭 мусор"])
     text = path.read_text(encoding="utf-8")
     assert "(14:31)" in text and "> 14:33 💭 мусор" in text
+    kept = live_sidecar.prev_path(live, path).read_bytes()
+    assert kept == "**Марк** [14:32]:\nужин\n".encode("cp1251"), "прежний файл — байтами в .prev/ (I1 DS)"
 
 
 def test_later_pass_keeps_the_edited_after_call_file_in_prev(meeting, monkeypatch):
@@ -2172,4 +2174,8 @@ def test_later_pass_keeps_the_edited_after_call_file_in_prev(meeting, monkeypatc
     rt.rebuild(meeting["live"], CFG)
     kept = live_sidecar.prev_path(out, path)
     assert "правка" not in path.read_text(encoding="utf-8")
+    assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
+    # третий проход с другим STT: машинный файл второго прохода правку не вытесняет (I2 Haiku)
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: f"иначе {len(chunk) // sr} с")
+    rt.rebuild(meeting["live"], CFG)
     assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
