@@ -2362,6 +2362,17 @@ def test_stub_alias_does_not_lead_to_a_canon_outside_entity_folders(tmp_path):
     g.upsert_entity(graph, "Системы", "Игрек", "система", "", "Встречи/2026-10-23_1000", "")
     assert "2026-10-23_1000" not in (out / "Икс.md").read_text(encoding="utf-8")
     assert g.follow_stubs(graph, graph / "Системы" / "Игрек.md") is None
+    # регистр папки в ссылке — тот же узел, путь в написании схемы (n777-final-fix4 DS I1 / Haiku I1)
+    (graph / "Системы" / "Канон.md").write_text("# Канон\n\nживой\n", encoding="utf-8")
+    (graph / "Системы" / "Старый.md").write_text("# Старый → [[системы/Канон]]\n", encoding="utf-8")
+    assert g._node_path(graph, graph / "системы" / "Канон.md", g.NODE_FOLDERS) == graph / "Системы" / "Канон.md"
+    assert g.follow_stubs(graph, graph / "Системы" / "Старый.md") == graph / "Системы" / "Канон.md"
+    g.upsert_entity(graph, "Системы", "Старый", "система", "", "Встречи/2026-10-23_1100", "")
+    assert "2026-10-23_1100" in (graph / "Системы" / "Канон.md").read_text(encoding="utf-8")
+    # кольцо через разное написание папки — обрыв, не вечный цикл
+    (graph / "Системы" / "Кольцо1.md").write_text("# Кольцо1 → [[системы/Кольцо2]]\n", encoding="utf-8")
+    (graph / "Системы" / "Кольцо2.md").write_text("# Кольцо2 → [[СИСТЕМЫ/Кольцо1]]\n", encoding="utf-8")
+    assert g.follow_stubs(graph, graph / "Системы" / "Кольцо1.md") is None
     # вложенный путь с папкой узлов в конце — не узел: Досье/Системы/X (n777-final-fix3 Haiku C1)
     (graph / "Системы" / "Зет.md").write_text("# Зет → [[Досье/Системы/Зет]]\n", encoding="utf-8")
     g.upsert_entity(graph, "Системы", "Зет", "система", "", "Встречи/2026-10-23_1000", "")

@@ -1577,13 +1577,18 @@ def _read_node(p: pathlib.Path, meeting_link: str = "") -> str | None:
         return None
 
 
-def _node_target(graph: pathlib.Path, path: pathlib.Path, folders: tuple[str, ...]) -> bool:
-    """Цель заглушки — узел верхнего уровня: ровно «Папка/Имя.md» под графом (не
-    `[[X/../../Y]]`, не `Досье/Системы/X`), папка из `folders` буквально, имя не
-    служебное. Замер 14 графов: 1003 цели заглушек с папкой — все такие (n777-final-fix3:
-    Haiku C1; сравнение через fold снято — путь записи остался бы в написании ссылки, DS I2)."""
+def _node_path(graph: pathlib.Path, path: pathlib.Path, folders: tuple[str, ...]) -> pathlib.Path | None:
+    """Цель заглушки как узел верхнего уровня: ровно «Папка/Имя.md» под графом (не
+    `[[X/../../Y]]`, не `Досье/Системы/X`), имя не служебное — иначе None. Папка
+    ссылки сверяется без регистра (Obsidian так и резолвит), а путь отдаётся в
+    написании схемы: писатель не зависит от того, как набрана ссылка (замер 14
+    графов: 1003 цели заглушек с папкой — все такие; n777-final-fix3 Haiku C1,
+    fix4 DS I1 / Haiku I1)."""
     parts = os.path.normpath(os.path.relpath(path, graph)).split(os.sep)
-    return len(parts) == 2 and parts[0] in folders and not CHAROITE.is_service_name(parts[1])
+    if len(parts) != 2 or CHAROITE.is_service_name(parts[1]):
+        return None
+    folder = next((f for f in folders if f.casefold() == parts[0].casefold()), None)
+    return graph / folder / parts[1] if folder is not None else None
 
 
 def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
@@ -1598,10 +1603,14 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
     allowed = NODE_FOLDERS if folders is None else folders
     visited: set[pathlib.Path] = set()
     start = p
-    while p is not None and p not in visited:
+    while p is not None:
+        if p != start:                       # до чтения: и нечитаемый канон вне папок —
+            p = _node_path(graph, p, allowed)   # обрыв (n777-final-fix DS I3)
+            if p is None:
+                return None
+        if p in visited:                     # кольцо — по пути в написании схемы
+            return None
         visited.add(p)
-        if p != start and not _node_target(graph, p, allowed):   # до чтения: и нечитаемый
-            return None                          # канон вне папок — обрыв (n777-final-fix DS I3)
         try:
             text = p.read_text(encoding="utf-8")
         except (OSError, ValueError):
@@ -1944,8 +1953,8 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
         # цель вне папок узлов (Досье, служебное, выше графа) — не узел: туда не пишем,
         # не создаём и не читаем (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)
-        if alt is not None and not _node_target(graph, alt, NODE_FOLDERS):
-            alt = None
+        if alt is not None:
+            alt = _node_path(graph, alt, NODE_FOLDERS)
         # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
         alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
         if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
