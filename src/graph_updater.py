@@ -1622,8 +1622,11 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
             return None
         # голое имя — сначала рядом с заглушкой (дубль и канон лежат вместе),
         # потом от корня: корневой черновик-тёзка уводил встречу из папки (GLM r3 M1)
-        cands = [p.parent / target, graph / target] if "/" not in target else [graph / target]
-        p = next((c for c in cands if c.is_file()), None)
+        # путь с папкой — сразу в написании схемы: на регистрозависимой ФС
+        # «[[системы/Канон]]» иначе не находил файл (CI Linux, #851)
+        cands = ([p.parent / target, graph / target] if "/" not in target
+                 else [_node_path(graph, graph / target, allowed)])
+        p = next((c for c in cands if c is not None and c.is_file()), None)
     return None
 
 
