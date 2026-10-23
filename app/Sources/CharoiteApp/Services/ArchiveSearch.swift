@@ -496,16 +496,17 @@ enum ArchiveSearch {
         }
         // Переименованные и удалённые файлы не должны занимать память вечно.
         await GraphCache.shared.retain(keys: liveKeys)
-        // Что живо для индекса — те же ключи, что для кэша текстов: файл, который
-        // не открылся, на диске есть и записи не теряет; незаперечисленное
-        // поддерево не прунится.
-        let indexWalk = SemanticIndex.Walk(seq: walk.seq, alive: walk.errors.alive(liveKeys))
         // папка без заметок — пусто; заметки есть, но не открылись (iCloud
         // выгрузил, нет прав) — не читали, значит не проверено. Prune тут нет:
         // пустой обход индекс не трогает (out2 C1, `WalkErrors.alive`).
         guard !all.isEmpty else {
             return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty)
         }
+        // Что живо для индекса — те же ключи, что для кэша текстов: файл, который
+        // не открылся, на диске есть и записи не теряет; незаперечисленное
+        // поддерево не прунится. После раннего выхода: журнал неполного обхода
+        // пишет только поиск, который дойдёт до индекса (out3 Sonnet M3).
+        let indexWalk = SemanticIndex.Walk(seq: walk.seq, alive: walk.errors.alive(liveKeys))
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
         }

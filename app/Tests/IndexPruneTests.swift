@@ -159,8 +159,9 @@ final class IndexPruneTests: XCTestCase {
         await search(graph, index)
         let inside = await finishesWithin(seconds: 10) { for await _ in entered { break } }
         guard inside else { return XCTFail("доиндексация не дошла до эмбеддера за 10 с") }
-        XCTAssertNil(SemanticIndex.storedMtimes(at: store)?[forgotten],
-                     "превью забытой встречи в файле индекса, пока задача ждёт эмбеддер")
+        let disk = SemanticIndex.storedMtimes(at: store)
+        XCTAssertNotNil(disk?["Люди/узел-768.md"], "файл индекса не прочитался — отсутствие ничего не доказывает")
+        XCTAssertNil(disk?[forgotten], "превью забытой встречи в файле индекса, пока задача ждёт эмбеддер")
         await gate.release()
         await index.drainForTests()
     }
@@ -183,6 +184,8 @@ final class IndexPruneTests: XCTestCase {
         let index = makeTestIndex(store: store) { texts in texts.map { _ in [1, 0] } }
         await search(graph, index)
         await index.drainForTests()
+        XCTAssertNotNil(SemanticIndex.storedMtimes(at: store)?[gone],
+                        "первая запись не дошла до файла — тест ушёл бы в skip (out3)")
 
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: storeDir.path)
         try FileManager.default.removeItem(at: graph.appendingPathComponent(gone))
