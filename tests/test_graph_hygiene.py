@@ -249,6 +249,14 @@ _STUB_FORMS = [
     ("# Отчёт → [[Ядра/Дубль]]\n" + _BIG, False, ()),
     ("# Дубль платежей → [[Системы/Шлюз]]\n" + _BIG, False, ()),
     ("# Дубль-контроль → [[Системы/Сверка]]\n" + _BIG, False, ()),
+    # n777-out3: только замеренные формы — «⛔ дубль →» и «→ см.»; хвост после
+    # «Дубль [[L]], сведён» — белым списком; ведущая строка — с заглавной
+    ("# Проблема: дубль → [[Системы/CRM]]\n" + _BIG, False, ()),
+    ("# X ⛔ STT-дубль → [[Ядра/L]]\n" + _BIG, True, ("Ядра/L.md",)),
+    ("# X → см [[Ядра/L]]\n" + _BIG, True, ("Ядра/L.md",)),
+    ("# Шлюз\n\nДубль [[Системы/Старый шлюз]], сведён в этот узел 12.10\n", False, ()),
+    ("# Шлюз\n\nДубль [[Системы/Старый шлюз]], перенесён к нам\n", False, ()),
+    ("# Отчёт\n\nдубль [[Люди/Иван]], сведён ревизией\n", False, ()),
     ("# Отчёт → см. [[Ядра/Отчётность]]\n" + _BIG, True, ("Ядра/Отчётность.md",)),
     ("# Отчёт — ⛔ дубль, см. [[Ядра/Отчётность]]\n" + _BIG, True, ("Ядра/Отчётность.md",)),
     ("# Шлюз\n\nДубль узла: при повторной обработке [[Встречи/2026-08-06_2241]]\n", False, ()),
@@ -399,7 +407,43 @@ def test_core_without_a_stat_snapshot_is_not_written_freely(tmp_path, monkeypatc
                   "Встречи/2026-09-16_1200", "2026-09-16 12:00")
     assert "новый" not in core.read_text(encoding="utf-8")
     log = "".join(f.read_text(encoding="utf-8") for f in tmp_path.rglob("graph_unlinked.log"))
-    assert "ядро изменилось под рукой: Ядра/Тема" in log
+    assert "ядро недоступно: Ядра/Тема" in log
+
+
+def test_core_that_vanished_mid_write_is_created_again(tmp_path, monkeypatch):
+    """Ядро пропало между проверкой и записью (LostRace GONE) — встреча не теряется:
+    один проход заново создаёт ядро (n777-out3 DS I2)."""
+    from charoite_graph import safe_write
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    core = graph / "Ядра" / "Тема.md"
+    core.write_text("# Тема\n\n## Статус\nидёт\n", encoding="utf-8")
+    real_rewrite = safe_write.rewrite_file
+
+    def vanish_first(path, transform, what):
+        if path == core and core.exists():
+            core.unlink()
+        return real_rewrite(path, transform, what)
+    monkeypatch.setattr(safe_write, "rewrite_file", vanish_first)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    text = core.read_text(encoding="utf-8")
+    assert "2026-09-16_1200" in text and "новый" in text
+
+
+def test_core_transform_error_is_not_reported_as_unreadable(tmp_path, monkeypatch):
+    """Ошибка преобразования летит наверх, а не прячется под «узел не прочитан»
+    (n777-out3 DS I1; как _write_entity)."""
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    (graph / "Ядра" / "Тема.md").write_text("# Тема\n\n## Статус\nидёт\n", encoding="utf-8")
+
+    def broken(*a, **k):
+        raise ValueError("сломанное преобразование")
+    monkeypatch.setattr(g, "_insert_chronicle_line", broken)
+    with pytest.raises(ValueError, match="сломанное"):
+        g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                      "Встречи/2026-09-16_1200", "2026-09-16 12:00")
 
 
 def test_core_that_appeared_during_parsing_is_not_overwritten(tmp_path, monkeypatch):

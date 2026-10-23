@@ -2626,15 +2626,22 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
 
         try:
             safe_write.rewrite_file(p, transform, "ядро встречи")
-        except (OSError, ValueError) as e:      # UnicodeDecodeError — ValueError; как _read_node
+        except (OSError, UnicodeDecodeError) as e:  # не ValueError: ошибка преобразования летит
+            # наверх, а не прячется под «не прочитан» — как _write_entity (n777-out3 DS I1)
             _journal_graph_event("узел не прочитан", f"Ядра/{p.stem}: {e}", meeting_link)
             _SKIPPED_NODES.append(f"Ядра/{p.stem}")
             print(f"граф: узел Ядра/{p.stem} не прочитан ({e}) — пропущен", file=sys.stderr, flush=True)
             return
         except safe_write.LostRace as e:
-            _journal_graph_event("ядро изменилось под рукой", f"Ядра/{p.stem}: {e}", meeting_link)
+            # причина — значением (n777-out3 DS I2): ядро пропало — один проход
+            # заново (resolve_core_path и создание); недоступно — не «чужая правка»
+            if e.gone and not _retry:
+                upsert_core(graph, core, meeting_link, stamp, transcript, speakers, _retry=True)
+                return
+            event = "ядро недоступно" if e.unreachable else "ядро изменилось под рукой"
+            _journal_graph_event(event, f"Ядра/{p.stem}: {e}", meeting_link)
             _SKIPPED_NODES.append(f"Ядра/{p.stem}")
-            print(f"граф: ядро «{p.stem}» менялось во время разбора ({e}), встреча {meeting_link} не дописана",
+            print(f"граф: {event}: «{p.stem}» ({e}), встреча {meeting_link} не дописана",
                   file=sys.stderr, flush=True)
             return
         if stub:
