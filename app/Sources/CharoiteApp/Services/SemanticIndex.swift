@@ -47,6 +47,18 @@ actor SemanticIndex {
     /// экземпляра: её можно дождаться и закрыть.
     private var inFlight: Task<Void, Never>?
     private var closed = false
+    /// Порядок обходов графа (№768). Номер выдаёт актор, а не часы вызывающего:
+    /// снимок медленного старого обхода не прунит то, что записано по новому.
+    private var walkSeq: UInt64 = 0
+    /// Номер обхода последнего применённого prune и его ключи: задача старшего
+    /// обхода не записывает файл, которого в нём уже нет (удалили, пока она
+    /// ждала эмбеддер).
+    private var prunedWalk: UInt64 = 0
+    private var prunedAlive: Set<String> = []
+    /// Индекс в памяти расходится с файлом. Пишет его только задача-писатель:
+    /// prune при занятой ячейке удаляет в памяти и не ставит запись десятков
+    /// мегабайт на путь ответа поиска.
+    private var dirty = false
     /// Сколько знаков блока держим для показа в выдаче.
     private static let previewChars = 700
     /// Кап фоновой доиндексации за вызов, В БЛОКАХ. Первый поиск на большом
@@ -224,30 +236,44 @@ actor SemanticIndex {
         await similar(to: query, within: paths, limit: 1).first?.score ?? 0
     }
 
+    /// Что живо в графе по одному обходу поиска. `alive` — ключи, которые обход
+    /// увидел: прочитанные, непрочитанные (iCloud выгрузил, нет прав, не UTF-8)
+    /// и дубли; nil — обход неполный (подпапку не перечислить), prune нет.
+    /// Прунить «по списку прочитанного» нельзя: файл на диске, который не
+    /// открылся, терял запись и уходил на переэмбеддинг в общую Ollama (№768).
+    struct Walk {
+        let seq: UInt64
+        let alive: Set<String>?
+    }
+
+    /// Номер обхода — до перечисления каталога.
+    func beginWalk() -> UInt64 {
+        walkSeq &+= 1
+        return walkSeq
+    }
+
     /// Фоновая доиндексация изменившихся файлов: режем на блоки, эмбеддим
     /// пачками, персист ОДИН раз в конце.
     ///
-    /// `pruneMissing` — выбросить из индекса пути, которых нет в `files`.
+    /// Prune — выбросить из индекса ключи, которых нет в `alive` обхода.
     /// Индекс хранит по 700 знаков превью на каждый блок каждого файла,
     /// включая стенограммы, а удаления не было вовсе: `forget_meeting`
     /// вычищал транскрипт, архив, граф и даже снимки облачных ревизий — а
     /// текст «забытой» встречи продолжал жить в
     /// `Application Support/Charoite/semantic_index_v2.bin` (аудит 16.08).
-    /// Флаг обязателен: звать с частичным списком и чистить «остальное»
-    /// значит стереть индекс целиком.
     ///
     /// Прямой вызов (тесты, проба BuildRealIndex) дожидается идущей фоновой
     /// задачи и делает свой проход: после возврата его файлы прошли один
     /// проход доиндексации — с тем же капом блоков и с остановкой на отказе
     /// эмбеддера, что и фоновый. Отмена вызывающего отменяет и проход.
-    /// `false` — экземпляр закрыт, прохода не было. Продукт зовёт только
-    /// `refreshInBackground`.
+    /// `alive: nil` — без prune. `false` — экземпляр закрыт, прохода не было.
+    /// Продукт зовёт только `refreshInBackground`.
     #if DEBUG
     @discardableResult
     func refresh(files: [(path: String, mtime: Double, text: String)],
-                 pruneMissing: Bool = false) async -> Bool {
+                 alive: Set<String>? = nil) async -> Bool {
         while let running = inFlight { await running.value }
-        guard let task = start(files: files, pruneMissing: pruneMissing,
+        guard let task = start(files: files, walk: Walk(seq: beginWalk(), alive: alive),
                                priority: Task.currentPriority) else { return false }
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
         return true
@@ -255,23 +281,31 @@ actor SemanticIndex {
     #endif
 
     /// Доиндексация после поиска: ответ её не ждёт. Идущая задача не
-    /// дублируется — снимок этого поиска пропускается (`false`), хвост
-    /// доедет со следующим (дозировка общей с подсказками Ollama). Принятая
-    /// задача регистрируется до возврата — тест может её дождаться.
+    /// дублируется — эмбеддинг этого снимка пропускается (`false`), хвост
+    /// доедет со следующим (дозировка общей с подсказками Ollama). А prune
+    /// снимка применяется сразу, в памяти: раньше он пропускался вместе со
+    /// снимком, и забытая во время доиндексации встреча жила в индексе до
+    /// следующего поиска (№768). Принятая задача регистрируется до возврата —
+    /// тест может её дождаться.
     @discardableResult
     func refreshInBackground(files: [(path: String, mtime: Double, text: String)],
-                             pruneMissing: Bool) -> Bool {
-        start(files: files, pruneMissing: pruneMissing, priority: .background) != nil
+                             walk: Walk) -> Bool {
+        guard !closed else { return false }
+        if inFlight != nil {
+            prune(walk)
+            return false
+        }
+        return start(files: files, walk: walk, priority: .background) != nil
     }
 
     /// Единственная точка старта писателя: занятая ячейка или закрытый
     /// экземпляр — задачи нет. Один писатель держит она, а не договорённость
     /// вызывающих (out1, DS К1).
     private func start(files: [(path: String, mtime: Double, text: String)],
-                       pruneMissing: Bool, priority: TaskPriority) -> Task<Void, Never>? {
+                       walk: Walk, priority: TaskPriority) -> Task<Void, Never>? {
         guard !closed, inFlight == nil else { return nil }
         let task = Task.detached(priority: priority) { [self] in
-            await self.run(files: files, pruneMissing: pruneMissing)
+            await self.run(files: files, walk: walk)
         }
         inFlight = task
         return task
@@ -280,22 +314,36 @@ actor SemanticIndex {
     /// Писать вправе только живая задача незакрытого экземпляра.
     private var mayWrite: Bool { !closed && !Task.isCancelled }
 
-    private func run(files: [(path: String, mtime: Double, text: String)],
-                     pruneMissing: Bool) async {
+    /// Единственная точка удаления записей. Загрузка — здесь же: prune из
+    /// занятой ветки на ещё не загруженном индексе стирал бы пустоту, а
+    /// задача потом подняла бы удалённый файл с диска. Обход старше
+    /// применённого не прунит: его ключи могли устареть.
+    private func prune(_ walk: Walk) {
+        guard let alive = walk.alive, walk.seq > prunedWalk else { return }
+        loadIfNeeded()
+        prunedWalk = walk.seq
+        prunedAlive = alive
+        let gone = index.keys.filter { !alive.contains($0) }
+        for path in gone { index.removeValue(forKey: path) }
+        if !gone.isEmpty { dirty = true }
+    }
+
+    private func run(files: [(path: String, mtime: Double, text: String)], walk: Walk) async {
         // ячейка занята только этой задачей — `start` второго не ставит
         defer { inFlight = nil }
         guard mayWrite else { return }   // отменена до первого шага
         loadIfNeeded()
-
-        if pruneMissing {
-            let alive = Set(files.map(\.path))
-            let gone = index.keys.filter { !alive.contains($0) }
-            if !gone.isEmpty {
-                for path in gone { index.removeValue(forKey: path) }
-                persist()
-            }
+        prune(walk)
+        await build(files: files, walk: walk)
+        // Закрытый экземпляр и отменённая задача не пишут: иначе хвост persist
+        // воссоздал бы удалённую копию индекса с превью встреч.
+        if dirty, mayWrite {
+            persist()
+            dirty = false
         }
+    }
 
+    private func build(files: [(path: String, mtime: Double, text: String)], walk: Walk) async {
         let pending = files.filter { index[$0.path]?.mtime != $0.mtime }
         guard !pending.isEmpty else { return }
 
@@ -322,7 +370,6 @@ actor SemanticIndex {
             Array(queue[$0..<min($0 + Self.batchSize, queue.count)])
         }
 
-        var completed = Set<String>()
         var started = Set<String>()
         for batch in batches {
             guard let embs = await embedTexts(batch.map(\.chunk.embeddingText)),
@@ -345,11 +392,14 @@ actor SemanticIndex {
         // mtime сохранится при половине блоков, и оставшиеся не доедут уже
         // никогда — файл будет считаться свежим.
         let expected = Dictionary(grouping: queue, by: \.path).mapValues(\.count)
+        // Пока задача ждала эмбеддер, применён prune более нового обхода:
+        // файла вне его ключей уже нет — запись воскресила бы удалённое.
+        let stale = prunedWalk > walk.seq
         for (path, entry) in built where entry.chunks.count == expected[path] {
+            if stale && !prunedAlive.contains(path) { continue }
             index[path] = FileVecs(mtime: entry.mtime, chunks: entry.chunks)
-            completed.insert(path)
+            dirty = true
         }
-        if !completed.isEmpty { persist() }
     }
 
     // MARK: - Хранение (бинарное)

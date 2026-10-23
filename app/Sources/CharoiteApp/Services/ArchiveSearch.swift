@@ -434,8 +434,10 @@ enum ArchiveSearch {
         //
         // Скрытое по НАМЕРЕНИЮ (.obsidian, .trash, .git) отсекаем по имени —
         // это надёжнее флага, который ставит не пользователь.
+        let walk = await semanticIndex.beginWalk()
+        let errors = WalkErrors(graph: graph)
         guard let walker = FileManager.default.enumerator(
-            at: graph, includingPropertiesForKeys: keys)
+            at: graph, includingPropertiesForKeys: keys, options: [], errorHandler: errors.record)
         else { return Outcome(text: "", rels: [], verdict: .unavailable) }
         // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
         // «Документация/Стенограммы встреч», побайтовая копия — в
@@ -497,6 +499,9 @@ enum ArchiveSearch {
         }
         // Переименованные и удалённые файлы не должны занимать память вечно.
         await GraphCache.shared.retain(keys: liveKeys)
+        // Что живо для индекса — те же ключи, что для кэша текстов: файл, который
+        // не открылся, на диске есть и записи не теряет. Неполный обход не прунит.
+        let indexWalk = SemanticIndex.Walk(seq: walk, alive: errors.alive(liveKeys))
         // папка без заметок — пусто; заметки есть, но не открылись (iCloud
         // выгрузил, нет прав) — не читали, значит не проверено
         guard !all.isEmpty else { return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty) }
@@ -616,15 +621,13 @@ enum ArchiveSearch {
         // НАСТОЯЩИЙ mtime: dateTs у встреч — дата из имени, она не меняется
         // при правке, и правленый файл никогда не переиндексировался бы
         let snapshot = all.map { (path: $0.rel, mtime: $0.mtime, text: $0.text) }
-        // pruneMissing: снимок здесь — весь прочитанный граф, поэтому чего в
-        // нём нет, того нет и на диске. Так забытая встреча уходит и из
-        // индекса, а не живёт там превью-блоками (аудит 16.08). Непрочитанный
-        // файл в снимок не попадает и тоже прунится — №768.
+        // Prune по живым ключам обхода: забытая встреча уходит и из индекса,
+        // а не живёт там превью-блоками (аудит 16.08).
         // Задачу ставит сам индекс — она его собственность, её можно
         // дождаться и закрыть (№534). Хоп на актор ждёт, если в нём идёт
         // синхронная секция фоновой задачи (загрузка файла индекса, нарезка
         // блоков, persist) — тот же актор similarChecked выше ждал и раньше.
-        await semanticIndex.refreshInBackground(files: snapshot, pruneMissing: true)
+        await semanticIndex.refreshInBackground(files: snapshot, walk: indexWalk)
 
         // разнообразие: одна встреча (заметка+архив+стенограмма) ≤ 1-2 слота
         var shown = diversify(merged, limit: limit)
