@@ -452,6 +452,9 @@ def test_missing_minutes_are_built_when_transcript_is_long_enough(tmp_path, monk
         "короткая встреча минуток не заслуживает"
 
 
+_CUT = rebuild_transcript.AFTER_CALL_CUT_NOTE.format(end="10:40", last="10:52") + "\n\n"
+
+
 def test_short_final_with_after_call_record_regenerates_the_draft(tmp_path, monkeypatch):
     """№733: черновик демона собран по живой ленте, где запись после звонка ещё
     внутри. Рядом есть файл записи после звонка — короткий финал всё равно идёт в
@@ -459,7 +462,7 @@ def test_short_final_with_after_call_record_regenerates_the_draft(tmp_path, monk
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
-    short = "**Инга** [10:21]:\nСмету пришлю.\n"
+    short = _CUT + "**Инга** [10:21]:\nСмету пришлю.\n"
     owned = rebuild_transcript.finalize_minutes(live, short, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
     assert owned != "human" and _FakeLLM.calls == [short.rstrip("\n")]
@@ -488,7 +491,7 @@ def test_model_refusal_with_after_call_record_never_restamps_the_live_draft(
     if answer.strip() or not fail:
         monkeypatch.setattr(_FakeLLM, "answer", answer)
     owned = rebuild_transcript.finalize_minutes(
-        live, "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {"Собеседник 2": "Инга"})
+        live, _CUT + "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
     assert owned == "restamped"
     assert "ужин" not in out and rebuild_transcript.MINUTES_AFTER_CALL_PENDING in out
@@ -514,9 +517,21 @@ def test_second_model_refusal_keeps_the_live_draft_in_prev(tmp_path, monkeypatch
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
     _FakeLLM.fail = True
-    short = "**Инга** [10:21]:\nСмету пришлю.\n"
+    short = _CUT + "**Инга** [10:21]:\nСмету пришлю.\n"
     assert rebuild_transcript.finalize_minutes(live, short, meta, {}, {}) == "restamped"
     meta["minutes_sha256"] = _sha(mpath.read_text(encoding="utf-8"))
     assert rebuild_transcript.finalize_minutes(live, short, meta, {}, {}) == "restamped"
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
     assert rebuild_transcript.MINUTES_AFTER_CALL_PENDING in mpath.read_text(encoding="utf-8")
+
+
+def test_stale_after_call_file_without_a_cut_in_this_final_restamps_as_before(tmp_path, monkeypatch):
+    """I1 шага Haiku out1: файл `_после_звонка` прошлого прохода пережил отказ
+    разделения — в этом финале пометки среза нет, минутки ведут себя как без хвоста."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    owned = rebuild_transcript.finalize_minutes(
+        live, "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {"Собеседник 2": "Инга"})
+    assert owned == "restamped" and _FakeLLM.calls == []
+    assert "смета" in mpath.read_text(encoding="utf-8")

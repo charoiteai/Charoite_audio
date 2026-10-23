@@ -1946,6 +1946,7 @@ def test_owner_speech_after_the_call_goes_to_its_own_file_not_the_transcript(mee
     text = out.read_text(encoding="utf-8")
     after = rt.after_call_path(out).read_text(encoding="utf-8")
     assert "реплика 22 с" in text and "реплика 9 с" not in text
+    assert rt.AFTER_CALL_CUT_PREFIX in text, "срез виден в самой стенограмме"
     assert "реплика 9 с" in after and f"**{OWNER}**" in after
     assert after.startswith("# После звонка ") and "не часть встречи" in after
     assert "Собеседник" not in after
@@ -1999,6 +2000,7 @@ def test_unsupported_spans_on_sherpa_keep_everything_in_the_transcript(meeting, 
     out = rt.rebuild(meeting["live"], CFG)
     assert "реплика 9 с" in out.read_text(encoding="utf-8")
     assert not rt.after_call_path(out).exists()
+    assert rt.AFTER_CALL_CUT_PREFIX not in out.read_text(encoding="utf-8")
 
 
 def test_call_channel_lost_till_the_end_keeps_everything_in_the_transcript(meeting, monkeypatch):
@@ -2015,3 +2017,4 @@ def test_call_channel_lost_till_the_end_keeps_everything_in_the_transcript(meeti
     out = rt.rebuild(live, CFG)
     assert "реплика 9 с" in out.read_text(encoding="utf-8")
     assert not rt.after_call_path(out).exists()
+    assert rt.AFTER_CALL_CUT_PREFIX not in out.read_text(encoding="utf-8")
