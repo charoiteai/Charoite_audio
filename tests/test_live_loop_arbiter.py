@@ -47,11 +47,6 @@ def test_empty_model_output_is_a_failed_hint():
     assert "модель вернула пустой ответ" in _body("gen_hint")
 
 
-def test_deja_vu_spends_the_window_only_when_there_is_something_to_compare():
-    body = _body("deja_vu_loop")
-    assert body.index("qv = embed(") < body.index("if len(scored) < 3:") < body.index("seen_len = len(full)")
-
-
 def test_name_loop_skips_a_tick_without_new_speech():
     assert "if grown == last_len:" in _body("name_loop")
 
@@ -88,3 +83,14 @@ def test_cloud_refusal_lands_in_the_audit_with_its_own_label():
     body = _body("cloud_loop")
     assert 'f"☁️ отказ {model}"' in body and "refusal = bool(out) and question_filter.is_refusal(out)" in body
     assert body.count("question_filter.is_refusal(") == 1
+
+
+def test_auto_node_lookup_reads_speech_not_the_labelled_tail():
+    """Авто-⏮ сверяет с узлами только речь (№776): в `tail` метка времени и подпись
+    «Говорящий-N» давали цифру, по которой всплывали узлы с кодом, а подпись
+    участника — его узел без упоминания."""
+    body = _body("live_context_loop")
+    call = body[body.index("node_index.lookup("):]
+    call = call[:call.index(")") + 1]
+    assert "tr.speech_tail(" in call and "tr.tail(" not in call, call
+

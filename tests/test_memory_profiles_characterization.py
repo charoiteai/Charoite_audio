@@ -153,6 +153,10 @@ class FakeTranscript:
         self.log.add("tr.tail", n)
         return ("хвост стенограммы " * 400)[:min(n, self.tail_len)]
 
+    def speech_tail(self, n):
+        self.log.add("tr.speech_tail", n)
+        return ("речь стенограммы " * 400)[:min(n, self.tail_len)]
+
 
 class FakeThread:
     def __init__(self, log: Journal, added=(2,), last_topic_title="Тема из нити"):

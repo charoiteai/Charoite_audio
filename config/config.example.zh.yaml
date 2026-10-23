@@ -100,10 +100,10 @@ sufler:
   graph_dir: ""           # Obsidian 图谱文件夹，例如 ~/Documents/Charoite/Work
   default_project: Work   # 工作会议归入哪个图谱
   graph_context_chars: 2500
-  deja_vu: true           # 「⏮ 已于 DD.MM 讨论过」——核心主题浮现在要点中
-  deja_vu_margin: 0.04
+  # 会议中的 bge-m3 嵌入器（8 GB 上为 false）。似曾相识循环与会议开始时的自动简报已移除
+  # （每场会议约 19 行，切题的仅 2/10）；保留该开关，供自动 ⏮ 对核心做语义校验——在此之前它在会议中不启用任何功能。
+  deja_vu: true
   embed_model: bge-m3:latest
-  meeting_brief: true     # 会议开始时自动简报：按主题提取档案上下文
   tier3_auto_apply: false
   # 用硬链接把逐字节相同的会议文档副本（原件在「Документация」，供 Finder
   # 打开的副本在「Встречи-архив」）连接起来：磁盘占用与 iCloud 同步不再翻倍，

@@ -7,7 +7,7 @@
 ```
 mic ───────┐                        ┌─ live transcript (per-voice paragraphs)
            ├─ AudioHub ─ STT ─ daemon ┼─ loops: ⚡ answers · theses · minutes
-system audio ┘  (3s chunks)         │   · déjà vu · names · dialogue markup
+system audio ┘  (3s chunks)         │   · names · dialogue markup
 (ScreenCaptureKit; BlackHole is the fallback)
                                     └─ NDJSON stdout ←→ stdin commands (UI)
 
@@ -23,7 +23,7 @@ GitHub — is described under "When the app learns about a new release".
 
 One process, thread loops around a shared locked `Transcript`: STT loop,
 the fast question trigger, instant answers, auto-hints, co-thinking
-(theses), the meeting thread, live minutes, déjà vu over Cores, name
+(theses), the meeting thread, live minutes, name
 resolution, dialogue markup, the live archive context (the graph searched
 by the meeting's topic), autostop, the cloud loop, heartbeat. Events stream
 to stdout as line-JSON (`{"type": "transcript"|"thesis"|"hint"|…}`);
@@ -324,7 +324,7 @@ under `--permission-mode dontAsk` is bound to it: a write outside the
 directory is refused by the CLI itself (checked by experiment — a request for
 a file outside returns "no access beyond the working directory"). Meanwhile
 the pipeline keeps writing to the real graph: the next meeting's extraction,
-minutes tails, déjà vu over cores.
+minutes tails.
 
 Hence the main property: **authorship is known by construction.** Everything
 by which the sandbox differs from the snapshot was done by the cloud;
@@ -1094,7 +1094,7 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   prefilter. There is deliberately no second embedding model.
 - **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the
   core-revision judge. Only in latency-tolerant loops; live hints and
-  déjà vu run on cheap stemming.
+  the auto ⏮ run on cheap stemming.
 - **Cloud — opt-in post-meeting enrichment only**, via subscription (no API
   key in the environment). Meeting data never leaves the machine by
   default; no cloud memory SaaS, none planned.
@@ -1773,7 +1773,7 @@ facade (`LEAD` / `ABSENCE`, complete over every status; the reason behind
 one builder, `brain.pack(profile, result)`, that splits a prompt budget between graph nodes and
 archive snippets by share instead of letting the nodes eat the archive; on a
 confident verdict the snippets come first and nodes get only the remainder.
-Déjà-vu goes to graph nodes unless the verdict is confident and calls the archive
+The manual ⏮ goes to graph nodes unless the verdict is confident and calls the archive
 "empty" only on a verified verdict; all three contours feed the block as built. The previous contract was a string with "⚠" parsed by
 `startswith` in three places — a dossier printed before the marker silenced the
 gate — and then an enum re-interpreted by three hand-written `if/elif` chains.

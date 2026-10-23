@@ -235,6 +235,48 @@ def test_tail_never_goes_empty_for_one_oversized_monologue(tmp_path, monkeypatch
     assert tail.endswith("слово ")
 
 
+def test_speech_tail_carries_no_stamp_and_no_speaker_label(tmp_path, monkeypatch):
+    """№776: сверка с узлами графа видит только речь — «[10:41]» и
+    «Собеседник 1» давали узлам коды «41» и «1»."""
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("подключаем шину к витрине", "Собеседник 1")
+    tr.add("согласовали срок", "Анна")
+
+    speech = tr.speech_tail(2500)
+
+    assert speech == "подключаем шину к витрине\nсогласовали срок"
+    assert "[" not in tr.speech_tail(2500) and "Собеседник" not in speech
+
+
+def test_speech_tail_never_goes_empty_for_one_oversized_monologue(tmp_path, monkeypatch):
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("слово " * 80, "Анна")
+
+    speech = tr.speech_tail(60)
+
+    assert len(speech) == 60
+    assert speech.endswith("слово ")
+
+
+def test_speech_tail_keeps_whole_recent_blocks_within_the_limit(tmp_path, monkeypatch):
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("первый блок речи", "Анна")
+    tr.add("второй", "Борис")
+
+    assert tr.speech_tail(10) == "второй"
+
+
+def test_speech_tail_counts_the_separator_and_keeps_an_exact_fit(tmp_path, monkeypatch):
+    """Граница среза: каждый блок стоит своей длины плюс перевод строки; блок,
+    который ровно укладывается в лимит, остаётся (мутанты CI №776)."""
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("свет", "Анна")
+    tr.add("тень", "Борис")
+
+    assert tr.speech_tail(10) == "свет\nтень"
+    assert tr.speech_tail(9) == "тень"
+
+
 def test_snapshot_update_is_compare_and_swap(tmp_path, monkeypatch):
     tr = make_transcript(tmp_path, monkeypatch)
     tr.add("Черновой текст", "Анна")

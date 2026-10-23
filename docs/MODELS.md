@@ -281,11 +281,11 @@ the meeting. `mlx_lm.server` takes its context at server start instead.
 
 ## Embeddings: bge-m3
 
-`bge-m3` (Ollama, ~1.2 GB resident) turns text into vectors for déjà vu, the
+`bge-m3` (Ollama, ~1.2 GB resident) turns text into vectors for the
 core revision (tier3), the hint memory's graph search and the app's search.
 It stays on Ollama whatever `llm.engine` says — `mlx_lm.server` serves no
 embeddings. `sufler.embed_model` swaps it, but the
-thresholds (the core revision's 0.55 prefilter, the déjà vu margin) were
+thresholds (the core revision's 0.55 prefilter) were
 tuned on bge-m3's cosine spread.
 
 **Input ceiling: 2048 tokens.** The model declares 8192, but Ollama cuts the

@@ -83,6 +83,23 @@ def _has_digit(s: str) -> bool:
     return any(c.isdigit() for c in s)
 
 
+def _is_code(s: str) -> bool:
+    """Код узла — буква И цифра в одном токене («1С», «s3», «м4»). Чисто число
+    кодом не считается: в речи это количество, год, номер слайда или время
+    (№776: «1» и «8» поднимали «Продукт 1.8», «2026» — что угодно с годом)."""
+    return _has_digit(s) and any(c.isalpha() for c in s)
+
+
+def _code_owners(nodes) -> dict[str, int]:
+    """Код → сколько УЗЛОВ его носят (имя и все alias одного узла — один
+    владелец). Ключ — стем, как в сверке."""
+    owners: dict[str, int] = {}
+    for node in nodes:
+        for code in {t for var in (node.name_stems, *node.alias_stems) for t in var if _is_code(t)}:
+            owners[code] = owners.get(code, 0) + 1
+    return owners
+
+
 @dataclasses.dataclass
 class Node:
     path: pathlib.Path
@@ -216,12 +233,18 @@ class NodeIndex:
         # Схема обязательна и без умолчания: индекс узлов строит только Чароит, и
         # забытая схема — `TypeError` здесь, а не молча пустой индекс на встрече.
         self.schema = schema
-        self._nodes: dict[pathlib.Path, Node] = {}
         # refresh зовут три потока демона (⚡, живой контекст, ручной ⏮):
         # без лока один меняет словарь, пока другой его итерирует (ревью
         # 15.08 ×3). Обновление собирается под локом и подменяет ссылку
-        # атомарно; lookup читает снапшот ссылки без лока.
+        # атомарно; lookup читает снапшот ссылки без лока. Узлы и карта
+        # владельцев кодов — одна пара: двумя атрибутами lookup мог бы взять
+        # узлы нового снимка с картой старого.
+        self._snap: tuple[dict[pathlib.Path, Node], dict[str, int]] = ({}, {})
         self._refresh_lock = threading.Lock()
+
+    @property
+    def _nodes(self) -> dict[pathlib.Path, Node]:
+        return self._snap[0]
 
     def refresh(self) -> None:
         with self._refresh_lock:
@@ -247,7 +270,7 @@ class NodeIndex:
                     node = self._load(p, folder, st)
                     if node is not None:
                         fresh[p] = node
-            self._nodes = fresh
+            self._snap = (fresh, _code_owners(fresh.values()))
 
     def _load(self, p: pathlib.Path, folder: str, st) -> Node | None:
         try:
@@ -282,9 +305,13 @@ class NodeIndex:
 
         strict=True — автоматический контур (авто-⏮): точность важнее
         полноты (ревью 15.08 ×2): многословное имя должно собраться целиком
-        в окне из 8 слов; однословное — прозвучать в двух разных строках,
-        кроме токенов с цифрой (коды «1С», «ИС 1494») и людей, чьё имя уже
-        известно демону как спикер (known_names, нормализованные).
+        в окне из 8 слов одной строки (реплики); однословное — прозвучать в двух разных строках,
+        кроме кода (буква и цифра в токене — «1С», «S3») с единственным
+        узлом-владельцем и людей, чьё имя уже известно демону как спикер
+        (known_names, нормализованные). Чисто число в одиночку узел не
+        поднимает: «1494» без «ИС» — количество или год чаще, чем система
+        (№776). Текст — речь без меток времени и подписей говорящих
+        (`Transcript.speech_tail`): участие в встрече — не упоминание.
         strict=False — явные запросы (⚡-вопрос, ручной ⏮): достаточно
         одного полного вхождения имени.
 
@@ -298,7 +325,7 @@ class NodeIndex:
         known = {norm(k) for k in (known_names or set())}
 
         found: list[tuple[int, Node, tuple[str, ...]]] = []
-        snapshot = self._nodes   # ссылка атомарна: refresh подменяет словарь
+        snapshot, owners = self._snap   # ссылка атомарна: refresh подменяет пару
         for node in snapshot.values():
             variants = (node.name_stems, *node.alias_stems)
             node_known = node.person and norm(node.name) in known
@@ -308,14 +335,25 @@ class NodeIndex:
                 if not var:
                     continue
                 if len(var) > 1:
-                    if self._window_match(stems, var):
+                    # strict: окно — внутри одной реплики; конец одной и начало
+                    # следующей имени не собирают (№776 out1: 5 кандидатов на 52
+                    # встречах держались только на такой склейке)
+                    if any(self._window_match(list(ln), var) for ln in lines) if strict \
+                            else self._window_match(stems, var):
                         if len(var) > best:
                             best, best_var = len(var), var
                         continue
-                    # код с цифрой уникален и без остального имени («1494» →
-                    # «ИС 1494»); опознанного спикера хватает и по фамилии
-                    digit = next((t for t in var if _has_digit(t)), None)
-                    if digit and digit in stems:
+                    # код узла держится и без остального имени («s3» →
+                    # «Хранилище S3»): в strict — только код с буквой и одним
+                    # владельцем, любой прозвучавший; опознанного спикера
+                    # хватает и по фамилии
+                    if strict:
+                        code = any(t in stems and _is_code(t) and owners.get(t) == 1
+                                   for t in var)
+                    else:
+                        digit = next((t for t in var if _has_digit(t)), None)
+                        code = bool(digit and digit in stems)
+                    if code:
                         if best < 1:
                             best, best_var = 1, var
                     elif node_known and any(t in stems for t in var):
@@ -336,7 +374,7 @@ class NodeIndex:
                         for i in range(len(stems)) if stems[i] == tok)
                     if not ok_form:
                         continue
-                if not strict or _has_digit(tok) or node_known or \
+                if not strict or (_is_code(tok) and owners.get(tok) == 1) or node_known or \
                         sum(1 for ln in lines if tok in ln) >= 2:
                     if best < 1:
                         best, best_var = 1, var

@@ -156,15 +156,6 @@
   mutual entailment; a refinement carrying a new fact is not a duplicate).
   The layer is optional: with no model in `models/nli/` it is simply off —
   see src/nli.py.
-- **Déjà vu (⏮)** — when the conversation touches a "Core" (a cross-meeting
-  topic from your graph), a thesis arrives: "⏮ discussed on Jul 15,
-  status was …". Semantic match (bge-m3 embeddings, relative threshold),
-  not literal words. Since Aug 24 the theses layer is unconditionally off
-  in the app (owner's package) — déjà vu lives only in headless daemon runs.
-- **Auto-brief at meeting start (⏮)** — once the first utterances reveal
-  the topic, the daemon pulls archive context once: top Cores with their
-  status and last-discussed dates. Assembled from ready-made graph lines,
-  no LLM — instant and nothing to hallucinate. Config: `meeting_brief`.
 - **Live draft minutes** — refreshed every ~2.5 minutes; the final protocol
   on demand or after stop.
 - **Ask the assistant** — type a question mid-meeting: the answer is built
@@ -564,8 +555,11 @@ it signals degradation, it does not break the loop.
   the talk is still going. No brain server, no LLM — name stems against
   graph files (`src/charoite_graph/graph_nodes.py`). The automatic path is strict: a
   multi-word name must assemble fully, a single-word one must be heard
-  twice (except digit codes and already-identified speakers), an
-  ambiguous name stays silent, at most four nodes per meeting. The ⚡
+  twice (except a letter-plus-digit code carried by a single node, like
+  "S3", and already-identified speakers), an ambiguous name stays silent,
+  at most four nodes per meeting. Only speech is matched — timestamps and
+  speaker labels are not mentions, and a bare number never raises a node
+  on its own (it read "[10:41]" as system 41 and "Speaker 1" as "1"). The ⚡
   question path is looser: nodes mentioned in the question itself are
   added to the instant-answer prompt. The same nodes back up live
   context and the manual ⏮ while the graph memory is still warming up or
@@ -894,7 +888,7 @@ it signals degradation, it does not break the loop.
   transcript copies are not indexed, and what stayed outside is said. When
   both signals are weak, the prompt says "almost nothing in the part that
   was read" instead of inventing. Timeouts and degradation stay with the
-  loops (⚡ 2.5 s, deja-vu 8 s, deep 6 s). The owner's question in the audit
+  loops (⚡ 2.5 s, manual ⏮ 8 s, deep 6 s). The owner's question in the audit
   label is no longer cut at 120 chars — the cap is 400 (№95). Freshness in the
   score comes from the date of the best block for the query, not the file
   mtime, so a node rewritten by every meeting no longer floats an old fact
