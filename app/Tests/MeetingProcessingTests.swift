@@ -58,6 +58,9 @@ final class MeetingProcessingTests: XCTestCase {
             snapshotAt("/transcripts/2026-08-04_1203_Тема_ревизия_claude.md").title,
             "Тема")
         XCTAssertEqual(
+            snapshotAt("/transcripts/2026-10-17_2000_Тема_после_звонка.md").title,
+            "Тема", "запись после звонка — производная (№733)")
+        XCTAssertEqual(
             snapshotAt("/transcripts/2026-07-31_1415_План.md").title,
             "План", "обычная тема не страдает")
     }

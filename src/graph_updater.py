@@ -36,7 +36,7 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, log_path, meeting_log, resolve_root
 import meeting_stamp
-from meeting_stamp import files_with_stamp, stamp_of
+from meeting_stamp import files_with_stamp, publishable, stamp_of
 from charoite_graph import frontmatter
 import graphs
 import graph_links
@@ -906,7 +906,7 @@ def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.
         log(f"канона минуток {canon} нет — копия минуток из источника")
         canon = None
     matched = False
-    for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
+    for f in publishable(files_with_stamp(tpath.parent, tpath.stem, suffix=".md")):
         if f in exclude:
             continue
         if canon is not None and canon_source is not None and f.name == canon_source.name:
@@ -3240,7 +3240,9 @@ def cloud_enrich_context(folder: pathlib.Path, stamp: str,
     room = limit
     # Граница штампа обязательна: без неё в облако уехали бы файлы соседней
     # встречи той же минуты (аудит DeepSeek 16.08).
-    for path in files_with_stamp(folder, stamp, suffix=".md"):
+    # Запись после конца звонка в облако не уходит (№733) — то же правило, что у
+    # копий в граф.
+    for path in publishable(files_with_stamp(folder, stamp, suffix=".md")):
         if room <= 0:
             break
         try:

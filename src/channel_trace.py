@@ -329,6 +329,12 @@ def episodes_of(events: list[dict]) -> list[Episode]:
     return _merge_windows(out)
 
 
+def lost_till_end(events: list[dict], label: str) -> bool:
+    """Канал `label` пропал и не вернулся до конца записи (эпизод без `back`).
+    Пересборке это причина не верить концу звонка по каналу собеседников (№733)."""
+    return any(ep.label == label and not ep.revived for ep in episodes_of(events))
+
+
 def summary_of(events: list[dict]) -> str | None:
     """Одна строка итога по списку событий: интервалы без канала и их сумма;
     открытый эпизод — «до конца записи». Нет эпизодов — None. Единственный

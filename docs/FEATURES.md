@@ -179,6 +179,18 @@
    clearly different people. Limitation: a call where the other side stays
    silent the whole meeting is labelled as a room too, and the owner's
    speech may spread over several neutral labels.
+   The recording outlives the call: after the other side hangs up the
+   microphone keeps hearing the room. In a call, everything the microphone
+   recorded after the last segment of the system channel goes to
+   `<stem>_после_звонка.md` next to the transcript, not into it — the
+   minutes, debrief, graph and archive never see it, and the file itself is
+   never published (archive folder, the graph's «Документация», cloud
+   review); neither are the live hints and draft of such a meeting. A reply
+   that started over the other side's last words stays in the meeting whole.
+   No split when the end of the call is not proven: a room meeting, a
+   call-channel loss that never came back, segments without channel support
+   when the microphone was not labelled by Nemotron, or a last call voice
+   relabelled from such a segment (headset failure).
 2. **Graph update** — entities (People/Systems), decisions, action items,
    Cores with status + chronicle; a meeting note with wiki-links. A
    person's or system's description is a dated fact too: a substantially

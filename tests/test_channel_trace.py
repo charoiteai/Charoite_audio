@@ -395,3 +395,17 @@ def test_episode_contract_is_named_not_positional():
     closed_by_stop = channel_trace.Episode("mic", 1.0, 5.0, False)
     revived = channel_trace.Episode("mic", 1.0, 5.0, True)
     assert not closed_by_stop.revived and revived.revived
+
+
+# --- канал пропал до конца записи — пересборке не верить концу звонка (№733) ---
+
+def test_lost_till_end_sees_only_an_unreturned_loss_of_that_channel():
+    lost = {"label": "blackhole", "kind": "lost", "stopped_at": 10.0}
+    back = {"label": "blackhole", "kind": "back", "at": 20.0}
+    end = {"label": "blackhole", "kind": "end", "at": 30.0}
+    mic = {"label": "mic", "kind": "lost", "stopped_at": 5.0}
+    assert channel_trace.lost_till_end([lost], "blackhole")
+    assert channel_trace.lost_till_end([lost, end], "blackhole"), "закрыт остановкой — не вернулся"
+    assert not channel_trace.lost_till_end([lost, back], "blackhole")
+    assert not channel_trace.lost_till_end([mic], "blackhole")
+    assert not channel_trace.lost_till_end([], "blackhole")
