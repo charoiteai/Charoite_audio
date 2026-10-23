@@ -21,7 +21,7 @@ from __future__ import annotations
 import dataclasses
 import re
 
-from charoite_graph import frontmatter
+from charoite_graph.frontmatter import list_field
 
 MERGED_MARKER = "Дубль. Смерджен"
 MERGED_TAG = "дубль-слит"
@@ -104,7 +104,7 @@ def _targets(fragment: str) -> tuple[str, ...]:
 def _tagged(text: str) -> bool:
     # подстрока — дешёвый предохранитель: YAML шапки разбираем только у тех, где
     # тег вообще встречается (детектор зовут на каждый файл графа)
-    return MERGED_TAG in text and MERGED_TAG in frontmatter.list_field(text, "tags")
+    return MERGED_TAG in text and MERGED_TAG in list_field(text, "tags")
 
 
 def stub_info(text: str) -> StubInfo:
