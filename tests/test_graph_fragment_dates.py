@@ -302,6 +302,53 @@ def test_a_hop_has_no_label_on_the_third_line(tmp_path):
     assert not lines[2].startswith("  [")
 
 
+def test_a_hop_judges_the_shown_window_of_its_target(tmp_path):
+    """Переход к длинной заметке: блок-победитель лексики несёт обе иглы, но дальше
+    окна; окно основного тела — обе рядом. Показано окно основного тела — правило
+    `_block_fragment` то же, что у выдачи (выходной круг n780-out1)."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Встречи-архив", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    _write(g / "Люди", "Кира.md", "# Кира\n## Связи\n- [[Встречи/2026-09-30_1000]] — встреча.\n")
+    _write(g / "Встречи", "2026-09-30_1000.md",
+           "# Встреча\n## Решения\nдоговор " + "наполнитель " * 150 + "оплата\n"
+           + "## Итоги\nдоговор и оплата сошлись. " + "приёмка " * 60 + "\n")
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("Кира договор оплата", limit=1)
+    hop = next((b for b in r.blocks if "↳ по ссылке из" in b), None)
+    assert hop is not None, "переход из узла Кира на встречу"
+    frag = hop.split("\n")[2]
+    assert "договор" in frag and "оплата" in frag
+
+
+def _tie_graph(tmp_path) -> gs.GraphSearch:
+    """Окно основного тела (первый блок) и окно блока-победителя семантики (второй
+    блок, синоним) — по две иглы, наборы разные."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Встречи-архив", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    _write(g / "Системы", "Шлюз.md",
+           "# Шлюз\n## Расчёты\nоплата прошла, склад принял. " + "приёмка " * 120
+           + "\n## Связи\nдоговор и оплата " + "провайдер " * 60 + "\n")
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    return s
+
+
+def test_a_tie_in_count_shows_the_winner_block(tmp_path, monkeypatch):
+    """Счёт разных игл равен (2:2), наборы разные — показан блок победителя:
+    правило по числу игл, не по их набору (DS C1 n780-out1, понижен с опытом)."""
+    s = _tie_graph(tmp_path)
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата склад", limit=3)
+    assert r.sem_used and wins and wins[0] and "→ Связи" in wins[0]
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "провайдер" in frag and "склад" not in frag
+
+
 # --------------------------------------------------- Е: чужая длина вектора
 #: Эталон, снятый на базе 51497705 (код до №633) на том же графе и тех же запросах:
 #: выдача и вердикт при векторе чужой нарезки. Не вывод кода под проверкой.
