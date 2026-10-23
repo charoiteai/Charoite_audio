@@ -42,7 +42,6 @@ import graphs
 import graph_links
 from charoite_graph import redirects
 from charoite_schema import CHAROITE
-from charoite_graph.text_norm import fold
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
 import name_fixes
@@ -1579,12 +1578,12 @@ def _read_node(p: pathlib.Path, meeting_link: str = "") -> str | None:
 
 
 def _node_target(graph: pathlib.Path, path: pathlib.Path, folders: tuple[str, ...]) -> bool:
-    """Цель заглушки — узел: путь не выходит из графа (`[[X/../../Y]]`), папка — из
-    `folders` в форме `fold` схемы (NFD с диска, регистр ссылки), имя не служебное
-    (n777-final-fix2: DS I1, Haiku C2, Sonnet M1)."""
+    """Цель заглушки — узел верхнего уровня: ровно «Папка/Имя.md» под графом (не
+    `[[X/../../Y]]`, не `Досье/Системы/X`), папка из `folders` буквально, имя не
+    служебное. Замер 14 графов: 1003 цели заглушек с папкой — все такие (n777-final-fix3:
+    Haiku C1; сравнение через fold снято — путь записи остался бы в написании ссылки, DS I2)."""
     parts = os.path.normpath(os.path.relpath(path, graph)).split(os.sep)
-    return (".." not in parts and len(parts) >= 2 and not CHAROITE.is_service_name(parts[-1])
-            and fold(parts[-2]) in {fold(f) for f in folders})
+    return len(parts) == 2 and parts[0] in folders and not CHAROITE.is_service_name(parts[1])
 
 
 def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
