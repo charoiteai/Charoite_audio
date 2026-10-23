@@ -281,7 +281,7 @@ the meeting. `mlx_lm.server` takes its context at server start instead.
 
 ## Embeddings: bge-m3
 
-`bge-m3` (Ollama, ~1.2 GB resident) turns text into vectors for déjà vu, the
+`bge-m3` (Ollama, ~1.2 GB resident) turns text into vectors for the
 core revision (tier3), the hint memory's graph search and the app's search.
 It stays on Ollama whatever `llm.engine` says — `mlx_lm.server` serves no
 embeddings. `sufler.embed_model` swaps it, but the

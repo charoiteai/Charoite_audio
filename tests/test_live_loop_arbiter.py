@@ -47,11 +47,6 @@ def test_empty_model_output_is_a_failed_hint():
     assert "модель вернула пустой ответ" in _body("gen_hint")
 
 
-def test_deja_vu_spends_the_window_only_when_there_is_something_to_compare():
-    body = _body("deja_vu_loop")
-    assert body.index("qv = embed(") < body.index("if len(scored) < 3:") < body.index("seen_len = len(full)")
-
-
 def test_name_loop_skips_a_tick_without_new_speech():
     assert "if grown == last_len:" in _body("name_loop")
 

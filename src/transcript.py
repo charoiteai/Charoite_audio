@@ -609,6 +609,27 @@ class Transcript:
                 out.append(s)
         return "\n".join(reversed(out))
 
+    def speech_tail(self, max_chars: int) -> str:
+        """Хвост РЕЧИ: тексты блоков без метки времени и подписи говорящего,
+        строка на блок, срез по длине текста — как у `tail` (блок длиннее
+        лимита отдаётся своим хвостом, а не пустотой).
+
+        Для сверки слов с узлами графа (авто-⏮, №776): в `tail` «[10:41]»
+        давало узлу «Система 41» код «41», а «Собеседник 1» — «1»; из 105
+        показов за 08–22.10 так всплыли 62, ни одного по теме. Участие в
+        встрече — не упоминание: подпись говорящего в сверку не идёт."""
+        with self._lock:
+            out: list[str] = []
+            total = 0
+            for _t0, _t1, _spk, text in reversed(self._blocks):
+                total += len(text) + 1
+                if total > max_chars:
+                    if not out:
+                        out.append(text[-max_chars:])
+                    break
+                out.append(text)
+        return "\n".join(reversed(out))
+
     def full(self) -> str:
         with self._lock:
             return "\n".join(

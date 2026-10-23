@@ -4,7 +4,6 @@
 800 ядер не укладывались в 20 с на машине, занятой встречей: кэш не грелся
 никогда, и каждый проход платил полной перепосылкой (круг 1 по коду, Opus I1).
 """
-import ast
 import json
 import pathlib
 import sys
@@ -86,22 +85,3 @@ def test_deja_vu_asks_the_door_without_keep_alive(_ollama_маршруты):
     assert daemon.deja_vu_embed(cfg, ["т"]) == [[1.0, 0.0]]
     assert seen["model"] == "own-model" and "keep_alive" not in seen, seen
     assert 0 < seen["timeout"] <= 20, "срок дежавю — 20 с на весь вызов"
-
-
-def test_the_deja_vu_loop_asks_through_deja_vu_embed():
-    """Проводка: замыкание `main()` снаружи недостижимо, поэтому единственное, что
-    здесь пиннится по исходнику, — ЧЕРЕЗ КОГО оно спрашивает; что уходит в
-    запрос, меряет тест выше."""
-    tree = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
-    loop = next(n for n in ast.walk(tree)
-                if isinstance(n, ast.FunctionDef) and n.name == "deja_vu_loop")
-    calls = {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
-             for c in ast.walk(loop) if isinstance(c, ast.Call)}
-    # фабрику двери цикл не упоминает: ни вызовом, ни атрибутом, ни именем, ни строкой
-    # (`getattr(llm_mod, "embedder")`) — выходные круги 3–4, DS M3; импорт внутри
-    # функции с псевдонимом (`from llm import embedder as e`) это не ловит
-    atoms = {n.attr for n in ast.walk(loop) if isinstance(n, ast.Attribute)} \
-        | {n.id for n in ast.walk(loop) if isinstance(n, ast.Name)} \
-        | {n.value for n in ast.walk(loop) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    assert "deja_vu_embed" in calls, sorted(calls)
-    assert "embedder" not in atoms, sorted(a for a in atoms if "embed" in a)

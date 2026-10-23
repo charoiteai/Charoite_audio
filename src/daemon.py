@@ -18,7 +18,6 @@ import datetime as dt
 import functools
 import hashlib
 import json
-import math
 import os
 import pathlib
 import re
@@ -42,7 +41,6 @@ from charoite_graph import safe_write  # noqa: E402
 import autostop as autostop_rules  # noqa: E402
 import channel_labels  # noqa: E402
 import cloud  # noqa: E402
-import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import speech_gate  # noqa: E402
 import frame_drops  # noqa: E402
@@ -92,7 +90,10 @@ from charoite_paths import (
 )
 
 
-#: Пачек прогрева кэша дежавю за один проход: ~4 с работы эмбеддера, не минута.
+#: Пачек прогрева кэша векторов ядер за один проход: ~4 с работы эмбеддера, не минута.
+#: Цикл дежавю удалён (№775: 18,6 строки на встречу, по теме 2 из 10); дверь
+#: `deja_vu_embed` и прогрев `warm_core_vectors` оставлены под смысловой допуск
+#: ядер на авто-⏮ (этап 2 №776) — читателя в демоне до него нет.
 WARM_BATCHES = 4
 
 
@@ -204,7 +205,7 @@ def emit(obj: dict):
 def quiet_loop_warn(tag: str):
     """Голос для вспомогательного контура, который раньше молчал.
 
-    deja_vu/разметка/имена глотали ЛЮБОЕ исключение через pass: отказ
+    разметка/имена глотали ЛЮБОЕ исключение через pass: отказ
     name_loop (имена не появятся всю встречу) снаружи неотличим от «имён
     не звучало» — тот же класс тихой деградации, что чинили в пересборке
     (names_pending, аудит 14.08). Совсем убрать except нельзя — контуры
@@ -1284,7 +1285,6 @@ def main():
                   f"ваши реплики подписываются как «{chan.mic_signed}» (канал микрофона)"})
 
     # Голоса вспомогательных контуров: их отказ больше не немой (см. quiet_loop_warn)
-    warn_deja = quiet_loop_warn("дежавю")
     warn_markup = quiet_loop_warn("разметка реплик")
     warn_names = quiet_loop_warn("имена")
 
@@ -2768,139 +2768,6 @@ def main():
                     return
                 delay = min(delay * 2, 60.0)
 
-    def deja_vu_loop():
-        """⏮ Предиктивные точки: тема разговора уже обсуждалась раньше —
-        показываем, когда и с каким статусом. Источник — Ядра графа (сквозные
-        темы с хроникой встреч). Каждое ядро показывается раз за встречу.
-
-        Совпадение ищем ПО СМЫСЛУ (эмбеддинги bge-m3 через Ollama, модель уже
-        стоит для графа), а не по обрубкам слов: прежний матч по основам искал
-        «бюджет» в тексте буквально и не видел, что «урезали финансирование
-        GPU» — это ядро «Бюджетирование GPU ресурсов». Векторы ядер считаются
-        один раз (18 ядер ≈ 1.8с) и живут в памяти; на каждом проходе считается
-        только вектор свежего фрагмента (≈0.2с).
-
-        Порог — ОТНОСИТЕЛЬНЫЙ: bge-m3 даёт узкий разброс косинусов (замер 22.07
-        на живом графе: 0.33…0.45), поэтому абсолютная отсечка не работает.
-        Берём лидера, только если он заметно оторвался от медианы.
-        """
-        # Через install_profile, а не bool(): приложение пишет значения
-        # строкой в кавычках, и bool("false") == True — контур остался бы
-        # включённым вместе с эмбеддером на 1.2 ГБ (ревью 19.08).
-        if not install_profile.deja_vu_enabled(cfg):
-            return
-        # Пустой graph_dir — None из единой точки (раньше Path(".") — и «Ядра»
-        # искались бы в рабочем каталоге демона: случайная папка с таким
-        # именем подсунула бы живой встрече чужие темы; третий круг, DeepSeek).
-        gdir = graphs.graph_dir(cfg)
-        if gdir is None:
-            return
-        cores_dir = gdir / "Ядра"
-        margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))
-        # Авто-бриф в начале встречи: как только по первым репликам понятна
-        # тема — один раз вытащить контекст из архива (топ-ядра: статус +
-        # когда обсуждалось). Собирается из ГОТОВЫХ строк файлов, без LLM:
-        # мгновенно и нечему галлюцинировать. Окно попыток — до 3000 знаков
-        # стенограммы: small talk в начале сигнала не даёт, дальше тему
-        # подхватит обычное дежавю.
-        brief_on = bool(cfg["sufler"].get("meeting_brief", True))
-        brief_done = not brief_on
-        shown: set[str] = set()
-        seen_len = 0
-        vecs: dict[str, list[float]] = {}  # ядро → вектор (кэш на всю встречу)
-
-        def embed(texts: list[str]) -> list[list[float]]:
-            return deja_vu_embed(cfg, texts)     # срок и keep_alive — в докстринге функции
-
-        def cosine(a: list[float], b: list[float]) -> float:
-            num = sum(x * y for x, y in zip(a, b))
-            den = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
-            return num / den if den else 0.0
-
-        while not stop.is_set():
-            time.sleep(45)
-            if not toggles["theses"] or not cores_dir.exists():
-                continue
-            full = tr.full()
-            fresh = full[seen_len:]
-            if len(fresh) < 300:
-                continue
-            try:
-                cores = [p for p in sorted(cores_dir.glob("*.md"))
-                         if not p.name.startswith("_")]
-                if not cores:
-                    continue
-                # прогреваем кэш векторов (и добираем новые ядра) пачками
-                warm_core_vectors(cores, vecs, embed)
-                qv = embed([" ".join(fresh[-1500:].split())])
-                if not qv:
-                    continue
-                scored = sorted(((cosine(qv[0], vecs[p.stem]), p) for p in cores
-                                 if p.stem in vecs), key=lambda x: -x[0])
-                if len(scored) < 3:
-                    continue
-                # прирост «израсходован» только когда есть с чем сверять: занятая
-                # Ollama (штатный 20-с таймаут эмбеддинга) или пустой кэш векторов
-                # иначе выбрасывали фрагмент из сверки с ядрами навсегда (аудит
-                # 13.09, DS M5 / GLM M2; DS r1 M2 по #558)
-                seen_len = len(full)
-                mid = scored[len(scored) // 2][0]  # медиана как «фон» разговора
-
-                if not brief_done and len(full) >= 600:
-                    # порог мягче обычного (margin/2): бриф — обзор, не точечное
-                    # «уже обсуждалось», и в начале встречи сигнал ещё слабый
-                    picks = [(s, p) for s, p in scored[:2]
-                             if s - mid >= margin / 2 and p.stem not in shown]
-                    if picks:
-                        brief_done = True
-                        lines = ["⏮ Контекст к встрече из памяти прошлых встреч:"]
-                        for _s, p in picks:
-                            btxt = p.read_text(encoding="utf-8")
-                            bm = re.search(r"## Статус\n(.+)", btxt)
-                            bst = re.sub(r"_\(.*?\)_", "", bm.group(1)).strip() if bm else ""
-                            bdates = sorted({d for d in re.findall(
-                                r"\[\[Встречи/(\d{4}-\d{2}-\d{2})_\d{4}", btxt)})
-                            bwhen = ", ".join(d[8:10] + "." + d[5:7] for d in bdates[-2:]) or "ранее"
-                            lines.append(f"• {p.stem} — {bst or 'без статуса'} (обсуждалось {bwhen})")
-                            shown.add(p.stem)
-                        line = "\n".join(lines)
-                        # в НИТЬ, не в мёртвый канал: события type:"thesis"
-                        # с 04.08 падали в массив, который UI не читает.
-                        # into_current: тема-якорь «Контекст…» стала бы
-                        # последней и магнитила живые строки (ревью 15.08 ×2);
-                        # имена ядер уже внутри строк брифа
-                        if thread.add_archive(
-                                "", [ln.lstrip("• ") for ln in lines[1:]],
-                                into_current=True):
-                            emit({"type": "thread", "text": thread.render()})
-                        tr.note(line)
-                        continue
-                    if len(full) > 3000:
-                        brief_done = True  # тема так и не совпала с архивом — молчим
-
-                top_score, top = scored[0]
-                if top.stem in shown or top_score - mid < margin:
-                    continue
-                text = top.read_text(encoding="utf-8")
-                m = re.search(r"## Статус\n(.+)", text)
-                dates = sorted({d for d in re.findall(
-                    r"\[\[Встречи/(\d{4}-\d{2}-\d{2})_\d{4}", text)})
-                when = ", ".join(d[8:10] + "." + d[5:7] for d in dates[-2:]) or "ранее"
-                st = re.sub(r"_\(.*?\)_", "", m.group(1)).strip() if m else ""
-                shown.add(top.stem)
-                line = f"⏮ {top.stem} — уже обсуждалось {when}." + (f" Статус: {st}" if st else "")
-                # точечное дежавю — в текущую тему нити, как сверка узлов:
-                # своя тема с именем ядра приклеивала бы живые строки к нему
-                if thread.add_archive(
-                        top.stem,
-                        [f"{top.stem} · уже обсуждалось {when}."
-                         + (f" Статус: {st}" if st else "")],
-                        into_current=True):
-                    emit({"type": "thread", "text": thread.render()})
-                tr.note(line)
-            except Exception as e:  # noqa: BLE001 — дежавю вспомогательно
-                warn_deja(e)
-
     def dialog_markup_loop():
         """Семантические реплики в живом окне: e4b расставляет диалоговые «—»
         внутри отлежавшегося абзаца. Акустика одного микрофона не видит смену
@@ -3488,8 +3355,10 @@ def main():
                     node_index.refresh()
                     # выборка шире капа показа: три показанных узла не должны
                     # навсегда заслонять четвёртого (ревью 15.08 ×4)
+                    # только речь: метка времени «[10:41]» и подпись
+                    # «Собеседник 1» давали коды «41» и «1» (№776)
                     node_hits = node_index.lookup(
-                        tail, strict=True,
+                        tr.speech_tail(2500), strict=True,
                         known_names=set(voice_names.values()),
                         limit=NODE_CAP + 1)
                 except Exception:  # noqa: BLE001
@@ -3643,7 +3512,6 @@ def main():
             ("instant-loop", instant_loop),
             ("cloud-loop", cloud_loop),
             ("fast-trigger-loop", fast_trigger_loop),
-            ("deja-vu-loop", deja_vu_loop),
             ("dialog-markup-loop", dialog_markup_loop),
             ("name-loop", name_loop),
             ("minutes-loop", minutes_loop),
@@ -3767,8 +3635,8 @@ def main():
                             detached="слой авто-подсказок живёт до конца встречи, за ним следит сторож")
                     elif action == "gave_up":
                         emit_error("слой авто-подсказок падает повторно — "
-                                   "оставляю до конца встречи, минутки и "
-                                   "дежавю работают")
+                                   "оставляю до конца встречи, минутки "
+                                   "работают")
                 # Пишет ГЛАВНЫЙ поток: если STT висит внутри ONNX, он сам не
                 # способен оставить строку. 30с — только диагностика; решение
                 # о рестарте остаётся за 100-секундным watchdog приложения.

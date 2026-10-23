@@ -7,7 +7,7 @@
 ```
 mic ───────┐                        ┌─ live transcript (per-voice paragraphs)
            ├─ AudioHub ─ STT ─ daemon ┼─ loops: ⚡ answers · theses · minutes
-system audio ┘  (3s chunks)         │   · déjà vu · names · dialogue markup
+system audio ┘  (3s chunks)         │   · names · dialogue markup
 （ScreenCaptureKit；BlackHole 为备用路径）
                                     └─ NDJSON stdout ←→ stdin commands (UI)
 
@@ -22,7 +22,7 @@ Stop → recording rebuild → graph update → archive + Summary → [Claude de
 
 单个进程，多个线程循环围绕一个共享加锁的 `Transcript` 运转：STT 循环、
 快速问题触发、即时回答、自动提示、共同思考（要点）、会议线程、实时会议纪要、
-基于核心（Cores）的既视感（déjà vu）、人名解析、对话标注、实时档案上下文
+人名解析、对话标注、实时档案上下文
 （按当前会议主题检索图谱）、自动停止、云端循环、心跳。事件以行式 JSON 流向
 stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传入
 （`hint`、`ask <question>`、`expand [主题]`、`cloud`、`summary`、

@@ -160,15 +160,60 @@ def test_ambiguous_name_is_silent_in_strict(tmp_path):
     assert len(loose) == 2   # явному запросу показываем обоих кандидатов
 
 
-def test_digit_code_matches_once_in_strict(tmp_path):
+def test_bare_number_does_not_raise_a_node_in_strict(tmp_path):
+    """№776: чисто число в речи — количество, год, номер, время; «1» и «8»
+    поднимали «Продукт 1.8», метка «[10:41]» — «Систему 41». В strict число
+    узел не поднимает; явный запрос (strict=False) — по-прежнему находит."""
     g = _graph(tmp_path)
     (g / "Системы" / "ИС 2049.md").write_text(
         "# ИС 2049\n\n## Встречи\n- [[Встречи/2026-08-05_1000]] — согласовали шину\n",
         encoding="utf-8")
+    (g / "Системы" / "Продукт 1.8.md").write_text("# Продукт 1.8\n", encoding="utf-8")
     idx = NodeIndex(g, schema=CHAROITE)
     idx.refresh()
-    hits = idx.lookup("подключаемся к 2049 после пилота")
-    assert [n.name for n in hits] == ["ИС 2049"]
+    assert idx.lookup("подключаемся к 2049 после пилота") == []
+    assert idx.lookup("шаг 1 из 8\nещё 1 и 8") == []
+    assert [n.name for n in idx.lookup("подключаемся к 2049", strict=False)] == ["ИС 2049"]
+    assert [n.name for n in idx.lookup("ИС 2049 подключаем")] == ["ИС 2049"], "окно держит"
+
+
+def test_letter_digit_code_with_one_owner_matches_once_in_strict(tmp_path):
+    g = _graph(tmp_path)
+    (g / "Системы" / "Хранилище S3.md").write_text(
+        "# Хранилище S3\n\n## Встречи\n- [[Встречи/2026-08-05_1000]] — выгрузка холодных данных\n",
+        encoding="utf-8")
+    idx = NodeIndex(g, schema=CHAROITE)
+    idx.refresh()
+    assert [n.name for n in idx.lookup("опять бомбят s3 ночью")] == ["Хранилище S3"]
+
+
+def test_shared_code_needs_the_rest_of_the_name_in_strict(tmp_path):
+    """Код двух узлов — не уникален: одиночный «s3» молчит, окно имени — нет.
+    Владелец — узел: alias с тем же кодом у того же узла счёт не удваивает."""
+    g = _graph(tmp_path)
+    (g / "Системы" / "Хранилище S3.md").write_text(
+        "---\naliases:\n  - S3 бакет\n---\n# Хранилище S3\n", encoding="utf-8")
+    (g / "Системы" / "Шлюз S3.md").write_text("# Шлюз S3\n", encoding="utf-8")
+    idx = NodeIndex(g, schema=CHAROITE)
+    idx.refresh()
+    assert idx.lookup("опять бомбят s3 ночью") == []
+    assert [n.name for n in idx.lookup("шлюз s3 лёг")] == ["Шлюз S3"]
+    (g / "Системы" / "Шлюз S3.md").unlink()
+    idx.refresh()
+    assert [n.name for n in idx.lookup("опять бомбят s3 ночью")] == ["Хранилище S3"], \
+        "карта владельцев пересчитана вместе со снимком узлов"
+
+
+def test_participant_label_is_not_a_mention(tmp_path):
+    """Участие — не упоминание (№776): узел участника не всплывает по одной
+    подписи говорящего, которой в речи нет; названный в речи — всплывает."""
+    tr_speech = "давайте по интеграции\nсрок до пятницы"
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
+    idx.refresh()
+    known = {"Иван Мироненко"}
+    assert idx.lookup(tr_speech, known_names=known) == []
+    assert [n.name for n in idx.lookup("Мироненко, что по интеграции?", known_names=known)] \
+        == ["Иван Мироненко"]
 
 
 def test_aliases_from_the_header_are_read_by_the_shared_parser(tmp_path):

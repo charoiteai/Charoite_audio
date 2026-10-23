@@ -112,13 +112,15 @@ sufler:
   #   ## Actions
   default_project: Work   # which graph receives work meetings
   graph_context_chars: 2500
-  deja_vu: true           # "⏮ discussed on DD.MM" — Core topics surfaced in theses
-  deja_vu_margin: 0.04    # margin above the similarity threshold: higher — rarer déjà vu
-  # embeddings for deja_vu (Ollama). Only for it: the Tier3 core revision is
+  # bge-m3 embedder during a live meeting (false on 8 GB). The déjà-vu loop and
+  # the meeting auto-brief were removed (~19 lines per meeting, 2 in 10 on topic);
+  # the flag is kept for a semantic check of Cores on auto-⏮ — until that lands it
+  # switches nothing on during a meeting.
+  deja_vu: true
+  # Ollama embedding model (the embedder door). The Tier3 core revision is
   # pinned to bge-m3 on purpose — its pair-selection threshold (EMB_PREFILTER
   # in src/tier3.py) is tuned to this model's cosine spread
   embed_model: bge-m3:latest
-  meeting_brief: true     # auto-brief at meeting start: archive context on the topic
   # Tier3 core revision after every meeting. false — duplicates and nestings
   # are marked in the graph reversibly (a "possible duplicate" line picked up
   # by the morning brief) but cores are not merged: merging rewrites the file
