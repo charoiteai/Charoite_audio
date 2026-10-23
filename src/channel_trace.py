@@ -45,6 +45,9 @@ SUMMARY_MARK = "📋 запись неполная"   # начало строк�
 # но это факт о записи, а не мысль модели — след, по тому же правилу снимается
 # из промптов и служит признаком «хвост вынесен этим финалом» для минуток.
 AFTER_CALL_CUT_MARK = "Запись после конца звонка"
+# форма строки целиком: без отметки времени (заметки демона идут с «ЧЧ:ММ»),
+# с окном среза — префикс сам по себе узнал бы мысль или реплику (Haiku-4 out4)
+_CUT_RE = re.compile(re.escape(AFTER_CALL_CUT_MARK) + r" \(\d\d:\d\d–\d\d:\d\d\) вынесена")
 LINES_MAX = 6            # ЭПИЗОДОВ на канал в хвост/нить за запись; дальше — итог
 #                          (счётчик по событиям съедал лимит за три флап-цикла —
 #                          Minor GLM и DS выходного круга)
@@ -465,9 +468,10 @@ def is_trace_line(line: str) -> bool:
     тех же фраз, что рендер: потребители (извлечение графа, блок ко-мышления
     в разборе) не различают их по префиксам сами."""
     body = _bare_line(line)
-    return body.startswith((SUMMARY_MARK, AFTER_CALL_CUT_MARK)) or bool(_TRACE_RE.match(body))
+    return body.startswith(SUMMARY_MARK) or bool(_TRACE_RE.match(body)) or is_after_call_cut(line)
 
 
 def is_after_call_cut(line: str) -> bool:
     """Строка хвоста — срез записи после конца звонка (№733)."""
-    return _bare_line(line).startswith(AFTER_CALL_CUT_MARK)
+    body = line.strip()
+    return bool(_CUT_RE.match(body[2:] if body.startswith("> ") else body))
