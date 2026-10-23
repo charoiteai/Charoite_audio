@@ -2158,14 +2158,11 @@ def _remember_sha(live: pathlib.Path, key: str, sha: str) -> bool:
     return ok
 
 
-def _has_after_call_cut(final_text: str) -> bool:
-    """В финале строка среза записи после звонка (№733) — единственный признак."""
-    return any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(final_text))
-
 
 def _built_from_a_cut_final(meta) -> bool:
     """Минутки последней регенерации собраны из финала со срезом: паспорт
-    записал хеш источника под обоими ключами (`record_minutes_passport`).
+    записал хеш источника под обоими ключами (`live_sidecar.attest` с `cut` —
+    у пересборки и у MCP «Минутки»).
     Регенерация из финала без среза меняет `minutes_source_sha256`, и ключи
     расходятся; перештамповка не трогает ни один (Haiku-C1 = Sonnet I1 out4)."""
     if not isinstance(meta, dict):
@@ -2192,20 +2189,17 @@ def record_minutes_passport(live: pathlib.Path, mpath: pathlib.Path, outcome: st
     if outcome == "human":
         return
     try:
-        minutes_sha = _sha(mpath.read_text(encoding="utf-8"))
+        minutes = mpath.read_text(encoding="utf-8")
         if outcome != "regenerated":
-            _remember_minutes_sha(live, minutes_sha)
+            _remember_minutes_sha(live, _sha(minutes))
             return
         # источник — речь + оговорка о записи, тем же объектом, что читает
         # fresh-проверка в finalize_minutes: писатель и читатель физически не
-        # могут разъехаться (Critical DS / Important GLM входного круга по №317)
-        source_sha = meeting_source.of(live, final_text).sha()
-        # Паспорт регенерации — одним merge, ключ среза пишется всегда: при
-        # сбое записи источника старая пара «срез == источник» переживала
-        # регенерацию из финала без среза (I1 Sonnet = I1 Haiku out5)
-        passport = {"minutes_sha256": minutes_sha, "minutes_source_sha256": source_sha,
-                    "minutes_cut_source_sha256": source_sha if _has_after_call_cut(final_text) else ""}
-        if not live_sidecar.merge(live, passport):
+        # могут разъехаться (Critical DS / Important GLM входного круга по №317).
+        # Паспорт — общим `attest` одним merge, с признаком среза, как у MCP
+        # «Минутки» (I1, I2 Sonnet out5)
+        source = meeting_source.of(live, final_text)
+        if not live_sidecar.attest(live, "minutes", minutes, source.sha(), cut=source.cut):
             # Без этого хеша minutes_names сочтёт минутки живыми и следующая
             # перештамповка возьмёт имена live.json на нумерацию пересборки
             # (DS I3 по #551): сказать громко, пока минутки нетронуты
@@ -2284,7 +2278,7 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # по этой речи (свежие вышли выше): перештамповать их — значит, возможно,
     # отдать быт в протокол. Признак один — строка среза в этом финале.
     # При нём короткий финал всё равно идёт в модель.
-    after_call = _has_after_call_cut(final_text)
+    after_call = source.cut
     if len(speech) < MINUTES_MIN_CHARS and not (after_call and current is not None):
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —

@@ -40,6 +40,9 @@ import transcript
 class MeetingSource:
     speech: str
     recording_note: str | None = None
+    # В финале строка среза записи после конца звонка (№733): в хеш не входит —
+    # это свойство источника для паспорта минуток, не его тело
+    cut: bool = False
 
     def canon(self) -> str:
         """Каноническое тело источника для хеша паспорта."""
@@ -66,7 +69,8 @@ def of(live: pathlib.Path, text: str) -> MeetingSource:
     писателя одной производной считали разные хеши (Critical DS и GLM
     выходного круга по №317). Штамп нужен только писателю до переезда пары
     (`ChannelTrace`) — у читателей его нет."""
-    return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live))
+    return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live),
+                         cut=any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(text)))
 
 def live(speech: str, note: str | None) -> MeetingSource:
     """Источник живого пути: речь из `Transcript.full()`, оговорка из
