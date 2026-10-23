@@ -417,7 +417,12 @@ def stub_base(text: str) -> str:
     Обход и так держит текст в руках, поэтому распознание стоит один разбор на
     ИЗМЕНЁННЫЙ файл, а не на запрос. Замер 17.09 на рабочем графе: 404 заглушки
     с целью из 3199 файлов, 1048 входящих ссылок вели на них вместо канонов."""
-    if not (redirects.is_redirect_stub(text) or redirects.is_merged(text)):
+    if not redirects.is_merged(text):
+        return ""
+    # выросшая заглушка (тело больше чистого указателя) несёт факты, дописанные
+    # разбором встреч после слияния: подмена каноном спрятала бы их из выдачи
+    # до переноса тел (№777, n777-in1 DS I4) — она остаётся документом
+    if not redirects.is_pointer(text):
         return ""
     target = redirects.stub_target(text)
     if not target:

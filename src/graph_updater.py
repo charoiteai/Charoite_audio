@@ -456,9 +456,12 @@ def node_aliases(text: str) -> list[str]:
 
 def _alias_index(files: list[pathlib.Path]) -> dict[str, list[pathlib.Path]]:
     """Ключ имени псевдонима → узлы, у которых он записан. Заглушка-редиректа
-    псевдонимов не отдаёт: её шапка пережила слияние, а запись в неё из графа
-    не видна (GLM, круг-1 #451). Битый файл (не UTF-8, нет прав) — пропуск,
-    а не смерть разбора всей встречи."""
+    свои псевдонимы тоже отдаёт, а потребители ведут их через follow_stubs к
+    живому канону: раньше она молчала (запись в неё не видна — GLM, круг-1
+    #451), и с ростом детектора (№777: +258 заглушек, у 56 псевдонимы, ручные
+    слияния их в канон не переносили) следующее упоминание псевдонима заводило
+    новый узел-дубль (n777-in1, Sonnet I4 / DS I1). Битый файл (не UTF-8, нет
+    прав) — пропуск, а не смерть разбора всей встречи."""
     index: dict[str, list[pathlib.Path]] = {}
     for f in files:
         try:
@@ -467,7 +470,7 @@ def _alias_index(files: list[pathlib.Path]) -> dict[str, list[pathlib.Path]]:
             cached = _alias_cache.get(f)
             if cached is None or cached[0] != key:
                 text = f.read_text(encoding="utf-8")
-                names = () if redirects.is_merged(text) else tuple(frontmatter.aliases(text, f.name))
+                names = tuple(frontmatter.aliases(text, f.name))
                 cached = (key, names)
                 _alias_cache[f] = cached
         except (OSError, ValueError):      # UnicodeDecodeError — ValueError
@@ -1187,7 +1190,7 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
     # адресом; несколько — не гадаем.
     hits: list[str] = []
     for f in _alias_index([f for f in files if f.parent.name in _AUTO_ALIAS_FOLDERS]).get(key, []):
-        live = follow_stubs(graph, f)
+        live = follow_stubs(graph, f, _AUTO_ALIAS_FOLDERS)     # и канон заглушки — не в Людях (Opus I2)
         if live is not None and f"{live.parent.name}/{live.stem}" not in hits:
             hits.append(f"{live.parent.name}/{live.stem}")
     if len(hits) == 1:
@@ -1223,7 +1226,8 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
 # пар этого вердикта заново (менять — с миграцией строк). Состояния склейки в
 # журнале нет — оно в шапке узла (AUTO_ALIASES_KEY, №286).
 _HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескольким узлам", "near": "похоже на существующий узел",
-             "aliased": "псевдоним по повтору", "by_alias": "по псевдониму узла"}
+             "aliased": "псевдоним по повтору", "by_alias": "по псевдониму узла",
+             "stub": "ядро — заглушка без канона в Ядрах"}
 
 # Папки, чьи псевдонимы читаются глобально и куда автопсевдоним может быть
 # записан. Люди — нет, и на чтении, и на записи: человек с псевдонимом
@@ -1573,14 +1577,39 @@ def _read_node(p: pathlib.Path, meeting_link: str = "") -> str | None:
         return None
 
 
-def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
+def _node_path(graph: pathlib.Path, path: pathlib.Path, folders: tuple[str, ...]) -> pathlib.Path | None:
+    """Цель заглушки как узел верхнего уровня: ровно «Папка/Имя.md» под графом (не
+    `[[X/../../Y]]`, не `Досье/Системы/X`), имя не служебное — иначе None. Папка
+    ссылки сверяется без регистра (Obsidian так и резолвит), а путь отдаётся в
+    написании схемы: писатель не зависит от того, как набрана ссылка (замер 14
+    графов: 1003 цели заглушек с папкой — все такие; n777-final-fix3 Haiku C1,
+    fix4 DS I1 / Haiku I1)."""
+    parts = os.path.normpath(os.path.relpath(path, graph)).split(os.sep)
+    if len(parts) != 2 or CHAROITE.is_service_name(parts[1]):
+        return None
+    folder = next((f for f in folders if f.casefold() == parts[0].casefold()), None)
+    return graph / folder / parts[1] if folder is not None else None
+
+
+def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
+                 folders: tuple[str, ...] | None = None) -> pathlib.Path | None:
     """Живой узел за цепочкой заглушек-редиректов или None, если цепочка
     обрывается. Цепочка A→B→C — обычное дело за месяц слияний, один хоп
     возвращал встречу в мёртвую заглушку (GLM r2 Critical / DS r2 B1);
     цель без папки («→ [[Петров Иван]]») ищется и от корня, и рядом с
-    заглушкой — как у `resolve_core_path`. Кольцо — обрыв."""
+    заглушкой — как у `resolve_core_path`. Кольцо — обрыв. Канон, к которому
+    привела заглушка, вне `folders` (по умолчанию NODE_FOLDERS: Досье,
+    служебное) — тоже обрыв, как у `resolve_core_path` для Ядер (Opus I2)."""
+    allowed = NODE_FOLDERS if folders is None else folders
     visited: set[pathlib.Path] = set()
-    while p is not None and p not in visited:
+    start = p
+    while p is not None:
+        if p != start:                       # до чтения: и нечитаемый канон вне папок —
+            p = _node_path(graph, p, allowed)   # обрыв (n777-final-fix DS I3)
+            if p is None:
+                return None
+        if p in visited:                     # кольцо — по пути в написании схемы
+            return None
         visited.add(p)
         try:
             text = p.read_text(encoding="utf-8")
@@ -1593,8 +1622,11 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
             return None
         # голое имя — сначала рядом с заглушкой (дубль и канон лежат вместе),
         # потом от корня: корневой черновик-тёзка уводил встречу из папки (GLM r3 M1)
-        cands = [p.parent / target, graph / target] if "/" not in target else [graph / target]
-        p = next((c for c in cands if c.is_file()), None)
+        # путь с папкой — сразу в написании схемы: на регистрозависимой ФС
+        # «[[системы/Канон]]» иначе не находил файл (CI Linux, #851)
+        cands = ([p.parent / target, graph / target] if "/" not in target
+                 else [_node_path(graph, graph / target, allowed)])
+        p = next((c for c in cands if c is not None and c.is_file()), None)
     return None
 
 
@@ -1645,8 +1677,15 @@ def _find_canonical_raw(graph: pathlib.Path, name: str,
     # не режем — это записанное человеком знание и связность узла (DS r3
     # против GLM r2); два узла с одной кличкой — по-прежнему не гадаем.
     if key:
-        hits = [f for f in _alias_index(files).get(key, [])
-                if folder is None or f.parent.name == folder]
+        # заглушка отдаёт псевдоним своему канону: псевдоним у заглушки и у канона
+        # (так их оставляет tier3 и ручное слияние) — один узел, не развилка
+        hits = []
+        for f in _alias_index(files).get(key, []):
+            live = follow_stubs(graph, f)
+            # канон вне папок узлов (Досье, служебное) псевдонимом не отдаём (n777-out1 Sonnet M10)
+            if (live is not None and live not in hits and live.parent.name in NODE_FOLDERS
+                    and (folder is None or live.parent.name == folder)):
+                hits.append(live)
         if len(hits) == 1:
             return hits[0]
         if hits and ambiguous is not None:    # как проход 2: кандидаты наружу,
@@ -1915,9 +1954,17 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         target = redirects.stub_target(text)
         leaf = pathlib.PurePosixPath(target).name if target else ""
         alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
+        # цель вне папок узлов (Досье, служебное, выше графа) — не узел: туда не пишем,
+        # не создаём и не читаем (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)
+        if alt is not None:
+            alt = _node_path(graph, alt, NODE_FOLDERS)
         # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
         alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
         if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
+            targets = redirects.stub_info(text).targets
+            if len(targets) > 1:    # развилка «→ см. [[A]] · [[B]]» — в кандидаты (n777-in1, DS C2)
+                _journal_held_entity(graph, folder, name, typ, "ambiguous",
+                                     [t.removesuffix(".md") for t in targets], meeting_link)
             _journal_graph_event("заглушка без канона", f"{p.parent.name}/{p.stem}", meeting_link)
             print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
             return
@@ -2537,7 +2584,7 @@ def _link_core_twin(core: pathlib.Path, twin: pathlib.Path, meeting_link: str) -
 
 
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
-                transcript: str = "", speakers: set[str] | None = None):
+                transcript: str = "", speakers: set[str] | None = None, *, _retry: bool = False):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
     хроника копится. В графе Obsidian ядра становятся хабами над-уровня."""
     d = graph / "Ядра"
@@ -2566,44 +2613,106 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     stamp_line = (f"- [[{meeting_link}]] — {upd}{anchor}" if upd
                   else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
-        text = _read_node(p, meeting_link)
-        if text is None:
+        # Чтение → проверка «не заглушка ли» → статус и хроника → запись под
+        # снимком, две попытки — через общий rewrite_file, как у сущностей и
+        # автопсевдонима: слияние, случившееся между чтением и записью (ночной
+        # tier3, облако), не затирается живым текстом с хроникой, а касание файла
+        # без смены байтов (iCloud) не съедает встречу (n777-out1/out2: DS I4,
+        # Sonnet I2). Проверка заглушки — внутри преобразования, на каждой попытке.
+        stub: list[str] = []
+
+        def transform(text: str) -> tuple[str, int]:
+            stub.clear()
+            if redirects.is_merged(text):
+                stub.append(text)
+                return text, 0
+            # Вытесненный статус не исчезает, а уходит в хронику с датой, с
+            # которой он держался: у факта появляются «с» и «по» (Graphiti/Zep,
+            # №127). Ретрай той же встречи с тем же статусом строку не дублирует;
+            # ретрай с другим статусом — уточнение, и оно дописывается к строке
+            # ЭТОЙ встречи (DS/GLM, круг-1 #451), а не теряется молча.
+            before = text
+            old_status, since = _current_status(text)
+            changed = bool(status and old_status
+                           and _flat(old_status).casefold() != _flat(status).casefold())
+            seen_link = has_link(text, meeting_link)
+            superseded = (f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
+                          if changed and not seen_link else "")
+            if status:  # свежий статус вытесняет прежний
+                # Замена через lambda, а не строкой: status приходит от модели, и
+                # re.sub разбирает в подстановке обратные слэши. Путь вида
+                # «миграция C:\1С\base готова» давал PatternError: invalid group
+                # reference — исключение убивало весь пост-процессинг встречи.
+                repl = f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n"
+                text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
+                              lambda _: repl, text, count=1, flags=re.S)
+            if not seen_link:
+                text = _insert_chronicle_line(text, stamp_line + superseded)
+            elif changed:
+                text, found = _annotate_chronicle(
+                    text, meeting_link, f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
+                if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
+                    line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
+                    text = _insert_chronicle_line(text, line)
+            return text, int(text != before)
+
+        try:
+            safe_write.rewrite_file(p, transform, "ядро встречи")
+        except (OSError, UnicodeDecodeError) as e:  # не ValueError: ошибка преобразования летит
+            # наверх, а не прячется под «не прочитан» — как _write_entity (n777-out3 DS I1)
+            # OSError бывает и у записи (нет места) — текст без «не прочитан» (Opus M3)
+            _journal_graph_event("встреча в ядро не дописана", f"Ядра/{p.stem}: {e}", meeting_link)
+            _SKIPPED_NODES.append(f"Ядра/{p.stem}")
+            print(f"граф: ядро Ядра/{p.stem} — {e}, встреча {meeting_link} не дописана", file=sys.stderr)
             return
-        # Вытесненный статус не исчезает, а уходит в хронику с датой, с
-        # которой он держался: у факта появляются «с» и «по» (Graphiti/Zep,
-        # №127). Ретрай той же встречи с тем же статусом строку не дублирует;
-        # ретрай с другим статусом — уточнение, и оно дописывается к строке
-        # ЭТОЙ встречи (DS/GLM, круг-1 #451), а не теряется молча.
-        old_status, since = _current_status(text)
-        changed = bool(status and old_status
-                       and _flat(old_status).casefold() != _flat(status).casefold())
-        seen_link = has_link(text, meeting_link)
-        superseded = (f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
-                      if changed and not seen_link else "")
-        if status:  # свежий статус вытесняет прежний
-            # Замена через lambda, а не строкой: status приходит от модели, и
-            # re.sub разбирает в подстановке обратные слэши. Путь вида
-            # «миграция C:\1С\base готова» давал PatternError: invalid group
-            # reference — исключение убивало весь пост-процессинг встречи.
-            repl = f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n"
-            text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
-                          lambda _: repl, text, count=1, flags=re.S)
-        if not seen_link:
-            text = _insert_chronicle_line(text, stamp_line + superseded)
-        elif changed:
-            text, found = _annotate_chronicle(
-                text, meeting_link, f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
-            if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
-                line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
-                text = _insert_chronicle_line(text, line)
-        safe_write.write_text(p, text)
-    else:
-        safe_write.write_text(
+        except safe_write.LostRace as e:
+            # причина — значением (n777-out3 DS I2): ядро пропало — один проход
+            # заново (resolve_core_path и создание); недоступно — не «чужая правка»
+            if e.gone and not _retry:
+                upsert_core(graph, core, meeting_link, stamp, transcript, speakers, _retry=True)
+                return
+            event = ("ядро пропало" if e.gone else "ядро недоступно" if e.unreachable
+                     else "ядро изменилось под рукой")     # повторный GONE — не «чужая правка» (Opus M2)
+            _journal_graph_event(event, f"Ядра/{p.stem}: {e}", meeting_link)
+            _SKIPPED_NODES.append(f"Ядра/{p.stem}")
+            print(f"граф: {event}: «{p.stem}» ({e}), встреча {meeting_link} не дописана", file=sys.stderr)
+            return
+        if stub:
+            # resolve_core_path отдаёт заглушку, когда живого канона нет: цели нет
+            # или их несколько, канон в другой папке, канон пропал. Писать в неё
+            # нельзя — так выросли заглушки до 20 тыс. знаков (n777-in1 C1).
+            # Человеку — строкой в `_Кандидаты.md`, не только машинным журналом:
+            # развилка «→ см. [[A]] · [[B]]» — как ядро на несколько тем, одна цель
+            # вне Ядер или пропавшая — «заглушка без канона» (n777-out1 Sonnet I3 / DS M6).
+            # Ядро стало заглушкой между resolve_core_path и записью (ночное слияние):
+            # путь решаем заново один раз — канон уже есть (Opus I1).
+            if not _retry and resolve_core_path(d, core["имя"], graph) != p:
+                upsert_core(graph, core, meeting_link, stamp, transcript, speakers, _retry=True)
+                return
+            info = redirects.stub_info(stub[0])
+            cands = [t.removesuffix(".md") for t in info.targets]
+            if not cands and (t := redirects.stub_target(stub[0])):
+                cands = [t.removesuffix(".md")]
+            _journal_held_entity(graph, "Ядра", core["имя"], "ядро",
+                                 "ambiguous" if len(cands) > 1 else "stub", cands, meeting_link)
+            _journal_graph_event("заглушка без канона", f"Ядра/{p.stem}", meeting_link)
+            print(f"граф: ядро «{p.stem}» — заглушка без живого канона в Ядрах, встреча {meeting_link} не дописана")
+            return
+    elif not safe_write.write_text(
             p,
             f"---\ntype: ядро\nвид: {frontmatter.yaml_str(str(core.get('тип') or 'тема'))}\n"
             f"tags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
-            f"## Хроника\n{stamp_line}\n")
+            f"## Хроника\n{stamp_line}\n", expect_absent=True):
+        # ядро появилось за время разбора (параллельный разбор, слияние) — не
+        # затираем его новым, а один раз проходим заново веткой дописывания
+        # (n777-out2 Sonnet M3; как _create_entity)
+        if not _retry:
+            upsert_core(graph, core, meeting_link, stamp, transcript, speakers, _retry=True)
+        else:
+            _journal_graph_event("ядро изменилось под рукой", f"Ядра/{p.stem}: создание", meeting_link)
+            _SKIPPED_NODES.append(f"Ядра/{p.stem}")
+        return
     if twin is not None:
         # параллельное ядро и узел-двойник ссылаются друг на друга; после записи
         # ядра, чтобы обе ссылки вели на существующие файлы (№266)

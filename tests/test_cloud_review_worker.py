@@ -1613,6 +1613,25 @@ def test_a_redirect_stub_lands_when_its_canon_lands(tmp_path):
     assert "Ядра/Провайдер платежей.md" in v.applied
     assert dup.read_text(encoding="utf-8").startswith("# Провайдер платежей → [[")
 
+
+def test_a_two_arrow_stub_without_one_target_is_reverted(tmp_path):
+    """«# X → [[A]] → [[B]]» — не узкая заглушка: у неё нет одной цели, и живой узел
+    не пишется ею сразу, мимо канона и копии тела (Opus C2, n777-final)."""
+    graph = _graph(tmp_path)
+    old = graph / "Ядра" / "Старое.md"
+    body = "# Старое\n## Статус\nидёт\n" + "".join(f"- факт {i}\n" for i in range(8))
+    old.write_text(body, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Старое.md").write_text(
+            "# Старое → [[Ядра/Нет1]] → [[Ядра/Нет2]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Старое.md" not in v.applied
+    assert "Ядра/Старое.md" in v.reverted
+    assert old.read_text(encoding="utf-8") == body
+    assert not cloud_review.is_redirect_stub("# Старое → [[Ядра/Нет1]] → [[Ядра/Нет2]]\n")
+
 def test_a_redirect_stub_is_recognised_with_ascii_arrow_and_yaml_frontmatter(tmp_path):
     """Заглушка распознаётся и с `->`, и с длинным frontmatter (GLM M1+M3).
 
@@ -1630,6 +1649,21 @@ def test_a_redirect_stub_is_recognised_with_ascii_arrow_and_yaml_frontmatter(tmp
     assert cloud_review._stub_target(
         "---\nrelated: см. → [[Другое]]\n---\n# Дубль → [[Ядра/Канон]]\n"
     ) == "Ядра/Канон.md"
+
+def test_the_cloud_does_not_revive_a_stub_of_any_historical_form(tmp_path):
+    """Узел, который детектор считает мёртвым («→ см. [[…]]», ведущая строка
+    «Дубль. Сведён в»), облако не превращает обратно в живой: прочие слои видели
+    бы заглушку, а облако — узел (№777, n777-in1 Sonnet I6). Перенацелить
+    заглушку узкой формой можно (№777)."""
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    path = graph / "Ядра" / "Отчёт.md"
+    old = "# Отчёт → см. [[Ядра/Отчётность]]\n"
+    assert cloud_review.judge(path, graph, old, "# Отчёт\n\n## Статус\nидёт\n", True) == "stub"
+    assert cloud_review.judge(path, graph, "# Отчёт\n\n➡️ **Дубль. Сведён в [[Ядра/X]]**\n",
+                              "# Отчёт\n\nживой\n", True) == "stub"
+    assert cloud_review.judge(path, graph, old, "# Отчёт → [[Ядра/Сроки]]\n", True) is None
+
 
 def test_a_sandbox_swapped_for_a_symlink_drops_to_read_only(tmp_path, monkeypatch):
     """Песочницу подменили симлинком на стенограммы — не пишем в живые данные.

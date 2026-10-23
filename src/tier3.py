@@ -260,7 +260,7 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
     canon["mtime"] = canon["path"].stat().st_mtime   # своя запись — не «чужая рука»
     safe_write.write_text(
         dup["path"],
-        f"---\ntype: ядро\nвид: задача\ntags: [дубль, redirect, tier3-nli]\n---\n"
+        f"---\ntype: ядро\nвид: задача\ntags: [дубль, redirect, дубль-слит, tier3-nli]\n---\n"
         f"# {dup['name']} → [[Ядра/{canon['name']}]]\n\n"
         f"⚠️ **Дубль. Смерджен Tier3-NLI.** Хроника перенесена в "
         f"[[Ядра/{canon['name']}|{canon['name']}]].\n",

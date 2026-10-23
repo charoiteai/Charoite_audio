@@ -8,14 +8,93 @@ resolve_core_path) такие заглушки принимали за живы�
 кластер вокруг мёртвого дубля, а свежий «## Статус» мог уехать в заглушку
 (аудит графа 28.08, Sonnet Important 5). cloud_review узнавал заглушки по
 СТРУКТУРЕ — первому заголовку со стрелкой; теперь так узнают все.
+
+Ручные ревизии писали заглушки ещё десятком форм — «# X → см. [[…]]»,
+«➡️ **Сведён в [[…]]**», «⛔ Дубль. Канонический узел — [[…]]» — и детектор их не
+узнавал: ночная ревизия судила мёртвые ядра как живые, а разбор встреч
+дописывал в них хронику (замер №777 по 14 графам, 23.10: 258 таких файлов,
+10 выросли больше 4000 знаков). Читаем замеренные исторические формы (`stub_info`),
+пишем одну (`is_redirect_stub` — ворота записи облака — остаётся узким).
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 
+from charoite_graph.frontmatter import list_field
+
 MERGED_MARKER = "Дубль. Смерджен"
+MERGED_TAG = "дубль-слит"
 REDIRECT_RE = re.compile(r"^# .+? (?:→|->|⇒) \[\[[^\]]+\]\]", re.M)
 STUB_TARGET_RE = re.compile(r"(?:→|->|⇒) \[\[([^\]]+)\]\]")
+STUB_MAX = 4000     # тело «чистого указателя»; длиннее — узел с телом
+
+_LINK = r"\[\[[^\]]+\]\]"
+_DECOR = r"(?:\s|⛔|⚠️|⚠|🔴|\*\*)*"
+_ARROW = r"(?:→|->|⇒|➡️|➡)"
+# Стрелка в первом заголовке ведёт ПРЯМО на ссылку: между ними только декор и
+# «см.». Живое ядро «# Тема → фиксация даты у [[Системы/X]]» — слова между
+# стрелкой и ссылкой — не заглушка (DS C3, n777-in1).
+_HEAD_RE = re.compile(
+    rf"# .+?{_DECOR}{_ARROW}{_DECOR}(?:см\.?\s*)?(?P<links>{_LINK}(?:\s*(?:·|,|и)\s*{_LINK})*){_DECOR}"
+    rf"|# .+?\s—{_DECOR}дубль,?\s*см\.?\s*(?P<links2>{_LINK})")
+_HEAD_ARROW_RE = re.compile(rf"^# .*(?:{_ARROW}|\bдубль\b)", re.I)
+# Заголовок, который сам говорит «указатель»: «⛔ дубль» ВПЛОТНУЮ перед стрелкой
+# или «см.» сразу после неё — только декор между ними. Только формы ревизий (замер
+# n777-out3 по 14 графам: 56 заголовков «⛔ дубль →», «⛔ STT-дубль →»); «# Проблема:
+# дубль → [[L]]» без ⛔ — живой узел (Haiku I-2). Выросшая заглушка с таким
+# заголовком мертва при любой длине (n777-out1: DS C2 / Sonnet I2, «# X ⛔ дубль →
+# [[L]]» — 10 713 знаков без тега). Слово в названии темы («# Дубль платежей → …»,
+# «# Дубль-контроль → …») или в цели ссылки («→ [[Ядра/Дубль]]») — не признак
+# (n777-out2: DS C1 / Sonnet I1); форма «— дубль, см. [[L]]» — группа links2.
+_STRONG_HEAD_RE = re.compile(rf"⛔\s*(?:\w+-)?дубль{_DECOR}{_ARROW}|{_ARROW}{_DECOR}см\.?")
+# Ведущая строка-пометка: с НАЧАЛА строки (после декора) — ровно те формы, что
+# писали ревизии (замер n777-out1 по 14 графам): «Дубль.», «Дубль,», «Дубль слит /
+# сведён», «Дубль-человек… Смерджен в [[L]]», «Дубль [[L]], сведён ревизией», и «Сведён(о) в / редиректом на /
+# Смерджен в» ПРЯМО перед ссылкой. Канон о влитом дубле пишет иначе: «Сведён в этот
+# узел дубль [[X]]», «Дубль «Старый» [[X]] сведён сюда», «Сюда сведён дубль» — слова
+# между глаголом и ссылкой, и он остаётся живым (DS C1 / Sonnet I5). После «Дубль
+# [[L]], сведён» — белый список (единственный хвост в графах — «ревизией»): «…, сведён
+# в этот узел» — канон (n777-out3: Sonnet I1, DS I3).
+# Пометка ВСЕГДА начинается значком (замер n777-final по 14 графам: все ведущие строки —
+# «➡️ **…», «⛔ **…», «> ⚠️ **…»): проза «Дубль сведён сюда из [[X]]» или «Сведено в
+# [[DWH]] ежедневно» без значка — канон, а не заглушка (Opus C1). «Дубль,» и «Дубль
+# слит / сведён» — только в замеренном продолжении: «Дубль, сведён ревизией», «Дубль
+# слит», «Дубль сведён редиректом». Голое «Сведено в [[L]]» — только жирной пометкой,
+# закрытой сразу за ссылкой («➡️ **Сведено в [[L]]** — …», 11 из 11 в графах): «➡️ Сведено в
+# [[DWH]] ежедневно» — живой узел (n777-final-fix: Haiku C1 / Sonnet I2). Хвост за пометкой —
+# замеренный («** ревизией», «** — там…», «** (ревизия…»), «** ежедневно» — проза
+# (n777-final-fix2 Haiku I1). Несколько целей в этой ветке не замерены (0 в графах) — не
+# узнаём: незамеренная форма остаётся живой, как на main (n777-final-fix3 DS C1).
+_LEAD_MARK = r"(?:⛔|➡️|➡|⚠️|⚠|🔴|🔀)"
+_LEAD_DECOR = rf"[>\s*_]*{_LEAD_MARK}(?:[>\s*_]|{_LEAD_MARK})*"
+_LEAD_RE = re.compile(
+    rf"^{_LEAD_DECOR}(?:Дубль(?:\.|,\s*свед[её]н\s+ревизией|\s+слит\b|\s+свед[её]н\s+редиректом\b"
+    rf"|\s+{_LINK},\s*(?:свед[её]н|смерджен|перенес[её]н)\s+(?:ревизией|вручную|автоматически)\b"
+    rf"|-\w+[^\[]*?(?:Смерджен|Свед[её]н[оа]?)\s+в\s+(?:\*\*)?\[\[)"
+    rf"|(?:Свед[её]н[оа]?\s+(?:в|редиректом\s+на)|Смерджен\s+в)\s+(?:\*\*)?{_LINK}"
+    rf"\*\*(?=\s*(?:ревизией|—|\(|$)))")
+# Слово слияния в первых строках — подтверждение тега, не признак сам по себе.
+_MERGE_WORD_RE = re.compile(r"(?i)\bдубль\b|свед[её]н|смерджен|редирект|перенес[её]н")
+_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+
+
+@dataclasses.dataclass(frozen=True)
+class StubInfo:
+    """Итог одного разбора: слит ли узел и куда ведёт.
+
+    `targets` — все разные цели из заголовка или ведущей строки; `target` —
+    единственная из них. Несколько целей («→ см. [[A]] · [[B]]») — развилка
+    смыслов: узел мёртв, но канона нет, писать некуда."""
+    merged: bool
+    targets: tuple[str, ...] = ()
+
+    @property
+    def target(self) -> str | None:
+        return self.targets[0] if len(self.targets) == 1 else None
+
+
+_LIVE = StubInfo(False)
 
 
 def stub_body(text: str) -> str:
@@ -27,33 +106,116 @@ def stub_body(text: str) -> str:
     return re.sub(r"\A(?:\s*<!--.*?-->\s*)*", "", body, flags=re.S).lstrip()
 
 
+def _md(link: str) -> str:
+    target = link.split("|", 1)[0].split("#", 1)[0].strip()
+    return target if target.endswith(".md") else f"{target}.md"
+
+
+def _targets(fragment: str) -> tuple[str, ...]:
+    out: list[str] = []
+    for link in _LINK_RE.findall(fragment):
+        t = _md(link)
+        if t.casefold() not in (x.casefold() for x in out):
+            out.append(t)
+    return tuple(out)
+
+
+def _tagged(text: str) -> bool:
+    # подстрока — дешёвый предохранитель: YAML шапки разбираем только у тех, где
+    # тег вообще встречается (детектор зовут на каждый файл графа)
+    return MERGED_TAG in text and MERGED_TAG in list_field(text, "tags")
+
+
+def stub_info(text: str) -> StubInfo:
+    """Один разбор на все формы заглушки (№777).
+
+    Признаки по надёжности:
+    - пометка tier3 «Дубль. Смерджен» где угодно — как прежде;
+    - строгая стрелка в первом заголовке («# X → [[L]]», «# X ⛔ → см. [[L]] · [[M]]»,
+      «# X — ⛔ дубль, см. [[L]]») — у тела до STUB_MAX; длиннее — со вторым
+      признаком (тег, ведущая строка, «см.»/«дубль» в заголовке): голая стрелка
+      одна не отличает узел, который люди напишут завтра (Sonnet I2, n777-in1);
+    - ведущая строка-пометка со ссылкой в трёх первых строках под заголовком — до
+      STUB_MAX или с тегом;
+    - тег `дубль-слит` — со стрелкой в заголовке или словом слияния в первых
+      строках: тег ставили руками, и голый тег узел не хоронит (Sonnet I3 / DS I3).
+    Цель — из строгого заголовка, иначе из ведущей строки."""
+    body = stub_body(text)
+    if not body:
+        return _LIVE
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    head = lines[0] if lines[0].startswith("# ") else ""
+    under = lines[1:4] if head else lines[:3]
+    short = len(body) <= STUB_MAX
+    m = _HEAD_RE.fullmatch(head) if head else None
+    lead = next((ln for ln in under if _LEAD_RE.match(ln)), None)
+    tagged = _tagged(text)
+    head_targets = _targets(m.group("links") or m.group("links2")) if m else ()
+    lead_targets = _targets(lead) if lead else ()
+    strong = m is not None and (m.group("links2") is not None
+                                or _STRONG_HEAD_RE.search(head.split("[[", 1)[0]) is not None)
+    if m and (short or tagged or lead is not None or strong):
+        return StubInfo(True, head_targets)
+    if lead is not None and lead_targets and (short or tagged):
+        return StubInfo(True, lead_targets)
+    if MERGED_MARKER in text:
+        return StubInfo(True, head_targets or lead_targets)
+    if tagged and ((head and _HEAD_ARROW_RE.match(head)) or any(_MERGE_WORD_RE.search(ln) for ln in under)):
+        return StubInfo(True, head_targets or lead_targets or _targets(head))
+    return _LIVE
+
+
 def stub_target(text: str) -> str | None:
     """Куда указывает заглушка-редирект: `→ [[Папка/Канон]]` → «Папка/Канон.md».
 
     Цель берём из ТЕЛА заглушки после среза frontmatter, не по сырому тексту:
     стрелка-ссылка в YAML-поле (note, related) увела бы цель мимо канона, и
-    легитимная заглушка ушла бы в карантин (DS, круг-4). Ищется в той же
-    первой строке, которую валидирует is_redirect_stub."""
+    легитимная заглушка ушла бы в карантин (DS, круг-4). Узкая форма — по той
+    же первой строке, которую валидирует is_redirect_stub; остальные формы —
+    тем же разбором, что узнаёт заглушку (stub_info): иначе «→ см. [[L]]»
+    узнавалась бы, а цель — нет, и запись уходила бы в саму заглушку (n777-in1 C1).
+    Развилка («# X → [[A]] · [[B]]») — None и в узкой форме: иначе первая ссылка
+    молча становилась каноном, и встреча уходила в A мимо кандидатов (n777-out1,
+    Haiku C1 / DS I3 / Sonnet I1). Узкая цель, которой нет среди целей разбора
+    («# X → [[A]] → [[B]]»: разбор видит B), — тоже развилка (n777-out3 Haiku I-1)."""
+    info = stub_info(text)
+    if len(info.targets) > 1:
+        return None
     first = stub_body(text).split("\n", 1)[0]
     m = STUB_TARGET_RE.search(first)
-    if not m:
-        return None
-    target = m.group(1).split("|", 1)[0].split("#", 1)[0].strip()
-    return target if target.endswith(".md") else f"{target}.md"
+    if m:
+        t = _md(m.group(1))
+        return t if not info.targets or t in info.targets else None
+    return info.target
 
 
 def is_redirect_stub(text: str) -> bool:
     """Заглушка после слияния: короткий файл, чей ПЕРВЫЙ заголовок (после
     frontmatter) — стрелка на канон. Стрелка где-то в середине переписанного
-    узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek)."""
+    узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek). Узкая
+    форма — ворота записи облака (cloud_review): читаем широко, пишем узко."""
     body = stub_body(text)
-    if not body or len(body) > 4000:   # длину мерим ПОСЛЕ frontmatter; облачная
+    if not body or len(body) > STUB_MAX:   # длину мерим ПОСЛЕ frontmatter; облачная
         # заглушка с перечнем слитых фактов длиннее 1200 (DS, круг-1 по #448 M8)
         return False
     first = body.split("\n", 1)[0].strip()
-    return REDIRECT_RE.fullmatch(first) is not None
+    # узкая форма — ровно одна согласованная цель: «# X → [[A]] → [[B]]» проходит
+    # fullmatch, но stub_target даёт None — ворота и перенос облака не должны
+    # расходиться (Opus C2: такая «заглушка» писалась сразу, мимо канона и копии тела)
+    return REDIRECT_RE.fullmatch(first) is not None and stub_target(text) is not None
 
 
 def is_merged(text: str) -> bool:
-    """Узел уже сведён в канон: пометка tier3 ИЛИ структурная заглушка."""
-    return MERGED_MARKER in text or is_redirect_stub(text)
+    """Узел уже сведён в канон: пометка tier3, узкая заглушка или любая
+    историческая форма (stub_info)."""
+    return MERGED_MARKER in text or is_redirect_stub(text) or stub_info(text).merged
+
+
+def is_pointer(text: str) -> bool:
+    """Заглушка — чистый указатель (тело до STUB_MAX), а не выросший узел.
+
+    Выросшие заглушки несут факты, дописанные разбором встреч ПОСЛЕ слияния,
+    пока детектор их не узнавал; в каноне этих фактов нет. Поиск подменяет хит
+    заглушки каноном только у указателя — иначе эти факты пропали бы из выдачи
+    до переноса тел (DS I4, n777-in1)."""
+    return len(stub_body(text)) <= STUB_MAX
