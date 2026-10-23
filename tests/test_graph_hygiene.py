@@ -483,13 +483,16 @@ def test_core_path_is_resolved_again_only_once(tmp_path, monkeypatch):
     calls = []
 
     def flapping(d, name, graph=None):
-        calls.append(name)
+        calls.append((d, name, graph))
         return (a, b)[(len(calls) - 1) % 2]
     monkeypatch.setattr(g, "resolve_core_path", flapping)
     g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
                   "Встречи/2026-09-16_1200", "2026-09-16 12:00")
-    assert len(calls) == 3
+    # итог, а не число заходов: без рекурсии, встреча в кандидатах (n777-final-fix6 DS I / Haiku I1)
+    assert 1 <= len(calls) <= 3
+    assert all(c == (graph / "Ядра", "Тема", graph) for c in calls)
     assert "2026-09-16_1200" in (graph / g.CANDIDATES_NOTE).read_text(encoding="utf-8")
+    assert "2026-09-16_1200" not in a.read_text(encoding="utf-8") + b.read_text(encoding="utf-8")
 
 
 def test_core_write_error_is_not_reported_as_unreadable(tmp_path, monkeypatch):
@@ -2351,6 +2354,19 @@ def test_entity_writer_goes_through_the_update_gate(tmp_path, monkeypatch, capsy
     assert (graph / "Системы" / "Ещё одна.md").read_text(encoding="utf-8").startswith("---\ntype: система\n")
 
 
+def test_stub_to_a_service_file_is_not_a_canon(tmp_path):
+    """Служебный файл в папке узлов (указатель) — не канон: заглушка на него
+    обрывается, писатель встречу туда не дописывает (мутанты CI #851 на `_node_path`)."""
+    graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    index = graph / "Системы" / "_Указатель.md"
+    index.write_text("# Указатель\n\nживой\n", encoding="utf-8")
+    (graph / "Системы" / "Ссылка.md").write_text("# Ссылка → [[Системы/_Указатель]]\n", encoding="utf-8")
+    assert g.follow_stubs(graph, graph / "Системы" / "Ссылка.md") is None
+    g.upsert_entity(graph, "Системы", "Ссылка", "система", "", "Встречи/2026-10-23_1200", "")
+    assert "2026-10-23_1200" not in index.read_text(encoding="utf-8")
+
+
 def test_stub_alias_does_not_lead_to_a_canon_outside_entity_folders(tmp_path):
     """Псевдоним заглушки ведёт к канону только в папках узлов (без Людей для
     вердикта сущности): система не уходит в человека или досье (Opus I2, n777-final)."""
@@ -2385,8 +2401,6 @@ def test_stub_alias_does_not_lead_to_a_canon_outside_entity_folders(tmp_path):
     (graph / "Системы" / "Канон.md").write_text("# Канон\n\nживой\n", encoding="utf-8")
     (graph / "Системы" / "Старый.md").write_text("# Старый → [[системы/Канон]]\n", encoding="utf-8")
     assert g._node_path(graph, graph / "системы" / "Канон.md", g.NODE_FOLDERS) == graph / "Системы" / "Канон.md"
-    # служебный файл в папке узлов — не узел: указатель не канон (мутант CI #851)
-    assert g._node_path(graph, graph / "Системы" / "_Указатель.md", g.NODE_FOLDERS) is None
     assert g.follow_stubs(graph, graph / "Системы" / "Старый.md") == graph / "Системы" / "Канон.md"
     g.upsert_entity(graph, "Системы", "Старый", "система", "", "Встречи/2026-10-23_1100", "")
     assert "2026-10-23_1100" in (graph / "Системы" / "Канон.md").read_text(encoding="utf-8")
