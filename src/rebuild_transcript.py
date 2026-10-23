@@ -990,7 +990,8 @@ def _after_call_body(path: pathlib.Path) -> str:
 
 def _merged_after_call_notes(path: pathlib.Path, notes: list[str]) -> list[str]:
     """Заметки прежнего файла `_после_звонка` и новые снятые — без повторов,
-    прежние первыми."""
+    прежние первыми. Повтор — заметка целиком (строка «> » с продолжением):
+    построчно пропадали одинаковые строки продолжения разных заметок (Haiku-5 out4)."""
     head = f"## {transcript.NOTES_TITLE} после звонка"
     try:
         old = path.read_text(encoding="utf-8")
@@ -998,7 +999,19 @@ def _merged_after_call_notes(path: pathlib.Path, notes: list[str]) -> list[str]:
         return notes
     at = old.find("\n" + head + "\n")
     prior = old[at + len(head) + 2:].rstrip("\n").split("\n") if at >= 0 else []
-    return prior + [n for n in notes if n not in prior]
+    seen = set(_note_blocks(prior))
+    return prior + [ln for b in _note_blocks(notes) if b not in seen for ln in b]
+
+
+def _note_blocks(lines: list[str]) -> list[tuple[str, ...]]:
+    """Строки заметок блоками: строка «> » и её продолжения."""
+    blocks: list[list[str]] = []
+    for ln in lines:
+        if ln.startswith("> ") or not blocks:
+            blocks.append([ln])
+        else:
+            blocks[-1].append(ln)
+    return [tuple(b) for b in blocks]
 
 
 def paragraphs(segments: list[tuple[float, float, str]], gap: float = 2.0) -> list[list]:

@@ -2045,12 +2045,22 @@ def test_empty_after_call_speech_on_a_later_pass_keeps_the_replies_of_the_file(m
     assert "реплика 9 с, правка" in path.read_text(encoding="utf-8")
 
 
+def test_after_call_notes_merge_by_whole_note(tmp_path):
+    """Haiku-5 out4: одинаковая строка продолжения у разных заметок не теряется."""
+    path = tmp_path / "x_после_звонка.md"
+    path.write_text("# После звонка\n\n## Ко-мышление после звонка\n> 14:31 💭 ужин\nок\n", encoding="utf-8")
+    merged = rt._merged_after_call_notes(path, ["> 14:31 💭 ужин", "ок", "> 14:32 💭 мусор", "ок"])
+    assert merged == ["> 14:31 💭 ужин", "ок", "> 14:32 💭 мусор", "ок"]
+
+
 def test_cut_line_is_a_recording_trace_not_a_model_thought():
     """S-M4/DS-I6 out3: строка среза — факт о записи; потребители следа
     (контекст графа, ко-мышление разбора) снимают её тем же правилом."""
     line = "> " + rt.AFTER_CALL_CUT_NOTE.format(end="14:30", last="14:31")
     assert channel_trace.is_trace_line(line) and channel_trace.is_after_call_cut(line)
     assert not channel_trace.is_after_call_cut("> 14:31 💭 Запись после конца звонка обсудить")
+    assert not channel_trace.is_after_call_cut("> Запись после конца звонка обсудили с Ингой")
+    assert not channel_trace.is_after_call_cut("> 14:31 " + line[2:]), "заметка демона со временем — не срез"
     text = transcript.append_note("**Инга** [14:20]:\nСмета.\n", line[2:])
     assert rt.AFTER_CALL_CUT_PREFIX not in meeting_source.without_trace(text)
 
