@@ -1631,6 +1631,21 @@ def test_a_redirect_stub_is_recognised_with_ascii_arrow_and_yaml_frontmatter(tmp
         "---\nrelated: см. → [[Другое]]\n---\n# Дубль → [[Ядра/Канон]]\n"
     ) == "Ядра/Канон.md"
 
+def test_the_cloud_does_not_revive_a_stub_of_any_historical_form(tmp_path):
+    """Узел, который детектор считает мёртвым («→ см. [[…]]», ведущая строка
+    «Дубль. Сведён в»), облако не превращает обратно в живой: прочие слои видели
+    бы заглушку, а облако — узел (№777, n777-in1 Sonnet I6). Перенацелить
+    заглушку узкой формой можно (№777)."""
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    path = graph / "Ядра" / "Отчёт.md"
+    old = "# Отчёт → см. [[Ядра/Отчётность]]\n"
+    assert cloud_review.judge(path, graph, old, "# Отчёт\n\n## Статус\nидёт\n", True) == "stub"
+    assert cloud_review.judge(path, graph, "# Отчёт\n\n➡️ **Дубль. Сведён в [[Ядра/X]]**\n",
+                              "# Отчёт\n\nживой\n", True) == "stub"
+    assert cloud_review.judge(path, graph, old, "# Отчёт → [[Ядра/Сроки]]\n", True) is None
+
+
 def test_a_sandbox_swapped_for_a_symlink_drops_to_read_only(tmp_path, monkeypatch):
     """Песочницу подменили симлинком на стенограммы — не пишем в живые данные.
 

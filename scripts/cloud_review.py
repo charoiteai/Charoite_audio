@@ -123,7 +123,7 @@ DENY_MAX = 200
 # заголовка. Сам файл остаётся, ссылки на него не ломаются.
 # Заглушка-редирект — общий детектор src/charoite_graph/redirects.py (тот же, что у tier3,
 # досье и конвейера); имена оставлены для тестов и читателей этого файла.
-from charoite_graph.redirects import stub_target as _stub_target, is_redirect_stub  # noqa: E402
+from charoite_graph.redirects import stub_target as _stub_target, is_redirect_stub, is_merged  # noqa: E402
 
 # Что облако не трогает никогда, даже находясь внутри графа. Архив встречи —
 # та же категория, что копии стенограмм: Саммари, Минутки, Стенограмма суфлёра
@@ -571,6 +571,12 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     # круга-1 по #447 я снёс эту ветку вместе с признаками зря (DS, I2).
     # Единственная допустимая форма «убрать узел» — заглушка-
     # перенаправление, как у tier3 при слиянии дублей.
+    # Читаем широко, пишем узко: узел, который детектор считает мёртвым (любая
+    # историческая форма заглушки), облако не оживляет чужим текстом — иначе
+    # прочие слои снова видели бы его заглушкой, а облако правило бы живым
+    # (№777, n777-in1 Sonnet I6). Перенацелить заглушку узкой формой — можно.
+    if existed and is_merged(old_text) and not is_redirect_stub(new_text):
+        return "stub"
     if (existed and not is_redirect_stub(new_text)
             and sum(1 for ln in old_text.splitlines() if ln.strip()) >= REWRITE_MIN_LINES
             and retention(old_text, new_text) < REWRITE_KEEP):

@@ -456,9 +456,12 @@ def node_aliases(text: str) -> list[str]:
 
 def _alias_index(files: list[pathlib.Path]) -> dict[str, list[pathlib.Path]]:
     """Ключ имени псевдонима → узлы, у которых он записан. Заглушка-редиректа
-    псевдонимов не отдаёт: её шапка пережила слияние, а запись в неё из графа
-    не видна (GLM, круг-1 #451). Битый файл (не UTF-8, нет прав) — пропуск,
-    а не смерть разбора всей встречи."""
+    свои псевдонимы тоже отдаёт, а потребители ведут их через follow_stubs к
+    живому канону: раньше она молчала (запись в неё не видна — GLM, круг-1
+    #451), и с ростом детектора (№777: +258 заглушек, у 56 псевдонимы, ручные
+    слияния их в канон не переносили) следующее упоминание псевдонима заводило
+    новый узел-дубль (n777-in1, Sonnet I4 / DS I1). Битый файл (не UTF-8, нет
+    прав) — пропуск, а не смерть разбора всей встречи."""
     index: dict[str, list[pathlib.Path]] = {}
     for f in files:
         try:
@@ -467,7 +470,7 @@ def _alias_index(files: list[pathlib.Path]) -> dict[str, list[pathlib.Path]]:
             cached = _alias_cache.get(f)
             if cached is None or cached[0] != key:
                 text = f.read_text(encoding="utf-8")
-                names = () if redirects.is_merged(text) else tuple(frontmatter.aliases(text, f.name))
+                names = tuple(frontmatter.aliases(text, f.name))
                 cached = (key, names)
                 _alias_cache[f] = cached
         except (OSError, ValueError):      # UnicodeDecodeError — ValueError
@@ -1645,8 +1648,13 @@ def _find_canonical_raw(graph: pathlib.Path, name: str,
     # не режем — это записанное человеком знание и связность узла (DS r3
     # против GLM r2); два узла с одной кличкой — по-прежнему не гадаем.
     if key:
-        hits = [f for f in _alias_index(files).get(key, [])
-                if folder is None or f.parent.name == folder]
+        # заглушка отдаёт псевдоним своему канону: псевдоним у заглушки и у канона
+        # (так их оставляет tier3 и ручное слияние) — один узел, не развилка
+        hits = []
+        for f in _alias_index(files).get(key, []):
+            live = follow_stubs(graph, f)
+            if live is not None and live not in hits and (folder is None or live.parent.name == folder):
+                hits.append(live)
         if len(hits) == 1:
             return hits[0]
         if hits and ambiguous is not None:    # как проход 2: кандидаты наружу,
@@ -1918,6 +1926,10 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
         alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
         if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
+            targets = redirects.stub_info(text).targets
+            if len(targets) > 1:    # развилка «→ см. [[A]] · [[B]]» — в кандидаты (n777-in1, DS C2)
+                _journal_held_entity(graph, folder, name, typ, "ambiguous",
+                                     [t.removesuffix(".md") for t in targets], meeting_link)
             _journal_graph_event("заглушка без канона", f"{p.parent.name}/{p.stem}", meeting_link)
             print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
             return
@@ -2568,6 +2580,18 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     if p.exists():
         text = _read_node(p, meeting_link)
         if text is None:
+            return
+        if redirects.is_merged(text):
+            # resolve_core_path отдаёт заглушку, когда живого канона нет: цели нет
+            # или их несколько, канон в другой папке, канон пропал. Писать в неё
+            # нельзя — так выросли заглушки до 20 тыс. знаков (n777-in1 C1).
+            # Развилка «→ см. [[A]] · [[B]]» — в кандидаты, как ядро на несколько тем.
+            targets = redirects.stub_info(text).targets
+            if len(targets) > 1:
+                _journal_held_entity(graph, "Ядра", core["имя"], "ядро", "ambiguous",
+                                     [t.removesuffix(".md") for t in targets], meeting_link)
+            _journal_graph_event("заглушка без канона", f"Ядра/{p.stem}", meeting_link)
+            print(f"граф: ядро «{p.stem}» — заглушка без живого канона в Ядрах, встреча {meeting_link} не дописана")
             return
         # Вытесненный статус не исчезает, а уходит в хронику с датой, с
         # которой он держался: у факта появляются «с» и «по» (Graphiti/Zep,

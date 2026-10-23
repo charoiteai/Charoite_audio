@@ -54,8 +54,9 @@ _disk_candidates = graph_links.disk_candidates   # прежнее имя — д�
 
 def _is_stub(text: str) -> bool:
     # тот же детектор, что у tier3/досье/облака: «## Статус → в работе» — не
-    # заглушка (DS, круг-1 по #448 I2)
-    return "дубль-слит" in text[:400] or redirects.is_merged(text)
+    # заглушка (DS, круг-1 по #448 I2); тег `дубль-слит` читает он же, из шапки,
+    # а не подстрокой в первых 400 знаках (№777, n777-in1 Sonnet M9)
+    return redirects.is_merged(text)
 
 
 def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = None) -> dict:
