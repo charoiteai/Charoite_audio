@@ -35,22 +35,28 @@ extension ArchiveSearch {
             return true
         }
 
-        /// Имя пути для журнала — только служебная папка корня из `GraphFolders`:
-        /// глубже и в имени файла корня — названия встреч, а папку корня называет
-        /// пользователь (человек, проект, плоский граф по папкам встреч); журнал
-        /// «Забыть встречу» не чистит (финальный Opus M2, круг среза А).
+        /// Имя пути для журнала — только служебная папка корня, литералом таблицы
+        /// `GraphFolders`: глубже и в имени файла корня — названия встреч, а папку
+        /// корня называет пользователь (человек, проект, плоский граф по папкам
+        /// встреч); журнал «Забыть встречу» не чистит (финальный Opus M2, срез А).
         static func logName(_ rel: String) -> String {
             guard !rel.isEmpty else { return "<корень>" }
-            guard rel.contains("/") else { return "<верхний уровень>" }
-            let top = String(rel.prefix { $0 != "/" })
-            return GraphFolders.all.contains(top) ? top : "<прочее>"
+            if let name = GraphFolders.serviceTop(String(rel.prefix { $0 != "/" })) { return name }
+            return rel.contains("/") ? "<прочее>" : "<верхний уровень>"
         }
 
-        /// Строка журнала о неполном обходе — одна точка сборки: имена путей
-        /// только через `logName`, тест видит ровно то, что уходит в NSLog.
+        /// Код ошибки для журнала — только форма «домен NS…:число»: свободный текст
+        /// ошибки (localizedDescription) несёт имя файла.
+        static func logCode(_ code: String) -> String {
+            code.range(of: #"^NS[A-Za-z]+ErrorDomain:-?[0-9]+$"#, options: .regularExpression) != nil
+                ? code : "<код ошибки>"
+        }
+
+        /// Строка журнала о неполном обходе — одна точка сборки: имена и коды
+        /// только через `logName` и `logCode`.
         static func logLine(_ list: [(rel: String, code: String)]) -> String? {
             guard !list.isEmpty else { return nil }
-            let shown = list.prefix(3).map { "\(logName($0.rel)) (\($0.code))" }
+            let shown = list.prefix(3).map { "\(logName($0.rel)) (\(logCode($0.code)))" }
             return "поиск: обход графа неполный, ошибок \(list.count): " + shown.joined(separator: ", ")
         }
 
@@ -61,9 +67,10 @@ extension ArchiveSearch {
         /// всё, том не смонтирован — prune стёр бы весь индекс (out2 C1).
         /// Цена: превью последней заметки опустевшего графа живёт до первой
         /// новой заметки.
-        func alive(_ keys: Set<String>) -> SemanticIndex.Alive? {
-            // путь из графа — аргументом, не в формат: папка «100%s» уронила бы NSLog
-            if let line = Self.logLine(list) { NSLog("%@", line) }
+        /// `log` — приёмник журнала; тест подставляет свой и видит ровно то, что
+        /// уходит в NSLog. Строка — аргументом, не в формат: «100%s» уронила бы NSLog.
+        func alive(_ keys: Set<String>, log: (String) -> Void = { NSLog("%@", $0) }) -> SemanticIndex.Alive? {
+            if let line = Self.logLine(list) { log(line) }
             if keys.isEmpty || list.contains(where: { $0.rel.isEmpty }) { return nil }
             return SemanticIndex.Alive(seen: keys, unscanned: list.map(\.rel))
         }

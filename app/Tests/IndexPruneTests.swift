@@ -233,15 +233,25 @@ final class IndexPruneTests: XCTestCase {
         // папку корня называет пользователь: человек, проект, встреча в плоском графе
         XCTAssertEqual(W.logName("Иван Петров/Закрытая/x.md"), "<прочее>")
         XCTAssertEqual(W.logName("2026-10-20 — Совет директоров/закрытая"), "<прочее>")
+        // заперта сама служебная папка; регистр диска — литерал таблицы
+        XCTAssertEqual(W.logName("Люди"), "Люди")
+        XCTAssertEqual(W.logName("люди/Пётр.md"), "Люди")
+        // свойство по всей таблице: служебное имя только целиком, не префиксом и не суффиксом
+        for f in GraphFolders.all {
+            XCTAssertEqual(W.logName("\(f)/x.md"), f)
+            XCTAssertEqual(W.logName("\(f)-Иван Петров/x.md"), "<прочее>")
+            XCTAssertEqual(W.logName("Иван \(f)/x.md"), "<прочее>")
+            XCTAssertEqual(W.logName("\(f)-Иван Петров"), "<верхний уровень>")
+        }
     }
 
-    /// Строка журнала целиком — то, что уходит в NSLog: ни одного компонента пути
-    /// глубже служебной папки, счёт ошибок полный, показаны три.
+    /// Строка журнала целиком: ни одного компонента пути глубже служебной папки,
+    /// код ошибки только формой «домен:число», счёт ошибок полный, показаны три.
     func testWalkLogLineCarriesNoNames() throws {
         typealias W = ArchiveSearch.WalkErrors
         XCTAssertNil(W.logLine([]))
         let list = [("Встречи-архив/2026-10-20 — Разговор о бюджете", "NSCocoaErrorDomain:257"),
-                    ("Иван Петров/Закрытая", "NSCocoaErrorDomain:257"),
+                    ("Встречи-Иван Петров/Закрытая", "NSCocoaErrorDomain:257: The file “Совет директоров” couldn’t be opened"),
                     ("Совет директоров.md", "NSPOSIXErrorDomain:13"),
                     ("Люди/Пётр", "NSCocoaErrorDomain:257")]
         let line = try XCTUnwrap(W.logLine(list.map { (rel: $0.0, code: $0.1) }))
@@ -249,7 +259,21 @@ final class IndexPruneTests: XCTestCase {
             XCTAssertFalse(line.contains(name), "в журнале имя «\(name)»: \(line)")
         }
         XCTAssertEqual(line, "поиск: обход графа неполный, ошибок 4: Встречи-архив (NSCocoaErrorDomain:257), "
-                       + "<прочее> (NSCocoaErrorDomain:257), <верхний уровень> (NSPOSIXErrorDomain:13)")
+                       + "<прочее> (<код ошибки>), <верхний уровень> (NSPOSIXErrorDomain:13)")
+    }
+
+    /// То, что `alive` отдаёт приёмнику журнала, — строка `logLine` по настоящим
+    /// ошибкам `record`, одна на обход; без ошибок журнал молчит.
+    func testAliveLogsExactlyTheLogLine() {
+        let graph = URL(fileURLWithPath: "/граф-768-нет-на-диске")  // без ссылок в пути: /tmp ведёт в /private/tmp
+        let errors = ArchiveSearch.WalkErrors(graph: graph)
+        var got: [String] = []
+        _ = errors.alive(["Люди/a.md"], log: { got.append($0) })
+        XCTAssertEqual(got, [])
+        _ = errors.record(graph.appendingPathComponent("Встречи-архив/2026-10-20 — Совет директоров"),
+                          NSError(domain: NSCocoaErrorDomain, code: 257))
+        _ = errors.alive(["Люди/a.md"], log: { got.append($0) })
+        XCTAssertEqual(got, ["поиск: обход графа неполный, ошибок 1: Встречи-архив (NSCocoaErrorDomain:257)"])
     }
 
     func testUnscannedSubtreeProtectsOnlyItsOwnKeys() {
