@@ -21,6 +21,7 @@ import owner_voice  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
 import speech_gate  # noqa: E402
 import transcript  # noqa: E402
+import channel_trace  # noqa: E402
 
 OWNER = "Игорь Ветров"
 
@@ -1946,7 +1947,9 @@ def test_owner_speech_after_the_call_goes_to_its_own_file_not_the_transcript(mee
     text = out.read_text(encoding="utf-8")
     after = rt.after_call_path(out).read_text(encoding="utf-8")
     assert "реплика 22 с" in text and "реплика 9 с" not in text
-    assert rt.AFTER_CALL_CUT_PREFIX in text, "срез виден в самой стенограмме"
+    assert any(n.startswith(rt.AFTER_CALL_CUT_PREFIX) for n in transcript.notes_of(text)), \
+        "срез виден в самой стенограмме — заметкой"
+    assert rt.AFTER_CALL_CUT_PREFIX not in transcript.speech_of(text), "пометка — не речь"
     assert "реплика 9 с" in after and f"**{OWNER}**" in after
     assert after.startswith("# После звонка ") and "не часть встречи" in after
     assert "Собеседник" not in after
@@ -1971,9 +1974,24 @@ def test_notes_before_keeps_the_end_minute_and_crosses_midnight():
     import datetime as dt
     base = dt.datetime(2026, 8, 20, 23, 58, 30)
     block = "---\n## Ко-мышление\n> 23:59 📌 до конца\n> 00:00 💭 после\n> 00:01 💭 позже"
-    assert rt.notes_before(block, base, 60.0) == "---\n## Ко-мышление\n> 23:59 📌 до конца"
-    assert "00:00" in rt.notes_before(block, base, 100.0)
-    assert "00:01" not in rt.notes_before(block, base, 100.0)
+    assert rt.notes_before(block, base, 60.0) == ("---\n## Ко-мышление\n> 23:59 📌 до конца", 2)
+    kept, dropped = rt.notes_before(block, base, 100.0)
+    assert "00:00" in kept and "00:01" not in kept and dropped == 1
+
+
+def test_notes_before_drops_a_multiline_note_whole_and_keeps_trace_lines():
+    """M1/M2 out2: продолжение многострочной заметки уходит вместе с ней; строка
+    следа записи с отметкой времени — факт о записи, остаётся."""
+    import datetime as dt
+    base = dt.datetime(2026, 8, 20, 14, 30, 0)
+    block = ("---\n## Ко-мышление\n> 14:30 📌 смета\n> 14:35 💭 ужин\nи мусор вечером\n"
+             "> 14:36 📌 потом\n")
+    kept, dropped = rt.notes_before(block, base, 60.0)
+    assert "ужин" not in kept and "мусор" not in kept and "потом" not in kept
+    assert "смета" in kept and dropped == 2
+    line = "> 14:50 " + channel_trace.SUMMARY_MARK + " без пропусков"
+    kept, dropped = rt.notes_before("---\n## Ко-мышление\n" + line, base, 60.0)
+    assert line in kept and dropped == 0
 
 
 def test_owner_answer_and_after_call_speech_are_not_glued_into_one_paragraph(meeting, monkeypatch):

@@ -13,6 +13,7 @@ import pytest
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+import live_sidecar  # noqa: E402
 import llm as llm_mod  # noqa: E402
 import rebuild_transcript  # noqa: E402
 import transcript  # noqa: E402
@@ -452,20 +453,27 @@ def test_missing_minutes_are_built_when_transcript_is_long_enough(tmp_path, monk
         "короткая встреча минуток не заслуживает"
 
 
-_CUT = rebuild_transcript.AFTER_CALL_CUT_NOTE.format(end="10:40", last="10:52") + "\n\n"
+SAID = "**Инга** [10:21]:\nСмету пришлю.\n"
+
+
+def _cut(text: str) -> str:
+    """Финал так, как его пишет пересборка с вынесенным хвостом: пометка среза —
+    в хвосте «Ко-мышления» (`transcript.append_note`), не в речи."""
+    return transcript.append_note(
+        text, rebuild_transcript.AFTER_CALL_CUT_NOTE.format(end="10:40", last="10:52"))
 
 
 def test_short_final_with_after_call_record_regenerates_the_draft(tmp_path, monkeypatch):
     """№733: черновик демона собран по живой ленте, где запись после звонка ещё
-    внутри. Рядом есть файл записи после звонка — короткий финал всё равно идёт в
-    модель: перештамповка отдала бы быт после звонка в протокол."""
+    внутри. Хвост вынесен этой пересборкой — короткий финал всё равно идёт в
+    модель: перештамповка отдала бы быт после звонка в протокол. Пометка среза
+    в модель не идёт — она заметка, не речь (Critical Sonnet out2)."""
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
-    short = _CUT + "**Инга** [10:21]:\nСмету пришлю.\n"
-    owned = rebuild_transcript.finalize_minutes(live, short, meta, {}, {"Собеседник 2": "Инга"})
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
-    assert owned != "human" and _FakeLLM.calls == [short.rstrip("\n")]
+    assert owned != "human" and _FakeLLM.calls == [SAID.rstrip("\n")]
     assert "ужин" not in out and "- [ ] **Инга** — прислать смету" in out
 
 
@@ -473,29 +481,44 @@ def test_short_final_with_after_call_record_and_no_draft_builds_nothing(tmp_path
     """Порог создания с нуля не меняется: минуток не было — короткий финал их не создаёт."""
     live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
-    rebuild_transcript.finalize_minutes(live, "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {})
+    rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
     assert _FakeLLM.calls == [] and not mpath.exists()
 
 
 @pytest.mark.parametrize("answer, fail", [("", True), ("   ", False)])
-def test_model_refusal_with_after_call_record_never_restamps_the_live_draft(
+def test_model_refusal_with_after_call_record_moves_the_live_draft_away(
         tmp_path, monkeypatch, answer, fail):
     """№733, Critical Haiku выходного круга: при записи после звонка и отказе
-    модели (исключение или пустой ответ) черновик демона не перештамповывается —
-    в нём хвост живой ленты. Черновик уходит в .prev/, на месте — пометка;
-    исход машинный, источник не запоминается — следующая пересборка соберёт."""
+    модели (исключение или пустой ответ) черновик живой ленты не перештамповывается
+    — в нём хвост. Он уходит в .prev/, файла минуток нет: состояние MISSING, его
+    собирают следующая пересборка и ретро-обход (Critical DS out2: пометка на месте
+    файла запиралась бы чужим писателем)."""
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
     _FakeLLM.fail = fail
-    if answer.strip() or not fail:
+    if not fail:
         monkeypatch.setattr(_FakeLLM, "answer", answer)
-    owned = rebuild_transcript.finalize_minutes(
-        live, _CUT + "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {"Собеседник 2": "Инга"})
-    out = mpath.read_text(encoding="utf-8")
-    assert owned == "restamped"
-    assert "ужин" not in out and rebuild_transcript.MINUTES_AFTER_CALL_PENDING in out
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {"Собеседник 2": "Инга"})
+    assert owned == "human" and not mpath.exists()
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
+    assert live_sidecar.derivative_state(mpath, meta, "minutes", "0" * 64) == live_sidecar.MISSING
+    rebuild_transcript.record_minutes_passport(live, mpath, owned, _cut(SAID), {})
+    assert not mpath.exists(), "паспорт и канон не воскрешают файл"
+
+
+def test_model_refusal_keeps_minutes_already_built_from_a_final(tmp_path, monkeypatch):
+    """Critical Haiku out2: минутки, уже собранные из финала (`minutes_source_sha256`),
+    речи после звонка не видели — отказ модели оставляет их прежней перештамповкой."""
+    built = "# Минутки\n- [ ] **Инга** — прислать смету\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, built, _sha(built))
+    meta["minutes_source_sha256"] = "a" * 64
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    _FakeLLM.fail = True
+    long_final = _cut("**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n")
+    owned = rebuild_transcript.finalize_minutes(live, long_final, meta, {}, {})
+    assert owned == "restamped" and "прислать смету" in mpath.read_text(encoding="utf-8")
+    assert not (tmp_path / ".prev" / mpath.name).exists()
 
 
 def test_model_refusal_without_after_call_record_restamps_as_before(tmp_path, monkeypatch):
@@ -507,22 +530,19 @@ def test_model_refusal_without_after_call_record_restamps_as_before(tmp_path, mo
     owned = rebuild_transcript.finalize_minutes(live, long_final, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
     assert owned == "restamped" and "Инга" in out and "смета" in out
-    assert rebuild_transcript.MINUTES_AFTER_CALL_PENDING not in out
 
 
 def test_second_model_refusal_keeps_the_live_draft_in_prev(tmp_path, monkeypatch):
-    """Два отказа подряд: вторая пересборка видит пометку (файл машинный) и не
-    перекладывает её в .prev/ поверх черновика."""
+    """Два отказа подряд: минуток уже нет — второй проход .prev/ не трогает."""
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nужин и мусор\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
     _FakeLLM.fail = True
-    short = _CUT + "**Инга** [10:21]:\nСмету пришлю.\n"
-    assert rebuild_transcript.finalize_minutes(live, short, meta, {}, {}) == "restamped"
-    meta["minutes_sha256"] = _sha(mpath.read_text(encoding="utf-8"))
-    assert rebuild_transcript.finalize_minutes(live, short, meta, {}, {}) == "restamped"
+    long_final = _cut("**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n")
+    assert rebuild_transcript.finalize_minutes(live, long_final, meta, {}, {}) == "human"
+    assert rebuild_transcript.finalize_minutes(live, long_final, meta, {}, {}) == "human"
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
-    assert rebuild_transcript.MINUTES_AFTER_CALL_PENDING in mpath.read_text(encoding="utf-8")
+    assert not mpath.exists()
 
 
 def test_stale_after_call_file_without_a_cut_in_this_final_restamps_as_before(tmp_path, monkeypatch):
@@ -531,7 +551,16 @@ def test_stale_after_call_file_without_a_cut_in_this_final_restamps_as_before(tm
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
-    owned = rebuild_transcript.finalize_minutes(
-        live, "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {"Собеседник 2": "Инга"})
+    owned = rebuild_transcript.finalize_minutes(live, SAID, meta, {}, {"Собеседник 2": "Инга"})
     assert owned == "restamped" and _FakeLLM.calls == []
     assert "смета" in mpath.read_text(encoding="utf-8")
+
+
+def test_cut_note_spoken_in_the_body_does_not_count_as_a_cut(tmp_path, monkeypatch):
+    """Признак — заметка финала, а не подстрока: те же слова в речи хвостом не считаются."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    said = "**Инга** [10:21]:\nЗапись после конца звонка пришлю.\n"
+    assert rebuild_transcript.finalize_minutes(live, said, meta, {}, {}) == "restamped"
+    assert _FakeLLM.calls == []
