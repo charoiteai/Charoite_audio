@@ -243,26 +243,15 @@ actor SemanticIndex {
     /// открылся, терял запись и уходил на переэмбеддинг в общую Ollama, а
     /// запертая подпапка — целиком (№768). Одна запертая папка не выключает
     /// prune остального графа: забытая встреча рядом всё равно уходит.
-    /// Непрочитанный файл держит запись, только пока его mtime тот же: правленый
-    /// «Забыть встречу» и не открывшийся файл хранил бы старое превью без срока,
-    /// а пользы нет — в выдачу он не идёт, а открывшись, переэмбеддится
-    /// (финальный Opus I1).
     struct Alive {
         let seen: Set<String>
         let unscanned: [String]
-        let unread: [String: Double]
-        init(seen: Set<String>, unscanned: [String] = [], unread: [String: Double] = [:]) {
+        init(seen: Set<String>, unscanned: [String] = []) {
             self.seen = seen
             self.unscanned = unscanned
-            self.unread = unread
         }
         func contains(_ key: String) -> Bool {
             seen.contains(key) || unscanned.contains { key == $0 || key.hasPrefix($0 + "/") }
-        }
-        func keeps(_ key: String, mtime: Double) -> Bool {
-            guard contains(key) else { return false }
-            guard let now = unread[key], now != 0 else { return true }
-            return now == mtime
         }
     }
 
@@ -350,7 +339,7 @@ actor SemanticIndex {
         loadIfNeeded()
         prunedWalk = walk.seq
         prunedAlive = alive
-        let gone = index.filter { !alive.keeps($0.key, mtime: $0.value.mtime) }.map(\.key)
+        let gone = index.keys.filter { !alive.contains($0) }
         for path in gone { index.removeValue(forKey: path) }
         if !gone.isEmpty { dirty = true }
     }

@@ -461,7 +461,7 @@ enum ArchiveSearch {
             }
         var seenContent = Set<Int>()
         var liveKeys = Set<String>()
-        var unread: [String: Double] = [:]   // ключ → mtime: prune сверяет версию
+        var unread = 0
         for url in urls {
             let canon = url.resolvingSymlinksInPath().path
             let inside = canon.hasPrefix(graph.path + "/")
@@ -486,7 +486,7 @@ enum ArchiveSearch {
             // реплик перечитывал весь граф десять раз.
             guard let cached = await GraphCache.shared.text(at: url, key: rel,
                                                            mtime: mtime, normalize: norm)
-            else { unread[rel] = mtime; continue }
+            else { unread += 1; continue }
             // Хеш содержимого, а не пути: копия отличается именем и папкой.
             guard seenContent.insert(cached.text.hashValue).inserted else { continue }
             let relBytes = Array(norm(rel).utf8)
@@ -500,13 +500,13 @@ enum ArchiveSearch {
         // выгрузил, нет прав) — не читали, значит не проверено. Prune тут нет:
         // пустой обход индекс не трогает (out2 C1, `WalkErrors.alive`).
         guard !all.isEmpty else {
-            return Outcome(text: "", rels: [], verdict: unread.isEmpty ? .empty : .unverified)
+            return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty)
         }
         // Что живо для индекса — те же ключи, что для кэша текстов: файл, который
         // не открылся, на диске есть и записи не теряет; незаперечисленное
         // поддерево не прунится. После раннего выхода: журнал неполного обхода
         // пишет только поиск, который дойдёт до индекса (out3 Sonnet M3).
-        let indexWalk = SemanticIndex.Walk(seq: walk.seq, alive: walk.errors.alive(liveKeys, unread: unread))
+        let indexWalk = SemanticIndex.Walk(seq: walk.seq, alive: walk.errors.alive(liveKeys))
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
         }
@@ -574,7 +574,7 @@ enum ArchiveSearch {
         // по документам, не по rel: симлинки наружу с одним именем делят rel,
         // а индекс под ним держит текст одного (out4, DS C1)
         let withText = all.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
-        let proven = checked.map { covered(compared: $0.compared, withText: withText, unread: unread.count) } ?? false
+        let proven = checked.map { covered(compared: $0.compared, withText: withText, unread: unread) } ?? false
         let sem = checked?.hits ?? []
         let bestSim = sem.first?.score ?? 0
         var semHits: [Hit] = []

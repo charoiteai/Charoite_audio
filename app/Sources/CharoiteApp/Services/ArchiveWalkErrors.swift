@@ -42,16 +42,22 @@ extension ArchiveSearch {
         /// всё, том не смонтирован — prune стёр бы весь индекс (out2 C1).
         /// Цена: превью последней заметки опустевшего графа живёт до первой
         /// новой заметки.
-        func alive(_ keys: Set<String>, unread: [String: Double] = [:]) -> SemanticIndex.Alive? {
+        /// Имя пути для журнала — только верхняя папка: глубже и в имени файла
+        /// корня — названия встреч, а журнал «Забыть встречу» не чистит
+        /// (финальный Opus M2). Путь без «/» — файл или папка корня, не печатаем.
+        static func logName(_ rel: String) -> String {
+            guard !rel.isEmpty else { return "<корень>" }
+            return rel.contains("/") ? String(rel.prefix { $0 != "/" }) : "<верхний уровень>"
+        }
+
+        func alive(_ keys: Set<String>) -> SemanticIndex.Alive? {
             if !list.isEmpty {
-                // только верхняя папка: глубже — названия встреч, а журнал
-                // «Забыть встречу» не чистит (финальный Opus M2)
-                let shown = list.prefix(3).map { "\($0.rel.split(separator: "/").first.map(String.init) ?? "<корень>") (\($0.code))" }
+                let shown = list.prefix(3).map { "\(Self.logName($0.rel)) (\($0.code))" }
                 // путь из графа — аргументом, не в формат: папка «100%s» уронила бы NSLog
                 NSLog("%@", "поиск: обход графа неполный, ошибок \(list.count): " + shown.joined(separator: ", "))
             }
             if keys.isEmpty || list.contains(where: { $0.rel.isEmpty }) { return nil }
-            return SemanticIndex.Alive(seen: keys, unscanned: list.map(\.rel), unread: unread)
+            return SemanticIndex.Alive(seen: keys, unscanned: list.map(\.rel))
         }
     }
 }
