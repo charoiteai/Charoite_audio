@@ -1955,6 +1955,20 @@ def test_owner_speech_after_the_call_goes_to_its_own_file_not_the_transcript(mee
     assert "Собеседник" not in after
 
 
+def test_cut_note_names_the_end_of_the_last_after_call_span(meeting, monkeypatch):
+    """Пометка среза называет конец последнего вынесенного отрезка, а не начало
+    первого (Haiku out2 — одно условие с фильтром заметок, `tail.after`)."""
+    meeting["len"].update(mic=120, blackhole=120)
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3), (70.0, 100.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    notes = [n for n in transcript.notes_of(out.read_text(encoding="utf-8"))
+             if n.startswith(rt.AFTER_CALL_CUT_PREFIX)]
+    assert len(notes) == 1 and "–14:31)" in notes[0], notes
+    assert "реплика 30 с" in rt.after_call_path(out).read_text(encoding="utf-8")
+
+
 def test_live_notes_after_the_call_end_are_not_carried_into_the_transcript(meeting, monkeypatch):
     """I4 выходного круга №733: заметки «Ко-мышления» демон писал по живой ленте,
     где запись после звонка ещё внутри. Позже минуты конца звонка — не
