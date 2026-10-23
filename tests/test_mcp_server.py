@@ -996,3 +996,15 @@ def test_hints_stay_closed_when_the_after_call_file_is_deleted(tmp_path, monkeyp
     tdir = _transcripts(root, monkeypatch, text=final)
     (tdir / "2026-09-13_1200_hints.md").write_text("подсказка про ужин\n", encoding="utf-8")
     assert "ужин" not in mcp_server.sufler_hints()
+
+
+def test_hints_of_an_unreadable_final_name_the_real_reason(tmp_path, monkeypatch):
+    """Minor 2 DS проверки правок Opus: финал не прочитался — подсказки закрыты,
+    но причина названа своя, а не «запись после звонка»."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    tdir = _transcripts(root, monkeypatch, text="# Встреча\n")
+    (tdir / "2026-09-13_1200.md").write_bytes("# Встреча\nужин\n".encode("cp1251"))
+    (tdir / "2026-09-13_1200_hints.md").write_text("подсказка про ужин\n", encoding="utf-8")
+    out = mcp_server.sufler_hints()
+    assert "ужин" not in out and "не прочиталась" in out

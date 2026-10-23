@@ -995,11 +995,21 @@ def _keep_edited_after_call(live: pathlib.Path, path: pathlib.Path, text: str) -
     except OSError as exc:
         log(f"прежний {path.name} не прочитан ({exc}) — оставлен как есть")
         return False
-    recorded = live_sidecar.valid_sha((live_sidecar.read(live) or {}).get("after_call_sha256"))
-    if old == text.encode("utf-8") or hashlib.sha256(old).hexdigest() == recorded:
+    try:
+        recorded = live_sidecar.valid_sha((live_sidecar.read(live) or {}).get("after_call_sha256"))
+    except OSError:                    # сайдкар не читается — хеша нет (I2 DS проверки правок Opus)
+        recorded = None
+    digest = hashlib.sha256(old).hexdigest()
+    if old == text.encode("utf-8") or digest == recorded:
         return True
     try:
-        safe_write.write_bytes(live_sidecar.prev_path(live, path), old)
+        # Занятый слот с другими байтами не затирается: без хеша (легаси, сбой
+        # записи) машинный файл неотличим от правки, а в слоте может лежать
+        # единственная копия правки (I2 Sonnet = I2 Haiku проверки правок Opus)
+        slot = live_sidecar.prev_path(live, path)
+        if slot.exists() and slot.read_bytes() != old:
+            slot = slot.with_name(f"{slot.name}.{digest[:8]}")
+        safe_write.write_bytes(slot, old)
     except OSError as exc:
         log(f"прежний {path.name} не сохранён в .prev/ ({exc}) — оставлен как есть")
         return False
@@ -2178,7 +2188,10 @@ def _remember_sha(live: pathlib.Path, key: str, sha: str) -> bool:
     (`minutes_sha256`, `transcript_sha256`, `minutes_source_sha256`):
     совпадение с диском означает, что текста никто не касался. Нет
     сайдкара — создаётся; неоднозначен — не пишем (False)."""
-    ok = live_sidecar.remember(live, key, sha)
+    try:
+        ok = live_sidecar.remember(live, key, sha)
+    except OSError:                    # сбой ФС при выборе сайдкара — тот же отказ
+        ok = False
     if not ok:
         log(f"хеш {key} не записан: сайдкар неоднозначен или не пишется")
     return ok
@@ -2359,8 +2372,24 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # — «его по-прежнему нет»: mcp «Минутки» или редактор за время генерации
     # могли создать документ (GLM Critical по #483).
     if not safe_write.write_text(mpath, doc, expect=before, expect_absent=before is None):
-        log("минутки сменились под пересборкой — оставлены как есть")
-        return "human"
+        # Проигранная гонка — та же развилка, что у отказа модели: минутки MCP
+        # по ленте с записью после звонка — машинные байты, они уходят в .prev/
+        # под этот протокол, а не остаются (C1 DS = C2 Haiku проверки правок Opus)
+        taken = _machine_bytes_now(mpath, live, meta) if after_call else None
+        if taken is None:
+            log("минутки сменились под пересборкой — оставлены как есть")
+            return "human"
+        _, before, current = taken
+        try:
+            (live.parent / ".prev").mkdir(exist_ok=True)
+            safe_write.write_text(live.parent / ".prev" / mpath.name, current)
+        except OSError as exc:
+            log(f"минутки: прежняя версия не сохранена в .prev/ ({exc}) — оставлены как есть")
+            return "human"
+        if not safe_write.write_text(mpath, doc, expect=before):
+            log("минутки сменились под пересборкой — оставлены как есть")
+            return "human"
+        log("минутки: под пересборкой их записала машина не из среза — заменены")
     log(f"минутки пересобраны по финальной стенограмме: {mpath.name} "
         f"({len(final_text)} знаков → {len(doc)}, {time.monotonic() - t0:.0f}с"
         + (", прежняя версия → .prev/" if current is not None else "") + ")")
@@ -2375,6 +2404,22 @@ def _passport_now(live: pathlib.Path, meta) -> dict:
     except OSError:
         fresh = {}
     return {**(meta if isinstance(meta, dict) else {}), **fresh}
+
+
+def _machine_bytes_now(mpath: pathlib.Path, live: pathlib.Path, meta):
+    """Минутки на этот миг, если их записала машина: паспорт этого мига знает
+    байты (FRESH/STALE оракула производных) — `(паспорт, снимок, текст)`.
+    None — файла нет, он не читается или байтов паспорт не знает (правка
+    человека). Одна развилка для отказа модели и проигранной гонки записи."""
+    meta = _passport_now(live, meta)
+    now = safe_write.stat_snapshot(mpath)
+    if now is None or live_sidecar.derivative_state(mpath, meta, "minutes", "") not in (
+            live_sidecar.FRESH, live_sidecar.STALE):
+        return None
+    try:
+        return meta, now, mpath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pathlib.Path,
@@ -2404,13 +2449,13 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pa
     meta = _passport_now(live, meta)
     now = safe_write.stat_snapshot(mpath)
     if now is not None and now != before:
-        if live_sidecar.derivative_state(mpath, meta, "minutes", "") not in (live_sidecar.FRESH, live_sidecar.STALE):
+        taken = _machine_bytes_now(mpath, live, meta)
+        if taken is None:
             log("минутки сменились под пересборкой — оставлены как есть")
             return "human"
-        try:
-            before, current = now, mpath.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return "human"
+        meta, before, current = taken
+    if live_sidecar.valid_sha(meta.get("minutes_source_sha256")):
+        live_names = {}   # минутки с паспортом источника — не черновик живой ленты (I1 DS)
     if _built_from_a_cut_final(meta):
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if current is None or safe_write.stat_snapshot(mpath) != before:

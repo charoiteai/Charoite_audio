@@ -753,3 +753,52 @@ def test_unreadable_sidecar_does_not_break_the_minutes_decision(tmp_path, monkey
         raise OSError("iCloud")
     monkeypatch.setattr(live_sidecar, "sidecar_for", boom)
     assert rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {}) in ("regenerated", "human", "restamped")
+
+
+def test_mcp_minutes_written_while_the_model_succeeds_are_replaced(tmp_path, monkeypatch):
+    """C1 DS = C2 Haiku проверки правок Opus по №733: MCP «Минутки» записали
+    минутки по ленте с бытом за время удачного вызова модели — запись по
+    снимку проигрывает гонку, но машинные байты не остаются: в .prev/, на месте
+    протокол пересборки."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    def mcp_then_answer(self, text, recording_note=None):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин\n", "b" * 64, cut=False)
+        yield _FakeLLM.answer
+    monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_answer)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "regenerated"
+    assert "ужин" not in mpath.read_text(encoding="utf-8")
+    assert "ужин" in (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8")
+
+
+def test_hand_edit_while_the_model_succeeds_is_left_alone(tmp_path, monkeypatch):
+    """Та же гонка с правкой человека: байты, которых паспорт не знает, не трогаем."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    def edit_then_answer(self, text, recording_note=None):
+        mpath.write_text("# Мои минутки\n", encoding="utf-8")
+        yield _FakeLLM.answer
+    monkeypatch.setattr(_FakeLLM, "minutes", edit_then_answer)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == "# Мои минутки\n"
+
+
+def test_clean_mcp_minutes_written_while_the_model_fails_keep_their_names(tmp_path, monkeypatch):
+    """I1 DS проверки правок Opus: MCP записали чистые минутки (из финала со
+    срезом) за время вызова модели, модель отказала — перештамповка не ставит в
+    них метки живой сессии."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    source = meeting_source.of(live, _cut(FINAL))
+
+    def mcp_then_fail(self, text, recording_note=None):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n**Собеседник 2** — смета\n",
+                                      source.sha(), cut=True)
+        raise RuntimeError("ollama лежит")
+        yield ""
+    monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_fail)
+    rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, rebuild_transcript.minutes_names(meta))
+    assert "Инга" not in mpath.read_text(encoding="utf-8")
