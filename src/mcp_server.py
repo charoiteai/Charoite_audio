@@ -20,6 +20,7 @@ import sys
 import requests
 from charoite_graph import safe_write
 import action_items
+import channel_trace
 import transcript
 
 import graphs
@@ -450,13 +451,14 @@ def sufler_make_minutes() -> str:
         forget_fit(source.speech)
 
 
-def _cut_in(f: pathlib.Path) -> bool:
+def _cut_in(f: pathlib.Path) -> bool | None:
     """Строка среза в финале — признак, переживающий удаление файла хвоста
-    (I2 DS проверки правок Opus по №733); не прочиталось — считаем срезом."""
+    (I2 DS проверки правок Opus по №733); None — не прочиталось."""
     try:
-        return meeting_source.of(f, f.read_text(encoding="utf-8")).cut
+        text = f.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return True
+        return None
+    return any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(text))
 
 
 @_tool
@@ -469,10 +471,14 @@ def sufler_hints() -> str:
     # Подсказки встречи с записью после звонка демон писал и по быту: выход в
     # чат — тот же выход из машины, правило то же, что у архива (M3 Opus по №733)
     after = f.with_name(f.stem + meeting_stamp.AFTER_CALL_SUFFIX + ".md")
-    if h.exists() and (not meeting_stamp.publishable([h, after] if after.exists() else [h])
-                       or _cut_in(f)):
+    if not h.exists():
+        return "Подсказок пока нет."
+    cut = _cut_in(f)
+    if cut is None:
+        return "Стенограмма не прочиталась — подсказки не выдаются: не проверить запись после конца звонка."
+    if cut or not meeting_stamp.publishable([h, after] if after.exists() else [h]):
         return "Подсказки встречи с записью после конца звонка не выдаются: демон писал их и по ней."
-    return _срез(h.read_text(encoding="utf-8"), slice(-4000, None)) if h.exists() else "Подсказок пока нет."
+    return _срез(h.read_text(encoding="utf-8"), slice(-4000, None))
 
 
 @_tool

@@ -6,6 +6,7 @@
 `resolve_channel_segments` / `merge_dwarfs` / `paragraphs` его не меняет, и
 следующий движок подключается поставщиком сырых сегментов, а не правкой блока.
 """
+import hashlib
 import os
 import pathlib
 import sys
@@ -2179,3 +2180,23 @@ def test_later_pass_keeps_the_edited_after_call_file_in_prev(meeting, monkeypatc
     monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: f"иначе {len(chunk) // sr} с")
     rt.rebuild(meeting["live"], CFG)
     assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
+
+
+def test_after_call_copy_without_a_hash_does_not_overwrite_the_kept_edit(meeting, monkeypatch):
+    """I2 Sonnet = I2 Haiku проверки правок Opus по №733: хеш файла хвоста не
+    записан (сбой сайдкара, легаси) — машинный файл неотличим от правки и
+    копируется, но занятый слот с правкой не затирает: копия — под своим именем."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    path = rt.after_call_path(out)
+    path.write_text(path.read_text(encoding="utf-8").replace("реплика 9 с", "реплика 9 с, правка"), encoding="utf-8")
+    rt.rebuild(meeting["live"], CFG)
+    machine = path.read_bytes()
+    live_sidecar.remember(out, "after_call_sha256", "")
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: f"иначе {len(chunk) // sr} с")
+    rt.rebuild(meeting["live"], CFG)
+    kept = live_sidecar.prev_path(out, path)
+    assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
+    assert kept.with_name(f"{kept.name}.{hashlib.sha256(machine).hexdigest()[:8]}").read_bytes() == machine
