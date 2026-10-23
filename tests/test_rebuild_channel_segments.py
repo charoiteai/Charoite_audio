@@ -22,6 +22,7 @@ import rebuild_transcript as rt  # noqa: E402
 import speech_gate  # noqa: E402
 import transcript  # noqa: E402
 import channel_trace  # noqa: E402
+import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 
 OWNER = "Игорь Ветров"
@@ -2157,3 +2158,18 @@ def test_unreadable_after_call_file_does_not_break_the_final(tmp_path):
     rt.write_after_call(live, "new", "14:31", [], lambda t: t, ["> 14:33 💭 мусор"])
     text = path.read_text(encoding="utf-8")
     assert "(14:31)" in text and "> 14:33 💭 мусор" in text
+
+
+def test_later_pass_keeps_the_edited_after_call_file_in_prev(meeting, monkeypatch):
+    """M2 Opus по №733: второй проход с непустым STT хвоста перезаписывает файл
+    `_после_звонка`, но прежний (с правкой человека) — в `.prev/`, как у финала."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    path = rt.after_call_path(out)
+    path.write_text(path.read_text(encoding="utf-8").replace("реплика 9 с", "реплика 9 с, правка"), encoding="utf-8")
+    rt.rebuild(meeting["live"], CFG)
+    kept = live_sidecar.prev_path(out, path)
+    assert "правка" not in path.read_text(encoding="utf-8")
+    assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
