@@ -42,6 +42,7 @@ import graphs
 import graph_links
 from charoite_graph import redirects
 from charoite_schema import CHAROITE
+from charoite_graph.text_norm import fold
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
 import name_fixes
@@ -1577,6 +1578,15 @@ def _read_node(p: pathlib.Path, meeting_link: str = "") -> str | None:
         return None
 
 
+def _node_target(graph: pathlib.Path, path: pathlib.Path, folders: tuple[str, ...]) -> bool:
+    """Цель заглушки — узел: путь не выходит из графа (`[[X/../../Y]]`), папка — из
+    `folders` в форме `fold` схемы (NFD с диска, регистр ссылки), имя не служебное
+    (n777-final-fix2: DS I1, Haiku C2, Sonnet M1)."""
+    parts = os.path.normpath(os.path.relpath(path, graph)).split(os.sep)
+    return (".." not in parts and len(parts) >= 2 and not CHAROITE.is_service_name(parts[-1])
+            and fold(parts[-2]) in {fold(f) for f in folders})
+
+
 def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
                  folders: tuple[str, ...] | None = None) -> pathlib.Path | None:
     """Живой узел за цепочкой заглушек-редиректов или None, если цепочка
@@ -1591,8 +1601,8 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
     start = p
     while p is not None and p not in visited:
         visited.add(p)
-        if p != start and p.parent.name not in allowed:   # до чтения: и нечитаемый
-            return None                                    # канон вне папок — обрыв (n777-final-fix DS I3)
+        if p != start and not _node_target(graph, p, allowed):   # до чтения: и нечитаемый
+            return None                          # канон вне папок — обрыв (n777-final-fix DS I3)
         try:
             text = p.read_text(encoding="utf-8")
         except (OSError, ValueError):
@@ -1933,12 +1943,13 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         target = redirects.stub_target(text)
         leaf = pathlib.PurePosixPath(target).name if target else ""
         alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
+        # цель вне папок узлов (Досье, служебное, выше графа) — не узел: туда не пишем,
+        # не создаём и не читаем (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)
+        if alt is not None and not _node_target(graph, alt, NODE_FOLDERS):
+            alt = None
         # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
         alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
-        # цель вне папок узлов (Досье, служебное) — не узел: туда не пишем и не создаём
-        # (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)
-        if (alt is None or alt == p or alt.parent.name not in NODE_FOLDERS
-                or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text)))):
+        if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
             targets = redirects.stub_info(text).targets
             if len(targets) > 1:    # развилка «→ см. [[A]] · [[B]]» — в кандидаты (n777-in1, DS C2)
                 _journal_held_entity(graph, folder, name, typ, "ambiguous",

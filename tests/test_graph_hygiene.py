@@ -267,6 +267,9 @@ _STUB_FORMS = [
     ("# CRM-выгрузка\n\nСведено в [[Системы/DWH]] ежедневно\n", False, ()),
     ("# CRM-выгрузка\n\n➡️ Сведено в [[Системы/DWH]] ежедневно\n", False, ()),
     ("# CRM-выгрузка\n\n⚠️ Смерджен в [[Системы/DWH]] вчера\n", False, ()),
+    ("# CRM-выгрузка\n\n➡️ **Сведено в [[Системы/DWH]]** ежедневно\n", False, ()),
+    ("# Шлюз\n\n⛔ **Сведён в [[Системы/A]] · [[Системы/B]]** ревизией\n", True, ("Системы/A.md", "Системы/B.md")),
+    ("# Отчёт\n\n➡️ **Сведено в [[Ядра/Отчётность]]** (ревизия уровня 4)\n", True, ("Ядра/Отчётность.md",)),
     ("# Отчёт\n\nДубль. Сведён в [[Ядра/Отчётность]]\n", False, ()),
     ("# Отчёт\n\n⛔ **Дубль сведён редиректом на [[Ядра/Отчётность]]**\n", True, ("Ядра/Отчётность.md",)),
     ("# Отчёт\n\n⚠️ **Дубль слит** в [[Ядра/Отчётность]]\n", True, ("Ядра/Отчётность.md",)),
@@ -2351,6 +2354,18 @@ def test_stub_alias_does_not_lead_to_a_canon_outside_entity_folders(tmp_path):
     (graph / "Системы" / "Склад.md").write_text("# Склад → [[Досье/Склад]]\n", encoding="utf-8")
     g.upsert_entity(graph, "Системы", "Склад", "система", "", "Встречи/2026-10-23_1000", "")
     assert not (graph / "Досье" / "Склад.md").exists()
+    # цель выше графа с папкой узлов в конце пути — не узел (n777-final-fix2 Haiku C2)
+    out = tmp_path / "out" / "Люди"
+    out.mkdir(parents=True)
+    (out / "Икс.md").write_text("# Икс\n\nживой\n", encoding="utf-8")
+    (graph / "Системы" / "Игрек.md").write_text("# Игрек → [[Системы/../../out/Люди/Икс]]\n", encoding="utf-8")
+    g.upsert_entity(graph, "Системы", "Игрек", "система", "", "Встречи/2026-10-23_1000", "")
+    assert "2026-10-23_1000" not in (out / "Икс.md").read_text(encoding="utf-8")
+    assert g.follow_stubs(graph, graph / "Системы" / "Игрек.md") is None
+    # регистр папки в ссылке — тот же узел (n777-final-fix2 DS I1)
+    (graph / "Системы" / "Канон.md").write_text("# Канон\n\nживой\n", encoding="utf-8")
+    (graph / "Системы" / "Старый.md").write_text("# Старый → [[системы/Канон]]\n", encoding="utf-8")
+    assert g._node_target(graph, graph / "системы" / "Канон.md", g.NODE_FOLDERS)
     # нечитаемый канон вне папок — тоже обрыв, до чтения (n777-final-fix DS I3)
     (graph / "Люди" / "Иван.md").write_bytes(b"\xff\xfe")
     assert g.follow_stubs(graph, graph / "Системы" / "Старая витрина.md", ("Системы",)) is None

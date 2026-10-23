@@ -807,7 +807,7 @@ graph root; the doctor keeps no list of extensions, and an absolute path,
 not counted as duplicates. Every layer recognises a stub with one detector,
 `src/charoite_graph/redirects.py`, by the structure of the first heading
 (`# Name → [[Canon]]`, also `→ см. [[Canon]]` and forks to several
-canons), a leading marked line («➡️ merged into [[Canon]]») or the `дубль-слит` tag,
+canons), a leading marked line («➡️ **merged into [[Canon]]**») or the `дубль-слит` tag,
 rather than by tier3's literal mark: the cloud and manual revisions mark
 merges in their own words. A stub that grew past 4000 characters is still a
 stub when a second sign backs the heading. The meeting writer never writes
