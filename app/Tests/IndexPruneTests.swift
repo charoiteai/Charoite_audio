@@ -3,8 +3,8 @@ import XCTest
 
 extension SemanticIndex {
     /// Снимок обхода для тестов: номер — как у поиска, `alive: nil` — без prune.
-    func testWalk(_ alive: Set<String>? = nil) -> Walk {
-        Walk(seq: beginWalk(), alive: alive)
+    func testWalk(_ alive: Set<String>? = nil, unscanned: [String] = []) -> Walk {
+        Walk(seq: beginWalk(), alive: alive.map { Alive(seen: $0, unscanned: unscanned) })
     }
 }
 
@@ -87,10 +87,15 @@ final class IndexPruneTests: XCTestCase {
         XCTAssertEqual(goneChunks, 0, "удалённый файл остался в индексе")
     }
 
-    func testLockedSubfolderKeepsItsRecords() async throws {
+    /// Запертая подпапка держит свои записи, но не выключает prune остального
+    /// графа: встреча, забытая рядом, уходит (out1 Sonnet I1 = Haiku I1).
+    func testLockedSubfolderKeepsItsRecordsAndPruneGoesOnElsewhere() async throws {
+        try XCTSkipIf(geteuid() == 0, "под root chmod 000 не запирает папку")
         let open = "Люди/открытый-768.md", hidden = "Закрытая-768/внутри-768.md"
+        let forgotten = "Встречи/забытая-768.md"
         let graph = try makeTestGraph([(open, "обсудили бюджет проекта"),
-                                       (hidden, "бюджет закрытого проекта")])
+                                       (hidden, "бюджет закрытого проекта"),
+                                       (forgotten, "бюджет забытого проекта")])
         let locked = graph.appendingPathComponent("Закрытая-768")
         defer {
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
@@ -104,15 +109,82 @@ final class IndexPruneTests: XCTestCase {
         XCTAssertGreaterThan(before, 0, "файл подпапки не попал в индекс — тест проверял бы пустоту")
 
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        try FileManager.default.removeItem(at: graph.appendingPathComponent(forgotten))
         await search(graph, index)
         await index.drainForTests()
         let after = await index.chunkCount(of: hidden)
+        let gone = await index.chunkCount(of: forgotten)
         XCTAssertGreaterThan(after, 0, "подпапка без доступа выпала из обхода, и prune стёр её файлы")
+        XCTAssertEqual(gone, 0, "одна запертая папка выключила prune всего графа")
+    }
+
+    /// Последнюю читаемую заметку забыли — поиск уходит ранним выходом
+    /// «пусто», а prune всё равно доходит до индекса (out1 Sonnet I2 = Haiku I2).
+    func testEmptyGraphStillPrunes() async throws {
+        let only = "Встречи/единственная-768.md"
+        let graph = try makeTestGraph([(only, "обсудили бюджет проекта")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+        let index = makeTestIndex { texts in texts.map { _ in [1, 0] } }
+        await search(graph, index)
+        await index.drainForTests()
+        let before = await index.chunkCount(of: only)
+        XCTAssertGreaterThan(before, 0, "заметка не попала в индекс — тест проверял бы пустоту")
+
+        try FileManager.default.removeItem(at: graph.appendingPathComponent(only))
+        await search(graph, index)
+        await index.drainForTests()
+        let after = await index.chunkCount(of: only)
+        XCTAssertEqual(after, 0, "ранний выход поиска пропустил prune")
+    }
+
+    /// Неудачная запись файла индекса не теряет удаление: флаг расхождения
+    /// снимает только удачная запись, и следующая задача повторит её (out1 DS I1).
+    func testFailedPersistIsRetried() async throws {
+        try XCTSkipIf(geteuid() == 0, "под root запрет записи в каталог не действует")
+        let gone = "Встречи/забытая-768.md", kept = "Люди/узел-768.md"
+        let graph = try makeTestGraph([(gone, "обсудили бюджет проекта"), (kept, "узел про бюджет")])
+        let storeDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-index-dir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: storeDir.path)
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: graph)
+        }
+        let store = storeDir.appendingPathComponent("index.bin")
+        let index = makeTestIndex(store: store) { texts in texts.map { _ in [1, 0] } }
+        await search(graph, index)
+        await index.drainForTests()
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: storeDir.path)
+        try FileManager.default.removeItem(at: graph.appendingPathComponent(gone))
+        await search(graph, index)
+        await index.drainForTests()
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: storeDir.path)
+        await search(graph, index)          // изменений в графе нет — пишет только флаг
+        await index.drainForTests()
+
+        await index.close()
+        let reread = makeTestIndex(store: store, loadStore: true) { texts in texts.map { _ in [1, 0] } }
+        let onDisk = await reread.chunkCount(of: gone)
+        let keptOnDisk = await reread.chunkCount(of: kept)
+        XCTAssertGreaterThan(keptOnDisk, 0, "файл индекса не записан вовсе — тест проверял бы пустоту")
+        XCTAssertEqual(onDisk, 0, "удаление, не дошедшее до файла, больше не повторилось")
+    }
+
+    func testUnscannedSubtreeProtectsOnlyItsOwnKeys() {
+        let alive = SemanticIndex.Alive(seen: ["Люди/a.md"], unscanned: ["Закрытая"])
+        XCTAssertTrue(alive.contains("Люди/a.md"))
+        XCTAssertTrue(alive.contains("Закрытая/x.md"))
+        XCTAssertTrue(alive.contains("Закрытая/глубже/y.md"))
+        XCTAssertFalse(alive.contains("Закрытая-2/x.md"), "соседняя папка с общим префиксом имени")
+        XCTAssertFalse(alive.contains("Встречи/m.md"))
     }
 
     /// Ошибка перечисления — путь от корня графа (не путь машины, и через
     /// симлинк /var → /private/var тоже); запертая скрытая папка не в счёт.
     func testWalkErrorsNameRelPathAndSkipHiddenFolders() throws {
+        try XCTSkipIf(geteuid() == 0, "под root chmod 000 не запирает папку")
         let graph = try makeTestGraph([("Закрытая-768/внутри.md", "x"), (".obsidian/вид.json", "{}")])
         let locked = ["Закрытая-768", ".obsidian"].map { graph.appendingPathComponent($0) }
         defer {
@@ -129,7 +201,9 @@ final class IndexPruneTests: XCTestCase {
             at: graph, includingPropertiesForKeys: nil, options: [], errorHandler: errors.record))
         while walker.nextObject() != nil {}
         XCTAssertEqual(errors.list.map(\.rel), ["Закрытая-768"])
-        XCTAssertNil(errors.alive(["Люди/a.md"]), "неполный обход отдал ключи для prune")
+        let alive = try XCTUnwrap(errors.alive(["Люди/a.md"]))
+        XCTAssertTrue(alive.contains("Закрытая-768/внутри.md"), "незаперечисленное поддерево не защищено")
+        XCTAssertFalse(alive.contains("Встречи/b.md"))
     }
 
     func testForgottenMeetingLeavesIndexWhileIndexingRuns() async throws {
@@ -194,7 +268,7 @@ final class IndexPruneTests: XCTestCase {
     func testOlderWalkDoesNotPruneAfterNewer() async throws {
         let index = makeTestIndex { texts in texts.map { _ in [1, 0] } }
         await index.refresh(files: [(path: "B.md", mtime: 1, text: "# B\n\nновый узел")])
-        let older = await index.testWalk([])          // обход начался до появления B
+        let older = await index.testWalk([])          // снимок с меньшим номером пришёл позже
         let newer = await index.testWalk(["B.md"])
         await index.refreshInBackground(files: [], walk: newer)
         await index.drainForTests()

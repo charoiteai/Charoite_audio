@@ -434,10 +434,7 @@ enum ArchiveSearch {
         //
         // Скрытое по НАМЕРЕНИЮ (.obsidian, .trash, .git) отсекаем по имени —
         // это надёжнее флага, который ставит не пользователь.
-        let walk = await semanticIndex.beginWalk()
-        let errors = WalkErrors(graph: graph)
-        guard let walker = FileManager.default.enumerator(
-            at: graph, includingPropertiesForKeys: keys, options: [], errorHandler: errors.record)
+        guard let walk = await beginGraphWalk(graph, keys: keys, index: semanticIndex)
         else { return Outcome(text: "", rels: [], verdict: .unavailable) }
         // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
         // «Документация/Стенограммы встреч», побайтовая копия — в
@@ -450,7 +447,7 @@ enum ArchiveSearch {
         //
         // Оригинал выигрывает: сортируем так, чтобы архивные копии шли
         // последними, и первый увиденный текст остаётся единственным.
-        let urls = walker.compactMap { $0 as? URL }
+        let urls = walk.walker.compactMap { $0 as? URL }
             .filter { $0.pathExtension == "md" }
             .filter { url in
                 // Точка в начале любого компонента пути = служебное:
@@ -500,11 +497,16 @@ enum ArchiveSearch {
         // Переименованные и удалённые файлы не должны занимать память вечно.
         await GraphCache.shared.retain(keys: liveKeys)
         // Что живо для индекса — те же ключи, что для кэша текстов: файл, который
-        // не открылся, на диске есть и записи не теряет. Неполный обход не прунит.
-        let indexWalk = SemanticIndex.Walk(seq: walk, alive: errors.alive(liveKeys))
+        // не открылся, на диске есть и записи не теряет; незаперечисленное
+        // поддерево не прунится.
+        let indexWalk = SemanticIndex.Walk(seq: walk.seq, alive: walk.errors.alive(liveKeys))
         // папка без заметок — пусто; заметки есть, но не открылись (iCloud
-        // выгрузил, нет прав) — не читали, значит не проверено
-        guard !all.isEmpty else { return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty) }
+        // выгрузил, нет прав) — не читали, значит не проверено. Prune — и тут:
+        // забыли последнюю читаемую встречу, а превью жило бы (out1).
+        guard !all.isEmpty else {
+            await semanticIndex.refreshInBackground(files: [], walk: indexWalk)
+            return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty)
+        }
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
         }

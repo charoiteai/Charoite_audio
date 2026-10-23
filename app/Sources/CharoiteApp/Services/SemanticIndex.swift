@@ -54,7 +54,7 @@ actor SemanticIndex {
     /// обхода не записывает файл, которого в нём уже нет (удалили, пока она
     /// ждала эмбеддер).
     private var prunedWalk: UInt64 = 0
-    private var prunedAlive: Set<String> = []
+    private var prunedAlive = Alive(seen: [])
     /// Индекс в памяти расходится с файлом. Пишет его только задача-писатель:
     /// prune при занятой ячейке удаляет в памяти и не ставит запись десятков
     /// мегабайт на путь ответа поиска.
@@ -236,14 +236,30 @@ actor SemanticIndex {
         await similar(to: query, within: paths, limit: 1).first?.score ?? 0
     }
 
-    /// Что живо в графе по одному обходу поиска. `alive` — ключи, которые обход
-    /// увидел: прочитанные, непрочитанные (iCloud выгрузил, нет прав, не UTF-8)
-    /// и дубли; nil — обход неполный (подпапку не перечислить), prune нет.
-    /// Прунить «по списку прочитанного» нельзя: файл на диске, который не
-    /// открылся, терял запись и уходил на переэмбеддинг в общую Ollama (№768).
+    /// Что живо в графе по одному обходу поиска: ключи, которые обход увидел
+    /// (прочитанные, непрочитанные — iCloud выгрузил, нет прав, не UTF-8 — и
+    /// дубли), и поддеревья, которые перечислить не удалось: под ними жив любой
+    /// ключ. Прунить «по списку прочитанного» нельзя: файл на диске, который не
+    /// открылся, терял запись и уходил на переэмбеддинг в общую Ollama, а
+    /// запертая подпапка — целиком (№768). Одна запертая папка не выключает
+    /// prune остального графа: забытая встреча рядом всё равно уходит.
+    struct Alive {
+        let seen: Set<String>
+        let unscanned: [String]
+        init(seen: Set<String>, unscanned: [String] = []) {
+            self.seen = seen
+            self.unscanned = unscanned
+        }
+        func contains(_ key: String) -> Bool {
+            seen.contains(key) || unscanned.contains { key == $0 || key.hasPrefix($0 + "/") }
+        }
+    }
+
+    /// `alive: nil` — о графе ничего не известно (корень не перечислен,
+    /// частичный снимок теста): prune нет.
     struct Walk {
         let seq: UInt64
-        let alive: Set<String>?
+        let alive: Alive?
     }
 
     /// Номер обхода — до перечисления каталога.
@@ -273,7 +289,7 @@ actor SemanticIndex {
     func refresh(files: [(path: String, mtime: Double, text: String)],
                  alive: Set<String>? = nil) async -> Bool {
         while let running = inFlight { await running.value }
-        guard let task = start(files: files, walk: Walk(seq: beginWalk(), alive: alive),
+        guard let task = start(files: files, walk: Walk(seq: beginWalk(), alive: alive.map { Alive(seen: $0) }),
                                priority: Task.currentPriority) else { return false }
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
         return true
@@ -337,10 +353,9 @@ actor SemanticIndex {
         await build(files: files, walk: walk)
         // Закрытый экземпляр и отменённая задача не пишут: иначе хвост persist
         // воссоздал бы удалённую копию индекса с превью встреч.
-        if dirty, mayWrite {
-            persist()
-            dirty = false
-        }
+        // Флаг снимает только удачная запись: иначе удаление, не дошедшее до
+        // файла, больше никто не повторил бы (out1 DS I1).
+        if dirty, mayWrite { dirty = !persist() }
     }
 
     private func build(files: [(path: String, mtime: Double, text: String)], walk: Walk) async {
@@ -370,7 +385,6 @@ actor SemanticIndex {
             Array(queue[$0..<min($0 + Self.batchSize, queue.count)])
         }
 
-        var started = Set<String>()
         for batch in batches {
             guard let embs = await embedTexts(batch.map(\.chunk.embeddingText)),
                   embs.count == batch.count else { break }   // Ollama лежит/нет модели
@@ -378,7 +392,6 @@ actor SemanticIndex {
             // воссоздала бы удалённый файл
             guard mayWrite else { return }
             for (item, emb) in zip(batch, embs) {
-                started.insert(item.path)
                 built[item.path, default: (item.mtime, [])].chunks.append(
                     ChunkVec(crumb: item.chunk.breadcrumb,
                              preview: String(item.chunk.text.prefix(Self.previewChars)),
@@ -411,9 +424,14 @@ actor SemanticIndex {
         index = Self.decode(data) ?? [:]
     }
 
-    private func persist() {
+    private func persist() -> Bool {
         let data = Self.encode(index)
-        try? data.write(to: storeURL, options: .atomic)
+        do {
+            try data.write(to: storeURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static let magic: [UInt8] = Array("CHV2".utf8)
