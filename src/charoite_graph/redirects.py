@@ -164,14 +164,17 @@ def stub_target(text: str) -> str | None:
     узнавалась бы, а цель — нет, и запись уходила бы в саму заглушку (n777-in1 C1).
     Развилка («# X → [[A]] · [[B]]») — None и в узкой форме: иначе первая ссылка
     молча становилась каноном, и встреча уходила в A мимо кандидатов (n777-out1,
-    Haiku C1 / DS I3 / Sonnet I1)."""
-    if len(stub_info(text).targets) > 1:
+    Haiku C1 / DS I3 / Sonnet I1). Узкая цель, которой нет среди целей разбора
+    («# X → [[A]] → [[B]]»: разбор видит B), — тоже развилка (n777-out3 Haiku I-1)."""
+    info = stub_info(text)
+    if len(info.targets) > 1:
         return None
     first = stub_body(text).split("\n", 1)[0]
     m = STUB_TARGET_RE.search(first)
     if m:
-        return _md(m.group(1))
-    return stub_info(text).target
+        t = _md(m.group(1))
+        return t if not info.targets or t in info.targets else None
+    return info.target
 
 
 def is_redirect_stub(text: str) -> bool:

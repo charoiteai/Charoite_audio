@@ -289,6 +289,15 @@ def test_every_historical_stub_form_is_recognised_and_live_nodes_are_not(text, m
         assert redirects.stub_target(text) == (targets[0] if len(targets) == 1 else None)
 
 
+def test_two_arrow_heading_has_no_single_target():
+    """«# X → [[A]] → [[B]]»: узкая регулярка видит A, разбор — B; цели нет, а не A
+    (n777-out3 Haiku I-1)."""
+    from charoite_graph import redirects
+    text = "# X → [[Ядра/A]] → [[Ядра/B]]\n"
+    assert redirects.stub_target(text) is None
+    assert redirects.stub_target("# X → [[Ядра/A]]\n") == "Ядра/A.md"
+
+
 def test_redirect_stub_stays_narrow_for_cloud_writes():
     """Ворота записи облака не расширяются: «→ см.» узнаётся, но облако так не пишет."""
     from charoite_graph import redirects
