@@ -505,3 +505,18 @@ def test_model_refusal_without_after_call_record_restamps_as_before(tmp_path, mo
     out = mpath.read_text(encoding="utf-8")
     assert owned == "restamped" and "Инга" in out and "смета" in out
     assert rebuild_transcript.MINUTES_AFTER_CALL_PENDING not in out
+
+
+def test_second_model_refusal_keeps_the_live_draft_in_prev(tmp_path, monkeypatch):
+    """Два отказа подряд: вторая пересборка видит пометку (файл машинный) и не
+    перекладывает её в .prev/ поверх черновика."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    _FakeLLM.fail = True
+    short = "**Инга** [10:21]:\nСмету пришлю.\n"
+    assert rebuild_transcript.finalize_minutes(live, short, meta, {}, {}) == "restamped"
+    meta["minutes_sha256"] = _sha(mpath.read_text(encoding="utf-8"))
+    assert rebuild_transcript.finalize_minutes(live, short, meta, {}, {}) == "restamped"
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
+    assert rebuild_transcript.MINUTES_AFTER_CALL_PENDING in mpath.read_text(encoding="utf-8")

@@ -2236,6 +2236,11 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None,
         if current is not None:
             log("минутки сменились под пересборкой — оставлены как есть")
         return "human"
+    if MINUTES_AFTER_CALL_PENDING in current:
+        # второй отказ подряд: на месте уже пометка, а черновик — в .prev/;
+        # переложить пометку в .prev/ — потерять черновик
+        log("минутки: пометка «не собраны» уже на месте — черновик остаётся в .prev/")
+        return "restamped"
     prev_dir = live.parent / ".prev"
     prev_dir.mkdir(exist_ok=True)
     safe_write.write_text(prev_dir / mpath.name, current)
