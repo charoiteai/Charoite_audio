@@ -1979,18 +1979,37 @@ def test_live_notes_after_the_call_end_are_not_carried_into_the_transcript(meeti
         "живая стенограмма\n\n---\n## Ко-мышление\n> 14:30 📌 смета к пятнице\n"
         "> 14:31 💭 ужин и мусор\n> канал собеседников: без пропусков\n", encoding="utf-8")
     monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
-    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
     assert "смета к пятнице" in text and "без пропусков" in text
     assert "ужин" not in text
+    after = rt.after_call_path(out).read_text(encoding="utf-8")
+    assert "## Ко-мышление после звонка\n> 14:31 💭 ужин и мусор" in after, "снятое не теряется"
+
+
+def test_notes_cut_with_no_recognised_after_call_speech_still_leaves_a_trace(meeting, monkeypatch):
+    """Haiku out2: STT после звонка пуст — заметки всё равно срезаны по `tail.after`;
+    срез не тихий: пометка в стенограмме, снятое — в файле `_после_звонка`."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["live"].write_text(
+        "живая стенограмма\n\n---\n## Ко-мышление\n> 14:31 💭 ужин и мусор\n", encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: "" if len(chunk) // sr == 9 else "реплика")
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert "ужин" not in text
+    assert any(n.startswith(rt.AFTER_CALL_CUT_PREFIX) for n in transcript.notes_of(text))
+    assert "ужин и мусор" in rt.after_call_path(out).read_text(encoding="utf-8")
 
 
 def test_notes_before_keeps_the_end_minute_and_crosses_midnight():
     import datetime as dt
     base = dt.datetime(2026, 8, 20, 23, 58, 30)
     block = "---\n## Ко-мышление\n> 23:59 📌 до конца\n> 00:00 💭 после\n> 00:01 💭 позже"
-    assert rt.notes_before(block, base, 60.0) == ("---\n## Ко-мышление\n> 23:59 📌 до конца", 2)
+    assert rt.notes_before(block, base, 60.0) == (
+        "---\n## Ко-мышление\n> 23:59 📌 до конца", ["> 00:00 💭 после", "> 00:01 💭 позже"])
     kept, dropped = rt.notes_before(block, base, 100.0)
-    assert "00:00" in kept and "00:01" not in kept and dropped == 1
+    assert "00:00" in kept and dropped == ["> 00:01 💭 позже"]
 
 
 def test_notes_before_drops_a_multiline_note_whole_and_keeps_trace_lines():
@@ -2002,10 +2021,10 @@ def test_notes_before_drops_a_multiline_note_whole_and_keeps_trace_lines():
              "> 14:36 📌 потом\n")
     kept, dropped = rt.notes_before(block, base, 60.0)
     assert "ужин" not in kept and "мусор" not in kept and "потом" not in kept
-    assert "смета" in kept and dropped == 2
+    assert "смета" in kept and dropped == ["> 14:35 💭 ужин", "и мусор вечером", "> 14:36 📌 потом"]
     line = "> 14:50 " + channel_trace.SUMMARY_MARK + " без пропусков"
     kept, dropped = rt.notes_before("---\n## Ко-мышление\n" + line, base, 60.0)
-    assert line in kept and dropped == 0
+    assert line in kept and dropped == []
 
 
 def test_owner_answer_and_after_call_speech_are_not_glued_into_one_paragraph(meeting, monkeypatch):
