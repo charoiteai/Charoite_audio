@@ -39,11 +39,13 @@ _HEAD_RE = re.compile(
     rf"# .+?{_DECOR}{_ARROW}{_DECOR}(?:см\.?\s*)?(?P<links>{_LINK}(?:\s*(?:·|,|и)\s*{_LINK})*){_DECOR}"
     rf"|# .+?\s—{_DECOR}дубль,?\s*см\.?\s*(?P<links2>{_LINK})")
 _HEAD_ARROW_RE = re.compile(rf"^# .*(?:{_ARROW}|\bдубль\b)", re.I)
-# Заголовок, который сам говорит «указатель»: «см.» или «дубль» рядом со строгой
-# стрелкой. Живое ядро так не называют, и выросшая заглушка с таким заголовком
-# мертва при любой длине (n777-out1: DS C2 / Sonnet I2, «# X ⛔ дубль → [[L]]» —
-# 10 713 знаков без тега).
-_STRONG_HEAD_RE = re.compile(r"(?i)(?<!\w)(?:см\.|дубль(?!\w))")
+# Заголовок, который сам говорит «указатель»: «дубль» ВПЛОТНУЮ перед стрелкой или
+# «см.» сразу после неё — только декор между ними. Выросшая заглушка с таким
+# заголовком мертва при любой длине (n777-out1: DS C2 / Sonnet I2, «# X ⛔ дубль →
+# [[L]]» — 10 713 знаков без тега). Слово в названии темы («# Дубль платежей → …»,
+# «# Дубль-контроль → …») или в цели ссылки («→ [[Ядра/Дубль]]») — не признак
+# (n777-out2: DS C1 / Sonnet I1); форма «— дубль, см. [[L]]» — группа links2.
+_STRONG_HEAD_RE = re.compile(rf"(?i)(?<!\w)дубль{_DECOR}{_ARROW}|{_ARROW}{_DECOR}см\.")
 # Ведущая строка-пометка: с НАЧАЛА строки (после декора) — ровно те формы, что
 # писали ревизии (замер n777-out1 по 14 графам): «Дубль.», «Дубль,», «Дубль слит /
 # сведён», «Дубль-человек… Смерджен в [[L]]», «Дубль [[L]],», и «Сведён(о) в / редиректом на /
@@ -52,7 +54,8 @@ _STRONG_HEAD_RE = re.compile(r"(?i)(?<!\w)(?:см\.|дубль(?!\w))")
 # между глаголом и ссылкой, и он остаётся живым (DS C1 / Sonnet I5).
 _LEAD_DECOR = r"(?:[>\s*_]|⛔|➡️|➡|⚠️|⚠|🔴|🔀)*"
 _LEAD_RE = re.compile(
-    rf"^{_LEAD_DECOR}(?:Дубль(?:[.,]|\s+(?:слит|свед[её]н)\b|\s+{_LINK},"
+    rf"^{_LEAD_DECOR}(?:Дубль(?:[.,]|\s+(?:слит|свед[её]н)\b"
+    rf"|\s+{_LINK},\s*(?:свед[её]н|смерджен|перенес[её]н)\b(?!\s+сюда)"
     rf"|-\w+[^\[]*?(?:Смерджен|Свед[её]н[оа]?)\s+в\s+(?:\*\*)?\[\[)"
     rf"|(?:Свед[её]н[оа]?\s+(?:в|редиректом\s+на)|Смерджен\s+в)\s+(?:\*\*)?\[\[)")
 # Слово слияния в первых строках — подтверждение тега, не признак сам по себе.
@@ -133,7 +136,9 @@ def stub_info(text: str) -> StubInfo:
     tagged = _tagged(text)
     head_targets = _targets(m.group("links") or m.group("links2")) if m else ()
     lead_targets = _targets(lead) if lead else ()
-    if m and (short or tagged or lead is not None or _STRONG_HEAD_RE.search(head)):
+    strong = m is not None and (m.group("links2") is not None
+                                or _STRONG_HEAD_RE.search(head.split("[[", 1)[0]) is not None)
+    if m and (short or tagged or lead is not None or strong):
         return StubInfo(True, head_targets)
     if lead is not None and lead_targets and (short or tagged):
         return StubInfo(True, lead_targets)

@@ -2581,59 +2581,77 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     stamp_line = (f"- [[{meeting_link}]] — {upd}{anchor}" if upd
                   else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
-        snap = safe_write.stat_snapshot(p)     # до чтения: запись — только в прочитанное
-        text = _read_node(p, meeting_link)
-        if text is None:
+        # Чтение → проверка «не заглушка ли» → статус и хроника → запись под
+        # снимком, две попытки — через общий rewrite_file, как у сущностей и
+        # автопсевдонима: слияние, случившееся между чтением и записью (ночной
+        # tier3, облако), не затирается живым текстом с хроникой, а касание файла
+        # без смены байтов (iCloud) не съедает встречу (n777-out1/out2: DS I4,
+        # Sonnet I2). Проверка заглушки — внутри преобразования, на каждой попытке.
+        stub: list[str] = []
+
+        def transform(text: str) -> tuple[str, int]:
+            stub.clear()
+            if redirects.is_merged(text):
+                stub.append(text)
+                return text, 0
+            # Вытесненный статус не исчезает, а уходит в хронику с датой, с
+            # которой он держался: у факта появляются «с» и «по» (Graphiti/Zep,
+            # №127). Ретрай той же встречи с тем же статусом строку не дублирует;
+            # ретрай с другим статусом — уточнение, и оно дописывается к строке
+            # ЭТОЙ встречи (DS/GLM, круг-1 #451), а не теряется молча.
+            before = text
+            old_status, since = _current_status(text)
+            changed = bool(status and old_status
+                           and _flat(old_status).casefold() != _flat(status).casefold())
+            seen_link = has_link(text, meeting_link)
+            superseded = (f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
+                          if changed and not seen_link else "")
+            if status:  # свежий статус вытесняет прежний
+                # Замена через lambda, а не строкой: status приходит от модели, и
+                # re.sub разбирает в подстановке обратные слэши. Путь вида
+                # «миграция C:\1С\base готова» давал PatternError: invalid group
+                # reference — исключение убивало весь пост-процессинг встречи.
+                repl = f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n"
+                text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
+                              lambda _: repl, text, count=1, flags=re.S)
+            if not seen_link:
+                text = _insert_chronicle_line(text, stamp_line + superseded)
+            elif changed:
+                text, found = _annotate_chronicle(
+                    text, meeting_link, f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
+                if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
+                    line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
+                    text = _insert_chronicle_line(text, line)
+            return text, int(text != before)
+
+        try:
+            safe_write.rewrite_file(p, transform, "ядро встречи")
+        except (OSError, ValueError) as e:      # UnicodeDecodeError — ValueError; как _read_node
+            _journal_graph_event("узел не прочитан", f"Ядра/{p.stem}: {e}", meeting_link)
+            _SKIPPED_NODES.append(f"Ядра/{p.stem}")
+            print(f"граф: узел Ядра/{p.stem} не прочитан ({e}) — пропущен", file=sys.stderr, flush=True)
             return
-        if redirects.is_merged(text):
+        except safe_write.LostRace as e:
+            _journal_graph_event("ядро изменилось под рукой", f"Ядра/{p.stem}: {e}", meeting_link)
+            _SKIPPED_NODES.append(f"Ядра/{p.stem}")
+            print(f"граф: ядро «{p.stem}» менялось во время разбора ({e}), встреча {meeting_link} не дописана",
+                  file=sys.stderr, flush=True)
+            return
+        if stub:
             # resolve_core_path отдаёт заглушку, когда живого канона нет: цели нет
             # или их несколько, канон в другой папке, канон пропал. Писать в неё
             # нельзя — так выросли заглушки до 20 тыс. знаков (n777-in1 C1).
             # Человеку — строкой в `_Кандидаты.md`, не только машинным журналом:
             # развилка «→ см. [[A]] · [[B]]» — как ядро на несколько тем, одна цель
             # вне Ядер или пропавшая — «заглушка без канона» (n777-out1 Sonnet I3 / DS M6).
-            info = redirects.stub_info(text)
+            info = redirects.stub_info(stub[0])
             cands = [t.removesuffix(".md") for t in info.targets]
-            if not cands and (t := redirects.stub_target(text)):
+            if not cands and (t := redirects.stub_target(stub[0])):
                 cands = [t.removesuffix(".md")]
             _journal_held_entity(graph, "Ядра", core["имя"], "ядро",
                                  "ambiguous" if len(cands) > 1 else "stub", cands, meeting_link)
             _journal_graph_event("заглушка без канона", f"Ядра/{p.stem}", meeting_link)
             print(f"граф: ядро «{p.stem}» — заглушка без живого канона в Ядрах, встреча {meeting_link} не дописана")
-            return
-        # Вытесненный статус не исчезает, а уходит в хронику с датой, с
-        # которой он держался: у факта появляются «с» и «по» (Graphiti/Zep,
-        # №127). Ретрай той же встречи с тем же статусом строку не дублирует;
-        # ретрай с другим статусом — уточнение, и оно дописывается к строке
-        # ЭТОЙ встречи (DS/GLM, круг-1 #451), а не теряется молча.
-        old_status, since = _current_status(text)
-        changed = bool(status and old_status
-                       and _flat(old_status).casefold() != _flat(status).casefold())
-        seen_link = has_link(text, meeting_link)
-        superseded = (f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
-                      if changed and not seen_link else "")
-        if status:  # свежий статус вытесняет прежний
-            # Замена через lambda, а не строкой: status приходит от модели, и
-            # re.sub разбирает в подстановке обратные слэши. Путь вида
-            # «миграция C:\1С\base готова» давал PatternError: invalid group
-            # reference — исключение убивало весь пост-процессинг встречи.
-            repl = f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n"
-            text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
-                          lambda _: repl, text, count=1, flags=re.S)
-        if not seen_link:
-            text = _insert_chronicle_line(text, stamp_line + superseded)
-        elif changed:
-            text, found = _annotate_chronicle(
-                text, meeting_link, f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
-            if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
-                line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
-                text = _insert_chronicle_line(text, line)
-        # под снимком: слияние, случившееся между чтением и записью (ночной tier3,
-        # облако), иначе затёрлось бы живым текстом с хроникой (n777-out1 DS I4 /
-        # Sonnet I4) — как у сущностей в _stamp_entity
-        if not safe_write.write_text(p, text, expect=snap):
-            _journal_graph_event("ядро изменилось под рукой", f"Ядра/{p.stem}", meeting_link)
-            print(f"граф: ядро «{p.stem}» изменилось во время разбора, встреча {meeting_link} не дописана")
             return
     else:
         safe_write.write_text(

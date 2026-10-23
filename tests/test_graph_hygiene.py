@@ -244,6 +244,13 @@ _STUB_FORMS = [
     ("# Шлюз\n\nДубль «Старый» [[Системы/Старый шлюз]] сведён сюда\n", False, ()),
     ("# Релиз\n\nСмерджен в основную ветку 12.10\n", False, ()),
     ("# Шлюз\n\nДубль-проверка [[Системы/Сверка]] по пятницам\n", False, ()),
+    ("# Шлюз\n\nДубль [[Ядра/Старый шлюз]], сведён сюда\n", False, ()),
+    # слово в названии темы или в цели ссылки — не «указатель» (n777-out2 DS C1 / Sonnet I1)
+    ("# Отчёт → [[Ядра/Дубль]]\n" + _BIG, False, ()),
+    ("# Дубль платежей → [[Системы/Шлюз]]\n" + _BIG, False, ()),
+    ("# Дубль-контроль → [[Системы/Сверка]]\n" + _BIG, False, ()),
+    ("# Отчёт → см. [[Ядра/Отчётность]]\n" + _BIG, True, ("Ядра/Отчётность.md",)),
+    ("# Отчёт — ⛔ дубль, см. [[Ядра/Отчётность]]\n" + _BIG, True, ("Ядра/Отчётность.md",)),
     ("# Шлюз\n\nДубль узла: при повторной обработке [[Встречи/2026-08-06_2241]]\n", False, ()),
     # строгая стрелка с телом больше STUB_MAX — живой узел, пока нет второго признака
     ("# Отчёт → [[Ядра/Отчётность]]\n" + _BIG, False, ()),
@@ -335,22 +342,64 @@ def test_core_stub_of_any_form_takes_no_meeting_and_a_fork_goes_to_candidates(tm
 
 def test_core_that_became_a_stub_between_read_and_write_is_not_revived(tmp_path, monkeypatch):
     """Слияние посреди разбора (ночной tier3) не затирается живым текстом с
-    хроникой: запись ядра идёт под снимком (n777-out1 DS I4 / Sonnet I4)."""
+    хроникой, а касание файла без смены байтов встречу не съедает: запись ядра
+    идёт через rewrite_file — снимок, две попытки, проверка заглушки на каждой
+    (n777-out1 DS I4 / Sonnet I4, n777-out2 DS I3–I4 / Sonnet I2)."""
+    import os
     graph = tmp_path / "g"
     (graph / "Ядра").mkdir(parents=True)
     core = graph / "Ядра" / "Тема.md"
-    core.write_text("# Тема\n\n## Статус\nидёт\n\n## Хроника\n", encoding="utf-8")
+    live = "# Тема\n\n## Статус\nидёт\n\n## Хроника\n"
+    core.write_text(live, encoding="utf-8")
     stub = "# Тема → [[Ядра/Канон]]\n\nДубль. Смерджен\n"
-    real_read = g._read_node
+    real_insert = g._insert_chronicle_line
+    calls = []
 
-    def read_then_merge(p, link=""):
-        text = real_read(p, link)
-        p.write_text(stub, encoding="utf-8")       # слияние в окне между чтением и записью
-        return text
-    monkeypatch.setattr(g, "_read_node", read_then_merge)
+    def merge_midway(text, line):
+        calls.append(line)
+        if len(calls) == 1:
+            core.write_text(stub, encoding="utf-8")      # слияние в окне между чтением и записью
+        return real_insert(text, line)
+    monkeypatch.setattr(g, "_insert_chronicle_line", merge_midway)
     g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
                   "Встречи/2026-09-16_1200", "2026-09-16 12:00")
     assert core.read_text(encoding="utf-8") == stub
+    assert len(calls) == 1, "вторая попытка увидела заглушку и не писала"
+    # касание без смены байтов: первая попытка проигрывает, вторая пишет
+    core.write_text(live, encoding="utf-8")
+    calls.clear()
+
+    def touch_midway(text, line):
+        calls.append(line)
+        if len(calls) == 1:
+            st = core.stat()
+            os.utime(core, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        return real_insert(text, line)
+    monkeypatch.setattr(g, "_insert_chronicle_line", touch_midway)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1300", "2026-09-16 13:00")
+    assert "2026-09-16_1300" in core.read_text(encoding="utf-8") and len(calls) == 2
+
+
+def test_core_without_a_stat_snapshot_is_not_written_freely(tmp_path, monkeypatch):
+    """Снимок не снялся — отказ, не свободная запись (n777-out2 DS I3)."""
+    from charoite_graph import safe_write
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    core = graph / "Ядра" / "Тема.md"
+    core.write_text("# Тема\n\n## Статус\nидёт\n", encoding="utf-8")
+    real_snap = safe_write._snapshot_or_raise
+
+    def snap_fails_for_core(path, what):
+        if path == core:
+            raise safe_write.LostRace(path, what, kind=safe_write.LostRace.UNREACHABLE, detail="нет доступа")
+        return real_snap(path, what)
+    monkeypatch.setattr(safe_write, "_snapshot_or_raise", snap_fails_for_core)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert "новый" not in core.read_text(encoding="utf-8")
+    log = "".join(f.read_text(encoding="utf-8") for f in tmp_path.rglob("graph_unlinked.log"))
+    assert "ядро изменилось под рукой: Ядра/Тема" in log
 
 def test_links_in_relations_only_point_at_existing_nodes(tmp_path):
     """«## Связи»: [[он]] и обрывки слов больше не становятся ссылками
