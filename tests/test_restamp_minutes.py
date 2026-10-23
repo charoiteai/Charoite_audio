@@ -14,6 +14,7 @@ SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 import live_sidecar  # noqa: E402
+import meeting_source  # noqa: E402
 import llm as llm_mod  # noqa: E402
 import rebuild_transcript  # noqa: E402
 import transcript  # noqa: E402
@@ -274,7 +275,7 @@ def test_rebuild_records_hash_after_canonization_only_for_machine_text():
     # ретро-прогона (№309): канон раньше хеша, хеш — только для машинного файла
     passport = src[src.index("def record_minutes_passport("):src.index("def finalize_minutes(")]
     i_can = passport.index("canonize_file(mpath, cfg)")
-    i_sha = passport.index("minutes_sha = _sha(mpath.read_text(")
+    i_sha = passport.index("minutes = mpath.read_text(")
     assert i_can < i_sha, "порядок: canonize → хеш по байтам с диска"
     assert 'if outcome == "human":\n        return' in passport[i_can:i_sha], "хеш — только для машинного файла"
     body = src[src.index("def finalize_minutes("):src.index("def restamp_minutes(")]
@@ -662,3 +663,26 @@ def test_regeneration_with_an_unwritable_prev_keeps_the_minutes_and_does_not_rai
     (tmp_path / ".prev").write_text("не каталог", encoding="utf-8")
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
     assert owned == "human" and mpath.read_text(encoding="utf-8") == draft
+
+
+def test_cut_is_a_property_of_the_source_not_of_its_hash(tmp_path, monkeypatch):
+    """Признак среза — поле `MeetingSource` (I2 Sonnet out5): в хеш источника не
+    входит, читают его и пересборка, и MCP «Минутки»."""
+    live, _, _ = _prep(tmp_path, monkeypatch, None, None)
+    plain = "**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n"
+    cut, whole = meeting_source.of(live, _cut(plain)), meeting_source.of(live, plain)
+    assert cut.cut and not whole.cut and cut.sha() == whole.sha()
+
+
+def test_any_minutes_writer_records_the_cut_proof(tmp_path, monkeypatch):
+    """I2 Sonnet = M1 Haiku out5: общий писатель производных (MCP «Минутки») пишет
+    ключ среза тем же паспортом; без среза — пустым, старое доказательство гаснет."""
+    live, mpath, _ = _prep(tmp_path, monkeypatch, None, None)
+    src = "a" * 64
+    live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n", src, cut=True)
+    meta = live_sidecar.read(live)
+    assert meta["minutes_cut_source_sha256"] == meta["minutes_source_sha256"] == src
+    live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки 2\n", src, cut=False)
+    assert not rebuild_transcript._built_from_a_cut_final(live_sidecar.read(live))
+    mcp = (SRC / "mcp_server.py").read_text(encoding="utf-8")
+    assert "cut=source.cut)" in mcp[mcp.index('"minutes", out, source.sha()'):], "MCP передаёт признак среза"

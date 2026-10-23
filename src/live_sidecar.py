@@ -118,13 +118,18 @@ def derivative_state(path: pathlib.Path, meta: dict | None, kind: str, source_sh
 
 
 def attest(live: pathlib.Path, kind: str, file_text: str, source_sha: str,
-           bare: str | None = None) -> bool:
+           bare: str | None = None, *, cut: bool | None = None) -> bool:
     """Выдать производной паспорт после МАШИННОЙ записи: байты и речь источника.
     Оба хеша — одним `merge`: читатель или сбой записи не должен увидеть
     байты новой производной с источником старой. Нет сайдкара — создаст;
-    неоднозначный — False."""
-    return merge(live, {f"{kind}_sha256": sha(file_text),
-                        f"{kind}_source_sha256": source_sha}, bare)
+    неоднозначный — False. `cut` (минутки, №733) — источник со срезом записи
+    после звонка: ключ `<kind>_cut_source_sha256` пишется тем же `merge` всегда,
+    пустым без среза — старая пара «срез == источник» не переживает запись из
+    финала без среза (I1 Sonnet = I1 Haiku out5)."""
+    updates = {f"{kind}_sha256": sha(file_text), f"{kind}_source_sha256": source_sha}
+    if cut is not None:
+        updates[f"{kind}_cut_source_sha256"] = source_sha if cut else ""
+    return merge(live, updates, bare)
 
 
 def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
@@ -179,7 +184,7 @@ class WriteOutcome(typing.NamedTuple):
 
 def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
                      source_sha: str, *, expect: tuple[int, int] | None = None,
-                     expect_absent: bool = False,
+                     expect_absent: bool = False, cut: bool | None = None,
                      log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
     """Записать производную и выдать ей паспорт — единственный машинный
     писатель производных с паспортом. Прежняя версия — в `.prev/` рядом со
@@ -220,7 +225,7 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
     if not live.is_file():
         log(f"паспорт {kind} не записан: стенограммы {live.name} нет — сайдкар был бы сиротой")
         return WriteOutcome(UNKNOWN)
-    if not attest(live, kind, body, source_sha):
+    if not attest(live, kind, body, source_sha, cut=cut):
         log(f"паспорт {kind} не записан — следующая пересборка сочтёт файл чужим")
     return WriteOutcome(derivative_state(path, read(live), kind, source_sha))
 

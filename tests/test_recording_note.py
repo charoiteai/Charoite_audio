@@ -336,7 +336,8 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     assert "LLM(cfg).minutes(speech, recording_note=source.recording_note)" in fin
     assert "meeting_source.finish_minutes(\n        doc, source, owner=user_name" in fin
     passport = rt[rt.index("def record_minutes_passport("):rt.index("\ndef ", rt.index("def record_minutes_passport(") + 1)]
-    assert "meeting_source.of(live, final_text).sha()" in passport, "паспорт — тем же объектом, что fresh-проверка"
+    assert "source = meeting_source.of(live, final_text)" in passport, "паспорт — тем же объектом, что fresh-проверка"
+    assert "source.sha(), cut=source.cut)" in passport
 
 
 def test_a_titled_meeting_reads_the_same_sidecar_on_every_path(tmp_path, monkeypatch):

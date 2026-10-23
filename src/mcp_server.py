@@ -431,7 +431,8 @@ def sufler_make_minutes() -> str:
         # Общий писатель хранит прежнюю версию, проверяет правку за время модели
         # и выдаёт паспорт той же записью, что остальные производные встречи.
         wrote = live_sidecar.write_derivative(f, mpath, "minutes", out, source.sha(),
-                                              expect=before, expect_absent=before is None)
+                                              expect=before, expect_absent=before is None,
+                                              cut=source.cut)
         if not wrote.written:
             return f"{wrote.refusal_words} — минутки НЕ тронуты ({mpath.name})"
         # Паспорт производной (№309): машинные минутки без него читались пересборкой
