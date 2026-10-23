@@ -2630,7 +2630,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             # наверх, а не прячется под «не прочитан» — как _write_entity (n777-out3 DS I1)
             _journal_graph_event("узел не прочитан", f"Ядра/{p.stem}: {e}", meeting_link)
             _SKIPPED_NODES.append(f"Ядра/{p.stem}")
-            print(f"граф: узел Ядра/{p.stem} не прочитан ({e}) — пропущен", file=sys.stderr, flush=True)
+            print(f"граф: узел Ядра/{p.stem} не прочитан ({e}) — пропущен", file=sys.stderr)
             return
         except safe_write.LostRace as e:
             # причина — значением (n777-out3 DS I2): ядро пропало — один проход
@@ -2641,8 +2641,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             event = "ядро недоступно" if e.unreachable else "ядро изменилось под рукой"
             _journal_graph_event(event, f"Ядра/{p.stem}: {e}", meeting_link)
             _SKIPPED_NODES.append(f"Ядра/{p.stem}")
-            print(f"граф: {event}: «{p.stem}» ({e}), встреча {meeting_link} не дописана",
-                  file=sys.stderr, flush=True)
+            print(f"граф: {event}: «{p.stem}» ({e}), встреча {meeting_link} не дописана", file=sys.stderr)
             return
         if stub:
             # resolve_core_path отдаёт заглушку, когда живого канона нет: цели нет

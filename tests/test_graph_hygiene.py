@@ -289,6 +289,45 @@ def test_every_historical_stub_form_is_recognised_and_live_nodes_are_not(text, m
         assert redirects.stub_target(text) == (targets[0] if len(targets) == 1 else None)
 
 
+def test_stub_parse_edges():
+    """Границы разбора заглушки (мутанты n777 CI)."""
+    from charoite_graph import redirects
+    tag = "---\ntags: [дубль-слит]\n---\n"
+    # пустое тело — живой, не None
+    assert redirects.stub_info("") == redirects.StubInfo(False, ())
+    # ссылка с разделом и подписью — цель без них
+    assert redirects.stub_info("# X → [[Ядра/A#Раздел|подпись]]\n").targets == ("Ядра/A.md",)
+    # ведущая строка в файле без заголовка
+    assert redirects.stub_info("Дубль. Сведён в [[Ядра/L]]\n") == redirects.StubInfo(True, ("Ядра/L.md",))
+    # сам заголовок не считается строкой «под» ним
+    assert not redirects.stub_info(tag + "# Сведение счетов\n\nтекст\n").merged
+    # ровно STUB_MAX — ещё указатель
+    edge = "# X → [[Ядра/L]]\n" + "я" * (redirects.STUB_MAX - len("# X → [[Ядра/L]]\n"))
+    assert len(redirects.stub_body(edge)) == redirects.STUB_MAX
+    assert redirects.stub_info(edge).merged and redirects.is_redirect_stub(edge) and redirects.is_pointer(edge)
+    # маркер «→ см.» в тексте ссылки не делает длинный заголовок сильным
+    assert not redirects.stub_info("# Отчёт → [[Ядра/Обзор → см. итог]]\n" + "я\n" * 3000).merged
+    # пометка tier3 в длинном узле — цель из заголовка
+    marked = "# Отчёт → [[Ядра/L]]\n" + "я\n" * 3000 + "Дубль. Смерджен\n"
+    assert redirects.stub_info(marked) == redirects.StubInfo(True, ("Ядра/L.md",))
+    # тег со стрелкой не прямо на ссылку — цель из заголовка
+    loose = tag + "# Тема → про [[Ядра/L]]\n\nтекст\n"
+    assert redirects.stub_info(loose) == redirects.StubInfo(True, ("Ядра/L.md",))
+
+
+def test_entity_stub_with_one_dead_target_is_not_a_fork(tmp_path):
+    """Заглушка сущности с одной целью, которая сама мертва, — не развилка: в
+    `_Кандидаты.md` строки «на несколько тем» нет (мутанты n777 CI)."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Люди" / "Иван.md").write_text("# Иван → [[Люди/Пётр]]\n", encoding="utf-8")
+    (graph / "Люди" / "Пётр.md").write_text("# Пётр → [[Люди/Нет]]\n", encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Иван", "person", "", "Встречи/2026-08-01_1000", "",
+                    node=graph / "Люди" / "Иван.md")
+    assert not (graph / "_Кандидаты.md").exists()
+    assert (graph / "Люди" / "Иван.md").read_text(encoding="utf-8") == "# Иван → [[Люди/Пётр]]\n"
+
+
 def test_two_arrow_heading_has_no_single_target():
     """«# X → [[A]] → [[B]]»: узкая регулярка видит A, разбор — B; цели нет, а не A
     (n777-out3 Haiku I-1)."""
@@ -453,6 +492,102 @@ def test_core_transform_error_is_not_reported_as_unreadable(tmp_path, monkeypatc
     with pytest.raises(ValueError, match="сломанное"):
         g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
                       "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+
+
+def _core_graph(tmp_path, text="# Тема\n\n## Статус\nидёт\n"):
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    core = graph / "Ядра" / "Тема.md"
+    core.write_text(text, encoding="utf-8")
+    return graph, core
+
+
+def _unlinked_log(tmp_path):
+    return "".join(f.read_text(encoding="utf-8") for f in tmp_path.rglob("graph_unlinked.log"))
+
+
+def test_core_race_without_gone_is_not_retried(tmp_path, monkeypatch):
+    """Гонка «файл сменился» — событие и отказ без второго прохода; повтор — только
+    для пропавшего ядра (мутанты n777 CI: `and` → `or`)."""
+    from charoite_graph import safe_write
+    graph, core = _core_graph(tmp_path)
+    calls = []
+
+    def changed(path, transform, what):
+        calls.append(path)
+        raise safe_write.LostRace(path, what, kind=safe_write.LostRace.CHANGED)
+    monkeypatch.setattr(safe_write, "rewrite_file", changed)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert len(calls) == 1
+    assert "ядро изменилось под рукой: Ядра/Тема" in _unlinked_log(tmp_path)
+
+
+def test_core_that_stays_gone_is_retried_once(tmp_path, monkeypatch):
+    """Ядро «пропало», а файл виден снова — второй проход один, без рекурсии."""
+    from charoite_graph import safe_write
+    graph, core = _core_graph(tmp_path)
+    calls = []
+
+    def gone(path, transform, what):
+        calls.append(path)
+        raise safe_write.LostRace(path, what, kind=safe_write.LostRace.GONE)
+    monkeypatch.setattr(safe_write, "rewrite_file", gone)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert len(calls) == 2
+
+
+def test_core_creation_refused_twice_is_reported_once(tmp_path, monkeypatch):
+    """Создание дважды упёрлось в «файл уже есть», а файла не видно — один повтор и
+    событие, без рекурсии."""
+    from charoite_graph import safe_write
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    real_write = safe_write.write_text
+    calls = []
+
+    def refuse(path, text, **kw):
+        if kw.get("expect_absent"):
+            calls.append(path)
+            return False
+        return real_write(path, text, **kw)
+    monkeypatch.setattr(safe_write, "write_text", refuse)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert len(calls) == 2
+    assert "ядро изменилось под рукой: Ядра/Тема: создание" in _unlinked_log(tmp_path)
+
+
+def test_core_status_replaces_only_the_first_status_section(tmp_path):
+    graph, core = _core_graph(tmp_path, "# Тема\n\n## Статус\nидёт\n\n## Заметки\n\n## Статус\nвторой\n")
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    text = core.read_text(encoding="utf-8")
+    assert "новый" in text and "## Статус\nвторой" in text
+
+
+def test_core_status_change_leaves_a_trace_when_the_link_is_outside_the_chronicle(tmp_path):
+    """Ссылка встречи есть, но не строкой списка (человек перенёс в текст) — вытеснение статуса
+    всё равно оставляет строку."""
+    graph, core = _core_graph(tmp_path, "# Тема\n\n## Статус\nстарый\n\n## Заметки\nОбсуждали на "
+                                         "[[Встречи/2026-09-16_1200]] вскользь.\n\n## Хроника\n- [[Встречи/2026-09-01_1000]]\n")
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert "вытеснило статус: «старый»" in core.read_text(encoding="utf-8")
+
+
+def test_core_stub_with_only_a_narrow_target_lists_it_as_candidate(tmp_path):
+    """Заглушка «Дубль. Смерджен» с узкой стрелкой, которую строгий разбор не берёт
+    (хвост после ссылки), — цель всё равно попадает в кандидаты."""
+    graph, core = _core_graph(tmp_path, "# Тема → [[Системы/Сверка]] (старое)\n\nДубль. Смерджен\n")
+    (graph / "Системы").mkdir()
+    (graph / "Системы" / "Сверка.md").write_text("# Сверка\n", encoding="utf-8")
+    before = core.read_text(encoding="utf-8")
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert core.read_text(encoding="utf-8") == before
+    assert "[[Системы/Сверка]]" in (graph / "_Кандидаты.md").read_text(encoding="utf-8")
 
 
 def test_core_that_appeared_during_parsing_is_not_overwritten(tmp_path, monkeypatch):
