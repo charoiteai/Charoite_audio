@@ -686,3 +686,15 @@ def test_any_minutes_writer_records_the_cut_proof(tmp_path, monkeypatch):
     assert not rebuild_transcript._built_from_a_cut_final(live_sidecar.read(live))
     mcp = (SRC / "mcp_server.py").read_text(encoding="utf-8")
     assert "cut=source.cut)" in mcp[mcp.index('"minutes", out, source.sha()'):], "MCP передаёт признак среза"
+
+
+def test_minutes_written_by_mcp_during_rebuild_are_judged_by_a_fresh_passport(tmp_path, monkeypatch):
+    """I2 Opus: MCP «Минутки» записали минутки с бытом, пока шли STT и диаризация, —
+    пересборка судит их по паспорту на момент решения, а не по снимку начала: при
+    отказе модели и срезе они не перештамповываются и не остаются на месте."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин и мусор\n", "b" * 64, cut=False)
+    _FakeLLM.fail = True
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and not mpath.exists() and (tmp_path / ".prev" / mpath.name).exists()

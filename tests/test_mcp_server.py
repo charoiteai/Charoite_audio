@@ -970,3 +970,16 @@ def test_write_refusal_drops_the_digests_of_that_meeting(tmp_path, monkeypatch):
     assert (llm._fit_speech_id(speech), "ollama") not in llm._fit_cache, \
         "отказ записи после ответа модели — сводки этой встречи из памяти ушли"
     assert (llm._fit_speech_id("чужая встреча"), "ollama") in llm._fit_cache, "чужие не тронуты"
+
+
+def test_hints_of_a_meeting_with_after_call_record_are_not_given(tmp_path, monkeypatch):
+    """M3 Opus по №733: подсказки встречи с записью после звонка (демон писал их и
+    по быту) в чат не выдаются — правило `meeting_stamp.publishable`, как у архива."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    tdir = _transcripts(root, monkeypatch)
+    (tdir / "2026-09-13_1200_hints.md").write_text("подсказка про ужин и мусор\n", encoding="utf-8")
+    assert "ужин" in mcp_server.sufler_hints()
+    (tdir / "2026-09-13_1200_после_звонка.md").write_text("# После звонка\n", encoding="utf-8")
+    out = mcp_server.sufler_hints()
+    assert "ужин" not in out and "после конца звонка" in out

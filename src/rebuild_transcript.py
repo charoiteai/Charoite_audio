@@ -975,6 +975,15 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
     if notes:
         body += [f"## {transcript.NOTES_TITLE} после звонка", *notes, ""]
     text, _ = privacy.scrub_local_paths("\n".join(body).rstrip() + "\n")
+    old = _read_after_call(path)
+    if old and old != text:
+        # прежний файл (и правки человека в нём) — в .prev/, как у финала
+        # (M2 Opus по №733); не сохранился — не затираем
+        try:
+            safe_write.write_text(live_sidecar.prev_path(live, path), old)
+        except OSError as exc:
+            log(f"прежний {path.name} не сохранён в .prev/ ({exc}) — оставлен как есть")
+            return
     safe_write.write_text(path, text)
     replies = f"{len(lines)} реплик" if lines else ("реплики прежнего прохода сохранены" if prior else "0 реплик")
     log(f"после звонка: {replies}, {sum(n.startswith('> ') for n in notes)} заметок → {path.name}")
@@ -2238,6 +2247,9 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     """
     mpath = live.with_name(live.stem + "_minutes.md")
     before = safe_write.stat_snapshot(mpath)
+    # Паспорт — на момент решения, а не снимок начала пересборки: за минуты STT
+    # MCP «Минутки» могли записать минутки и свой паспорт (I2 Opus по №733)
+    meta = {**(meta if isinstance(meta, dict) else {}), **(live_sidecar.read(live) or {})}
     current: str | None = None
     if before is not None:
         try:

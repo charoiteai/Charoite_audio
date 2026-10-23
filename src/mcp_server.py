@@ -457,6 +457,11 @@ def sufler_hints() -> str:
     if not f:
         return "Стенограмм нет."
     h = f.with_name(f.stem + "_hints.md")
+    # Подсказки встречи с записью после звонка демон писал и по быту: выход в
+    # чат — тот же выход из машины, правило то же, что у архива (M3 Opus по №733)
+    after = f.with_name(f.stem + meeting_stamp.AFTER_CALL_SUFFIX + ".md")
+    if h.exists() and not meeting_stamp.publishable([h, after] if after.exists() else [h]):
+        return "Подсказки встречи с записью после конца звонка не выдаются: демон писал их и по ней."
     return _срез(h.read_text(encoding="utf-8"), slice(-4000, None)) if h.exists() else "Подсказок пока нет."
 
 
