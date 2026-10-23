@@ -2552,7 +2552,7 @@ def _link_core_twin(core: pathlib.Path, twin: pathlib.Path, meeting_link: str) -
 
 
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
-                transcript: str = "", speakers: set[str] | None = None):
+                transcript: str = "", speakers: set[str] | None = None, *, _retry: bool = False):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
     хроника копится. В графе Obsidian ядра становятся хабами над-уровня."""
     d = graph / "Ядра"
@@ -2653,13 +2653,21 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             _journal_graph_event("заглушка без канона", f"Ядра/{p.stem}", meeting_link)
             print(f"граф: ядро «{p.stem}» — заглушка без живого канона в Ядрах, встреча {meeting_link} не дописана")
             return
-    else:
-        safe_write.write_text(
+    elif not safe_write.write_text(
             p,
             f"---\ntype: ядро\nвид: {frontmatter.yaml_str(str(core.get('тип') or 'тема'))}\n"
             f"tags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
-            f"## Хроника\n{stamp_line}\n")
+            f"## Хроника\n{stamp_line}\n", expect_absent=True):
+        # ядро появилось за время разбора (параллельный разбор, слияние) — не
+        # затираем его новым, а один раз проходим заново веткой дописывания
+        # (n777-out2 Sonnet M3; как _create_entity)
+        if not _retry:
+            upsert_core(graph, core, meeting_link, stamp, transcript, speakers, _retry=True)
+        else:
+            _journal_graph_event("ядро изменилось под рукой", f"Ядра/{p.stem}: создание", meeting_link)
+            _SKIPPED_NODES.append(f"Ядра/{p.stem}")
+        return
     if twin is not None:
         # параллельное ядро и узел-двойник ссылаются друг на друга; после записи
         # ядра, чтобы обе ссылки вели на существующие файлы (№266)

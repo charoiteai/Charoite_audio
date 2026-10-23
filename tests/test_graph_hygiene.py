@@ -401,6 +401,27 @@ def test_core_without_a_stat_snapshot_is_not_written_freely(tmp_path, monkeypatc
     log = "".join(f.read_text(encoding="utf-8") for f in tmp_path.rglob("graph_unlinked.log"))
     assert "ядро изменилось под рукой: Ядра/Тема" in log
 
+
+def test_core_that_appeared_during_parsing_is_not_overwritten(tmp_path, monkeypatch):
+    """Ядро, появившееся между проверкой и созданием, не затирается новым: запись
+    с expect_absent и один проход заново веткой дописывания (n777-out2 Sonnet M3)."""
+    from charoite_graph import safe_write
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    core = graph / "Ядра" / "Тема.md"
+    real_write = safe_write.write_text
+
+    def appear_first(path, text, **kw):
+        if path == core and kw.get("expect_absent") and not core.exists():
+            real_write(core, "# Тема\n\n## Статус\nчужое\n\n## Хроника\n- [[Встречи/2026-09-15_1000]]\n")
+        return real_write(path, text, **kw)
+    monkeypatch.setattr(safe_write, "write_text", appear_first)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    text = core.read_text(encoding="utf-8")
+    assert "2026-09-15_1000" in text and "2026-09-16_1200" in text and "новый" in text
+
+
 def test_links_in_relations_only_point_at_existing_nodes(tmp_path):
     """«## Связи»: [[он]] и обрывки слов больше не становятся ссылками
     (Sonnet 28.08 I3: 626 битых ссылок, среди целей — местоимение «он»)."""
