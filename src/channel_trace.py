@@ -41,6 +41,10 @@ import transcript
 
 SIDECAR_KEY = "channel_events"
 SUMMARY_MARK = "📋 запись неполная"   # начало строки итога; все, кто ищет её в тексте, берут отсюда
+# Начало строки среза записи после конца звонка (№733): её пишет пересборка,
+# но это факт о записи, а не мысль модели — след, по тому же правилу снимается
+# из промптов и служит признаком «хвост вынесен этим финалом» для минуток.
+AFTER_CALL_CUT_MARK = "Запись после конца звонка"
 LINES_MAX = 6            # ЭПИЗОДОВ на канал в хвост/нить за запись; дальше — итог
 #                          (счётчик по событиям съедал лимит за три флап-цикла —
 #                          Minor GLM и DS выходного круга)
@@ -461,4 +465,9 @@ def is_trace_line(line: str) -> bool:
     тех же фраз, что рендер: потребители (извлечение графа, блок ко-мышления
     в разборе) не различают их по префиксам сами."""
     body = _bare_line(line)
-    return body.startswith(SUMMARY_MARK) or bool(_TRACE_RE.match(body))
+    return body.startswith((SUMMARY_MARK, AFTER_CALL_CUT_MARK)) or bool(_TRACE_RE.match(body))
+
+
+def is_after_call_cut(line: str) -> bool:
+    """Строка хвоста — срез записи после конца звонка (№733)."""
+    return _bare_line(line).startswith(AFTER_CALL_CUT_MARK)

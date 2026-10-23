@@ -896,7 +896,7 @@ AFTER_CALL_NOTE = ("Запись шла после конца звонка ({end
 # класс, что №316 — владелец формата хвоста `transcript.append_note`). Она же —
 # признак для минуток, что хвост вынесен ЭТОЙ пересборкой: файл `_после_звонка`
 # прошлого прохода переживает отказ разделения.
-AFTER_CALL_CUT_PREFIX = "Запись после конца звонка"
+AFTER_CALL_CUT_PREFIX = channel_trace.AFTER_CALL_CUT_MARK
 AFTER_CALL_CUT_NOTE = (AFTER_CALL_CUT_PREFIX + " ({end}–{last}) вынесена в отдельный файл: "
                        "это не часть встречи, в протокол, разбор, граф и архив она не идёт.")
 
@@ -920,8 +920,8 @@ def notes_before(block: str, base, end: float) -> tuple[str, list[str]]:
     cut = (base + dt.timedelta(seconds=end)).replace(second=0, microsecond=0)
     kept, dropped, skipping = [], [], False
     for line in block.split("\n"):
-        if skipping and not line.startswith("> ") and line.strip():
-            dropped.append(line)
+        if skipping and not line.startswith(("> ", "---", "#")):
+            dropped.append(line)              # продолжение, в том числе после пустой строки (M3 out3)
             continue
         skipping = False
         m = _NOTE_AT.match(line)
@@ -934,6 +934,8 @@ def notes_before(block: str, base, end: float) -> tuple[str, list[str]]:
                 skipping = True
                 continue
         kept.append(line)
+    while dropped and not dropped[-1].strip():      # хвостовые пустые строки — разметка блока, не заметка
+        kept.append(dropped.pop())
     return "\n".join(kept), dropped
 
 
@@ -949,12 +951,17 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
     теряет ни слова, а речь встречи их не содержит. Подписи — метки разметки:
     имена встречи сюда не переносятся, голос из комнаты не должен получить имя
     собеседника. Хвоста нет — прежний файл не трогаем: его могли править.
-    `notes` — заметки ко-мышления, снятые со стенограммы `notes_before`."""
+    `notes` — заметки ко-мышления, снятые со стенограммы `notes_before`.
+    `end` есть ровно тогда, когда разделение вынесло хвост, — то же условие,
+    что у строки среза в финале: файл и строка не расходятся (Critical out3),
+    файл бывает и без реплик (STT пуст). Снятые заметки прошлых проходов
+    сохраняются: в новом финале их уже нет (I4 DS out3)."""
     path = after_call_path(live)
-    if not (lines or notes) or end is None:
+    if end is None:
         if path.exists():
             log(f"запись после звонка не выделена, прежний {path.name} оставлен")
         return
+    notes = _merged_after_call_notes(path, list(notes))
     body = [f"# После звонка {stamp}", "", AFTER_CALL_NOTE.format(end=fmt(end)), ""]
     for s, e, spk, text in lines:
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
@@ -964,6 +971,19 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
     text, _ = privacy.scrub_local_paths("\n".join(body).rstrip() + "\n")
     safe_write.write_text(path, text)
     log(f"после звонка: {len(lines)} реплик, {sum(n.startswith('> ') for n in notes)} заметок → {path.name}")
+
+
+def _merged_after_call_notes(path: pathlib.Path, notes: list[str]) -> list[str]:
+    """Заметки прежнего файла `_после_звонка` и новые снятые — без повторов,
+    прежние первыми."""
+    head = f"## {transcript.NOTES_TITLE} после звонка"
+    try:
+        old = path.read_text(encoding="utf-8")
+    except OSError:
+        return notes
+    at = old.find("\n" + head + "\n")
+    prior = old[at + len(head) + 2:].rstrip("\n").split("\n") if at >= 0 else []
+    return prior + [n for n in notes if n not in prior]
 
 
 def paragraphs(segments: list[tuple[float, float, str]], gap: float = 2.0) -> list[list]:
@@ -1823,7 +1843,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     m = re.search(rf"\n---\n## {transcript.NOTES_TITLE}.*", live_text, re.S)
     late_notes: list[str] = []
     if m:
-        notes = m.group(0).lstrip("\n")
+        # строка среза — производная этого прохода: прежняя снимается всегда,
+        # иначе копится от пересборки к пересборке и переживает проход без выноса (I3 DS out3)
+        notes = "\n".join(ln for ln in m.group(0).lstrip("\n").split("\n")
+                          if not channel_trace.is_after_call_cut(ln))
         if tail.after and tail.end is not None:
             notes, late_notes = notes_before(notes, base, tail.end)
         body.append(notes)
@@ -1844,7 +1867,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     final_text = canonize(final_text, cfg)
     # Запись после звонка — до финала: упади пересборка между ними, на диске
     # останется живая стенограмма целиком, а не финал без хвоста и без файла.
-    write_after_call(live, stamp, tail.end, after_lines, fmt, late_notes)
+    write_after_call(live, stamp, tail.end if tail.after else None, after_lines, fmt, late_notes)
     write_final(live, final_text, live_text)
     _finish(live, final_text, meta, cfg)
     return live
@@ -2194,11 +2217,11 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         # стенограммы (Critical GLM входного круга по №309)
         log("минутки уже собраны по этой речи — модель не зову")
         return "fresh"
-    # Черновик демона собран по живой ленте, где запись после звонка ещё
-    # внутри (№733): перештамповать его — значит отдать быт в протокол. При
-    # таком файле короткий финал всё равно идёт в модель.
-    after_call = (any(n.startswith(AFTER_CALL_CUT_PREFIX) for n in transcript.notes_of(final_text))
-                  and after_call_path(live).exists())
+    # Финал вынес запись после звонка (№733), а минутки на месте собраны не
+    # по этой речи (свежие вышли выше): перештамповать их — значит, возможно,
+    # отдать быт в протокол. Признак один — строка среза в этом финале.
+    # При нём короткий финал всё равно идёт в модель.
+    after_call = any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(final_text))
     if len(speech) < MINUTES_MIN_CHARS and not (after_call and current is not None):
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
@@ -2215,12 +2238,12 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
         log(f"минутки не пересобраны ({type(e).__name__}: {e})")
         if after_call:
-            return _defer_live_draft(mpath, before, current, live, meta, live_names)
+            return _defer_live_draft(mpath, before, current, live)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if not doc:
         log("минутки не пересобраны (модель промолчала)")
         if after_call:
-            return _defer_live_draft(mpath, before, current, live, meta, live_names)
+            return _defer_live_draft(mpath, before, current, live)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     # Те же шаги, что у кнопки «Протокол», — общим входом минуток (№732):
     # сверка по тому множеству, что видела модель (речь + оговорка, DS I5),
@@ -2248,22 +2271,20 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     return "regenerated"
 
 
-def _defer_live_draft(mpath: pathlib.Path, before, current: str | None,
-                      live: pathlib.Path, meta: dict, live_names: dict[str, str]) -> str:
-    """Отказ модели при записи после звонка (№733): минутки, ни разу не
-    собранные из финала, — черновик живой ленты с хвостом внутри; они уходят
-    в .prev/, файла минуток нет.
+def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pathlib.Path) -> str:
+    """Отказ модели при записи после звонка (№733): машинные минутки собраны
+    не по этой речи — черновик живой ленты или финал прохода, который хвост
+    не вынес; они уходят в .prev/, файла минуток нет.
 
     Перештамповка отдала бы быт в протокол (Critical Haiku выходного круга).
     Пометка на месте файла была бы новым состоянием, которое чужой писатель
     (мост ревизии, рука) запирает навсегда: хеш не совпал — «правлено руками»
     (Critical DS out2). Нет файла — состояние MISSING оракула производных:
     его собирают и следующая пересборка, и ретро-обход (`POLICY_RETRO`).
-    Минутки, уже собранные из финала (`minutes_source_sha256`), речи после
-    звонка не видели — им прежняя перештамповка (Critical Haiku out2).
+    «Собраны из финала» (`minutes_source_sha256`) чистоты не доказывает:
+    прежний финал мог хвост не вынести (до №733, сомнение в канале) — Critical
+    DS и Important Sonnet out3. Опубликованные копии не отзываются — №609.
     """
-    if live_sidecar.valid_sha(meta.get("minutes_source_sha256") if isinstance(meta, dict) else None):
-        return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if current is None or safe_write.stat_snapshot(mpath) != before:
         if current is not None:
             log("минутки сменились под пересборкой — оставлены как есть")
@@ -2271,7 +2292,11 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None,
     prev_dir = live.parent / ".prev"
     prev_dir.mkdir(exist_ok=True)
     # перенос, а не удаление: проиграй гонку — в .prev/ уедут чужие байты, но не пропадут
-    os.replace(mpath, prev_dir / mpath.name)
+    try:
+        os.replace(mpath, prev_dir / mpath.name)
+    except OSError as exc:              # стенограмма уже записана — прогон не падает (M6 out3)
+        log(f"минутки: не перенесены в .prev/ ({exc}) — оставлены как есть")
+        return "human"
     log("минутки: черновик живой ленты с записью после звонка → .prev/, "
         "соберутся следующей пересборкой или ретро-обходом")
     return "human"

@@ -22,6 +22,7 @@ import rebuild_transcript as rt  # noqa: E402
 import speech_gate  # noqa: E402
 import transcript  # noqa: E402
 import channel_trace  # noqa: E402
+import meeting_source  # noqa: E402
 
 OWNER = "Игорь Ветров"
 
@@ -2002,6 +2003,44 @@ def test_notes_cut_with_no_recognised_after_call_speech_still_leaves_a_trace(mee
     assert "ужин и мусор" in rt.after_call_path(out).read_text(encoding="utf-8")
 
 
+def test_second_rebuild_keeps_one_cut_line_and_the_notes_moved_before(meeting, monkeypatch):
+    """I3/I4 DS out3: вход второй пересборки — первый финал. Строка среза не
+    копится, а заметки, снятые первым проходом, из файла хвоста не пропадают."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["live"].write_text(
+        "живая стенограмма\n\n---\n## Ко-мышление\n> 14:30 📌 смета\n> 14:31 💭 ужин и мусор\n",
+        encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    rt.rebuild(meeting["live"], CFG)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert sum(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(text)) == 1
+    after = rt.after_call_path(out).read_text(encoding="utf-8")
+    assert after.count("ужин и мусор") == 1 and "реплика 9 с" in after
+
+
+def test_cut_with_empty_after_call_speech_and_no_notes_still_writes_the_file(meeting, monkeypatch):
+    """Critical out3: строка среза и файл хвоста — одно условие (`tail.after`),
+    файл бывает и без реплик."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: "" if len(chunk) // sr == 9 else "реплика")
+    out = rt.rebuild(meeting["live"], CFG)
+    assert any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(out.read_text(encoding="utf-8")))
+    assert rt.after_call_path(out).read_text(encoding="utf-8").startswith("# После звонка ")
+
+
+def test_cut_line_is_a_recording_trace_not_a_model_thought():
+    """S-M4/DS-I6 out3: строка среза — факт о записи; потребители следа
+    (контекст графа, ко-мышление разбора) снимают её тем же правилом."""
+    line = "> " + rt.AFTER_CALL_CUT_NOTE.format(end="14:30", last="14:31")
+    assert channel_trace.is_trace_line(line) and channel_trace.is_after_call_cut(line)
+    assert not channel_trace.is_after_call_cut("> 14:31 💭 Запись после конца звонка обсудить")
+    text = transcript.append_note("**Инга** [14:20]:\nСмета.\n", line[2:])
+    assert rt.AFTER_CALL_CUT_PREFIX not in meeting_source.without_trace(text)
+
+
 def test_notes_before_keeps_the_end_minute_and_crosses_midnight():
     import datetime as dt
     base = dt.datetime(2026, 8, 20, 23, 58, 30)
@@ -2022,6 +2061,8 @@ def test_notes_before_drops_a_multiline_note_whole_and_keeps_trace_lines():
     kept, dropped = rt.notes_before(block, base, 60.0)
     assert "ужин" not in kept and "мусор" not in kept and "потом" not in kept
     assert "смета" in kept and dropped == ["> 14:35 💭 ужин", "и мусор вечером", "> 14:36 📌 потом"]
+    kept, dropped = rt.notes_before("---\n## Ко-мышление\n> 14:35 💭 ужин\n\nи мусор вечером\n", base, 60.0)
+    assert "мусор" not in kept and dropped == ["> 14:35 💭 ужин", "", "и мусор вечером"], "пустая строка — не конец (M3 out3)"
     line = "> 14:50 " + channel_trace.SUMMARY_MARK + " без пропусков"
     kept, dropped = rt.notes_before("---\n## Ко-мышление\n" + line, base, 60.0)
     assert line in kept and dropped == []

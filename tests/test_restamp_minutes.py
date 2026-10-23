@@ -507,18 +507,43 @@ def test_model_refusal_with_after_call_record_moves_the_live_draft_away(
     assert not mpath.exists(), "паспорт и канон не воскрешают файл"
 
 
-def test_model_refusal_keeps_minutes_already_built_from_a_final(tmp_path, monkeypatch):
-    """Critical Haiku out2: минутки, уже собранные из финала (`minutes_source_sha256`),
-    речи после звонка не видели — отказ модели оставляет их прежней перештамповкой."""
-    built = "# Минутки\n- [ ] **Инга** — прислать смету\n"
+def test_model_refusal_moves_minutes_built_from_another_final_away(tmp_path, monkeypatch):
+    """Critical DS out3: «собраны из финала» чистоты не доказывает — прежний финал
+    мог хвост не вынести (до №733, сомнение в канале). Речь другая, модель
+    отказала — минутки с бытом в .prev/, не перештамповка."""
+    built = "# Минутки\n- [ ] **Инга** — прислать смету\n- ужин и мусор\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, built, _sha(built))
     meta["minutes_source_sha256"] = "a" * 64
-    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
     _FakeLLM.fail = True
     long_final = _cut("**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n")
     owned = rebuild_transcript.finalize_minutes(live, long_final, meta, {}, {})
-    assert owned == "restamped" and "прислать смету" in mpath.read_text(encoding="utf-8")
-    assert not (tmp_path / ".prev" / mpath.name).exists()
+    assert owned == "human" and not mpath.exists()
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == built
+
+
+def test_cut_in_the_final_is_the_only_sign_even_without_the_after_call_file(tmp_path, monkeypatch):
+    """Critical Sonnet out3: строка среза в финале есть, файла хвоста нет (STT пуст,
+    старая версия) — черновик живой ленты всё равно не перештамповывается."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    assert not rebuild_transcript.after_call_path(live).exists()
+    _FakeLLM.fail = True
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
+    assert owned == "human" and not mpath.exists()
+
+
+def test_refusal_with_a_failing_move_keeps_the_file_and_does_not_raise(tmp_path, monkeypatch):
+    """M6 Sonnet out3: ошибка ФС при переносе в .prev/ не роняет прогон после
+    записанной стенограммы — файл остаётся, исход «human»."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    _FakeLLM.fail = True
+
+    def boom(*a, **k):
+        raise OSError("read-only")
+    monkeypatch.setattr(rebuild_transcript.os, "replace", boom)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == draft
 
 
 def test_model_refusal_without_after_call_record_restamps_as_before(tmp_path, monkeypatch):
