@@ -131,14 +131,14 @@ def test_the_main_window_is_kept_when_the_winner_block_has_no_needles(tmp_path):
     assert frag == main
 
 
-def _synonym_graph(tmp_path, first_block: str) -> gs.GraphSearch:
+def _synonym_graph(tmp_path, first_block: str, pad: int = 60, tail: str = "") -> gs.GraphSearch:
     """Узел из двух длинных блоков: «семантика» подделки выбирает блок с синонимом
     (`провайдер` = `поставщик`), а иглы запроса лежат в другом блоке (№780)."""
     g = tmp_path / "Работа"
     for d in ("Люди", "Системы", "Ядра", "Встречи", "Встречи-архив", "Документация"):
         (g / d).mkdir(parents=True, exist_ok=True)
     _write(g / "Системы", "Шлюз.md",
-           "# Шлюз\n## Связи\n" + first_block + " " + "провайдер " * 60
+           "# Шлюз\n## Связи\n" + first_block + " " + "провайдер " * pad + tail
            + "\n## Расчёты\nдоговор подписан, оплата прошла. " + "склад приёмка " * 60 + "\n")
     s = _searcher(tmp_path)
     s.refresh(force=True)
@@ -147,12 +147,15 @@ def _synonym_graph(tmp_path, first_block: str) -> gs.GraphSearch:
 
 
 def _spy_winner(s, monkeypatch) -> list:
-    """Номера блоков, с которыми зван `_block_fragment`, — проверка, что фикстура
-    действительно идёт веткой семантического победителя."""
+    """Текст блоков-победителей, с которыми зван `_block_fragment` (`None` — победителя
+    нет), — проверка, что фикстура действительно идёт веткой семантического победителя."""
     wins: list = []
     real = s._block_fragment
-    monkeypatch.setattr(s, "_block_fragment",
-                        lambda d, win, *a: wins.append(s._blocks(d)[win]) or real(d, win, *a))
+
+    def spy(d, win, *a):
+        wins.append(None if win is None else s._blocks(d)[win])
+        return real(d, win, *a)
+    monkeypatch.setattr(s, "_block_fragment", spy)
     return wins
 
 
@@ -164,7 +167,7 @@ def test_a_semantic_winner_with_fewer_needles_gives_way_to_the_main_window(tmp_p
     wins = _spy_winner(s, monkeypatch)
     r = s.search("поставщик договор оплата", limit=3)
     assert r.sem_used
-    assert wins and "→ Связи" in wins[0], "победитель — блок синонима"
+    assert wins and wins[0] and "→ Связи" in wins[0], "победитель — блок синонима"
     frag = r.blocks[0].split("\n", 1)[1]
     assert "оплата" in frag and "договор" in frag
 
@@ -175,9 +178,22 @@ def test_a_semantic_winner_no_weaker_than_the_window_is_shown(tmp_path, monkeypa
     s = _synonym_graph(tmp_path, "договор и оплата")
     wins = _spy_winner(s, monkeypatch)
     r = s.search("поставщик договор оплата", limit=3)
-    assert r.sem_used and wins and "→ Связи" in wins[0]
+    assert r.sem_used and wins and wins[0] and "→ Связи" in wins[0]
     frag = r.blocks[0].split("\n", 1)[1]
     assert "провайдер" in frag and "склад" not in frag
+
+
+def test_the_rule_judges_the_shown_window_not_the_whole_block(tmp_path, monkeypatch):
+    """Блок-победитель несёт обе иглы, но дальше окна друг от друга: его окно — одна
+    игла, окно основного тела — две. Сравнение блока целиком показало бы окно с одной
+    иглой; сравнивается показанное окно — показано окно основного тела (вход n780-in1)."""
+    s = _synonym_graph(tmp_path, "договор", pad=150, tail="оплата")
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата", limit=3)
+    assert r.sem_used and wins and wins[0] and "→ Связи" in wins[0]
+    assert "договор" in wins[0] and "оплата" in wins[0], "в блоке целиком обе иглы"
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "оплата" in frag and "договор" in frag
 
 
 def test_a_short_node_is_shown_whole_without_a_label(tmp_path):
