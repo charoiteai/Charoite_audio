@@ -2031,6 +2031,20 @@ def test_cut_with_empty_after_call_speech_and_no_notes_still_writes_the_file(mee
     assert rt.after_call_path(out).read_text(encoding="utf-8").startswith("# После звонка ")
 
 
+def test_empty_after_call_speech_on_a_later_pass_keeps_the_replies_of_the_file(meeting, monkeypatch):
+    """I2 Sonnet out4: второй проход с пустым STT хвоста не затирает реплики
+    (и правки человека) прежнего файла `_после_звонка`."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    path = rt.after_call_path(out)
+    path.write_text(path.read_text(encoding="utf-8").replace("реплика 9 с", "реплика 9 с, правка"), encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: "" if len(chunk) // sr == 9 else "реплика")
+    rt.rebuild(meeting["live"], CFG)
+    assert "реплика 9 с, правка" in path.read_text(encoding="utf-8")
+
+
 def test_cut_line_is_a_recording_trace_not_a_model_thought():
     """S-M4/DS-I6 out3: строка среза — факт о записи; потребители следа
     (контекст графа, ко-мышление разбора) снимают её тем же правилом."""
