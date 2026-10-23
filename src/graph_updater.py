@@ -1190,7 +1190,7 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
     # адресом; несколько — не гадаем.
     hits: list[str] = []
     for f in _alias_index([f for f in files if f.parent.name in _AUTO_ALIAS_FOLDERS]).get(key, []):
-        live = follow_stubs(graph, f)
+        live = follow_stubs(graph, f, _AUTO_ALIAS_FOLDERS)     # и канон заглушки — не в Людях (Opus I2)
         if live is not None and f"{live.parent.name}/{live.stem}" not in hits:
             hits.append(f"{live.parent.name}/{live.stem}")
     if len(hits) == 1:
@@ -1577,13 +1577,18 @@ def _read_node(p: pathlib.Path, meeting_link: str = "") -> str | None:
         return None
 
 
-def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
+def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
+                 folders: tuple[str, ...] | None = None) -> pathlib.Path | None:
     """Живой узел за цепочкой заглушек-редиректов или None, если цепочка
     обрывается. Цепочка A→B→C — обычное дело за месяц слияний, один хоп
     возвращал встречу в мёртвую заглушку (GLM r2 Critical / DS r2 B1);
     цель без папки («→ [[Петров Иван]]») ищется и от корня, и рядом с
-    заглушкой — как у `resolve_core_path`. Кольцо — обрыв."""
+    заглушкой — как у `resolve_core_path`. Кольцо — обрыв. Канон, к которому
+    привела заглушка, вне `folders` (по умолчанию NODE_FOLDERS: Досье,
+    служебное) — тоже обрыв, как у `resolve_core_path` для Ядер (Opus I2)."""
+    allowed = NODE_FOLDERS if folders is None else folders
     visited: set[pathlib.Path] = set()
+    start = p
     while p is not None and p not in visited:
         visited.add(p)
         try:
@@ -1591,7 +1596,7 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
         except (OSError, ValueError):
             return p
         if not redirects.is_merged(text):
-            return p
+            return p if p == start or p.parent.name in allowed else None
         target = redirects.stub_target(text)
         if not target:
             return None
@@ -2628,9 +2633,10 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             safe_write.rewrite_file(p, transform, "ядро встречи")
         except (OSError, UnicodeDecodeError) as e:  # не ValueError: ошибка преобразования летит
             # наверх, а не прячется под «не прочитан» — как _write_entity (n777-out3 DS I1)
-            _journal_graph_event("узел не прочитан", f"Ядра/{p.stem}: {e}", meeting_link)
+            # OSError бывает и у записи (нет места) — текст без «не прочитан» (Opus M3)
+            _journal_graph_event("встреча в ядро не дописана", f"Ядра/{p.stem}: {e}", meeting_link)
             _SKIPPED_NODES.append(f"Ядра/{p.stem}")
-            print(f"граф: узел Ядра/{p.stem} не прочитан ({e}) — пропущен", file=sys.stderr)
+            print(f"граф: ядро Ядра/{p.stem} — {e}, встреча {meeting_link} не дописана", file=sys.stderr)
             return
         except safe_write.LostRace as e:
             # причина — значением (n777-out3 DS I2): ядро пропало — один проход
@@ -2638,7 +2644,8 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             if e.gone and not _retry:
                 upsert_core(graph, core, meeting_link, stamp, transcript, speakers, _retry=True)
                 return
-            event = "ядро недоступно" if e.unreachable else "ядро изменилось под рукой"
+            event = ("ядро пропало" if e.gone else "ядро недоступно" if e.unreachable
+                     else "ядро изменилось под рукой")     # повторный GONE — не «чужая правка» (Opus M2)
             _journal_graph_event(event, f"Ядра/{p.stem}: {e}", meeting_link)
             _SKIPPED_NODES.append(f"Ядра/{p.stem}")
             print(f"граф: {event}: «{p.stem}» ({e}), встреча {meeting_link} не дописана", file=sys.stderr)
@@ -2650,6 +2657,11 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             # Человеку — строкой в `_Кандидаты.md`, не только машинным журналом:
             # развилка «→ см. [[A]] · [[B]]» — как ядро на несколько тем, одна цель
             # вне Ядер или пропавшая — «заглушка без канона» (n777-out1 Sonnet I3 / DS M6).
+            # Ядро стало заглушкой между resolve_core_path и записью (ночное слияние):
+            # путь решаем заново один раз — канон уже есть (Opus I1).
+            if not _retry and resolve_core_path(d, core["имя"], graph) != p:
+                upsert_core(graph, core, meeting_link, stamp, transcript, speakers, _retry=True)
+                return
             info = redirects.stub_info(stub[0])
             cands = [t.removesuffix(".md") for t in info.targets]
             if not cands and (t := redirects.stub_target(stub[0])):

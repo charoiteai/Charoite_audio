@@ -1613,6 +1613,25 @@ def test_a_redirect_stub_lands_when_its_canon_lands(tmp_path):
     assert "Ядра/Провайдер платежей.md" in v.applied
     assert dup.read_text(encoding="utf-8").startswith("# Провайдер платежей → [[")
 
+
+def test_a_two_arrow_stub_without_one_target_is_reverted(tmp_path):
+    """«# X → [[A]] → [[B]]» — не узкая заглушка: у неё нет одной цели, и живой узел
+    не пишется ею сразу, мимо канона и копии тела (Opus C2, n777-final)."""
+    graph = _graph(tmp_path)
+    old = graph / "Ядра" / "Старое.md"
+    body = "# Старое\n## Статус\nидёт\n" + "".join(f"- факт {i}\n" for i in range(8))
+    old.write_text(body, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Старое.md").write_text(
+            "# Старое → [[Ядра/Нет1]] → [[Ядра/Нет2]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Старое.md" not in v.applied
+    assert "Ядра/Старое.md" in v.reverted
+    assert old.read_text(encoding="utf-8") == body
+    assert not cloud_review.is_redirect_stub("# Старое → [[Ядра/Нет1]] → [[Ядра/Нет2]]\n")
+
 def test_a_redirect_stub_is_recognised_with_ascii_arrow_and_yaml_frontmatter(tmp_path):
     """Заглушка распознаётся и с `->`, и с длинным frontmatter (GLM M1+M3).
 
