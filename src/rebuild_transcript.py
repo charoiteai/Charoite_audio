@@ -889,6 +889,13 @@ def resolve_channel_segments(
 
 AFTER_CALL_NOTE = ("Запись шла после конца звонка ({end}): это не часть встречи — в протокол, "
                    "разбор, граф и архив она не идёт. Подписи голосов не проверялись.")
+# Строка шапки стенограммы, когда запись после конца звонка вынесена (№733,
+# Critical Haiku шага out1): без неё срез тихий — протокол выглядит полным.
+# Она же — признак для минуток, что хвост вынесен ЭТОЙ пересборкой: файл
+# `_после_звонка` прошлого прохода переживает отказ разделения (I1 шага).
+AFTER_CALL_CUT_PREFIX = "> Запись после конца звонка"
+AFTER_CALL_CUT_NOTE = (AFTER_CALL_CUT_PREFIX + " ({end}–{last}) вынесена в отдельный файл: "
+                       "это не часть встречи, в протокол, разбор, граф и архив она не идёт.")
 # Минутки при записи после звонка и отказе модели (№733, Critical Haiku
 # выходного круга): черновик демона собран по живой ленте с хвостом внутри,
 # перештамповать его — отдать быт в протокол. Черновик уходит в .prev/, на
@@ -1795,6 +1802,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
         body += [ENGINE_FALLBACK_NOTE.format(reason=engine_note), ""]
     if mic_engine_note:
         body += [MIC_ENGINE_FALLBACK_NOTE.format(reason=mic_engine_note), ""]
+    if after_lines and tail.end is not None:
+        body += [AFTER_CALL_CUT_NOTE.format(end=fmt(tail.end), last=fmt(after_lines[-1][1])), ""]
     for s, e, spk, text in lines:
         spk = names.get(spk, spk)
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
@@ -2172,7 +2181,7 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # Черновик демона собран по живой ленте, где запись после звонка ещё
     # внутри (№733): перештамповать его — значит отдать быт в протокол. При
     # таком файле короткий финал всё равно идёт в модель.
-    after_call = after_call_path(live).exists()
+    after_call = AFTER_CALL_CUT_PREFIX in final_text and after_call_path(live).exists()
     if len(speech) < MINUTES_MIN_CHARS and not (after_call and current is not None):
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
