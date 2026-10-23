@@ -225,11 +225,31 @@ final class IndexPruneTests: XCTestCase {
     }
 
     /// Журнал неполного обхода не уносит названий встреч (финальный Opus M2).
-    func testWalkLogNamesOnlyTopFolder() {
-        XCTAssertEqual(ArchiveSearch.WalkErrors.logName("Встречи-архив/2026-10-20 — Разговор о бюджете/a.md"),
-                       "Встречи-архив")
-        XCTAssertEqual(ArchiveSearch.WalkErrors.logName("Разговор о бюджете.md"), "<верхний уровень>")
-        XCTAssertEqual(ArchiveSearch.WalkErrors.logName(""), "<корень>")
+    func testWalkLogNamesOnlyServiceTopFolder() {
+        typealias W = ArchiveSearch.WalkErrors
+        XCTAssertEqual(W.logName("Встречи-архив/2026-10-20 — Разговор о бюджете/a.md"), "Встречи-архив")
+        XCTAssertEqual(W.logName("Разговор о бюджете.md"), "<верхний уровень>")
+        XCTAssertEqual(W.logName(""), "<корень>")
+        // папку корня называет пользователь: человек, проект, встреча в плоском графе
+        XCTAssertEqual(W.logName("Иван Петров/Закрытая/x.md"), "<прочее>")
+        XCTAssertEqual(W.logName("2026-10-20 — Совет директоров/закрытая"), "<прочее>")
+    }
+
+    /// Строка журнала целиком — то, что уходит в NSLog: ни одного компонента пути
+    /// глубже служебной папки, счёт ошибок полный, показаны три.
+    func testWalkLogLineCarriesNoNames() throws {
+        typealias W = ArchiveSearch.WalkErrors
+        XCTAssertNil(W.logLine([]))
+        let list = [("Встречи-архив/2026-10-20 — Разговор о бюджете", "NSCocoaErrorDomain:257"),
+                    ("Иван Петров/Закрытая", "NSCocoaErrorDomain:257"),
+                    ("Совет директоров.md", "NSPOSIXErrorDomain:13"),
+                    ("Люди/Пётр", "NSCocoaErrorDomain:257")]
+        let line = try XCTUnwrap(W.logLine(list.map { (rel: $0.0, code: $0.1) }))
+        for name in ["Разговор о бюджете", "Иван Петров", "Закрытая", "Совет директоров", "Пётр"] {
+            XCTAssertFalse(line.contains(name), "в журнале имя «\(name)»: \(line)")
+        }
+        XCTAssertEqual(line, "поиск: обход графа неполный, ошибок 4: Встречи-архив (NSCocoaErrorDomain:257), "
+                       + "<прочее> (NSCocoaErrorDomain:257), <верхний уровень> (NSPOSIXErrorDomain:13)")
     }
 
     func testUnscannedSubtreeProtectsOnlyItsOwnKeys() {

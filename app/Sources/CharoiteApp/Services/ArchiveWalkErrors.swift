@@ -35,6 +35,25 @@ extension ArchiveSearch {
             return true
         }
 
+        /// Имя пути для журнала — только служебная папка корня из `GraphFolders`:
+        /// глубже и в имени файла корня — названия встреч, а папку корня называет
+        /// пользователь (человек, проект, плоский граф по папкам встреч); журнал
+        /// «Забыть встречу» не чистит (финальный Opus M2, круг среза А).
+        static func logName(_ rel: String) -> String {
+            guard !rel.isEmpty else { return "<корень>" }
+            guard rel.contains("/") else { return "<верхний уровень>" }
+            let top = String(rel.prefix { $0 != "/" })
+            return GraphFolders.all.contains(top) ? top : "<прочее>"
+        }
+
+        /// Строка журнала о неполном обходе — одна точка сборки: имена путей
+        /// только через `logName`, тест видит ровно то, что уходит в NSLog.
+        static func logLine(_ list: [(rel: String, code: String)]) -> String? {
+            guard !list.isEmpty else { return nil }
+            let shown = list.prefix(3).map { "\(logName($0.rel)) (\($0.code))" }
+            return "поиск: обход графа неполный, ошибок \(list.count): " + shown.joined(separator: ", ")
+        }
+
         /// Что живо для prune: увиденное обходом плюс поддеревья, которые не
         /// перечислены, — под ними жив любой ключ, и одна запертая папка не
         /// выключает prune остального графа. Корень не перечислен — nil.
@@ -42,20 +61,9 @@ extension ArchiveSearch {
         /// всё, том не смонтирован — prune стёр бы весь индекс (out2 C1).
         /// Цена: превью последней заметки опустевшего графа живёт до первой
         /// новой заметки.
-        /// Имя пути для журнала — только верхняя папка: глубже и в имени файла
-        /// корня — названия встреч, а журнал «Забыть встречу» не чистит
-        /// (финальный Opus M2). Путь без «/» — файл или папка корня, не печатаем.
-        static func logName(_ rel: String) -> String {
-            guard !rel.isEmpty else { return "<корень>" }
-            return rel.contains("/") ? String(rel.prefix { $0 != "/" }) : "<верхний уровень>"
-        }
-
         func alive(_ keys: Set<String>) -> SemanticIndex.Alive? {
-            if !list.isEmpty {
-                let shown = list.prefix(3).map { "\(Self.logName($0.rel)) (\($0.code))" }
-                // путь из графа — аргументом, не в формат: папка «100%s» уронила бы NSLog
-                NSLog("%@", "поиск: обход графа неполный, ошибок \(list.count): " + shown.joined(separator: ", "))
-            }
+            // путь из графа — аргументом, не в формат: папка «100%s» уронила бы NSLog
+            if let line = Self.logLine(list) { NSLog("%@", line) }
             if keys.isEmpty || list.contains(where: { $0.rel.isEmpty }) { return nil }
             return SemanticIndex.Alive(seen: keys, unscanned: list.map(\.rel))
         }
