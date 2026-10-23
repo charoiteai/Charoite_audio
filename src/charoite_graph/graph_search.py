@@ -1717,12 +1717,11 @@ class GraphSearch:
                 # sim >= SIM_FLOOR, иначе лексический (файл бывает в обоих
                 # списках разными блоками, а фрагмент один)
                 if sem_used and rel in sem_win:
-                    win, require_cov = sem_win[rel], False
+                    win = sem_win[rel]
                 else:
                     win, _cov = self._lex_winner(d, keys, rx)
-                    require_cov = True
                 frag = self._block_fragment(d, win, main_frag, keys, rx,
-                                            snippet_chars, rare_first, require_cov)
+                                            snippet_chars, rare_first)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
         total = len(fused)
@@ -1796,14 +1795,14 @@ class GraphSearch:
         return best_i, best_cov
 
     def _block_fragment(self, d: Doc, win: int | None, main_frag: str, keys: Sequence[str],
-                        rx: re.Pattern, chars: int, rare: Sequence[str],
-                        require_cov: bool) -> str:
+                        rx: re.Pattern, chars: int, rare: Sequence[str]) -> str:
         """Фрагмент из блока-победителя. Окно режется по тексту блока, а не по
         всему телу: склейка конца одного блока и начала другого показала бы
-        соседний факт под чужим заголовком. Нет игл в блоке (или покрытие ниже
-        окна основного тела для лексического победителя) — фрагмент как на
-        `main`. Короткий файл (тело в пределах окна) показывается целиком; из
-        блока фрагмент режется, только когда файл длиннее."""
+        соседний факт под чужим заголовком. Нет игл в блоке или в окне блока игл
+        меньше, чем в окне основного тела, — фрагмент как на `main`; правило одно
+        для лексического и семантического победителя (№780). Короткий файл (тело
+        в пределах окна) показывается целиком; из блока фрагмент режется, только
+        когда файл длиннее."""
         if win is None:
             return main_frag
         parts = self._blocks(d)
@@ -1816,15 +1815,17 @@ class GraphSearch:
         # на пустоту фрагмента здесь не годится
         if not rx.search(norm(_without_crumb(block))):
             return main_frag                  # игл в блоке нет — как на `main`
-        if require_cov:
-            lows = self._norm_blocks(d)
-            if _needle_cov(lows[win], keys, rx) < _needle_cov(norm(main_frag), keys, rx):
-                # лексический победитель слабее окна основного тела (узел длиннее
-                # потолка блоков — середина выброшена): фрагмент как на `main`
-                return main_frag
         if len(d.body or d.text) <= chars + chars // 2:
             return main_frag
-        return _frag_or_head(_without_crumb(block), rx, chars, rare, dense)
+        frag = _frag_or_head(_without_crumb(block), rx, chars, rare, dense)
+        # сравниваем то, что будет показано, — окно из блока, а не блок целиком:
+        # блок с тем же числом игл режется до окна, где их меньше. Правило — по
+        # числу разных игл, не по их набору: при равном счёте показан блок. Без
+        # проверки семантический победитель (синоним, другой язык) вытеснял окно
+        # с большим числом игл — минус три вопроса answer после №633 (замер №770)
+        if _needle_cov(norm(frag), keys, rx) < _needle_cov(norm(main_frag), keys, rx):
+            return main_frag
+        return frag
 
     def _fragment(self, d: Doc, rx: re.Pattern, chars: int, rare: Sequence[str]) -> str:
         """Фрагмент документа для выдачи и для перехода — одно правило на оба места:
@@ -1886,7 +1887,7 @@ class GraphSearch:
                     if BLOCK_DATES:
                         win, _cov = self._lex_winner(d, keys, rx)
                         frag = self._block_fragment(d, win, main_frag, keys, rx,
-                                                    snippet_chars, rare_first, True)
+                                                    snippet_chars, rare_first)
                     seen.add(d.rel)
                     out.append((d.rel, f"• {d.rel}\n  ↳ по ссылке из {node_rel}\n  {frag}"))
                     if len(out) >= limit:

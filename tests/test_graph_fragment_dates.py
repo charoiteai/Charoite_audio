@@ -2,7 +2,9 @@
 
 Фрагмент режется из блока-победителя (`snippet` по тексту блока), а не окном по
 всему телу: окно склеило бы конец одного блока и начало другого, и одна дата на
-такой фрагмент ложна. Метки даты во фрагменте нет ни у блока, ни у перехода, ни у
+такой фрагмент ложна. Окно блока, в котором разных игл меньше, чем в окне
+основного тела, уступает окну основного тела — одно правило для лексического и
+семантического победителя (№780). Метки даты во фрагменте нет ни у блока, ни у перехода, ни у
 досье. Без моделей и сети.
 """
 from __future__ import annotations
@@ -127,8 +129,89 @@ def test_the_main_window_is_kept_when_the_winner_block_has_no_needles(tmp_path):
     d = s._gen.docs[str(s.graph / "Люди" / "Кира.md")]
     main = s._fragment(d, re.compile("несуществующая_игла"), 500, [])
     frag = s._block_fragment(d, 0, main, ["несуществующая_игла"],
-                             re.compile("несуществующая_игла"), 500, [], False)
+                             re.compile("несуществующая_игла"), 500, [])
     assert frag == main
+
+
+def _synonym_graph(tmp_path, first_block: str, pad: int = 60, tail: str = "") -> gs.GraphSearch:
+    """Узел из двух длинных блоков: «семантика» подделки выбирает блок с синонимом
+    (`провайдер` = `поставщик`), а иглы запроса лежат в другом блоке (№780)."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Встречи-архив", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    _write(g / "Системы", "Шлюз.md",
+           "# Шлюз\n## Связи\n" + first_block + " " + "провайдер " * pad + tail
+           + "\n## Расчёты\nдоговор подписан, оплата прошла. " + "склад приёмка " * 60 + "\n")
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    return s
+
+
+def _spy_winner(s, monkeypatch) -> list:
+    """Текст блоков-победителей, с которыми зван `_block_fragment` (`None` — победителя
+    нет). Лексического победителя нет вовсе (`_lex_winner` → `(None, 0)`): блок с тем же
+    заголовком мог выиграть и лексику, а так победитель бывает только из `sem_win`, и
+    тест идёт именно веткой семантического победителя (выходной круг n780-out2)."""
+    wins: list = []
+    real = s._block_fragment
+
+    def spy(d, win, *a):
+        wins.append(None if win is None else s._blocks(d)[win])
+        return real(d, win, *a)
+    monkeypatch.setattr(s, "_lex_winner", lambda *a: (None, 0))
+    monkeypatch.setattr(s, "_block_fragment", spy)
+    return wins
+
+
+def _sem_winner(wins: list, heading: str) -> str:
+    """Текст первого победителя; падает, если победителя нет или это не тот блок.
+    `None` нигде в `wins` — тоже падение: `_lex_winner` выключен на всём экземпляре, и
+    переход, появись он в фикстуре, ушёл бы на окно без победителя (n780-out3)."""
+    assert wins and None not in wins, "победителя семантики нет"
+    assert f"→ {heading}" in wins[0], f"победитель — не блок «{heading}»"
+    return wins[0]
+
+
+def test_a_semantic_winner_with_fewer_needles_gives_way_to_the_main_window(tmp_path, monkeypatch):
+    """Победитель семантики (синоним и одна игла) слабее окна основного тела (две
+    иглы): показано окно основного тела. До №780 показывался блок синонима, и игла
+    окна пропадала из выдачи — минус три вопроса бенча answer после №633."""
+    s = _synonym_graph(tmp_path, "договор")
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата", limit=3)
+    assert r.sem_used
+    _sem_winner(wins, "Связи")
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "оплата" in frag and "договор" in frag
+
+
+def test_a_semantic_winner_no_weaker_than_the_window_is_shown(tmp_path, monkeypatch):
+    """Окно блока-победителя несёт не меньше игл, чем окно основного тела, — показан
+    блок победителя (его дата ранжирует файл), а не окно основного тела."""
+    s = _synonym_graph(tmp_path, "договор и оплата")
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата", limit=3)
+    assert r.sem_used
+    _sem_winner(wins, "Связи")
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "провайдер" in frag and "склад" not in frag
+
+
+def test_the_rule_judges_the_shown_window_not_the_whole_block(tmp_path, monkeypatch):
+    """Блок-победитель несёт обе иглы, но дальше окна друг от друга: его окно — одна
+    игла, окно основного тела — две. Сравнение блока целиком показало бы окно с одной
+    иглой; сравнивается показанное окно — показано окно основного тела (вход n780-in1)."""
+    s = _synonym_graph(tmp_path, "договор", pad=150, tail="оплата")
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата", limit=3)
+    assert r.sem_used
+    _sem_winner(wins, "Связи")
+    block = wins[0]
+    assert "договор" in block and "оплата" in block, "в блоке целиком обе иглы"
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "оплата" in frag and "договор" in frag
+    assert "склад" in frag, "показано окно основного тела («Расчёты»), а не окно блока"
 
 
 def test_a_short_node_is_shown_whole_without_a_label(tmp_path):
@@ -233,6 +316,62 @@ def test_a_hop_has_no_label_on_the_third_line(tmp_path):
     lines = hop.split("\n")
     assert lines[0].startswith("• ") and lines[1].startswith("  ↳ по ссылке из ")
     assert not lines[2].startswith("  [")
+
+
+def test_a_hop_judges_the_shown_window_of_its_target(tmp_path, monkeypatch):
+    """Переход к длинной заметке: блок-победитель лексики несёт обе иглы, но дальше
+    окна; окно основного тела — обе рядом. Показано окно основного тела — правило
+    `_block_fragment` то же, что у выдачи (выходной круг n780-out1)."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Встречи-архив", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    _write(g / "Люди", "Кира.md", "# Кира\n## Связи\n- [[Встречи/2026-09-30_1000]] — встреча.\n")
+    _write(g / "Встречи", "2026-09-30_1000.md",
+           "# Встреча\n## Решения\nдоговор " + "наполнитель " * 150 + "оплата\n"
+           + "## Итоги\nдоговор и оплата сошлись. " + "приёмка " * 60 + "\n")
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    wins: list = []
+    real = s._block_fragment
+    monkeypatch.setattr(s, "_block_fragment", lambda d, win, *a: wins.append(
+        (d.rel, None if win is None else s._blocks(d)[win])) or real(d, win, *a))
+    r = s.search("Кира договор оплата", limit=1)
+    target = [t for rel, t in wins if rel == "Встречи/2026-09-30_1000.md"]
+    assert len(target) == 1, "встреча попала в показ, а не только в переход"
+    assert target[0] and "→ Решения" in target[0], "победитель лексики — дальний блок"
+    hop = next((b for b in r.blocks if "↳ по ссылке из" in b), None)
+    assert hop is not None, "переход из узла Кира на встречу"
+    frag = hop.split("\n")[2]
+    assert "договор" in frag and "оплата" in frag
+    assert "приёмка" in frag, "показано окно основного тела («Итоги»), а не окно блока"
+
+
+def _tie_graph(tmp_path) -> gs.GraphSearch:
+    """Окно основного тела (первый блок) и окно блока-победителя семантики (второй
+    блок, синоним) — по две иглы, наборы разные."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Встречи-архив", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    _write(g / "Системы", "Шлюз.md",
+           "# Шлюз\n## Расчёты\nоплата прошла, склад принял. " + "приёмка " * 120
+           + "\n## Связи\nдоговор и оплата " + "провайдер " * 60 + "\n")
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    return s
+
+
+def test_a_tie_in_count_shows_the_winner_block(tmp_path, monkeypatch):
+    """Счёт разных игл равен (2:2), наборы разные — показан блок победителя:
+    правило по числу игл, не по их набору (DS C1 n780-out1, понижен с опытом)."""
+    s = _tie_graph(tmp_path)
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата склад", limit=3)
+    assert r.sem_used
+    _sem_winner(wins, "Связи")
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "провайдер" in frag and "склад" not in frag
 
 
 # --------------------------------------------------- Е: чужая длина вектора

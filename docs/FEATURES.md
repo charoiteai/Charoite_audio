@@ -895,6 +895,9 @@ it signals degradation, it does not break the loop.
   above a fresh one when the dates sit in different blocks (№633). How a
   block is dated is described in the docstrings of `file_block_dates` and
   `chunks()` in `graph_search.py`. The fragment carries no date label.
+  It is cut from that block only if its window holds no fewer distinct query
+  words than the window of the main body; otherwise the main-body window is
+  shown — the same rule for a semantic and a lexical winner (№780).
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35
