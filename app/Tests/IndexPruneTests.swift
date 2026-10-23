@@ -61,31 +61,47 @@ final class IndexPruneTests: XCTestCase {
 
     func testUnreadableFileKeepsItsRecordDeletedFileLosesIt() async throws {
         let open = "Ядра/открытый-768.md", broken = "Ядра/битый-768.md", gone = "Ядра/удалённый-768.md"
+        let edited = "Люди/правленый-768.md"
         let graph = try makeTestGraph([(open, "обсудили бюджет проекта"),
                                        (broken, "бюджет второго проекта"),
-                                       (gone, "бюджет третьего проекта")])
+                                       (gone, "бюджет третьего проекта"),
+                                       (edited, "решили: бюджет режем")])
         defer { try? FileManager.default.removeItem(at: graph) }
+        // mtime — целые секунды: вернуть файлу ту же версию после порчи
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+        for rel in [broken, edited] {
+            try FileManager.default.setAttributes([.modificationDate: stamp],
+                                                  ofItemAtPath: graph.appendingPathComponent(rel).path)
+        }
         let index = makeTestIndex { texts in texts.map { _ in [1, 0] } }
 
         await search(graph, index)
         await index.drainForTests()
-        for rel in [open, broken, gone] {
+        for rel in [open, broken, gone, edited] {
             let chunks = await index.chunkCount(of: rel)
             XCTAssertGreaterThan(chunks, 0, "\(rel) не попал в индекс — тест проверял бы пустоту")
         }
 
-        // не UTF-8 — GraphCache не откроет файл; mtime вперёд, чтобы кэш текстов не отдал старое
-        let brokenURL = graph.appendingPathComponent(broken)
-        try Data([0xFF, 0xFE, 0x41]).write(to: brokenURL)
-        try touch(brokenURL, ahead: 10)
+        // не UTF-8 — GraphCache не откроет файл. Битый — с прежним mtime (кэш
+        // текстов сброшен, иначе отдал бы старое); правленый — с новым: так
+        // выглядит файл, который «Забыть встречу» переписала, а он не открылся.
+        for rel in [broken, edited] {
+            try Data([0xFF, 0xFE, 0x41]).write(to: graph.appendingPathComponent(rel))
+        }
+        try FileManager.default.setAttributes([.modificationDate: stamp],
+                                              ofItemAtPath: graph.appendingPathComponent(broken).path)
+        try touch(graph.appendingPathComponent(edited), ahead: 10)
+        await GraphCache.shared.clear()
         try FileManager.default.removeItem(at: graph.appendingPathComponent(gone))
 
         await search(graph, index)
         await index.drainForTests()
         let brokenChunks = await index.chunkCount(of: broken)
         let goneChunks = await index.chunkCount(of: gone)
+        let editedChunks = await index.chunkCount(of: edited)
         XCTAssertGreaterThan(brokenChunks, 0, "файл на диске, который не открылся, потерял запись индекса")
         XCTAssertEqual(goneChunks, 0, "удалённый файл остался в индексе")
+        XCTAssertEqual(editedChunks, 0, "непрочитанный файл новой версии хранит старое превью (финальный Opus I1)")
     }
 
     /// Запертая подпапка держит свои записи, но не выключает prune остального
@@ -212,6 +228,10 @@ final class IndexPruneTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: graph) }
         let err = NSError(domain: NSCocoaErrorDomain, code: 257)
         XCTAssertNil(ArchiveSearch.WalkErrors(graph: graph).alive([]), "пустой обход стёр бы весь индекс")
+
+        let version = try XCTUnwrap(ArchiveSearch.WalkErrors(graph: graph).alive(["Люди/a.md"], unread: ["Люди/a.md": 2]))
+        XCTAssertTrue(version.keeps("Люди/a.md", mtime: 2))
+        XCTAssertFalse(version.keeps("Люди/a.md", mtime: 1), "непрочитанный файл новой версии держит старую запись")
 
         let file = ArchiveSearch.WalkErrors(graph: graph)
         XCTAssertTrue(file.record(graph.appendingPathComponent("Люди/a.md"), err))

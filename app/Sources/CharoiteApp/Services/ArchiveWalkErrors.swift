@@ -42,14 +42,16 @@ extension ArchiveSearch {
         /// всё, том не смонтирован — prune стёр бы весь индекс (out2 C1).
         /// Цена: превью последней заметки опустевшего графа живёт до первой
         /// новой заметки.
-        func alive(_ keys: Set<String>) -> SemanticIndex.Alive? {
+        func alive(_ keys: Set<String>, unread: [String: Double] = [:]) -> SemanticIndex.Alive? {
             if !list.isEmpty {
-                let shown = list.prefix(3).map { "\($0.rel.isEmpty ? "<корень>" : $0.rel) (\($0.code))" }
+                // только верхняя папка: глубже — названия встреч, а журнал
+                // «Забыть встречу» не чистит (финальный Opus M2)
+                let shown = list.prefix(3).map { "\($0.rel.split(separator: "/").first.map(String.init) ?? "<корень>") (\($0.code))" }
                 // путь из графа — аргументом, не в формат: папка «100%s» уронила бы NSLog
                 NSLog("%@", "поиск: обход графа неполный, ошибок \(list.count): " + shown.joined(separator: ", "))
             }
             if keys.isEmpty || list.contains(where: { $0.rel.isEmpty }) { return nil }
-            return SemanticIndex.Alive(seen: keys, unscanned: list.map(\.rel))
+            return SemanticIndex.Alive(seen: keys, unscanned: list.map(\.rel), unread: unread)
         }
     }
 }
