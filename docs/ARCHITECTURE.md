@@ -806,8 +806,12 @@ graph root; the doctor keeps no list of extensions, and an absolute path,
 — `Ядра/X` pairs and tier3 redirect stubs share a name by design and are
 not counted as duplicates. Every layer recognises a stub with one detector,
 `src/charoite_graph/redirects.py`, by the structure of the first heading
-(`# Name → [[Canon]]`) rather than by tier3's literal mark: the cloud marks
-its merges in its own words. When the cloud review's edits are
+(`# Name → [[Canon]]`, also `→ см. [[Canon]]` and forks to several
+canons), a leading «merged into [[Canon]]» line or the `дубль-слит` tag,
+rather than by tier3's literal mark: the cloud and manual revisions mark
+merges in their own words. A stub that grew past 4000 characters is still a
+stub when a second sign backs the heading. The meeting writer never writes
+into a stub: without a single canon the meeting goes to `_Кандидаты.md`. When the cloud review's edits are
 carried from the sandbox into the graph, every link target is checked
 against the live graph and the nodes this run created: a link to a node
 that exists in neither becomes plain text, the log names the file and the
