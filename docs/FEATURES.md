@@ -187,6 +187,8 @@
    never published (archive folder, the graph's «Документация», cloud
    review); neither are the live hints and draft of such a meeting. A reply
    that started over the other side's last words stays in the meeting whole.
+   The transcript says so in its notes tail («Запись после конца звонка…»);
+   co-thinking notes written after the call end move to the same file.
    No split when the end of the call is not proven: a room meeting, a
    call-channel loss that never came back, segments without channel support
    when the microphone was not labelled by Nemotron, or a last call voice
