@@ -904,10 +904,12 @@ AFTER_CALL_CUT_NOTE = (AFTER_CALL_CUT_PREFIX + " ({end}–{last}) вынесен
 _NOTE_AT = re.compile(r"^> (\d\d):(\d\d) ")
 
 
-def notes_before(block: str, base, end: float) -> tuple[str, int]:
+def notes_before(block: str, base, end: float) -> tuple[str, list[str]]:
     """Хвост «Ко-мышления» без мыслей модели позже конца звонка (№733, I4
     выходного круга): демон писал их по живой ленте, где запись после звонка
-    ещё внутри. Возвращает хвост и число снятых заметок.
+    ещё внутри. Возвращает хвост и снятые строки — они уходят в файл
+    `_после_звонка`, а не пропадают (I3 Sonnet out2: заметка отстаёт от речи,
+    и 📌 о прощальной договорённости может лечь минутой позже конца звонка).
 
     Заметка помечена часами:минутами — той же минуты, что конец звонка,
     остаётся; строка без отметки времени остаётся. След записи
@@ -916,9 +918,10 @@ def notes_before(block: str, base, end: float) -> tuple[str, int]:
     продолжение без него: снимается целиком, сирот не остаётся (M1/M2 out2)."""
     import datetime as dt
     cut = (base + dt.timedelta(seconds=end)).replace(second=0, microsecond=0)
-    kept, dropped, skipping = [], 0, False
+    kept, dropped, skipping = [], [], False
     for line in block.split("\n"):
         if skipping and not line.startswith("> ") and line.strip():
+            dropped.append(line)
             continue
         skipping = False
         m = _NOTE_AT.match(line)
@@ -927,7 +930,7 @@ def notes_before(block: str, base, end: float) -> tuple[str, int]:
             if at < base.replace(second=0, microsecond=0):
                 at += dt.timedelta(days=1)       # встреча через полночь
             if at > cut:
-                dropped += 1
+                dropped.append(line)
                 skipping = True
                 continue
         kept.append(line)
@@ -940,13 +943,15 @@ def after_call_path(live: pathlib.Path) -> pathlib.Path:
 
 
 def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
-                     lines: list[tuple[float, float, str, str]], fmt) -> None:
+                     lines: list[tuple[float, float, str, str]], fmt,
+                     notes: list[str] = ()) -> None:
     """Записать реплики после конца звонка отдельным файлом — стенограмма не
     теряет ни слова, а речь встречи их не содержит. Подписи — метки разметки:
     имена встречи сюда не переносятся, голос из комнаты не должен получить имя
-    собеседника. Хвоста нет — прежний файл не трогаем: его могли править."""
+    собеседника. Хвоста нет — прежний файл не трогаем: его могли править.
+    `notes` — заметки ко-мышления, снятые со стенограммы `notes_before`."""
     path = after_call_path(live)
-    if not lines or end is None:
+    if not (lines or notes) or end is None:
         if path.exists():
             log(f"запись после звонка не выделена, прежний {path.name} оставлен")
         return
@@ -954,9 +959,11 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
     for s, e, spk, text in lines:
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
         body += [f"**{spk}** [{span}]:", text, ""]
+    if notes:
+        body += [f"## {transcript.NOTES_TITLE} после звонка", *notes, ""]
     text, _ = privacy.scrub_local_paths("\n".join(body).rstrip() + "\n")
     safe_write.write_text(path, text)
-    log(f"после звонка: {len(lines)} реплик → {path.name}")
+    log(f"после звонка: {len(lines)} реплик, {sum(n.startswith('> ') for n in notes)} заметок → {path.name}")
 
 
 def paragraphs(segments: list[tuple[float, float, str]], gap: float = 2.0) -> list[list]:
@@ -1814,12 +1821,11 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     # ко-мышление из живого черновика — переносим
     live_text = live.read_text(encoding="utf-8")
     m = re.search(rf"\n---\n## {transcript.NOTES_TITLE}.*", live_text, re.S)
+    late_notes: list[str] = []
     if m:
         notes = m.group(0).lstrip("\n")
         if tail.after and tail.end is not None:
-            notes, dropped = notes_before(notes, base, tail.end)
-            if dropped:
-                log(f"после звонка: заметок ко-мышления снято {dropped} — писались по записи после звонка")
+            notes, late_notes = notes_before(notes, base, tail.end)
         body.append(notes)
 
     final_text = "\n".join(body).rstrip() + "\n"
@@ -1838,7 +1844,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     final_text = canonize(final_text, cfg)
     # Запись после звонка — до финала: упади пересборка между ними, на диске
     # останется живая стенограмма целиком, а не финал без хвоста и без файла.
-    write_after_call(live, stamp, tail.end, after_lines, fmt)
+    write_after_call(live, stamp, tail.end, after_lines, fmt, late_notes)
     write_final(live, final_text, live_text)
     _finish(live, final_text, meta, cfg)
     return live
