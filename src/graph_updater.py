@@ -1226,7 +1226,8 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
 # пар этого вердикта заново (менять — с миграцией строк). Состояния склейки в
 # журнале нет — оно в шапке узла (AUTO_ALIASES_KEY, №286).
 _HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескольким узлам", "near": "похоже на существующий узел",
-             "aliased": "псевдоним по повтору", "by_alias": "по псевдониму узла"}
+             "aliased": "псевдоним по повтору", "by_alias": "по псевдониму узла",
+             "stub": "ядро — заглушка без канона в Ядрах"}
 
 # Папки, чьи псевдонимы читаются глобально и куда автопсевдоним может быть
 # записан. Люди — нет, и на чтении, и на записи: человек с псевдонимом
@@ -1653,7 +1654,9 @@ def _find_canonical_raw(graph: pathlib.Path, name: str,
         hits = []
         for f in _alias_index(files).get(key, []):
             live = follow_stubs(graph, f)
-            if live is not None and live not in hits and (folder is None or live.parent.name == folder):
+            # канон вне папок узлов (Досье, служебное) псевдонимом не отдаём (n777-out1 Sonnet M10)
+            if (live is not None and live not in hits and live.parent.name in NODE_FOLDERS
+                    and (folder is None or live.parent.name == folder)):
                 hits.append(live)
         if len(hits) == 1:
             return hits[0]
@@ -2578,6 +2581,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     stamp_line = (f"- [[{meeting_link}]] — {upd}{anchor}" if upd
                   else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
+        snap = safe_write.stat_snapshot(p)     # до чтения: запись — только в прочитанное
         text = _read_node(p, meeting_link)
         if text is None:
             return
@@ -2585,11 +2589,15 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             # resolve_core_path отдаёт заглушку, когда живого канона нет: цели нет
             # или их несколько, канон в другой папке, канон пропал. Писать в неё
             # нельзя — так выросли заглушки до 20 тыс. знаков (n777-in1 C1).
-            # Развилка «→ см. [[A]] · [[B]]» — в кандидаты, как ядро на несколько тем.
-            targets = redirects.stub_info(text).targets
-            if len(targets) > 1:
-                _journal_held_entity(graph, "Ядра", core["имя"], "ядро", "ambiguous",
-                                     [t.removesuffix(".md") for t in targets], meeting_link)
+            # Человеку — строкой в `_Кандидаты.md`, не только машинным журналом:
+            # развилка «→ см. [[A]] · [[B]]» — как ядро на несколько тем, одна цель
+            # вне Ядер или пропавшая — «заглушка без канона» (n777-out1 Sonnet I3 / DS M6).
+            info = redirects.stub_info(text)
+            cands = [t.removesuffix(".md") for t in info.targets]
+            if not cands and (t := redirects.stub_target(text)):
+                cands = [t.removesuffix(".md")]
+            _journal_held_entity(graph, "Ядра", core["имя"], "ядро",
+                                 "ambiguous" if len(cands) > 1 else "stub", cands, meeting_link)
             _journal_graph_event("заглушка без канона", f"Ядра/{p.stem}", meeting_link)
             print(f"граф: ядро «{p.stem}» — заглушка без живого канона в Ядрах, встреча {meeting_link} не дописана")
             return
@@ -2620,7 +2628,13 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
                 line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
                 text = _insert_chronicle_line(text, line)
-        safe_write.write_text(p, text)
+        # под снимком: слияние, случившееся между чтением и записью (ночной tier3,
+        # облако), иначе затёрлось бы живым текстом с хроникой (n777-out1 DS I4 /
+        # Sonnet I4) — как у сущностей в _stamp_entity
+        if not safe_write.write_text(p, text, expect=snap):
+            _journal_graph_event("ядро изменилось под рукой", f"Ядра/{p.stem}", meeting_link)
+            print(f"граф: ядро «{p.stem}» изменилось во время разбора, встреча {meeting_link} не дописана")
+            return
     else:
         safe_write.write_text(
             p,
