@@ -983,3 +983,16 @@ def test_hints_of_a_meeting_with_after_call_record_are_not_given(tmp_path, monke
     (tdir / "2026-09-13_1200_после_звонка.md").write_text("# После звонка\n", encoding="utf-8")
     out = mcp_server.sufler_hints()
     assert "ужин" not in out and "после конца звонка" in out
+
+
+def test_hints_stay_closed_when_the_after_call_file_is_deleted(tmp_path, monkeypatch):
+    """I2 DS: строка среза в финале — признак, переживающий удаление файла хвоста."""
+    import rebuild_transcript
+    import transcript
+    root = tmp_path / "данные"
+    root.mkdir()
+    final = transcript.append_note("# Встреча\n**Инга** [10:21]:\nсмета\n",
+                                   rebuild_transcript.AFTER_CALL_CUT_NOTE.format(end="10:40", last="10:52"))
+    tdir = _transcripts(root, monkeypatch, text=final)
+    (tdir / "2026-09-13_1200_hints.md").write_text("подсказка про ужин\n", encoding="utf-8")
+    assert "ужин" not in mcp_server.sufler_hints()

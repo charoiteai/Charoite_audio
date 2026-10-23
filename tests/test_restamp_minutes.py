@@ -697,4 +697,59 @@ def test_minutes_written_by_mcp_during_rebuild_are_judged_by_a_fresh_passport(tm
     live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин и мусор\n", "b" * 64, cut=False)
     _FakeLLM.fail = True
     owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
-    assert owned == "human" and not mpath.exists() and (tmp_path / ".prev" / mpath.name).exists()
+    assert owned == "human" and not mpath.exists()
+    assert "ужин и мусор" in (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8"), "перенос, а не удаление (M5 DS)"
+
+
+def test_minutes_written_by_mcp_while_the_model_runs_are_judged_at_decision_time(tmp_path, monkeypatch):
+    """C1 Haiku проверки правок Opus: MCP «Минутки» записали минутки с бытом во
+    время вызова модели, модель отказала — минутки уходят в .prev/, не остаются."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    def mcp_then_fail(self, text, recording_note=None):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин\n", "b" * 64, cut=False)
+        raise RuntimeError("ollama лежит")
+        yield ""
+    monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_fail)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and not mpath.exists()
+    assert "ужин" in (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8")
+
+
+def test_hand_edit_during_the_model_call_is_left_alone(tmp_path, monkeypatch):
+    """Байты, которых паспорт не знает (правка человека за время модели), отсрочка
+    не трогает."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    def edit_then_fail(self, text, recording_note=None):
+        mpath.write_text("# Мои минутки\n", encoding="utf-8")
+        raise RuntimeError("ollama лежит")
+        yield ""
+    monkeypatch.setattr(_FakeLLM, "minutes", edit_then_fail)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == "# Мои минутки\n"
+
+
+def test_mcp_minutes_are_not_restamped_with_live_session_names(tmp_path, monkeypatch):
+    """M4 DS: имена перештамповки — по паспорту решения: минутки MCP (с хешем
+    источника) метками живой сессии не штампуются."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n**Собеседник 2** — смета\n", "b" * 64, cut=False)
+    _FakeLLM.fail = True
+    long_final = "**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n"
+    rebuild_transcript.finalize_minutes(live, long_final, meta, {}, rebuild_transcript.minutes_names(meta))
+    assert "Инга" not in mpath.read_text(encoding="utf-8")
+
+
+def test_unreadable_sidecar_does_not_break_the_minutes_decision(tmp_path, monkeypatch):
+    """M3 DS: сбой ввода-вывода сайдкара в решении о минутках — снимок, не исключение."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    def boom(*a, **k):
+        raise OSError("iCloud")
+    monkeypatch.setattr(live_sidecar, "sidecar_for", boom)
+    assert rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {}) in ("regenerated", "human", "restamped")

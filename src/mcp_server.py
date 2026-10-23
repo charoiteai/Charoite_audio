@@ -450,6 +450,15 @@ def sufler_make_minutes() -> str:
         forget_fit(source.speech)
 
 
+def _cut_in(f: pathlib.Path) -> bool:
+    """Строка среза в финале — признак, переживающий удаление файла хвоста
+    (I2 DS проверки правок Opus по №733); не прочиталось — считаем срезом."""
+    try:
+        return meeting_source.of(f, f.read_text(encoding="utf-8")).cut
+    except (OSError, UnicodeDecodeError):
+        return True
+
+
 @_tool
 def sufler_hints() -> str:
     """Сохранённые подсказки последней встречи (авто и ручные)."""
@@ -460,7 +469,8 @@ def sufler_hints() -> str:
     # Подсказки встречи с записью после звонка демон писал и по быту: выход в
     # чат — тот же выход из машины, правило то же, что у архива (M3 Opus по №733)
     after = f.with_name(f.stem + meeting_stamp.AFTER_CALL_SUFFIX + ".md")
-    if h.exists() and not meeting_stamp.publishable([h, after] if after.exists() else [h]):
+    if h.exists() and (not meeting_stamp.publishable([h, after] if after.exists() else [h])
+                       or _cut_in(f)):
         return "Подсказки встречи с записью после конца звонка не выдаются: демон писал их и по ней."
     return _срез(h.read_text(encoding="utf-8"), slice(-4000, None)) if h.exists() else "Подсказок пока нет."
 
