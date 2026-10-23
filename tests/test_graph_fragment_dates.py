@@ -165,8 +165,10 @@ def _spy_winner(s, monkeypatch) -> list:
 
 
 def _sem_winner(wins: list, heading: str) -> str:
-    """Текст первого победителя; падает, если победителя нет или это не тот блок."""
-    assert wins and wins[0], "победителя семантики нет"
+    """Текст первого победителя; падает, если победителя нет или это не тот блок.
+    `None` нигде в `wins` — тоже падение: `_lex_winner` выключен на всём экземпляре, и
+    переход, появись он в фикстуре, ушёл бы на окно без победителя (n780-out3)."""
+    assert wins and None not in wins, "победителя семантики нет"
     assert f"→ {heading}" in wins[0], f"победитель — не блок «{heading}»"
     return wins[0]
 
@@ -336,7 +338,8 @@ def test_a_hop_judges_the_shown_window_of_its_target(tmp_path, monkeypatch):
         (d.rel, None if win is None else s._blocks(d)[win])) or real(d, win, *a))
     r = s.search("Кира договор оплата", limit=1)
     target = [t for rel, t in wins if rel == "Встречи/2026-09-30_1000.md"]
-    assert target and target[0] and "→ Решения" in target[0], "победитель лексики — дальний блок"
+    assert len(target) == 1, "встреча попала в показ, а не только в переход"
+    assert target[0] and "→ Решения" in target[0], "победитель лексики — дальний блок"
     hop = next((b for b in r.blocks if "↳ по ссылке из" in b), None)
     assert hop is not None, "переход из узла Кира на встречу"
     frag = hop.split("\n")[2]
