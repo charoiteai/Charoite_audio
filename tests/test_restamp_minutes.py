@@ -274,7 +274,7 @@ def test_rebuild_records_hash_after_canonization_only_for_machine_text():
     # ретро-прогона (№309): канон раньше хеша, хеш — только для машинного файла
     passport = src[src.index("def record_minutes_passport("):src.index("def finalize_minutes(")]
     i_can = passport.index("canonize_file(mpath, cfg)")
-    i_sha = passport.index("_remember_minutes_sha(live, _sha(mpath.read_text(")
+    i_sha = passport.index("minutes_sha = _sha(mpath.read_text(")
     assert i_can < i_sha, "порядок: canonize → хеш по байтам с диска"
     assert 'if outcome == "human":\n        return' in passport[i_can:i_sha], "хеш — только для машинного файла"
     body = src[src.index("def finalize_minutes("):src.index("def restamp_minutes(")]
@@ -627,3 +627,38 @@ def test_cut_note_spoken_in_the_body_does_not_count_as_a_cut(tmp_path, monkeypat
     said = "**Инга** [10:21]:\nЗапись после конца звонка пришлю.\n"
     assert rebuild_transcript.finalize_minutes(live, said, meta, {}, {}) == "restamped"
     assert _FakeLLM.calls == []
+
+
+def test_failed_passport_write_does_not_keep_an_old_cut_proof(tmp_path, monkeypatch):
+    """I1 Sonnet = I1 Haiku out5: регенерация из финала без среза, паспорт которой
+    не записался, не оставляет старую пару «срез == источник» — отказ модели на
+    финале со срезом не перештамповывает минутки с бытом."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    first = _cut("**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n")
+    rebuild_transcript.record_minutes_passport(
+        live, mpath, rebuild_transcript.finalize_minutes(live, first, meta, {}, {}), first, {})
+    whole = "**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n**Марк** [10:53]:\nужин и мусор\n"
+    passport = live_sidecar.read(live)
+    real_remember = live_sidecar.remember
+    with monkeypatch.context() as m:
+        m.setattr(_FakeLLM, "answer", _FakeLLM.answer + "- [ ] **Марк** — ужин и мусор\n")
+        m.setattr(live_sidecar, "merge", lambda *a, **k: False)
+        m.setattr(live_sidecar, "remember", lambda live, key, value, bare=None:
+                  False if key == "minutes_source_sha256" else real_remember(live, key, value, bare))
+        rebuild_transcript.record_minutes_passport(
+            live, mpath, rebuild_transcript.finalize_minutes(live, whole, passport, {}, {}), whole, {})
+    assert live_sidecar.read(live) == passport, "паспорт регенерации пишется целиком или никак"
+    _FakeLLM.fail = True
+    edited = _cut("**Инга** [10:21]:\n" + "Смету пришлю в пятницу. " * 40 + "\n")
+    owned = rebuild_transcript.finalize_minutes(live, edited, live_sidecar.read(live), {}, {})
+    assert owned != "restamped", "минутки с бытом не выдаются за собранные из финала со срезом"
+
+
+def test_regeneration_with_an_unwritable_prev_keeps_the_minutes_and_does_not_raise(tmp_path, monkeypatch):
+    """I2 Haiku out5: прежняя версия не сохраняется в .prev/ — минутки не
+    перезаписываются, исключение ФС не роняет прогон после записанного финала."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    (tmp_path / ".prev").write_text("не каталог", encoding="utf-8")
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == draft

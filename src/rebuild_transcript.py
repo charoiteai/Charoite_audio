@@ -963,11 +963,12 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
         return
     notes = _merged_after_call_notes(path, list(notes))
     body = [f"# После звонка {stamp}", "", AFTER_CALL_NOTE.format(end=fmt(end)), ""]
-    prior = _after_call_body(path) if not lines else ""
+    prior = _after_call_replies(path) if not lines else ""
     if prior:
         # STT хвоста в этом проходе пуст — реплики прежнего файла (и правки
-        # человека в них) не затираются (I2 Sonnet out4)
-        body = [prior, ""]
+        # человека в них) не затираются (I2 Sonnet out4); шапка и время конца —
+        # этого прохода (Minor 1 Sonnet out5)
+        body += [prior, ""]
     for s, e, spk, text in lines:
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
         body += [f"**{spk}** [{span}]:", text, ""]
@@ -975,17 +976,30 @@ def write_after_call(live: pathlib.Path, stamp: str, end: float | None,
         body += [f"## {transcript.NOTES_TITLE} после звонка", *notes, ""]
     text, _ = privacy.scrub_local_paths("\n".join(body).rstrip() + "\n")
     safe_write.write_text(path, text)
-    log(f"после звонка: {len(lines)} реплик, {sum(n.startswith('> ') for n in notes)} заметок → {path.name}")
+    replies = f"{len(lines)} реплик" if lines else ("реплики прежнего прохода сохранены" if prior else "0 реплик")
+    log(f"после звонка: {replies}, {sum(n.startswith('> ') for n in notes)} заметок → {path.name}")
 
 
-def _after_call_body(path: pathlib.Path) -> str:
-    """Прежний файл `_после_звонка` без раздела снятых заметок."""
+def _read_after_call(path: pathlib.Path) -> str:
+    """Текст прежнего файла `_после_звонка`; нечитаемый — пусто: файл хвоста
+    не роняет запись финала (M4 Haiku out5)."""
     try:
-        old = path.read_text(encoding="utf-8")
-    except OSError:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return ""
+
+
+def _after_call_replies(path: pathlib.Path) -> str:
+    """Реплики прежнего файла `_после_звонка`: без шапки с временем конца и без
+    раздела снятых заметок — их пишет `write_after_call` этого прохода."""
+    old = _read_after_call(path)
     at = old.find(f"\n## {transcript.NOTES_TITLE} после звонка\n")
-    return (old[:at] if at >= 0 else old).rstrip("\n")
+    old = old[:at] if at >= 0 else old
+    lines = old.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("**"):
+            return "\n".join(lines[i:]).rstrip("\n")
+    return ""
 
 
 def _merged_after_call_notes(path: pathlib.Path, notes: list[str]) -> list[str]:
@@ -993,10 +1007,7 @@ def _merged_after_call_notes(path: pathlib.Path, notes: list[str]) -> list[str]:
     прежние первыми. Повтор — заметка целиком (строка «> » с продолжением):
     построчно пропадали одинаковые строки продолжения разных заметок (Haiku-5 out4)."""
     head = f"## {transcript.NOTES_TITLE} после звонка"
-    try:
-        old = path.read_text(encoding="utf-8")
-    except OSError:
-        return notes
+    old = _read_after_call(path)
     at = old.find("\n" + head + "\n")
     prior = old[at + len(head) + 2:].rstrip("\n").split("\n") if at >= 0 else []
     seen = set(_note_blocks(prior))
@@ -2181,16 +2192,20 @@ def record_minutes_passport(live: pathlib.Path, mpath: pathlib.Path, outcome: st
     if outcome == "human":
         return
     try:
-        _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
+        minutes_sha = _sha(mpath.read_text(encoding="utf-8"))
+        if outcome != "regenerated":
+            _remember_minutes_sha(live, minutes_sha)
+            return
         # источник — речь + оговорка о записи, тем же объектом, что читает
         # fresh-проверка в finalize_minutes: писатель и читатель физически не
         # могут разъехаться (Critical DS / Important GLM входного круга по №317)
         source_sha = meeting_source.of(live, final_text).sha()
-        if (outcome == "regenerated" and _has_after_call_cut(final_text)
-                and not _remember_sha(live, "minutes_cut_source_sha256", source_sha)):
-            log("признак «минутки собраны из финала со срезом» не записан — "
-                "при отказе модели они уйдут в .prev/ и соберутся заново")
-        if outcome == "regenerated" and not _remember_sha(live, "minutes_source_sha256", source_sha):
+        # Паспорт регенерации — одним merge, ключ среза пишется всегда: при
+        # сбое записи источника старая пара «срез == источник» переживала
+        # регенерацию из финала без среза (I1 Sonnet = I1 Haiku out5)
+        passport = {"minutes_sha256": minutes_sha, "minutes_source_sha256": source_sha,
+                    "minutes_cut_source_sha256": source_sha if _has_after_call_cut(final_text) else ""}
+        if not live_sidecar.merge(live, passport):
             # Без этого хеша minutes_names сочтёт минутки живыми и следующая
             # перештамповка возьмёт имена live.json на нумерацию пересборки
             # (DS I3 по #551): сказать громко, пока минутки нетронуты
@@ -2304,9 +2319,15 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         participants=action_items.participants_of(speech, owner=user_name),
         lang=str(sufler.get("language") or "ru"))
     if current is not None:
+        # без сохранённой прежней версии минутки не перезаписываются; ошибка ФС
+        # не роняет прогон после записанного финала (I2 Haiku out5)
         prev_dir = live.parent / ".prev"
-        prev_dir.mkdir(exist_ok=True)
-        safe_write.write_text(prev_dir / mpath.name, current)
+        try:
+            prev_dir.mkdir(exist_ok=True)
+            safe_write.write_text(prev_dir / mpath.name, current)
+        except OSError as exc:
+            log(f"минутки: прежняя версия не сохранена в .prev/ ({exc}) — оставлены как есть")
+            return "human"
     # Гейт в обе стороны: существовавший файл — тем же снимком, отсутствовавший
     # — «его по-прежнему нет»: mcp «Минутки» или редактор за время генерации
     # могли создать документ (GLM Critical по #483).
