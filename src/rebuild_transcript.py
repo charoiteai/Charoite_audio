@@ -889,6 +889,37 @@ def resolve_channel_segments(
 
 AFTER_CALL_NOTE = ("Запись шла после конца звонка ({end}): это не часть встречи — в протокол, "
                    "разбор, граф и архив она не идёт. Подписи голосов не проверялись.")
+# Минутки при записи после звонка и отказе модели (№733, Critical Haiku
+# выходного круга): черновик демона собран по живой ленте с хвостом внутри,
+# перештамповать его — отдать быт в протокол. Черновик уходит в .prev/, на
+# его месте — эта пометка; исход машинный, источник не запоминается, и
+# следующая пересборка соберёт минутки заново.
+MINUTES_AFTER_CALL_PENDING = ("Минутки не собраны: модель не ответила, а черновик живой ленты "
+                              "содержит запись после конца звонка — он отложен в .prev/. "
+                              "Пересоберите встречу, когда модель свободна.")
+
+
+_NOTE_AT = re.compile(r"^> (\d\d):(\d\d) ")
+
+
+def notes_before(block: str, base, end: float) -> str:
+    """Хвост «Ко-мышления» без заметок позже конца звонка (№733, I4 выходного
+    круга): демон писал их по живой ленте, где запись после звонка ещё внутри.
+    Заметка помечена часами:минутами — заметки той же минуты, что конец
+    звонка, остаются; строка без отметки времени остаётся."""
+    import datetime as dt
+    cut = (base + dt.timedelta(seconds=end)).replace(second=0, microsecond=0)
+    kept = []
+    for line in block.split("\n"):
+        m = _NOTE_AT.match(line)
+        if m:
+            at = base.replace(hour=int(m[1]), minute=int(m[2]), second=0, microsecond=0)
+            if at < base.replace(second=0, microsecond=0):
+                at += dt.timedelta(days=1)       # встреча через полночь
+            if at > cut:
+                continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def after_call_path(live: pathlib.Path) -> pathlib.Path:
@@ -1772,7 +1803,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     live_text = live.read_text(encoding="utf-8")
     m = re.search(rf"\n---\n## {transcript.NOTES_TITLE}.*", live_text, re.S)
     if m:
-        body.append(m.group(0).lstrip("\n"))
+        notes = m.group(0).lstrip("\n")
+        if tail.after and tail.end is not None:
+            notes = notes_before(notes, base, tail.end)
+        body.append(notes)
 
     final_text = "\n".join(body).rstrip() + "\n"
     final_text = _with_recording_summary(live, final_text)
@@ -2153,10 +2187,14 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     try:
         doc = "".join(LLM(cfg).minutes(speech, recording_note=source.recording_note)).strip()
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
-        log(f"минутки не пересобраны ({type(e).__name__}: {e}) — перештамповка")
+        log(f"минутки не пересобраны ({type(e).__name__}: {e})")
+        if after_call:
+            return _defer_live_draft(mpath, before, current, live)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if not doc:
-        log("минутки не пересобраны (модель промолчала) — перештамповка")
+        log("минутки не пересобраны (модель промолчала)")
+        if after_call:
+            return _defer_live_draft(mpath, before, current, live)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     # Те же шаги, что у кнопки «Протокол», — общим входом минуток (№732):
     # сверка по тому множеству, что видела модель (речь + оговорка, DS I5),
@@ -2182,6 +2220,31 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         f"({len(final_text)} знаков → {len(doc)}, {time.monotonic() - t0:.0f}с"
         + (", прежняя версия → .prev/" if current is not None else "") + ")")
     return "regenerated"
+
+
+def _defer_live_draft(mpath: pathlib.Path, before, current: str | None,
+                      live: pathlib.Path) -> str:
+    """Отказ модели при записи после звонка: черновик демона — в .prev/, на
+    его месте пометка `MINUTES_AFTER_CALL_PENDING` (№733).
+
+    Перештамповка оставила бы в протоколе хвост живой ленты. Исход —
+    «restamped»: файл машинный, хеш снимается, источник — нет, и следующая
+    пересборка зовёт модель. Черновика не было или файл сменился под
+    пересборкой — «human», как у `_fallback_restamp`.
+    """
+    if current is None or safe_write.stat_snapshot(mpath) != before:
+        if current is not None:
+            log("минутки сменились под пересборкой — оставлены как есть")
+        return "human"
+    prev_dir = live.parent / ".prev"
+    prev_dir.mkdir(exist_ok=True)
+    safe_write.write_text(prev_dir / mpath.name, current)
+    stub = f"# Минутки {meeting_stamp.stamp_of(live.stem) or live.stem}\n\n> ⚠️ {MINUTES_AFTER_CALL_PENDING}\n"
+    if not safe_write.write_text(mpath, stub, expect=before):
+        log("минутки сменились под пересборкой — оставлены как есть")
+        return "human"
+    log("минутки: черновик живой ленты с записью после звонка → .prev/, на месте — пометка")
+    return "restamped"
 
 
 def _fallback_restamp(mpath: pathlib.Path, before, current: str | None,

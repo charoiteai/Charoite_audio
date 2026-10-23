@@ -1951,6 +1951,30 @@ def test_owner_speech_after_the_call_goes_to_its_own_file_not_the_transcript(mee
     assert "Собеседник" not in after
 
 
+def test_live_notes_after_the_call_end_are_not_carried_into_the_transcript(meeting, monkeypatch):
+    """I4 выходного круга №733: заметки «Ко-мышления» демон писал по живой ленте,
+    где запись после звонка ещё внутри. Позже минуты конца звонка — не
+    переносятся; той же минуты и без отметки времени — переносятся."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["live"].write_text(
+        "живая стенограмма\n\n---\n## Ко-мышление\n> 14:30 📌 смета к пятнице\n"
+        "> 14:31 💭 ужин и мусор\n> канал собеседников: без пропусков\n", encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert "смета к пятнице" in text and "без пропусков" in text
+    assert "ужин" not in text
+
+
+def test_notes_before_keeps_the_end_minute_and_crosses_midnight():
+    import datetime as dt
+    base = dt.datetime(2026, 8, 20, 23, 58, 30)
+    block = "---\n## Ко-мышление\n> 23:59 📌 до конца\n> 00:00 💭 после\n> 00:01 💭 позже"
+    assert rt.notes_before(block, base, 60.0) == "---\n## Ко-мышление\n> 23:59 📌 до конца"
+    assert "00:00" in rt.notes_before(block, base, 100.0)
+    assert "00:01" not in rt.notes_before(block, base, 100.0)
+
+
 def test_owner_answer_and_after_call_speech_are_not_glued_into_one_paragraph(meeting, monkeypatch):
     """Зазор меньше `paragraphs(gap=2.0)`: без раздельных абзацев прощание и первая
     фраза после звонка слились бы в один блок встречи (синтетика 17.10)."""

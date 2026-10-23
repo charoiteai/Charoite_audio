@@ -8,6 +8,8 @@
 import pathlib
 import sys
 
+import pytest
+
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
@@ -470,3 +472,36 @@ def test_short_final_with_after_call_record_and_no_draft_builds_nothing(tmp_path
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
     rebuild_transcript.finalize_minutes(live, "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {})
     assert _FakeLLM.calls == [] and not mpath.exists()
+
+
+@pytest.mark.parametrize("answer, fail", [("", True), ("   ", False)])
+def test_model_refusal_with_after_call_record_never_restamps_the_live_draft(
+        tmp_path, monkeypatch, answer, fail):
+    """№733, Critical Haiku выходного круга: при записи после звонка и отказе
+    модели (исключение или пустой ответ) черновик демона не перештамповывается —
+    в нём хвост живой ленты. Черновик уходит в .prev/, на месте — пометка;
+    исход машинный, источник не запоминается — следующая пересборка соберёт."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    _FakeLLM.fail = fail
+    if answer.strip() or not fail:
+        monkeypatch.setattr(_FakeLLM, "answer", answer)
+    owned = rebuild_transcript.finalize_minutes(
+        live, "**Инга** [10:21]:\nСмету пришлю.\n", meta, {}, {"Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert owned == "restamped"
+    assert "ужин" not in out and rebuild_transcript.MINUTES_AFTER_CALL_PENDING in out
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
+
+
+def test_model_refusal_without_after_call_record_restamps_as_before(tmp_path, monkeypatch):
+    """Без записи после звонка отказ модели — прежняя перештамповка (№146)."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    _FakeLLM.fail = True
+    long_final = "**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n"
+    owned = rebuild_transcript.finalize_minutes(live, long_final, meta, {}, {"Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert owned == "restamped" and "Инга" in out and "смета" in out
+    assert rebuild_transcript.MINUTES_AFTER_CALL_PENDING not in out
