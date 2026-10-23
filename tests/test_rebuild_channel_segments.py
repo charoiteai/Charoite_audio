@@ -2134,3 +2134,26 @@ def test_call_channel_lost_till_the_end_keeps_everything_in_the_transcript(meeti
     assert "реплика 9 с" in out.read_text(encoding="utf-8")
     assert not rt.after_call_path(out).exists()
     assert rt.AFTER_CALL_CUT_PREFIX not in out.read_text(encoding="utf-8")
+
+
+def test_kept_replies_get_the_header_and_end_of_this_pass(tmp_path):
+    """Minor 1 Sonnet out5: при пустом STT хвоста сохраняются реплики прежнего
+    файла, а шапка и время конца звонка — этого прохода."""
+    live = tmp_path / "2026-10-17_2000.md"
+    path = rt.after_call_path(live)
+    path.write_text("# После звонка old\n\n" + rt.AFTER_CALL_NOTE.format(end="14:30")
+                    + "\n\n**Марк** [14:32]:\nужин и мусор\n", encoding="utf-8")
+    rt.write_after_call(live, "new", "14:31", [], lambda t: t)
+    text = path.read_text(encoding="utf-8")
+    assert "(14:31)" in text and "(14:30)" not in text and "# После звонка new" in text
+    assert "ужин и мусор" in text
+
+
+def test_unreadable_after_call_file_does_not_break_the_final(tmp_path):
+    """M4 Haiku out5: файл хвоста не в UTF-8 не роняет запись финала."""
+    live = tmp_path / "2026-10-17_2000.md"
+    path = rt.after_call_path(live)
+    path.write_bytes("**Марк** [14:32]:\nужин\n".encode("cp1251"))
+    rt.write_after_call(live, "new", "14:31", [], lambda t: t, ["> 14:33 💭 мусор"])
+    text = path.read_text(encoding="utf-8")
+    assert "(14:31)" in text and "> 14:33 💭 мусор" in text
