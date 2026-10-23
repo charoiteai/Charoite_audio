@@ -204,6 +204,19 @@ def test_shared_code_needs_the_rest_of_the_name_in_strict(tmp_path):
         "карта владельцев пересчитана вместе со снимком узлов"
 
 
+def test_one_word_code_name_needs_a_single_owner_in_strict(tmp_path):
+    """Однословное имя-код («S3») в strict держится одним упоминанием, только пока
+    код у одного узла; второй владелец кода — снова нужны две строки."""
+    g = _graph(tmp_path)
+    (g / "Системы" / "S3.md").write_text("# S3\n", encoding="utf-8")
+    idx = NodeIndex(g, schema=CHAROITE)
+    idx.refresh()
+    assert [n.name for n in idx.lookup("опять бомбят s3 ночью")] == ["S3"]
+    (g / "Системы" / "Хранилище S3.md").write_text("# Хранилище S3\n", encoding="utf-8")
+    idx.refresh()
+    assert idx.lookup("опять бомбят s3 ночью") == []
+
+
 def test_participant_label_is_not_a_mention(tmp_path):
     """Участие — не упоминание (№776): узел участника не всплывает по одной
     подписи говорящего, которой в речи нет; названный в речи — всплывает."""
