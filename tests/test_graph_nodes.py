@@ -216,6 +216,20 @@ def test_participant_label_is_not_a_mention(tmp_path):
         == ["Иван Мироненко"]
 
 
+def test_name_window_does_not_cross_replies_in_strict(tmp_path):
+    """Окно многословного имени в strict — внутри реплики (№776 out1): хвост одной
+    реплики и начало следующей имени не собирают; ручной запрос (strict=False)
+    по-прежнему ищет по всему тексту."""
+    g = _graph(tmp_path)
+    (g / "Ядра" / "Проблема источников.md").write_text("# Проблема источников\n", encoding="utf-8")
+    idx = NodeIndex(g, schema=CHAROITE)
+    idx.refresh()
+    split = "кто платит за развитие источников\nпроблемы я что-то потерял"
+    assert idx.lookup(split) == []
+    assert [n.name for n in idx.lookup(split, strict=False)] == ["Проблема источников"]
+    assert [n.name for n in idx.lookup("опять проблема источников всплыла")] == ["Проблема источников"]
+
+
 def test_aliases_from_the_header_are_read_by_the_shared_parser(tmp_path):
     """Псевдонимы читаются одним парсером с конвейером (frontmatter.py, #451):
     блок «- имя», кавычки с запятой, битая соседняя строка — всё видно."""

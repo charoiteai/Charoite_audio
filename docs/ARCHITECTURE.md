@@ -1094,7 +1094,7 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   prefilter. There is deliberately no second embedding model.
 - **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the
   core-revision judge. Only in latency-tolerant loops; live hints and
-  déjà vu run on cheap stemming.
+  the auto ⏮ run on cheap stemming.
 - **Cloud — opt-in post-meeting enrichment only**, via subscription (no API
   key in the environment). Meeting data never leaves the machine by
   default; no cloud memory SaaS, none planned.
@@ -1773,7 +1773,7 @@ facade (`LEAD` / `ABSENCE`, complete over every status; the reason behind
 one builder, `brain.pack(profile, result)`, that splits a prompt budget between graph nodes and
 archive snippets by share instead of letting the nodes eat the archive; on a
 confident verdict the snippets come first and nodes get only the remainder.
-Déjà-vu goes to graph nodes unless the verdict is confident and calls the archive
+The manual ⏮ goes to graph nodes unless the verdict is confident and calls the archive
 "empty" only on a verified verdict; all three contours feed the block as built. The previous contract was a string with "⚠" parsed by
 `startswith` in three places — a dossier printed before the marker silenced the
 gate — and then an enum re-interpreted by three hand-written `if/elif` chains.

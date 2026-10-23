@@ -285,7 +285,7 @@ the meeting. `mlx_lm.server` takes its context at server start instead.
 core revision (tier3), the hint memory's graph search and the app's search.
 It stays on Ollama whatever `llm.engine` says — `mlx_lm.server` serves no
 embeddings. `sufler.embed_model` swaps it, but the
-thresholds (the core revision's 0.55 prefilter, the déjà vu margin) were
+thresholds (the core revision's 0.55 prefilter) were
 tuned on bge-m3's cosine spread.
 
 **Input ceiling: 2048 tokens.** The model declares 8192, but Ollama cuts the

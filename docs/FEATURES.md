@@ -888,7 +888,7 @@ it signals degradation, it does not break the loop.
   transcript copies are not indexed, and what stayed outside is said. When
   both signals are weak, the prompt says "almost nothing in the part that
   was read" instead of inventing. Timeouts and degradation stay with the
-  loops (⚡ 2.5 s, deja-vu 8 s, deep 6 s). The owner's question in the audit
+  loops (⚡ 2.5 s, manual ⏮ 8 s, deep 6 s). The owner's question in the audit
   label is no longer cut at 120 chars — the cap is 400 (№95). Freshness in the
   score comes from the date of the best block for the query, not the file
   mtime, so a node rewritten by every meeting no longer floats an old fact
