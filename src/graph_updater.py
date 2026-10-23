@@ -1591,12 +1591,14 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
     start = p
     while p is not None and p not in visited:
         visited.add(p)
+        if p != start and p.parent.name not in allowed:   # до чтения: и нечитаемый
+            return None                                    # канон вне папок — обрыв (n777-final-fix DS I3)
         try:
             text = p.read_text(encoding="utf-8")
         except (OSError, ValueError):
             return p
         if not redirects.is_merged(text):
-            return p if p == start or p.parent.name in allowed else None
+            return p
         target = redirects.stub_target(text)
         if not target:
             return None
@@ -1933,7 +1935,10 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
         # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
         alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
-        if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
+        # цель вне папок узлов (Досье, служебное) — не узел: туда не пишем и не создаём
+        # (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)
+        if (alt is None or alt == p or alt.parent.name not in NODE_FOLDERS
+                or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text)))):
             targets = redirects.stub_info(text).targets
             if len(targets) > 1:    # развилка «→ см. [[A]] · [[B]]» — в кандидаты (n777-in1, DS C2)
                 _journal_held_entity(graph, folder, name, typ, "ambiguous",
