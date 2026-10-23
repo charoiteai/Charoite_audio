@@ -350,11 +350,14 @@ actor SemanticIndex {
         guard mayWrite else { return }   // отменена до первого шага
         loadIfNeeded()
         prune(walk)
-        await build(files: files, walk: walk)
         // Закрытый экземпляр и отменённая задача не пишут: иначе хвост persist
         // воссоздал бы удалённую копию индекса с превью встреч.
         // Флаг снимает только удачная запись: иначе удаление, не дошедшее до
         // файла, больше никто не повторил бы (out1 DS I1).
+        // Удаление — на диск сразу, не после эмбеддера: выход или зависшая
+        // Ollama оставили бы превью забытой встречи в файле (out2 Sonnet I2).
+        if dirty, mayWrite { dirty = !persist() }
+        await build(files: files, walk: walk)
         if dirty, mayWrite { dirty = !persist() }
     }
 

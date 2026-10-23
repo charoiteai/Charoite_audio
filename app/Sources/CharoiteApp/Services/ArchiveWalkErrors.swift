@@ -38,12 +38,17 @@ extension ArchiveSearch {
         /// Что живо для prune: увиденное обходом плюс поддеревья, которые не
         /// перечислены, — под ними жив любой ключ, и одна запертая папка не
         /// выключает prune остального графа. Корень не перечислен — nil.
+        /// Пустой обход — тоже nil: граф под скрытой папкой, iCloud выгрузил
+        /// всё, том не смонтирован — prune стёр бы весь индекс (out2 C1).
+        /// Цена: превью последней заметки опустевшего графа живёт до первой
+        /// новой заметки.
         func alive(_ keys: Set<String>) -> SemanticIndex.Alive? {
-            guard !list.isEmpty else { return SemanticIndex.Alive(seen: keys) }
-            let shown = list.prefix(3).map { "\($0.rel.isEmpty ? "<корень>" : $0.rel) (\($0.code))" }
-            // путь из графа — аргументом, не в формат: папка «100%s» уронила бы NSLog
-            NSLog("%@", "поиск: обход графа неполный, ошибок \(list.count): " + shown.joined(separator: ", "))
-            if list.contains(where: { $0.rel.isEmpty }) { return nil }
+            if !list.isEmpty {
+                let shown = list.prefix(3).map { "\($0.rel.isEmpty ? "<корень>" : $0.rel) (\($0.code))" }
+                // путь из графа — аргументом, не в формат: папка «100%s» уронила бы NSLog
+                NSLog("%@", "поиск: обход графа неполный, ошибок \(list.count): " + shown.joined(separator: ", "))
+            }
+            if keys.isEmpty || list.contains(where: { $0.rel.isEmpty }) { return nil }
             return SemanticIndex.Alive(seen: keys, unscanned: list.map(\.rel))
         }
     }

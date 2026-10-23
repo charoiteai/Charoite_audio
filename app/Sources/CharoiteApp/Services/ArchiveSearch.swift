@@ -501,10 +501,9 @@ enum ArchiveSearch {
         // поддерево не прунится.
         let indexWalk = SemanticIndex.Walk(seq: walk.seq, alive: walk.errors.alive(liveKeys))
         // папка без заметок — пусто; заметки есть, но не открылись (iCloud
-        // выгрузил, нет прав) — не читали, значит не проверено. Prune — и тут:
-        // забыли последнюю читаемую встречу, а превью жило бы (out1).
+        // выгрузил, нет прав) — не читали, значит не проверено. Prune тут нет:
+        // пустой обход индекс не трогает (out2 C1, `WalkErrors.alive`).
         guard !all.isEmpty else {
-            await semanticIndex.refreshInBackground(files: [], walk: indexWalk)
             return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty)
         }
         let files = all.filter { f in

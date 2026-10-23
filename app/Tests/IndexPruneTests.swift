@@ -8,8 +8,9 @@ extension SemanticIndex {
     }
 }
 
-/// Prune индекса стирает запись только у файла, которого нет на диске, и
-/// стирает её сразу, даже если идёт доиндексация (№768).
+/// Prune индекса стирает запись только у файла, которого обход графа не
+/// увидел и который не лежит под незаперечисленной папкой; пустой обход не
+/// прунит вовсе. Стирает сразу, даже если идёт доиндексация (№768).
 ///
 /// Раньше снимок prune строился из ПРОЧИТАННЫХ файлов: заметка, которую
 /// iCloud выгрузил или которую не открыть, теряла запись и уходила на
@@ -109,6 +110,8 @@ final class IndexPruneTests: XCTestCase {
         XCTAssertGreaterThan(before, 0, "файл подпапки не попал в индекс — тест проверял бы пустоту")
 
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        try XCTSkipIf(FileManager.default.isReadableFile(atPath: locked.path),
+                      "chmod 000 не запер папку — тест проверял бы обычный обход (out2 DS I3)")
         try FileManager.default.removeItem(at: graph.appendingPathComponent(forgotten))
         await search(graph, index)
         await index.drainForTests()
@@ -118,9 +121,9 @@ final class IndexPruneTests: XCTestCase {
         XCTAssertEqual(gone, 0, "одна запертая папка выключила prune всего графа")
     }
 
-    /// Последнюю читаемую заметку забыли — поиск уходит ранним выходом
-    /// «пусто», а prune всё равно доходит до индекса (out1 Sonnet I2 = Haiku I2).
-    func testEmptyGraphStillPrunes() async throws {
+    /// Обход не увидел ни одной заметки (граф под скрытой папкой, iCloud
+    /// выгрузил всё, том не смонтирован) — индекс цел, а не стёрт (out2 C1).
+    func testEmptiedGraphKeepsIndex() async throws {
         let only = "Встречи/единственная-768.md"
         let graph = try makeTestGraph([(only, "обсудили бюджет проекта")])
         defer { try? FileManager.default.removeItem(at: graph) }
@@ -134,7 +137,32 @@ final class IndexPruneTests: XCTestCase {
         await search(graph, index)
         await index.drainForTests()
         let after = await index.chunkCount(of: only)
-        XCTAssertEqual(after, 0, "ранний выход поиска пропустил prune")
+        XCTAssertGreaterThan(after, 0, "пустой обход стёр индекс")
+    }
+
+    /// Удаление доходит до файла индекса сразу, а не после эмбеддера: выход
+    /// или зависшая Ollama оставили бы превью в файле (out2 Sonnet I2).
+    func testPruneReachesDiskBeforeEmbedding() async throws {
+        let forgotten = "Встречи/забытая-768.md", slow = "Ядра/затор-768.md"
+        let graph = try makeTestGraph([(forgotten, "решили: бюджет проекта режем"),
+                                       ("Люди/узел-768.md", "узел про бюджет проекта")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+        let store = tempIndexStore()
+        let (index, gate, entered) = gatedIndex(store: store)
+        await search(graph, index)
+        await index.drainForTests()
+        XCTAssertNotNil(SemanticIndex.storedMtimes(at: store)?[forgotten],
+                        "встреча не попала в файл индекса — тест проверял бы пустоту")
+
+        try FileManager.default.removeItem(at: graph.appendingPathComponent(forgotten))
+        try "ЗАТОР бюджет проекта".write(to: graph.appendingPathComponent(slow), atomically: true, encoding: .utf8)
+        await search(graph, index)
+        let inside = await finishesWithin(seconds: 10) { for await _ in entered { break } }
+        guard inside else { return XCTFail("доиндексация не дошла до эмбеддера за 10 с") }
+        XCTAssertNil(SemanticIndex.storedMtimes(at: store)?[forgotten],
+                     "превью забытой встречи в файле индекса, пока задача ждёт эмбеддер")
+        await gate.release()
+        await index.drainForTests()
     }
 
     /// Неудачная запись файла индекса не теряет удаление: флаг расхождения
@@ -160,6 +188,8 @@ final class IndexPruneTests: XCTestCase {
         try FileManager.default.removeItem(at: graph.appendingPathComponent(gone))
         await search(graph, index)
         await index.drainForTests()
+        try XCTSkipIf(SemanticIndex.storedMtimes(at: store)?[gone] == nil,
+                      "запрет записи не подействовал — повтор не проверялся бы (out2 DS I2)")
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: storeDir.path)
         await search(graph, index)          // изменений в графе нет — пишет только флаг
         await index.drainForTests()
@@ -170,6 +200,25 @@ final class IndexPruneTests: XCTestCase {
         let keptOnDisk = await reread.chunkCount(of: kept)
         XCTAssertGreaterThan(keptOnDisk, 0, "файл индекса не записан вовсе — тест проверял бы пустоту")
         XCTAssertEqual(onDisk, 0, "удаление, не дошедшее до файла, больше не повторилось")
+    }
+
+    /// Без прав и chmod — идёт и под root (out2 M1): ошибка корня и пустой
+    /// обход выключают prune, ошибка файла защищает только его ключ.
+    func testRootErrorAndEmptyWalkLeaveIndexAlone() throws {
+        let graph = try makeTestGraph([("Люди/a.md", "x")]).resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: graph) }
+        let err = NSError(domain: NSCocoaErrorDomain, code: 257)
+        XCTAssertNil(ArchiveSearch.WalkErrors(graph: graph).alive([]), "пустой обход стёр бы весь индекс")
+
+        let file = ArchiveSearch.WalkErrors(graph: graph)
+        XCTAssertTrue(file.record(graph.appendingPathComponent("Люди/a.md"), err))
+        let alive = try XCTUnwrap(file.alive(["Встречи/b.md"]))
+        XCTAssertTrue(alive.contains("Люди/a.md"))
+        XCTAssertFalse(alive.contains("Люди/c.md"), "ошибка файла защитила соседей")
+
+        let root = ArchiveSearch.WalkErrors(graph: graph)
+        XCTAssertTrue(root.record(graph, err))
+        XCTAssertNil(root.alive(["Люди/a.md"]), "ошибка корня — о графе ничего не известно, prune нет")
     }
 
     func testUnscannedSubtreeProtectsOnlyItsOwnKeys() {
