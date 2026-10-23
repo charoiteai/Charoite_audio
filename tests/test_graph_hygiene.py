@@ -473,6 +473,25 @@ def test_core_merged_midway_into_a_live_canon_goes_to_the_canon(tmp_path, monkey
     assert not cands.exists() or "2026-09-16_1200" not in cands.read_text(encoding="utf-8")
 
 
+def test_core_path_is_resolved_again_only_once(tmp_path, monkeypatch):
+    """Путь ядра, сменившийся под рукой, решаем заново ровно один раз: если и он
+    оказался заглушкой, а путь снова другой — кандидаты, не вечная рекурсия
+    (мутанты CI #851 на `not _retry and …` и `_retry=True`)."""
+    graph, a = _core_graph(tmp_path, "# Тема → [[Ядра/Нет]]\n\nДубль. Смерджен\n")
+    b = graph / "Ядра" / "Другая.md"
+    b.write_text("# Другая → [[Ядра/Нет]]\n\nДубль. Смерджен\n", encoding="utf-8")
+    calls = []
+
+    def flapping(d, name, graph=None):
+        calls.append(name)
+        return (a, b)[(len(calls) - 1) % 2]
+    monkeypatch.setattr(g, "resolve_core_path", flapping)
+    g.upsert_core(graph, {"имя": "Тема", "статус": "новый", "обновление": "x"},
+                  "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert len(calls) == 3
+    assert "2026-09-16_1200" in (graph / g.CANDIDATES_NOTE).read_text(encoding="utf-8")
+
+
 def test_core_write_error_is_not_reported_as_unreadable(tmp_path, monkeypatch):
     """OSError записи (нет места) — «встреча в ядро не дописана», не «узел не
     прочитан» (Opus M3, n777-final)."""
@@ -2366,6 +2385,8 @@ def test_stub_alias_does_not_lead_to_a_canon_outside_entity_folders(tmp_path):
     (graph / "Системы" / "Канон.md").write_text("# Канон\n\nживой\n", encoding="utf-8")
     (graph / "Системы" / "Старый.md").write_text("# Старый → [[системы/Канон]]\n", encoding="utf-8")
     assert g._node_path(graph, graph / "системы" / "Канон.md", g.NODE_FOLDERS) == graph / "Системы" / "Канон.md"
+    # служебный файл в папке узлов — не узел: указатель не канон (мутант CI #851)
+    assert g._node_path(graph, graph / "Системы" / "_Указатель.md", g.NODE_FOLDERS) is None
     assert g.follow_stubs(graph, graph / "Системы" / "Старый.md") == graph / "Системы" / "Канон.md"
     g.upsert_entity(graph, "Системы", "Старый", "система", "", "Встречи/2026-10-23_1100", "")
     assert "2026-10-23_1100" in (graph / "Системы" / "Канон.md").read_text(encoding="utf-8")
