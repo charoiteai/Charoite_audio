@@ -127,8 +127,57 @@ def test_the_main_window_is_kept_when_the_winner_block_has_no_needles(tmp_path):
     d = s._gen.docs[str(s.graph / "Люди" / "Кира.md")]
     main = s._fragment(d, re.compile("несуществующая_игла"), 500, [])
     frag = s._block_fragment(d, 0, main, ["несуществующая_игла"],
-                             re.compile("несуществующая_игла"), 500, [], False)
+                             re.compile("несуществующая_игла"), 500, [])
     assert frag == main
+
+
+def _synonym_graph(tmp_path, first_block: str) -> gs.GraphSearch:
+    """Узел из двух длинных блоков: «семантика» подделки выбирает блок с синонимом
+    (`провайдер` = `поставщик`), а иглы запроса лежат в другом блоке (№780)."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Встречи-архив", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    _write(g / "Системы", "Шлюз.md",
+           "# Шлюз\n## Связи\n" + first_block + " " + "провайдер " * 60
+           + "\n## Расчёты\nдоговор подписан, оплата прошла. " + "склад приёмка " * 60 + "\n")
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    return s
+
+
+def _spy_winner(s, monkeypatch) -> list:
+    """Номера блоков, с которыми зван `_block_fragment`, — проверка, что фикстура
+    действительно идёт веткой семантического победителя."""
+    wins: list = []
+    real = s._block_fragment
+    monkeypatch.setattr(s, "_block_fragment",
+                        lambda d, win, *a: wins.append(s._blocks(d)[win]) or real(d, win, *a))
+    return wins
+
+
+def test_a_semantic_winner_with_fewer_needles_gives_way_to_the_main_window(tmp_path, monkeypatch):
+    """Победитель семантики (синоним и одна игла) слабее окна основного тела (две
+    иглы): показано окно основного тела. До №780 показывался блок синонима, и игла
+    окна пропадала из выдачи — минус три вопроса бенча answer после №633."""
+    s = _synonym_graph(tmp_path, "договор")
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата", limit=3)
+    assert r.sem_used
+    assert wins and "→ Связи" in wins[0], "победитель — блок синонима"
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "оплата" in frag and "договор" in frag
+
+
+def test_a_semantic_winner_no_weaker_than_the_window_is_shown(tmp_path, monkeypatch):
+    """Окно блока-победителя несёт не меньше игл, чем окно основного тела, — показан
+    блок победителя (его дата ранжирует файл), а не окно основного тела."""
+    s = _synonym_graph(tmp_path, "договор и оплата")
+    wins = _spy_winner(s, monkeypatch)
+    r = s.search("поставщик договор оплата", limit=3)
+    assert r.sem_used and wins and "→ Связи" in wins[0]
+    frag = r.blocks[0].split("\n", 1)[1]
+    assert "провайдер" in frag and "склад" not in frag
 
 
 def test_a_short_node_is_shown_whole_without_a_label(tmp_path):
