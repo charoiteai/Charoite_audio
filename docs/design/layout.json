@@ -67,7 +67,6 @@
       "transcript",
       "live_sidecar",
       "channel_trace",
-      "meeting_tail",
       "transcript_origin",
       "action_items",
       "speaker_names",
@@ -222,6 +221,10 @@
     "threads": {
       "layer": "base",
       "why": "шов потоков продукта: поток — сам threading.Thread/Timer, реестр — метаданные при потоке (роль и причина detached). Импортов из репозитория нет, только stdlib; зовут его app (daemon, main, dictate), audio, llm и meeting. В app он дал бы ребро base → app: реестр обязан быть ниже всех, кто заводит поток"
+    },
+    "meeting_tail": {
+      "layer": "meeting",
+      "why": "граница конца звонка (№733): делит сегменты стенограммы на разговор и хвост после звонка. Импортов из репозитория нет, только stdlib; единственный потребитель — rebuild_transcript (meeting). В base модуль открылся бы всем слоям, хотя решение о хвосте — предметное правило встречи"
     },
     "charoite_schema": {
       "layer": "graph",
