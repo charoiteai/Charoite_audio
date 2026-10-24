@@ -187,85 +187,6 @@ def resolve_lang(cfg, *, demo_zh: bool, demo_en: bool, demo: bool) -> str:
     return lang if lang in SYNTH else "ru"
 
 
-# Исходы обращения к серверу памяти — одно значение с причиной вместо None на
-# три случая: «лежит», «жив, но граф вне его vault» и «жив, пусто» раньше
-# сливались, и отказ по --brain объяснялся бы неверно (входной круг DS по №296)
-BRAIN_DEAD = "dead"          # :8100 не отвечает (выключен решением по №250)
-BRAIN_FOREIGN = "foreign"    # сервер жив, но этого графа в его vault нет (демо, другой диск)
-BRAIN_ALIVE = "alive"
-
-# Чат приложения ждёт сервер-компаньон 4 с (ArchiveSearch.swift) и молча уходит
-# в свой поиск на Swift; бенч ждёт дольше, чтобы напечатать задержку, но вопрос
-# дольше порога в сравнение не берёт — в продукте ответ дал бы другой поиск
-COMPANION_DEADLINE_S = 4.0
-# limit/snippet как у чата (ChatRetrieval.Params.chat в app/); бюджета у
-# протокола companion нет, и подгонка под окно модели (ChatRetrieval.fit, №743)
-# здесь не повторяется — бенч мерит выдачу сервера до среза
-COMPANION_LIMIT, COMPANION_SNIPPET = 25, 1000
-
-
-class BrainHit(NamedTuple):
-    """Ответ сервера памяти: исход, текст выдачи без шапки, «⚠» полем, задержка."""
-    outcome: str
-    text: str
-    low_conf: bool = False
-    elapsed: float = 0.0
-
-
-def search_brain(graph: pathlib.Path, query: str, *, limit: int = LIMIT_FILES,
-                 snippet: int = SNIPPET, timeout: float = 25) -> BrainHit:
-    """Сервер памяти :8100 (`vault_search`). Сейчас это сервер-компаньон чата
-    приложения у владельца; у демона его нет с №250.
-
-    -> BrainHit: текст непустой только при BRAIN_ALIVE; пустая выдача живого
-    сервера — ("alive", "").
-    """
-    import json
-    import time
-    import urllib.request
-
-    from charoite_graph.net import open_url
-
-    folder = graph.name  # стандартная раскладка: vault/<граф>/…
-    # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
-    req = urllib.request.Request(
-        "http://127.0.0.1:8100/vault_search",
-        data=json.dumps({"query": query, "folder": folder,
-                         "limit": limit, "snippet_chars": snippet},
-                        ensure_ascii=False).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    t0 = time.monotonic()
-    try:
-        # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
-        with open_url(req, timeout=timeout) as resp:
-            text = json.load(resp).get("text", "")
-    except (OSError, ValueError):
-        return BrainHit(BRAIN_DEAD, "", elapsed=time.monotonic() - t0)
-    elapsed = time.monotonic() - t0
-    if text.startswith("Ничего не найдено"):
-        return BrainHit(BRAIN_ALIVE, "", elapsed=elapsed)
-    if text.startswith("Папка не найдена") or text.startswith("Недопустимый путь"):
-        return BrainHit(BRAIN_FOREIGN, "", elapsed=elapsed)
-    low = text.startswith("⚠")
-    # срезаем шапку «Найдено в vault (N из M):»
-    _, _, body = text.partition("\n\n")
-    return BrainHit(BRAIN_ALIVE, body or text, low, elapsed)
-
-
-def require_brain(graph: pathlib.Path, demo: bool, flag: str = "--brain") -> None:
-    """Сервер памяти — явный отказ с причиной, а не молчаливый уход на другой контур:
-    иначе заголовок «память демона» печатался при любом выборе (№296)."""
-    if demo:
-        sys.exit(f"{flag} неприменим к демо-графу: его нет в vault сервера памяти")
-    outcome = search_brain(graph, "проверка").outcome
-    if outcome == BRAIN_DEAD:
-        sys.exit(f"{flag}: сервер памяти :8100 не отвечает — у пользователей его нет, у демона "
-                 "он выключен решением по №250; снимите флаг или поднимите сервер")
-    if outcome == BRAIN_FOREIGN:
-        sys.exit(f"{flag}: сервер памяти жив, но этого графа в его vault нет — флаг неприменим")
-
-
 _INDEX: dict[str, object] = {}
 
 
@@ -343,7 +264,7 @@ def search_legacy(graph: pathlib.Path, query: str) -> str:
     return "\n\n".join(h for _, h in scored[:LIMIT_FILES])
 
 
-PROFILE_CHOICES = ("raw", "answer", "live", "expand", "companion")
+PROFILE_CHOICES = ("raw", "answer", "live", "expand")
 
 
 class Q(NamedTuple):
@@ -353,8 +274,8 @@ class Q(NamedTuple):
     его отрезал), «не выдано», «поиск пуст», «синтез» (факт в блоке, модель его
     потеряла). `new_pos` / `old_pos` — позиция нового и старого значения в блоке
     у вопросов `latest` (диагностика порядка; None — нет в блоке). `comparable` —
-    False, когда вопрос вне сравнения: компаньон дольше порога чата, ответ дал
-    облачный откат на локальную модель."""
+    False, когда вопрос вне сравнения: ответ дал облачный откат на локальную
+    модель."""
     n: int
     cat: str
     ok: bool
@@ -537,40 +458,6 @@ def run_profile(profile: brain.Profile, graph: pathlib.Path, emb, cases: list[di
     return out, model or "", graph_fp
 
 
-def run_companion(graph: pathlib.Path, cases: list[dict], demo: bool) -> list[Q]:
-    """Сервер-компаньон чата приложения — справочно, вне ночи.
-
-    Есть только у владельца и только пока жив сервер :8100; у пользователей чат
-    идёт в поиск на Swift (его мерит P2 плана памяти). Один запрос с потолком
-    25 с: дольше порога чата (4 с) вопрос вне сравнения — в продукте ответ дал бы
-    Swift-поиск. Упаковка на стороне сервера, бюджета у бенча нет."""
-    require_brain(graph, demo, "--profile companion")
-    print(f"профиль companion (engine=companion): {COMPANION_LIMIT}×{COMPANION_SNIPPET}, "
-          f"порог чата {COMPANION_DEADLINE_S:.0f} с; у пользователей чат идёт в Swift-поиск, его мерит P2")
-    timings = Timings()
-    out: list[Q] = []
-    for i, case in enumerate(cases, 1):
-        hit = search_brain(graph, case["q"], limit=COMPANION_LIMIT, snippet=COMPANION_SNIPPET, timeout=25)
-        if hit.outcome != BRAIN_ALIVE:
-            sys.exit(f"--profile companion: сервер памяти отпал посреди прогона ({hit.outcome}) — итог не сравним")
-        timings.add("поиск", hit.elapsed)
-        must = case.get("must") or []
-        ok = all(contains(m, hit.text) for m in must)
-        comparable = hit.elapsed <= COMPANION_DEADLINE_S
-        q = Q(i, str(case.get("cat") or "?"), ok, None, "weak" if hit.low_conf else "ok",
-              "" if ok else ("поиск пуст" if not hit.text else "не выдано"), comparable=comparable)
-        note = "" if comparable else " — дольше порога: в продукте ушёл бы в Swift-поиск, вне сравнения"
-        print(f"[{i}/{len(cases)}] {'✓' if ok else '✗'} {q.cat} {'⚠' if hit.low_conf else ''}"
-              f" {hit.elapsed:.2f} с{note}")
-        out.append(q)
-    comp = [q for q in out if q.comparable]
-    print(f"\nИТОГ companion: {sum(q.ok for q in comp)}/{len(comp)}, вне сравнения {len(out) - len(comp)}")
-    print("задержки по этапам:")
-    for ln in timings.lines():
-        print(ln)
-    return out
-
-
 def raw_stats(graph: pathlib.Path, cfg: dict, demo: bool, cases: list[dict]) -> None:
     """Калибровка гейта честности (круги 1–2 по #577) в режиме `raw`: распределение
     сигналов на своих вопросах, без модели. Пороги — в graph_search.py."""
@@ -592,22 +479,15 @@ def raw_stats(graph: pathlib.Path, cfg: dict, demo: bool, cases: list[dict]) -> 
 
 
 def run_raw(args, graph: pathlib.Path, cfg: dict, cases: list[dict], lang: str) -> None:
-    """Режим `raw` — как было до профилей: 5 × 1 200, свой SYNTH, флаги --brain и --legacy."""
+    """Режим `raw` — как было до профилей: 5 × 1 200, свой SYNTH, флаг --legacy."""
     llm = LLM(cfg)
     passed, failures = 0, []
     # по умолчанию — память демона (src/charoite_graph/graph_search.py): то, что видит владелец
-    # на встрече; сервер и прежний фолбэк — только по флагам, для сравнения
-    print("контур поиска: " + ("сервер памяти :8100" if args.brain else
-                               "прежний локальный фолбэк" if args.legacy else "память демона (graph_search)"))
+    # на встрече; прежний фолбэк — только по флагу, для сравнения
+    print("контур поиска: " + ("прежний локальный фолбэк" if args.legacy else "память демона (graph_search)"))
     for i, case in enumerate(cases, 1):
         q, must = case["q"], case.get("must", [])
-        if args.brain:
-            hit = search_brain(graph, q)
-            if hit.outcome != BRAIN_ALIVE:
-                sys.exit(f"--brain: сервер памяти отпал посреди прогона ({hit.outcome}) — итог не сравним")
-            found = hit.text
-        else:
-            found = search_legacy(graph, q) if args.legacy else search(graph, q, cfg if not args.demo else None)
+        found = search_legacy(graph, q) if args.legacy else search(graph, q, cfg if not args.demo else None)
         if not found:
             failures.append((q, must, "поиск ничего не нашёл"))
             print(f"[{i}/{len(cases)}] ✗ {q} — поиск пуст")
@@ -964,15 +844,13 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0, help="только первые N вопросов")
     ap.add_argument("--profile", choices=PROFILE_CHOICES, default="raw",
                     help="чей путь мерить: answer / live / expand — потребители демона через профиль "
-                         "brain.py; companion — сервер-компаньон чата (справочно); raw — прежний контур")
+                         "brain.py; raw — прежний контур")
     ap.add_argument("--demo", action="store_true",
                     help="демо-граф из репозитория вместо вашего: проверка контура без встреч")
     ap.add_argument("--demo-en", action="store_true",
                     help="английский демо-граф (demo/graph_en) и английские кейсы")
     ap.add_argument("--demo-zh", action="store_true",
                     help="китайский демо-граф (demo/graph_zh) и китайские кейсы")
-    ap.add_argument("--brain", action="store_true",
-                    help="raw: искать через сервер памяти :8100 (сравнение с прежним контуром)")
     ap.add_argument("--legacy", action="store_true",
                     help="raw: прежний локальный фолбэк вместо src/charoite_graph/graph_search.py (сравнение до/после)")
     ap.add_argument("--stats", action="store_true",
@@ -991,11 +869,11 @@ def main() -> None:
     ap.add_argument("--run", default="", metavar="ID", help="с --accept: id итога, который принимается")
     ap.add_argument("--reason", default="", help="с --accept: причина, если итог хуже прежней базы")
     args = ap.parse_args()
-    if (args.brain or args.legacy) and args.profile != "raw":
-        ap.error("--brain и --legacy — флаги режима raw")
+    if args.legacy and args.profile != "raw":
+        ap.error("--legacy — флаг режима raw")
     if args.no_dossiers and args.profile not in brain.PROFILES:
         ap.error("--no-dossiers — только с профилями демона: answer, live, expand "
-                 "(у raw и companion оси досье нет)")
+                 "(у raw оси досье нет)")
     if (args.record or args.accept) and args.profile not in brain.PROFILES:
         ap.error("--record и --accept — для профилей демона: answer, live, expand")
     if args.record and (args.limit or args.demo or args.demo_en or args.demo_zh):
@@ -1052,9 +930,6 @@ def main() -> None:
     if args.limit:
         cases = cases[:args.limit]
 
-    if args.profile == "companion":
-        run_companion(graph, cases, args.demo)
-        return
     if args.profile != "raw":
         # пустой конфиг фабрика читает как «моделей нет»: демо меряет лексику, не ходя в сеть
         emb = build_embedder(cfg if not args.demo else {})
@@ -1067,8 +942,6 @@ def main() -> None:
             judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out, str(graph),
                                        dossiers=profile.dossiers), graph)
         return
-    if args.brain:
-        require_brain(graph, args.demo)     # до любой ветки: --brain --stats тоже не должен мерить молча другой контур
     if args.stats:
         raw_stats(graph, cfg, args.demo, cases)
         return

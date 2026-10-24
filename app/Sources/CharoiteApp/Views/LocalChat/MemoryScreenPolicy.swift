@@ -72,8 +72,8 @@ enum MemoryScreenPolicy {
         return head + " · " + theme
     }
 
-    /// Источники из блока поиска. Ловит и локальный формат («• путь»), и
-    /// brain-блоки: любой путь с известной верхней папкой графа до «.md».
+    /// Источники из блока поиска (запасной разбор, когда у выдачи нет rels):
+    /// любой путь с известной верхней папкой графа до «.md».
     /// Порядок появления сохраняется — он же ранг поиска; дубли схлопнуты.
     static func sources(from block: String, limit: Int = 6) -> [Source] {
         guard !block.isEmpty, limit > 0 else { return [] }
@@ -88,7 +88,7 @@ enum MemoryScreenPolicy {
         for m in re.matches(in: block, range: NSRange(block.startIndex..., in: block)) {
             guard let r = Range(m.range, in: block) else { continue }
             let rel = String(block[r]).trimmingCharacters(in: .whitespaces)
-            // указатель папки в тексте brain-блока — не источник (№750)
+            // указатель папки в тексте блока — не источник (№750)
             if seen.contains(rel) || GraphFolders.isChatExcluded(rel) { continue }
             seen.insert(rel)
             out.append(Source(rel: rel, kind: kind(of: rel)))

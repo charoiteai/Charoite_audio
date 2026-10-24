@@ -47,15 +47,6 @@ enum GraphFolders {
     /// Карта ли это — путь ОТ КОРНЯ графа, а не имя: «Встречи/_MOC.md» не карта.
     static func isMapFile(_ rel: String) -> Bool { fold(rel) == fold(mapFile) }
 
-    /// Путь от корня vault («<папка графа>/Люди/X.md», так отвечает сервер
-    /// памяти) → путь от корня графа. Папка сравнивается в форме схемы (NFC
-    /// с диска macOS, регистр); путь без неё возвращается как есть.
-    static func graphRelative(_ path: String, folder: String) -> String {
-        guard !folder.isEmpty, let slash = path.firstIndex(of: "/"),
-              fold(String(path[..<slash])) == fold(folder) else { return path }
-        return String(path[path.index(after: slash)...])
-    }
-
     /// Не источник чата: служебный файл, кроме карты содержания — указатели
     /// папок («_ЯДРА», «_ИНДЕКС»…) и прочая навигация конвейера.
     static func isChatExcluded(_ rel: String) -> Bool { isServiceFile(rel) && !isMapFile(rel) }

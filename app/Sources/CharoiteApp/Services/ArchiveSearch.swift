@@ -2,7 +2,7 @@ import Foundation
 
 /// Локальный поиск по графу встреч — прямо по markdown-файлам, без облака.
 ///
-/// Ранжирование v2 (июль 2026), зеркало серверного vault_search:
+/// Ранжирование v2 (июль 2026), зеркало python-поиска vault_search:
 /// стемминг русских окончаний (одно совпадение покрывает «встреча/встречах»),
 /// IDF (редкое слово запроса весит больше частого), покрытие запроса (файл со
 /// всеми словами выше файла с одним частым), свежесть (дата из имени файла),
@@ -10,9 +10,9 @@ import Foundation
 /// при равной релевантности выше), разнообразие выдачи (одна встреча не
 /// занимает все слоты своими заметкой+архивом+стенограммой).
 ///
-/// Если поднят локальный brain-сервер (порт 8100, опциональный компаньон) —
-/// поиск уходит туда: там тот же алгоритм плюс семантический слой bge-m3.
-/// Всё на этой машине, ничего никуда не уходит.
+/// Сервер-компаньон :8100 чат не читает (№754): он отвечал в 19 из 20
+/// запросов дольше 4 с ожидания, а его текстовый ответ без контракта терял
+/// первое досье при разборе. Всё на этой машине, ничего никуда не уходит.
 enum ArchiveSearch {
     /// Служебные слова: в иглы не идут и в покрытие запроса не считаются.
     ///
@@ -119,7 +119,7 @@ enum ArchiveSearch {
         return w
     }
 
-    /// Маркер слабых совпадений от brain-сервера: UI показывает честную
+    /// Маркер слабых совпадений поиска: UI показывает честную
     /// плашку, синтез отвечает «в архиве нет», а не сочиняет.
     static let lowConfidenceMarker = "⚠"
 
@@ -136,9 +136,6 @@ enum ArchiveSearch {
     }
 
     /// Топ-`limit` файлов графа со сниппетами ~`snippet` знаков.
-    /// Сначала пробуем brain (:8100, гибрид с семантикой), иначе — локально.
-    /// CHAROITE_GRAPH_DIR (демо/тесты) — строго файловый поиск: brain этой
-    /// машины индексирует ДРУГОЙ граф и молча отвечал бы не по подменённому.
     ///
     /// `semanticIndex` — без значения по умолчанию: `.shared` называет только
     /// корень приложения, тест и проба передают свой экземпляр (№534).
@@ -151,9 +148,9 @@ enum ArchiveSearch {
 
     /// Результат поиска для потребителей, которым важно «ЧТО подмешали», а
     /// не только текст. `rels` — точный список хитов, реально вошедших в
-    /// текст (в порядке выдачи), пути от корня графа; nil — структуры нет
-    /// (ответ без заголовков блоков), потребитель падает на разбор текста;
-    /// [] — структура есть, источников не осталось (фолбэк не нужен).
+    /// текст (в порядке выдачи), пути от корня графа; nil — выдачу собрали
+    /// руками (тесты), потребитель падает на разбор текста — поиск nil не
+    /// отдаёт; [] — структура есть, источников не осталось (фолбэк не нужен).
     /// Круг-1 по PR #396: DS, Codex и GLM независимо указали, что чипы
     /// источников из regex по склеенной строке ловят упоминания из сниппетов
     /// и молча ломаются о форматирование packContext.
@@ -165,7 +162,7 @@ enum ArchiveSearch {
         /// строку сам, а промпт чата перерешивал за поиск. Маркер в `text`
         /// остаётся для строкового API (`search`) и человека.
         var verdict: Verdict
-        /// Оговорка поиска словами сервера: что не читали, почему слабо.
+        /// Оговорка поиска: что не вошло в выдачу и почему.
         var note: String = ""
         /// Выдача кусками в порядке текста — окно модели берёт их только
         /// целиком (`ChatRetrieval.fit`, №743). nil — кусков нет (выдачу
@@ -187,7 +184,8 @@ enum ArchiveSearch {
     /// Кусок выдачи: блок источника или досье. Окно модели не режет его на
     /// полуслове, а берёт или выбрасывает целиком (№743): огрызок фрагмента
     /// путает модель сильнее, чем его отсутствие. `rel` — путь от корня графа
-    /// (чип), nil — у досье и прочего без источника. `rank` — сила в выдаче,
+    /// (чип), nil — у куска без источника (выдача собрана руками и разрезана
+    /// окном, `ChatRetrieval.fit`). `rank` — сила в выдаче,
     /// 0 — лучший: текст идёт «лучший первым, второй — последним», а окно
     /// выбрасывает сначала слабейший.
     struct Part: Equatable {
@@ -195,10 +193,6 @@ enum ArchiveSearch {
         let rel: String?
         let rank: Int
     }
-
-    /// Шапка досье в ответе :8100 (`_dossier` в mcp_charoit_server.py): досье
-    /// идут над блоками источников, каждое — отдельный кусок выдачи.
-    static let dossierHead = "📋 ДОСЬЕ"
 
     /// Значения — как у python `graph_search.Verdict`, плюс `unavailable`:
     /// искать было негде (папки графа нет), и «в памяти этого нет» было бы
@@ -219,150 +213,10 @@ enum ArchiveSearch {
                                  budget: Int = defaultBudget,
                                  includeLinked: Bool = true,
                                  semanticIndex: SemanticIndex) async -> Outcome {
-        let graphOverridden = AppSettings.graphDirEnvNames.contains { name in
-            !(ProcessInfo.processInfo.environment[name] ?? "")
-                .trimmingCharacters(in: .whitespaces).isEmpty
-        }
-        let viaBrain = graphOverridden
-            ? nil : await brainSearch(query: query, limit: limit, snippet: snippet)
-        return await choose(brain: viaBrain, folder: AppSettings.graphDir?.lastPathComponent ?? "") {
-            await localSearchOutcome(query: query, limit: limit,
-                                     snippet: snippet, budget: budget,
-                                     includeLinked: includeLinked,
-                                     semanticIndex: semanticIndex)
-        }
-    }
-
-    /// Выбор движка: ответ brain, если разбор его принял (источники или
-    /// пустой ответ «Ничего не найдено» — `empty`, как до №634); nil разбора —
-    /// локальный поиск (сервер не поднят, отдал одни указатели или «⚠» без выдачи).
-    /// Вердикт идёт с обоих путей полем `Outcome.verdict` (№634).
-    static func choose(brain: String?, folder: String,
-                       local: () async -> Outcome) async -> Outcome {
-        if let brain, let out = brainOutcome(brain, folder: folder) { return out }
-        return await local()
-    }
-
-    /// Ответ brain-сервера (после среза `brainSearch`) → `Outcome` с вердиктом.
-    /// Пустой ответ («Ничего не найдено») — `empty`, как в базе: локальный
-    /// поиск не зовётся (индекс сервера без архива встреч — долг №637).
-    /// Строка «⚠ …» первой —
-    /// решение сервера: «не провер…» в ней — `unverified`, иначе `weak`; сама
-    /// строка уходит в `note`, причину видит модель (№634: прежний срез её
-    /// терял). После неё пусто — nil: отсутствие не доказано, решает локальный
-    /// поиск по своему индексу.
-    ///
-    /// Блоки «• путь\n  …фрагмент…»: rels берём ТОЛЬКО из строк-заголовков —
-    /// упоминание пути в теле сниппета источником не становится и на
-    /// brain-пути (круг-2, GLM). Ни одного заголовка — текст как есть и
-    /// rels=nil, честный фолбэк. Блок указателя папки выбрасывается целиком,
-    /// и из текста, и из rels (№750, out1: :8100 отдаёт «_ЯДРА», «_КОМАНДЫ»,
-    /// «Служебное_*»; фильтр одних чипов оставлял их модели). Пути сервера
-    /// идут от корня vault («<папка графа>/_MOC.md») — правило судит путь от
-    /// корня графа, и rels отдаются от корня графа — как у локальной ветки
-    /// (вид чипа, «Карта графа», открытие файла). Все блоки выброшены — nil,
-    /// и поиск уходит в локальный: brain отдал слоты указателям, а сводки досье
-    /// над блоками (out4) и узлы по тем же словам локальный поиск найдёт сам.
-    /// Заголовок — «• » в КОЛОНКЕ 0, как разбирает свой ответ сам сервер:
-    /// тело блока он пишет одной свёрнутой строкой с отступом, и «• путь.md»
-    /// внутри фрагмента заголовком не становится (out2).
-    static func brainOutcome(_ text: String, folder: String) -> Outcome? {
-        guard !text.isEmpty else { return Outcome(text: "", rels: [], verdict: .empty) }
-        var body = Substring(text)
-        var note = ""
-        var verdict = Verdict.confident
-        if body.hasPrefix(lowConfidenceMarker) {
-            let line = body.prefix(while: { $0 != "\n" })
-            note = line.dropFirst(lowConfidenceMarker.count).trimmingCharacters(in: .whitespaces)
-            body = body.dropFirst(line.count).drop(while: \.isNewline)
-            verdict = note.lowercased().contains("не провер") ? .unverified : .weak
-        }
-        // «⚠ По словам ничего не нашлось…» — пусто, но не доказано: решает локальный
-        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        func header(_ line: Substring) -> String? {
-            guard line.hasPrefix("• ") else { return nil }
-            let s = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            return s.hasSuffix(".md") ? s : nil
-        }
-        func graphRel(_ path: String) -> String { GraphFolders.graphRelative(path, folder: folder) }
-        // маркер в тексте — для строкового API (`search`), решение — в verdict
-        func marked(_ lines: [Substring]) -> String {
-            let joined = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            return verdict == .confident ? joined : lowConfidenceMarker + joined
-        }
-        var preamble: [Substring] = []
-        var blocks: [(rel: String, lines: [Substring])] = []
-        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
-            if let h = header(line) {
-                blocks.append((h, [line]))
-            } else if blocks.isEmpty {
-                preamble.append(line)
-            } else {
-                blocks[blocks.count - 1].lines.append(line)
-            }
-        }
-        // досье над блоками — по куску на досье, ранги выше блоков: сервер
-        // ставит их первыми (№621)
-        var dossiers: [[Substring]] = []
-        for line in preamble {
-            if line.hasPrefix(dossierHead) || dossiers.isEmpty { dossiers.append([line]) }
-            else { dossiers[dossiers.count - 1].append(line) }
-        }
-        func trimmed(_ lines: [Substring]) -> String {
-            lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        let head = dossiers.map(trimmed).filter { !$0.isEmpty }
-            .enumerated().map { Part(text: $0.element, rel: nil, rank: $0.offset) }
-        guard !blocks.isEmpty else {
-            return Outcome(text: marked(preamble), rels: nil, verdict: verdict, note: note, parts: head)
-        }
-        let kept = blocks.filter { !GraphFolders.isChatExcluded(graphRel($0.rel)) }
-        if kept.isEmpty { return nil }
-        var seen = Set<String>()
-        let rels = kept.map { graphRel($0.rel) }.filter { seen.insert($0).inserted }
-        let parts = head + kept.enumerated().map {
-            Part(text: trimmed($0.element.lines), rel: graphRel($0.element.rel), rank: head.count + $0.offset)
-        }
-        return Outcome(text: marked(preamble + kept.flatMap(\.lines)), rels: rels, verdict: verdict,
-                       note: note, parts: parts)
-    }
-
-    /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
-    private static func brainSearch(query: String, limit: Int, snippet: Int) async -> String? {
-        guard let graph = AppSettings.graphDir,
-              let url = URL(string: "http://127.0.0.1:8100/vault_search") else { return nil }
-        // brain ищет по всему vault: сузим до папки графа (её имя — подпапка)
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 4
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "query": query, "folder": graph.lastPathComponent,
-            "limit": limit, "snippet_chars": snippet,
-        ] as [String: Any])
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.connectionProxyDictionary = [:]
-        guard let (data, resp) = try? await URLSession(configuration: cfg).data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = obj["text"] as? String, !text.isEmpty else { return nil }
-        // граф вне vault brain-сервера (демо, другой диск) — честный фолбэк
-        // на локальный поиск, а не сообщение об ошибке в качестве «сырья»
-        if text.hasPrefix("Папка не найдена") || text.hasPrefix("Недопустимый путь") { return nil }
-        return brainSlice(text)
-    }
-
-    /// Ответ :8100 → вход `brainOutcome`: «Ничего не найдено» — пусто, иначе
-    /// тело без строки-шапки «Найдено в vault (N из M):». Строка «⚠ …» —
-    /// первой строкой: из неё brainOutcome берёт вердикт и оговорку (№634).
-    static func brainSlice(_ text: String) -> String {
-        if text.hasPrefix("Ничего не найдено") { return "" }
-        let lowConf = text.hasPrefix(lowConfidenceMarker)
-        if let range = text.range(of: "\n\n") {
-            let body = String(text[range.upperBound...])
-            return lowConf ? String(text.prefix { $0 != "\n" }) + "\n" + body : body
-        }
-        return text
+        await localSearchOutcome(query: query, limit: limit,
+                                 snippet: snippet, budget: budget,
+                                 includeLinked: includeLinked,
+                                 semanticIndex: semanticIndex)
     }
 
     struct Hit {
@@ -551,7 +405,7 @@ enum ArchiveSearch {
             bestCov = max(bestCov, Double(matched) / Double(needles.count))
         }
 
-        // ─ Семантика: RRF с лексикой (веса 1.0/0.7), как в brain-компаньоне ─
+        // ─ Семантика: RRF с лексикой (веса 1.0/0.7) ─
         // Кандидаты — ВЕСЬ граф, не только лексические попадания: иначе ветка
         // объединения в слиянии ниже — мёртвый код, а словарный разрыв
         // (вопрос другими словами) не закрывается никогда.

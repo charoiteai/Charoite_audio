@@ -163,8 +163,8 @@ meeting opens its card, a graph note or dossier opens as the file itself.
 
 The semantic layer (bge-m3 via your Ollama) works in the built-in search
 too: the index keeps a vector per block of each file, builds in the background
-and refreshes by mtime (see docs/SETUP — `ollama pull bge-m3`). If the optional
-brain server is up (port 8100), search goes there; with neither — pure lexical.
+and refreshes by mtime (see docs/SETUP — `ollama pull bge-m3`); without it —
+pure lexical. The chat does not read the optional brain server (:8100).
 An index instance has one writer: a background refresh starts only when none
 is running (a newer snapshot is skipped, not queued). Tests and probes create
 their own instances and close them in teardown. The app's index file is
@@ -174,8 +174,7 @@ check of running apps, not a file lock).
 
 ## What leaves the Mac
 
-By default the app talks only to localhost: your Ollama, the optional brain
-companion (:8100) and the copilot daemon. Two exceptions are yours to control:
+By default the app talks only to localhost: your Ollama and the copilot daemon. Two exceptions are yours to control:
 at most once every four hours it asks the public GitHub API for the latest release number
 (`sufler.check_updates`, a toggle in Settings), and an update you accept is
 downloaded from GitHub releases and replaces the app only after its checksum,
@@ -183,3 +182,7 @@ the owner's manifest signature and the Developer ID signature check out. Both
 are off under `CHAROITE_NO_CLOUD`. The cloud layers — Claude during a meeting,
 the cloud chat engine — are opt-in and run in the daemon; see
 [Privacy](../PRIVACY.md).
+The chat searches the graph on the Mac itself and does not read the optional
+memory server on localhost:8100. Forgetting or renaming a meeting does notify
+that server (whether `sufler.brain` is on or not), so facts it already holds
+follow the meeting; it is still localhost.

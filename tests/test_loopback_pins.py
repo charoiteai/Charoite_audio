@@ -110,21 +110,6 @@ def test_bench_models_version_probe_goes_direct(monkeypatch, _сеть_закр�
     assert url == f"{bench_models.BASE}/api/version" and kw["timeout"] == 3 and _direct(kw)
 
 
-def test_memory_bench_search_goes_through_open_url_with_its_timeout(monkeypatch, tmp_path):
-    import memory_bench
-    seen = {}
-
-    def fake_open(req, timeout):
-        seen["url"], seen["timeout"] = req.full_url, timeout
-        return io.BytesIO(json.dumps({"text": "Ничего не найдено"}).encode())
-
-    monkeypatch.setattr(net, "open_url", fake_open)
-    graph = tmp_path / "граф"
-    graph.mkdir()
-    assert memory_bench.search_brain(graph, "вопрос")[0] == memory_bench.BRAIN_ALIVE
-    assert seen == {"url": "http://127.0.0.1:8100/vault_search", "timeout": 25}
-
-
 def test_doctor_asks_ollama_through_open_url_with_its_timeout(monkeypatch, capsys):
     import doctor
     seen = {}

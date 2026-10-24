@@ -1408,8 +1408,8 @@ it signals degradation, it does not break the loop.
   opens as a file. A bge-m3 semantic layer finds answers even without
   word overlap: the app keeps its own vectors per file block through the
   local Ollama and fuses them with the lexical ranking (RRF); without bge-m3
-  the search stays lexical. If an optional brain companion is running on
-  :8100, the app asks it first. Meeting facts, voice notes and diary entries
+  the search stays lexical. The chat does not read the optional brain
+  companion on :8100 (№754). Meeting facts, voice notes and diary entries
   are written into that external memory only with `sufler.brain: true` (off
   by default); forgetting and renaming a meeting reach it either way.
 - **Claude Code tools need a named data root** — the MCP server no longer
