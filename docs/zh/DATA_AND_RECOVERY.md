@@ -20,7 +20,7 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
 | 导入文件夹的 `done/`、归档文件夹中的 `Исходник.*` | 导入录音的副本及其放在会议旁的音频源 | `audio.import_keep_days`，默认导入后 2 天 | 在你核对结果期间的第二次机会 |
 | `backups/<图谱>-<哈希>/` | 图谱的服务副本：云端复核的快照与隔离区、移走的冲突副本、批量修改待办事项前的副本 | 快照保留一次运行，隔离区保留十次；移走的副本在你删除前一直保留 | 撤销对图谱的自动修改，不在 iCloud 中 |
 | `data/graph_search/` | 提示记忆的向量缓存：图谱块的向量和文件路径，不含文本 | 可重建（`scripts/graph_search_index.py`）；已消失文件的向量在下次索引时剔除 | 加速提示记忆，不是备份 |
-| `~/Library/Application Support/Charoite/semantic_index_v2.bin` | 派生搜索索引，保存每个块约 700 字符的预览——包括逐字稿 | 可重建；已消失文件的条目在下次搜索时剔除 | 加速搜索，不是备份 |
+| `~/Library/Application Support/Charoite/semantic_index_v2.bin` | 派生搜索索引，保存每个块约 700 字符的预览——包括逐字稿 | 可重建；已消失文件的条目在下次搜索时剔除，后台索引进行中也一样。搜索读不了的文件（被 iCloud 移出本地、无权限、非 UTF-8）和无法列出的文件夹保留各自的条目；图谱根目录出错或遍历为空时索引不动 | 加速搜索，不是备份 |
 | `~/Library/Application Support/CharoiteApp/chat_history.json` | 本地聊天：对话的最近 200 条消息（回答可能复述图谱；图谱片段本身不存储） | 直到在聊天里按**清除**；`forget_meeting.py` 不会动它 | 对话连续性，没有其他读者 |
 
 `record_keep_days` 删除的是音频，不是会议文档。某条记录从“近期会议”中消失也
