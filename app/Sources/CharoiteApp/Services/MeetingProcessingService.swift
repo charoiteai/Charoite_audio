@@ -389,7 +389,7 @@ extension MeetingProcessingSnapshot {
         // старых версий могли записать в transcript_path файл разбора, и
         // тогда тема в списке обрастала «… разбор» (инцидент 04.08).
         for suffix in ["_ревизия_claude", "_minutes", "_hints", "_live",
-                       "_debrief", "_разбор", "_спикеры"] where rest.hasSuffix(suffix) {
+                       "_debrief", "_разбор", "_спикеры", "_после_звонка"] where rest.hasSuffix(suffix) {
             rest.removeLast(suffix.count)
         }
         let name = rest.replacingOccurrences(of: "_", with: " ")

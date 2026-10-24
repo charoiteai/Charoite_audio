@@ -336,10 +336,11 @@ def test_хвост_пишет_один_писатель_с_гейтом_expect_
     text3, n3 = channel_trace.tail_with_summary(final, more)
     assert n3 == 1 and text3.count(channel_trace.SUMMARY_MARK) == 2
     assert meeting_source.note_in_tail(text3) == channel_trace.summary_of(more), "читатель берёт последний итог"
-    # структурно: у строки итога в проекте один писатель — tail_with_summary
+    # структурно: у строки итога в проекте один писатель — tail_with_summary.
+    # Другие заметки хвоста через append_note законны (пометка среза записи после
+    # звонка, №733) — запрещён вызов, в аргументах которого итог из channel_trace.
     for name in ("scripts/import_meeting.py", "src/rebuild_transcript.py"):
-        code = (ROOT / name).read_text(encoding="utf-8")
-        assert "append_note(" not in code, name
+        assert not _append_note_writes_summary((ROOT / name).read_text(encoding="utf-8")), name
 
     # неоднозначный сайдкар: ничего не записано → None, лог не врёт «догнала»
     ambiguous = tmp_path / "amb"
@@ -397,3 +398,23 @@ def test_словарь_причин_совпадает_с_enum_компаньо
         ROOT / "app-ios" / "Sources" / "CharoiteiOS" / "Inbox.swift").read_text(encoding="utf-8")
     assert f'audio.appendingPathExtension("{channel_trace.MANIFEST_SUFFIX[1:]}")' in (
         ROOT / "app-ios" / "Sources" / "CharoiteiOS" / "Inbox.swift").read_text(encoding="utf-8")
+
+
+def _append_note_writes_summary(code: str) -> list[int]:
+    import ast
+    bad = []
+    for node in ast.walk(ast.parse(code)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, (ast.Attribute, ast.Name))
+                and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) == "append_note"):
+            names = {getattr(n, "attr", None) or getattr(n, "id", None)
+                     for a in node.args[1:] + [k.value for k in node.keywords] for n in ast.walk(a)}
+            if names & {"channel_trace", "summary_of", "SUMMARY_MARK", "tail_with_summary"}:
+                bad.append(node.lineno)
+    return bad
+
+
+def test_append_note_guard_catches_a_summary_written_past_tail_with_summary():
+    """Контроль сторожа выше: нарушение он ловит, законную заметку пропускает."""
+    assert _append_note_writes_summary("transcript.append_note(t, channel_trace.summary_of(ev))")
+    assert _append_note_writes_summary("append_note(t, line=channel_trace.SUMMARY_MARK + ' x')")
+    assert not _append_note_writes_summary("transcript.append_note(t, CUT.format(end=e))")

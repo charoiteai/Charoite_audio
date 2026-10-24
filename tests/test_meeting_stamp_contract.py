@@ -567,3 +567,34 @@ def test_ключ_встречи_целиком_и_ничего_больше():
     for не_ключ in ("заметки", "", "2026-07-21", "2026-07-21_09301", "2026-07-21_0930_Тема",
                     " 2026-07-21_0930", "2026-07-21_0930\n", 42, None):
         assert not meeting_stamp.is_stamp(не_ключ), repr(не_ключ)
+
+
+# --- запись после конца звонка (№733) ---------------------------------------
+
+def test_after_call_record_is_a_derivative_not_a_meeting():
+    assert meeting_stamp.stamp_of("2026-10-17_2000_после_звонка") is None
+    assert meeting_stamp.stamp_of("2026-10-17_2000_Планёрка_после_звонка") is None
+    assert meeting_stamp.stamp_of("2026-10-17_2000_Планёрка") == "2026-10-17_2000"
+
+
+def test_publishable_drops_the_after_call_record_and_live_files_of_that_meeting():
+    p = pathlib.Path("/t")
+    files = [p / f"2026-10-17_2000_Тема{s}.md"
+             for s in ("", "_hints", "_live", "_minutes", "_разбор", "_после_звонка")]
+    out = meeting_stamp.publishable(files)
+    assert [f.name for f in out] == ["2026-10-17_2000_Тема.md", "2026-10-17_2000_Тема_minutes.md",
+                                     "2026-10-17_2000_Тема_разбор.md"]
+
+
+def test_publishable_keeps_everything_without_an_after_call_record():
+    p = pathlib.Path("/t")
+    files = [p / f"2026-10-17_2000{s}.md" for s in ("", "_hints", "_live", "_minutes")]
+    assert meeting_stamp.publishable(files) == files
+
+
+def test_publishable_judges_live_files_by_the_meeting_stem_not_by_the_word():
+    """Встреча с темой «Демо live» — не черновик: её главный файл публикуется."""
+    p = pathlib.Path("/t")
+    files = [p / "2026-10-17_2000_Демо_live.md", p / "2026-10-17_2000_Демо_live_после_звонка.md",
+             p / "2026-10-17_2000_Демо_live_hints.md"]
+    assert meeting_stamp.publishable(files) == files[:1]

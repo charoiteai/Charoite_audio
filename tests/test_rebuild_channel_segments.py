@@ -6,6 +6,7 @@
 `resolve_channel_segments` / `merge_dwarfs` / `paragraphs` его не меняет, и
 следующий движок подключается поставщиком сырых сегментов, а не правкой блока.
 """
+import hashlib
 import os
 import pathlib
 import sys
@@ -21,6 +22,9 @@ import owner_voice  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
 import speech_gate  # noqa: E402
 import transcript  # noqa: E402
+import channel_trace  # noqa: E402
+import live_sidecar  # noqa: E402
+import meeting_source  # noqa: E402
 
 OWNER = "Игорь Ветров"
 
@@ -1928,3 +1932,271 @@ def test_a_room_on_sherpa_builds_no_unsupported_spans(meeting, monkeypatch):
     assert seen == [[]]
     assert any("нули канала собеседников" in line for line in said), said
     assert not any("без опоры" in line for line in said), said
+
+
+# --------------------------------------------- запись после конца звонка (№733)
+
+def _stt_by_length(stt, chunk, sr):
+    return f"реплика {len(chunk) // sr} с"
+
+
+def test_owner_speech_after_the_call_goes_to_its_own_file_not_the_transcript(meeting, monkeypatch):
+    """Собеседники кончили на 20-й секунде, владелец говорит дальше: эти слова —
+    файл `_после_звонка` рядом, в стенограмме их нет, имён встречи там нет."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    after = rt.after_call_path(out).read_text(encoding="utf-8")
+    assert "реплика 22 с" in text and "реплика 9 с" not in text
+    assert any(n.startswith(rt.AFTER_CALL_CUT_PREFIX) for n in transcript.notes_of(text)), \
+        "срез виден в самой стенограмме — заметкой"
+    assert rt.AFTER_CALL_CUT_PREFIX not in transcript.speech_of(text), "пометка — не речь"
+    assert "реплика 9 с" in after and f"**{OWNER}**" in after
+    assert after.startswith("# После звонка ") and "не часть встречи" in after
+    assert "Собеседник" not in after
+
+
+def test_cut_note_names_the_end_of_the_last_after_call_span(meeting, monkeypatch):
+    """Пометка среза называет конец последнего вынесенного отрезка, а не начало
+    первого (Haiku out2 — одно условие с фильтром заметок, `tail.after`)."""
+    meeting["len"].update(mic=120, blackhole=120)
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3), (70.0, 100.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    notes = [n for n in transcript.notes_of(out.read_text(encoding="utf-8"))
+             if n.startswith(rt.AFTER_CALL_CUT_PREFIX)]
+    assert len(notes) == 1 and "–14:31)" in notes[0], notes
+    assert "реплика 30 с" in rt.after_call_path(out).read_text(encoding="utf-8")
+
+
+def test_live_notes_after_the_call_end_are_not_carried_into_the_transcript(meeting, monkeypatch):
+    """I4 выходного круга №733: заметки «Ко-мышления» демон писал по живой ленте,
+    где запись после звонка ещё внутри. Позже минуты конца звонка — не
+    переносятся; той же минуты и без отметки времени — переносятся."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["live"].write_text(
+        "живая стенограмма\n\n---\n## Ко-мышление\n> 14:30 📌 смета к пятнице\n"
+        "> 14:31 💭 ужин и мусор\n> канал собеседников: без пропусков\n", encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert "смета к пятнице" in text and "без пропусков" in text
+    assert "ужин" not in text
+    after = rt.after_call_path(out).read_text(encoding="utf-8")
+    assert "## Ко-мышление после звонка\n> 14:31 💭 ужин и мусор" in after, "снятое не теряется"
+
+
+def test_notes_cut_with_no_recognised_after_call_speech_still_leaves_a_trace(meeting, monkeypatch):
+    """Haiku out2: STT после звонка пуст — заметки всё равно срезаны по `tail.after`;
+    срез не тихий: пометка в стенограмме, снятое — в файле `_после_звонка`."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["live"].write_text(
+        "живая стенограмма\n\n---\n## Ко-мышление\n> 14:31 💭 ужин и мусор\n", encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: "" if len(chunk) // sr == 9 else "реплика")
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert "ужин" not in text
+    assert any(n.startswith(rt.AFTER_CALL_CUT_PREFIX) for n in transcript.notes_of(text))
+    assert "ужин и мусор" in rt.after_call_path(out).read_text(encoding="utf-8")
+
+
+def test_second_rebuild_keeps_one_cut_line_and_the_notes_moved_before(meeting, monkeypatch):
+    """I3/I4 DS out3: вход второй пересборки — первый финал. Строка среза не
+    копится, а заметки, снятые первым проходом, из файла хвоста не пропадают."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["live"].write_text(
+        "живая стенограмма\n\n---\n## Ко-мышление\n> 14:30 📌 смета\n> 14:31 💭 ужин и мусор\n",
+        encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    rt.rebuild(meeting["live"], CFG)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert sum(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(text)) == 1
+    after = rt.after_call_path(out).read_text(encoding="utf-8")
+    assert after.count("ужин и мусор") == 1 and "реплика 9 с" in after
+
+
+def test_cut_with_empty_after_call_speech_and_no_notes_still_writes_the_file(meeting, monkeypatch):
+    """Critical out3: строка среза и файл хвоста — одно условие (`tail.after`),
+    файл бывает и без реплик."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: "" if len(chunk) // sr == 9 else "реплика")
+    out = rt.rebuild(meeting["live"], CFG)
+    assert any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(out.read_text(encoding="utf-8")))
+    assert rt.after_call_path(out).read_text(encoding="utf-8").startswith("# После звонка ")
+
+
+def test_empty_after_call_speech_on_a_later_pass_keeps_the_replies_of_the_file(meeting, monkeypatch):
+    """I2 Sonnet out4: второй проход с пустым STT хвоста не затирает реплики
+    (и правки человека) прежнего файла `_после_звонка`."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    path = rt.after_call_path(out)
+    path.write_text(path.read_text(encoding="utf-8").replace("реплика 9 с", "реплика 9 с, правка"), encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: "" if len(chunk) // sr == 9 else "реплика")
+    rt.rebuild(meeting["live"], CFG)
+    assert "реплика 9 с, правка" in path.read_text(encoding="utf-8")
+
+
+def test_after_call_notes_merge_by_whole_note(tmp_path):
+    """Haiku-5 out4: одинаковая строка продолжения у разных заметок не теряется."""
+    path = tmp_path / "x_после_звонка.md"
+    path.write_text("# После звонка\n\n## Ко-мышление после звонка\n> 14:31 💭 ужин\nок\n", encoding="utf-8")
+    merged = rt._merged_after_call_notes(path, ["> 14:31 💭 ужин", "ок", "> 14:32 💭 мусор", "ок"])
+    assert merged == ["> 14:31 💭 ужин", "ок", "> 14:32 💭 мусор", "ок"]
+
+
+def test_cut_line_is_a_recording_trace_not_a_model_thought():
+    """S-M4/DS-I6 out3: строка среза — факт о записи; потребители следа
+    (контекст графа, ко-мышление разбора) снимают её тем же правилом."""
+    line = "> " + rt.AFTER_CALL_CUT_NOTE.format(end="14:30", last="14:31")
+    assert channel_trace.is_trace_line(line) and channel_trace.is_after_call_cut(line)
+    assert not channel_trace.is_after_call_cut("> 14:31 💭 Запись после конца звонка обсудить")
+    assert not channel_trace.is_after_call_cut("> Запись после конца звонка обсудили с Ингой")
+    assert not channel_trace.is_after_call_cut("> 14:31 " + line[2:]), "заметка демона со временем — не срез"
+    text = transcript.append_note("**Инга** [14:20]:\nСмета.\n", line[2:])
+    assert rt.AFTER_CALL_CUT_PREFIX not in meeting_source.without_trace(text)
+
+
+def test_notes_before_keeps_the_end_minute_and_crosses_midnight():
+    import datetime as dt
+    base = dt.datetime(2026, 8, 20, 23, 58, 30)
+    block = "---\n## Ко-мышление\n> 23:59 📌 до конца\n> 00:00 💭 после\n> 00:01 💭 позже"
+    assert rt.notes_before(block, base, 60.0) == (
+        "---\n## Ко-мышление\n> 23:59 📌 до конца", ["> 00:00 💭 после", "> 00:01 💭 позже"])
+    kept, dropped = rt.notes_before(block, base, 100.0)
+    assert "00:00" in kept and dropped == ["> 00:01 💭 позже"]
+
+
+def test_notes_before_drops_a_multiline_note_whole_and_keeps_trace_lines():
+    """M1/M2 out2: продолжение многострочной заметки уходит вместе с ней; строка
+    следа записи с отметкой времени — факт о записи, остаётся."""
+    import datetime as dt
+    base = dt.datetime(2026, 8, 20, 14, 30, 0)
+    block = ("---\n## Ко-мышление\n> 14:30 📌 смета\n> 14:35 💭 ужин\nи мусор вечером\n"
+             "> 14:36 📌 потом\n")
+    kept, dropped = rt.notes_before(block, base, 60.0)
+    assert "ужин" not in kept and "мусор" not in kept and "потом" not in kept
+    assert "смета" in kept and dropped == ["> 14:35 💭 ужин", "и мусор вечером", "> 14:36 📌 потом"]
+    kept, dropped = rt.notes_before("---\n## Ко-мышление\n> 14:35 💭 ужин\n\nи мусор вечером\n", base, 60.0)
+    assert "мусор" not in kept and dropped == ["> 14:35 💭 ужин", "", "и мусор вечером"], "пустая строка — не конец (M3 out3)"
+    line = "> 14:50 " + channel_trace.SUMMARY_MARK + " без пропусков"
+    kept, dropped = rt.notes_before("---\n## Ко-мышление\n" + line, base, 60.0)
+    assert line in kept and dropped == []
+
+
+def test_owner_answer_and_after_call_speech_are_not_glued_into_one_paragraph(meeting, monkeypatch):
+    """Зазор меньше `paragraphs(gap=2.0)`: без раздельных абзацев прощание и первая
+    фраза после звонка слились бы в один блок встречи (синтетика 17.10)."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (39.0, 41.0, 3), (42.0, 49.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert "реплика 2 с" in text and "реплика 7 с" not in text
+    assert "реплика 7 с" in rt.after_call_path(out).read_text(encoding="utf-8")
+
+
+def test_unsupported_spans_on_sherpa_keep_everything_in_the_transcript(meeting, monkeypatch):
+    """Канал собеседников замолк на 20-й секунде до конца записи, а микрофон размечен
+    не Nemotron — переподписи нет, и собеседники могли звучать в микрофоне под
+    подписью владельца: конца звонка нет, файла `_после_звонка` нет."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    meeting["len"] = {"mic": 130, "blackhole": 130}
+    meeting["bh_zeros"] = [(40.5, 130.0)]   # серия ≥ UNSUPPORTED_MIN_S до конца записи
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    assert "реплика 9 с" in out.read_text(encoding="utf-8")
+    assert not rt.after_call_path(out).exists()
+    assert rt.AFTER_CALL_CUT_PREFIX not in out.read_text(encoding="utf-8")
+
+
+def test_call_channel_lost_till_the_end_keeps_everything_in_the_transcript(meeting, monkeypatch):
+    """След канала: системный звук пропал и не вернулся до конца — конец звонка
+    по нему не доказан, файла `_после_звонка` нет."""
+    import json
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    events = [{"label": "blackhole", "kind": "lost", "stopped_at": 40.0}]
+    live = meeting["live"]
+    live.with_name(live.name + ".live.json").write_text(
+        json.dumps({"channel_events": json.dumps(events)}), encoding="utf-8")
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(live, CFG)
+    assert "реплика 9 с" in out.read_text(encoding="utf-8")
+    assert not rt.after_call_path(out).exists()
+    assert rt.AFTER_CALL_CUT_PREFIX not in out.read_text(encoding="utf-8")
+
+
+def test_kept_replies_get_the_header_and_end_of_this_pass(tmp_path):
+    """Minor 1 Sonnet out5: при пустом STT хвоста сохраняются реплики прежнего
+    файла, а шапка и время конца звонка — этого прохода."""
+    live = tmp_path / "2026-10-17_2000.md"
+    path = rt.after_call_path(live)
+    path.write_text("# После звонка old\n\n" + rt.AFTER_CALL_NOTE.format(end="14:30")
+                    + "\n\n**Марк** [14:32]:\nужин и мусор\n", encoding="utf-8")
+    rt.write_after_call(live, "new", "14:31", [], lambda t: t)
+    text = path.read_text(encoding="utf-8")
+    assert "(14:31)" in text and "(14:30)" not in text and "# После звонка new" in text
+    assert "ужин и мусор" in text
+
+
+def test_unreadable_after_call_file_does_not_break_the_final(tmp_path):
+    """M4 Haiku out5: файл хвоста не в UTF-8 не роняет запись финала."""
+    live = tmp_path / "2026-10-17_2000.md"
+    path = rt.after_call_path(live)
+    path.write_bytes("**Марк** [14:32]:\nужин\n".encode("cp1251"))
+    rt.write_after_call(live, "new", "14:31", [], lambda t: t, ["> 14:33 💭 мусор"])
+    text = path.read_text(encoding="utf-8")
+    assert "(14:31)" in text and "> 14:33 💭 мусор" in text
+    kept = live_sidecar.prev_path(live, path).read_bytes()
+    assert kept == "**Марк** [14:32]:\nужин\n".encode("cp1251"), "прежний файл — байтами в .prev/ (I1 DS)"
+
+
+def test_later_pass_keeps_the_edited_after_call_file_in_prev(meeting, monkeypatch):
+    """M2 Opus по №733: второй проход с непустым STT хвоста перезаписывает файл
+    `_после_звонка`, но прежний (с правкой человека) — в `.prev/`, как у финала."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    path = rt.after_call_path(out)
+    path.write_text(path.read_text(encoding="utf-8").replace("реплика 9 с", "реплика 9 с, правка"), encoding="utf-8")
+    rt.rebuild(meeting["live"], CFG)
+    kept = live_sidecar.prev_path(out, path)
+    assert "правка" not in path.read_text(encoding="utf-8")
+    assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
+    # третий проход с другим STT: машинный файл второго прохода правку не вытесняет (I2 Haiku)
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: f"иначе {len(chunk) // sr} с")
+    rt.rebuild(meeting["live"], CFG)
+    assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
+
+
+def test_after_call_copy_without_a_hash_does_not_overwrite_the_kept_edit(meeting, monkeypatch):
+    """I2 Sonnet = I2 Haiku проверки правок Opus по №733: хеш файла хвоста не
+    записан (сбой сайдкара, легаси) — машинный файл неотличим от правки и
+    копируется, но занятый слот с правкой не затирает: копия — под своим именем."""
+    meeting["raw"] = {"mic": [(6.0, 28.0, 3), (43.0, 52.0, 3)],
+                      "blackhole": [(0.0, 5.0, 0), (30.0, 40.0, 1)]}
+    monkeypatch.setattr(rt, "stt_segment", _stt_by_length)
+    out = rt.rebuild(meeting["live"], CFG)
+    path = rt.after_call_path(out)
+    path.write_text(path.read_text(encoding="utf-8").replace("реплика 9 с", "реплика 9 с, правка"), encoding="utf-8")
+    rt.rebuild(meeting["live"], CFG)
+    machine = path.read_bytes()
+    live_sidecar.remember(out, "after_call_sha256", "")
+    monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: f"иначе {len(chunk) // sr} с")
+    rt.rebuild(meeting["live"], CFG)
+    kept = live_sidecar.prev_path(out, path)
+    assert "реплика 9 с, правка" in kept.read_text(encoding="utf-8")
+    assert kept.with_name(f"{kept.name}.{hashlib.sha256(machine).hexdigest()[:8]}").read_bytes() == machine

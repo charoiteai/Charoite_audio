@@ -72,6 +72,18 @@ def test_previous_version_is_copied_as_bytes_even_outside_utf8(tmp_path):
     assert meta["minutes_source_sha256"] == source
 
 
+def test_passport_refusal_after_a_write_is_said_aloud(tmp_path, monkeypatch):
+    """Файл записан, паспорт — нет: следующая пересборка сочтёт файл чужим, и
+    писатель обязан сказать об этом."""
+    live = tmp_path / "2026-10-06_1200.md"
+    live.write_text("# Встреча 2026-10-06_1200\n", encoding="utf-8")
+    target = live.with_name("2026-10-06_1200_minutes.md")
+    monkeypatch.setattr(live_sidecar, "attest", lambda *a, **k: False)
+    said: list[str] = []
+    live_sidecar.write_derivative(live, target, "minutes", "новые\n", live_sidecar.sha("речь"), log=said.append)
+    assert any("паспорт minutes не записан" in m for m in said)
+
+
 def test_previous_version_gets_the_process_mask_not_the_source_mode(tmp_path):
     """`.prev` — копия прежней производной с правами ПО МАСКЕ ПРОЦЕССА, а не с
     правами источника: минутки 0644 (записаны до `harden_umask` или правлены в

@@ -36,7 +36,14 @@ _RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?$")
 # meeting_processing._AUX_SUFFIXES и rename_meeting.SUFFIXES: расхождение
 # уже стоило темы «… разбор» в списке встреч (инцидент 04.08).
 AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
-                "_разбор", "_ревизия_claude", "_спикеры")
+                "_разбор", "_ревизия_claude", "_спикеры", "_после_звонка")
+# Запись после конца звонка (№733): пересборка кладёт её рядом со стенограммой,
+# не в неё — речь встречи, производные и читатели хвоста не видят. В граф, архив
+# и облако файл не публикуется (`publishable`).
+AFTER_CALL_SUFFIX = "_после_звонка"
+# Что демон писал по живой ленте, где хвост ещё внутри: у встречи с записью
+# после звонка эти файлы тоже не публикуются.
+_LIVE_DERIVED = ("_hints", "_live")
 RECORDING_LABELS = ("mic", "blackhole")
 # Расширения файла канала в порядке поиска: готовый wav, сырой pcm демона,
 # недописанный wav.part. Единственный список — resolve_stamp, rebuild
@@ -413,6 +420,23 @@ def files_with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
             continue
         out.append(f)
     return sorted(out)
+
+
+def publishable(files: list[pathlib.Path]) -> list[pathlib.Path]:
+    """Файлы встречи, которые уходят из машины владельца: в папку архива, в
+    «Документацию» графа и в облачную ревизию — одно правило на трёх писателей.
+
+    Запись после конца звонка не публикуется никогда (№733: бытовой разговор
+    после встречи лежал в архиве, «Документации» и в промпте облака). У такой
+    встречи не публикуются и подсказки с живым черновиком: демон писал их по
+    живой ленте, где хвост ещё внутри. Порядок `files` сохраняется."""
+    stems = [f.name[:-3] if f.name.endswith(".md") else f.stem for f in files]
+    # Подсказки и черновик — по стему встречи, у которой есть запись после
+    # звонка, а не по хвосту имени: встреча с темой «Демо live» — не черновик.
+    hidden = {s[:-len(AFTER_CALL_SUFFIX)] + x
+              for s in stems if s.endswith(AFTER_CALL_SUFFIX) for x in _LIVE_DERIVED}
+    return [f for f, s in zip(files, stems)
+            if not s.endswith(AFTER_CALL_SUFFIX) and s not in hidden]
 
 
 def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,

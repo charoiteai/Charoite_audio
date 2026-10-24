@@ -1,6 +1,6 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 85.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 86.
 
 ## Слои и направление стрелок
 
@@ -12,7 +12,7 @@
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 1): `cloud`
 - **audio** (зависит от: base, runtime; модулей 13): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `speech_gate`, `stt`, `stt_runtime`, `voice_pitch`
-- **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 25): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
+- **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 26): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_tail`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
 - **app** (зависит от: base, runtime, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 
 ## Слой окружения и слои без него
@@ -46,6 +46,7 @@
 - `graphs` → meeting: дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app
 - `install_profile` → meeting: бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting
 - `media_meta` → base: разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует
+- `meeting_tail` → meeting: граница конца звонка (№733): делит сегменты стенограммы на разговор и хвост после звонка. Импортов из репозитория нет, только stdlib; единственный потребитель — rebuild_transcript (meeting). В base модуль открылся бы всем слоям, хотя решение о хвосте — предметное правило встречи
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3, daemon и scripts/doctor.py (годность — refusal(), проба — judge())
 - `once` → base: общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его llm (llm, model_lease; llm передаёт его двери векторов значением), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm
 - `task_line` → base: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items и meeting_archive — источник саммари без учёта после встречи, without_statuses (№392); ничего из репо не импортирует

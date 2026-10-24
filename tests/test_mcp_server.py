@@ -970,3 +970,41 @@ def test_write_refusal_drops_the_digests_of_that_meeting(tmp_path, monkeypatch):
     assert (llm._fit_speech_id(speech), "ollama") not in llm._fit_cache, \
         "отказ записи после ответа модели — сводки этой встречи из памяти ушли"
     assert (llm._fit_speech_id("чужая встреча"), "ollama") in llm._fit_cache, "чужие не тронуты"
+
+
+def test_hints_of_a_meeting_with_after_call_record_are_not_given(tmp_path, monkeypatch):
+    """M3 Opus по №733: подсказки встречи с записью после звонка (демон писал их и
+    по быту) в чат не выдаются — правило `meeting_stamp.publishable`, как у архива."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    tdir = _transcripts(root, monkeypatch)
+    (tdir / "2026-09-13_1200_hints.md").write_text("подсказка про ужин и мусор\n", encoding="utf-8")
+    assert "ужин" in mcp_server.sufler_hints()
+    (tdir / "2026-09-13_1200_после_звонка.md").write_text("# После звонка\n", encoding="utf-8")
+    out = mcp_server.sufler_hints()
+    assert "ужин" not in out and "после конца звонка" in out
+
+
+def test_hints_stay_closed_when_the_after_call_file_is_deleted(tmp_path, monkeypatch):
+    """I2 DS: строка среза в финале — признак, переживающий удаление файла хвоста."""
+    import rebuild_transcript
+    import transcript
+    root = tmp_path / "данные"
+    root.mkdir()
+    final = transcript.append_note("# Встреча\n**Инга** [10:21]:\nсмета\n",
+                                   rebuild_transcript.AFTER_CALL_CUT_NOTE.format(end="10:40", last="10:52"))
+    tdir = _transcripts(root, monkeypatch, text=final)
+    (tdir / "2026-09-13_1200_hints.md").write_text("подсказка про ужин\n", encoding="utf-8")
+    assert "ужин" not in mcp_server.sufler_hints()
+
+
+def test_hints_of_an_unreadable_final_name_the_real_reason(tmp_path, monkeypatch):
+    """Minor 2 DS проверки правок Opus: финал не прочитался — подсказки закрыты,
+    но причина названа своя, а не «запись после звонка»."""
+    root = tmp_path / "данные"
+    root.mkdir()
+    tdir = _transcripts(root, monkeypatch, text="# Встреча\n")
+    (tdir / "2026-09-13_1200.md").write_bytes("# Встреча\nужин\n".encode("cp1251"))
+    (tdir / "2026-09-13_1200_hints.md").write_text("подсказка про ужин\n", encoding="utf-8")
+    out = mcp_server.sufler_hints()
+    assert "ужин" not in out and "не прочиталась" in out

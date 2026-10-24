@@ -46,6 +46,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import graph_updater as gu  # noqa: E402
+import meeting_stamp  # noqa: E402
 from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 
@@ -62,7 +63,9 @@ def _root() -> pathlib.Path:
 # Служебные соседи стенограммы: подсказки, минутки, разбор, живой черновик,
 # облачная ревизия. Их разбирать бессмысленно — это уже продукты модели, а не
 # речь людей, и модель на них меряет саму себя.
-SUFFIXES = ("_hints", "_minutes", "_разбор", "_live", "_ревизия_claude")
+# Список — общий для всех читателей (`meeting_stamp.AUX_SUFFIXES`): свой
+# пропустил бы запись после звонка (№733) как встречу.
+SUFFIXES = meeting_stamp.AUX_SUFFIXES
 # Стенограмма, которую дописывали только что, — либо идущая встреча, либо
 # ещё не пересобранная. Замер на половине разговора сравнивает не модели.
 FRESH_S = 10 * 60
