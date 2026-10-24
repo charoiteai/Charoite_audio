@@ -469,8 +469,8 @@ def _cut(text: str) -> str:
 def test_short_final_with_after_call_record_moves_the_draft_without_the_model(
         tmp_path, monkeypatch, first_fails):
     """№733, вариант 2 главной (C1 DS n733-mut-out2): черновик демона собран по
-    живой ленте, где запись после звонка ещё внутри; хвост вынесен, речи после
-    среза меньше порога. Перештамповка отдала бы быт в протокол, а модель на
+    живой ленте, где запись после звонка ещё внутри; хвост вынесен, речь звонка
+    короче порога. Перештамповка отдала бы быт в протокол, а модель на
     короткой речи не зовётся — порог коротких встреч: черновик уходит в .prev/.
     Исход один при отказавшей и исправной модели, и повторный проход его не
     меняет: модель не зовётся ни разу."""
@@ -479,8 +479,13 @@ def test_short_final_with_after_call_record_moves_the_draft_without_the_model(
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
     names = {"Собеседник 2": "Инга"}
     _FakeLLM.fail = first_fails
+    said: list[str] = []
+    monkeypatch.setattr(rebuild_transcript, "log", said.append)
     assert rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, names) == "human"
-    assert not mpath.exists()
+    assert not mpath.exists() and _FakeLLM.calls == []
+    # лог не обещает пересборку, которой при короткой речи не будет (M1 Sonnet out3)
+    assert any("минуток не будет" in m for m in said)
+    assert not any("соберутся" in m for m in said)
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
     _FakeLLM.fail = False
     assert rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, names) == "human"
@@ -504,6 +509,38 @@ def test_short_final_with_after_call_record_and_no_draft_builds_nothing(tmp_path
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
     rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
     assert _FakeLLM.calls == [] and not mpath.exists()
+
+
+def test_mcp_minutes_written_while_reading_a_short_cut_final_go_away(tmp_path, monkeypatch):
+    """I1 DS out3: минуток на старте не было, MCP «Минутки» записали их по ленте
+    с бытом за чтение источника; речь звонка короче порога — машинные байты
+    судятся на этот миг и уходят в .prev/, как на пути отказа модели."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    real_of = rebuild_transcript.meeting_source.of
+
+    def of_after_mcp(live_path, final_text):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин\n", "b" * 64, cut=False)
+        return real_of(live_path, final_text)
+    monkeypatch.setattr(rebuild_transcript.meeting_source, "of", of_after_mcp)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
+    assert owned == "human" and not mpath.exists() and _FakeLLM.calls == []
+    assert "ужин" in (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8")
+
+
+def test_minutes_built_from_a_cut_final_survive_a_short_cut_final(tmp_path, monkeypatch):
+    """I2 DS out3 = Minor 7 Haiku: минутки собраны из финала со срезом — чистые;
+    правленый финал со срезом стал короче порога — перештамповка без модели,
+    файл на месте, в .prev/ ничего."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    final = _cut("**Инга** [10:21]:\n" + "Смету пришлю. " * 60 + "\n")
+    outcome = rebuild_transcript.finalize_minutes(live, final, meta, {}, {})
+    assert outcome == "regenerated"
+    rebuild_transcript.record_minutes_passport(live, mpath, outcome, final, {})
+    built = mpath.read_text(encoding="utf-8")
+    _FakeLLM.calls.clear()
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), live_sidecar.read(live), {}, {})
+    assert owned == "restamped" and mpath.read_text(encoding="utf-8") == built
+    assert _FakeLLM.calls == [] and not (tmp_path / ".prev" / mpath.name).exists()
 
 
 @pytest.mark.parametrize("answer, fail", [("", True), ("   ", False)])

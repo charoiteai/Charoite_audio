@@ -2306,10 +2306,10 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         return "human"
     # Модели — только речь: хвост «Ко-мышление» (📌/💎/💭 живого контура) —
     # мысли модели, не сказанное вслух; кнопка «Протокол» получает tr.full()
-    # без него, и здесь так же (GLM Imp-4 по #483). Порог — только при
-    # создании с нуля: существующий черновик сам доказывает, что встреча
-    # короткой не была, а финал бывает короче живого текста (эхо-фильтр
-    # микрофона; GLM Minor-5).
+    # без него, и здесь так же (GLM Imp-4 по #483). Порог коротких встреч
+    # модель не зовёт; существующий черновик без среза перештамповывается —
+    # финал бывает короче живого текста (эхо-фильтр микрофона; GLM Minor-5),
+    # со срезом — уходит в .prev/ (ниже).
     source = meeting_source.of(live, final_text)
     speech = source.speech
     if current is not None and source.matches(
@@ -2327,13 +2327,15 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     if len(speech) < MINUTES_MIN_CHARS:
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
-        # прежнее поведение №146, перештамповка. После среза черновик уходит
-        # в .prev/ без модели — порог коротких встреч, исход один при любой
-        # модели (№733: иначе отказ модели переносил черновик, а следующий
-        # проход по порогу модель уже не звал).
+        # прежнее поведение №146, перештамповка. Финал со срезом: речь звонка
+        # (запись после звонка в финал не входит) короче порога — черновик
+        # уходит в .prev/ без модели, исход один при любой модели (№733: иначе
+        # отказ модели переносил черновик, а следующий проход по порогу модель
+        # уже не звал). Минуток не было на старте — решает тоже
+        # _defer_live_draft: MCP мог записать их за чтение источника (I1 DS out3).
         log(f"минутки не пересобраны: речи короче {MINUTES_MIN_CHARS} знаков")
-        if after_call and current is not None:
-            return _defer_live_draft(mpath, before, current, live, meta, live_names)
+        if after_call:
+            return _defer_live_draft(mpath, before, current, live, meta, live_names, short=True)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     from llm import LLM
     # Тяжёлый вызов не спорит с идущей встречей (GLM Imp-2), но и очередь
@@ -2427,8 +2429,9 @@ def _machine_bytes_now(mpath: pathlib.Path, live: pathlib.Path, meta):
 
 
 def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pathlib.Path,
-                      meta: dict, live_names: dict[str, str]) -> str:
-    """Отказ модели при записи после звонка (№733): машинные минутки собраны
+                      meta: dict, live_names: dict[str, str], short: bool = False) -> str:
+    """Запись после звонка (№733), а модель минутки не дала: отказала или не
+    звалась — речь звонка короче порога (`short`). Машинные минутки собраны
     не по этой речи — черновик живой ленты или финал прохода, который хвост
     не вынес; они уходят в .prev/, файла минуток нет.
 
@@ -2474,8 +2477,12 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pa
     except OSError as exc:              # стенограмма уже записана — прогон не падает (M6 out3)
         log(f"минутки: не перенесены в .prev/ ({exc}) — оставлены как есть")
         return "human"
-    log("минутки: черновик живой ленты с записью после звонка → .prev/, "
-        "соберутся следующей пересборкой или ретро-обходом")
+    if short:
+        log("минутки: черновик живой ленты с записью после звонка → .prev/, "
+            f"минуток не будет: речь звонка короче {MINUTES_MIN_CHARS} знаков")
+    else:
+        log("минутки: черновик живой ленты с записью после звонка → .prev/, "
+            "соберутся следующей пересборкой или ретро-обходом")
     return "human"
 
 
