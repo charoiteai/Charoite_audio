@@ -748,8 +748,9 @@ it signals degradation, it does not break the loop.
   so the line appears as soon as the review finishes. The count belongs to
   the review attempt that wrote it: a review that touched nothing leaves no
   line, a running or failed attempt without transferred edits hides it, and
-  a pipeline rerun keeps it only until the review restarts on a rebuilt
-  transcript. Before, the review worked invisibly and its edits were only
+  a pipeline rerun keeps it only while the transcript is the one it was
+  counted on: a rebuilt transcript drops it even if the review does not run
+  again. Before, the review worked invisibly and its edits were only
   discoverable in the logs. A review whose CLI failed to start or whose
   answer broke off retries itself once — ten minutes later and not during a
   live meeting; a timeout is not retried. Its stage (running, retrying, ok,

@@ -115,7 +115,7 @@ fi
 step "3. swift — если тронут app/ или контракт статуса (сборка, тесты и SwiftLint как в swift-tests.yml; app-ios не собирается)"
 if skipped swift; then :
 elif [ -z "$(changed app/ tests/fixtures/meeting_status_review.json)" ]; then
-  echo "   – app/ и контракт статуса не тронуты"; SKIPPED="$SKIPPED swift(app/ не тронут)"
+  echo "   – app/ и контракт статуса не тронуты"; SKIPPED="$SKIPPED swift(app/ и контракт статуса не тронуты)"
 else
   # Линтер: его СОБСТВЕННЫЙ код возврата плюс отсутствие строк error — так же, как
   # в swift-tests.yml под `set -euo pipefail`. Раньше код глотался `;`, и краш или

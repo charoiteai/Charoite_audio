@@ -727,7 +727,9 @@ as the `review` field without moving readiness (with `review.result`
 that wrote it: every review stage write replaces it, so a running or failed
 attempt without transferred edits drops it; `processing()` of a new pipeline
 run carries it, since the review restarts only when the transcript is newer
-than its file, and that restart's first stage write drops it; the meeting
+than its file, and that restart's first stage write drops it; a run outcome
+(ready, failed) also drops it once the transcript is newer than `result.at`,
+since the review may not restart at all (cloud off, lock wait); the meeting
 card reads it from here, not from the log), keeps failures linked to the
 source transcript, and
 announces readiness only after the exact meeting note exists. The status file

@@ -74,12 +74,31 @@ def _review_doc(state: str, note: str, now: float,
     (№779, n779-out2: опоздавший воркер прежней стенограммы и правило «ноль не
     вытесняет» держали чужое число через два прогона). Через границу прогона
     итог несёт `processing()`: повтор без новой стенограммы ревизию не
-    перезапускает, и итог остаётся верным."""
+    перезапускает, и итог остаётся верным. `at` — когда итог записан: по нему
+    исход прогона узнаёт стенограмму, переписанную после ревизии."""
     doc: dict[str, Any] = {"state": state, "note": str(note)[:300], "updated_at": now}
     if result is not None:
         doc["result"] = {"touched": int(result.get("touched", 0)),
-                         "applied": int(result.get("applied", 0))}
+                         "applied": int(result.get("applied", 0)), "at": now}
     return doc
+
+
+def _review_outlived(review: dict[str, Any], final: pathlib.Path) -> dict[str, Any]:
+    """`review` без итога, если стенограмма переписана после него: прогон
+    пересобрал её, а ревизия не перезапустилась (облако выключено) или ещё
+    ждёт замка графа — число прежней стенограммы карточка выдала бы за итог
+    этой (n779-out3, DS I1 = Haiku I1). Тот же признак, что `fresh` в
+    graph_updater: стенограмма новее ревизии. Не прочиталась — итог остаётся."""
+    result = review.get("result")
+    if not isinstance(result, dict):
+        return review
+    try:
+        newer = final.stat().st_mtime > float(result.get("at", 0) or 0)
+    except (OSError, TypeError, ValueError):
+        return review
+    if not newer:
+        return review
+    return {k: v for k, v in review.items() if k != "result"}
 
 
 def _names_of(path: pathlib.Path):
@@ -374,7 +393,9 @@ class MeetingStatusStore:
             # конвейера и успевал записать «running» раньше, чем тот собрал
             # документ заново без поля (DS r1 I1, GLM r1 I1 по #546)
             if isinstance(current.get("review"), dict):
-                payload["review"] = current["review"]
+                review = _review_outlived(current["review"], final)
+                if review:
+                    payload["review"] = review
             return payload
 
         return _required(self._update(transcript, mutate, terminal=True))
@@ -479,7 +500,8 @@ class MeetingStatusStore:
         `unfinished` и `busy`, а ревизия не обработка. Документа ещё нет —
         не заводим ни его, ни каталог, ни файл замка. `result` —
         `{touched, applied}` по вердикту сверки, его читает карточка встречи
-        (№779); не передан — прежний переносится."""
+        (№779); не передан — этап остаётся без итога: итог принадлежит
+        попытке, которая его пишет (`_review_doc`)."""
         transcript = pathlib.Path(transcript)
         if not self.directory.is_dir() or not self._path(transcript).is_file():
             return None
@@ -570,7 +592,9 @@ class MeetingStatusStore:
                 "attempts": int(current.get("attempts", 0)) + 1,
             }
             if isinstance(current.get("review"), dict):
-                payload["review"] = current["review"]
+                review = _review_outlived(current["review"], pathlib.Path(payload["transcript_path"]))
+                if review:
+                    payload["review"] = review
             return payload
 
         return _required(self._update(transcript, mutate, terminal=True))

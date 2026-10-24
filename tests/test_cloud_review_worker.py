@@ -2168,7 +2168,8 @@ def test_the_review_stage_carries_what_reached_the_graph(tmp_path, monkeypatch):
     assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert "ЮPay" in core.read_text(encoding="utf-8")
     review = json.loads(status.read_text(encoding="utf-8"))["review"]
-    assert review["state"] == "ok" and review["result"] == {"touched": 2, "applied": 1}
+    assert review["state"] == "ok"
+    assert {k: v for k, v in review["result"].items() if k != "at"} == {"touched": 2, "applied": 1}
 
     class Refused:
         returncode = 1
@@ -2238,7 +2239,8 @@ def test_a_partial_transfer_shows_what_did_reach_the_graph(tmp_path, monkeypatch
     assert ("ЮPay" in core.read_text(encoding="utf-8")) == (expected is not None)
     review = json.loads(status.read_text(encoding="utf-8"))["review"]
     assert review["state"] == "failed"
-    assert review.get("result") == expected, review
+    got = review.get("result")
+    assert ({k: v for k, v in got.items() if k != "at"} if got else None) == expected, review
 
 
 def test_a_stub_keeps_the_displaced_body_in_quarantine(tmp_path):
