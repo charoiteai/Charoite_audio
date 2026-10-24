@@ -193,6 +193,7 @@ def test_owner_label_never_reaches_name_speakers_rest():
 # ---------------------------------------------------------------------------
 import hashlib  # noqa: E402
 import json  # noqa: E402
+import shutil  # noqa: E402
 
 
 def _sha(text: str) -> str:
@@ -802,3 +803,100 @@ def test_clean_mcp_minutes_written_while_the_model_fails_keep_their_names(tmp_pa
     monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_fail)
     rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, rebuild_transcript.minutes_names(meta))
     assert "Инга" not in mpath.read_text(encoding="utf-8")
+
+
+def test_mcp_minutes_written_while_the_model_fails_with_no_minutes_before_go_away(tmp_path, monkeypatch):
+    """Минуток не было, MCP «Минутки» записали их по ленте с бытом за время
+    вызова модели, модель отказала — машинные байты не из среза уходят в
+    .prev/, как черновик живой ленты: файл судится на этот миг, а не по снимку
+    начала (выжившие мутанты двери в CI по №733)."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+
+    def mcp_then_fail(self, text, recording_note=None):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин\n", "b" * 64, cut=False)
+        raise RuntimeError("ollama лежит")
+        yield ""
+    monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_fail)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and not mpath.exists()
+    assert "ужин" in (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8")
+
+
+def test_model_refusal_with_no_minutes_at_all_leaves_nothing(tmp_path, monkeypatch):
+    """Минуток не было и нет — переносить нечего, файла не появляется."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    _FakeLLM.fail = True
+    assert rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {}) == "human"
+    assert not mpath.exists() and not (tmp_path / ".prev").exists()
+
+
+def test_mcp_minutes_stay_when_the_previous_version_cannot_be_kept(tmp_path, monkeypatch):
+    """Удачная модель, MCP записали минутки под пересборкой, а `.prev/` не
+    создаётся — заменять без копии нельзя: исход «human», байты MCP на месте."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    def mcp_then_answer(self, text, recording_note=None):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин\n", "b" * 64, cut=False)
+        shutil.rmtree(tmp_path / ".prev")
+        (tmp_path / ".prev").write_text("не каталог\n", encoding="utf-8")
+        yield _FakeLLM.answer
+    monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_answer)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == "# Минутки\n- ужин\n"
+
+
+def test_mcp_minutes_stay_when_the_replacement_loses_a_second_race(tmp_path, monkeypatch):
+    """Та же гонка, и вторая запись по новому снимку тоже проиграла — файл не
+    наш: исход «human», байты MCP на месте."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    real_write = rebuild_transcript.safe_write.write_text
+    lost = []
+
+    def write_text(path, *a, **k):
+        if lost and pathlib.Path(path) == mpath:
+            return False
+        return real_write(path, *a, **k)
+
+    def mcp_then_answer(self, text, recording_note=None):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин\n", "b" * 64, cut=False)
+        lost.append(True)
+        yield _FakeLLM.answer
+    monkeypatch.setattr(rebuild_transcript.safe_write, "write_text", write_text)
+    monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_answer)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == "# Минутки\n- ужин\n"
+
+
+def test_final_exactly_at_the_threshold_goes_to_the_model(tmp_path, monkeypatch):
+    """Порог строгий: речь ровно в `MINUTES_MIN_CHARS` знаков — уже не короткая."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    monkeypatch.setattr(rebuild_transcript, "MINUTES_MIN_CHARS", len(meeting_source.of(live, FINAL).speech))
+    assert rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {}) == "regenerated"
+    assert len(_FakeLLM.calls) == 1
+
+
+@pytest.mark.parametrize("meta", [None, [], "minutes_cut_source_sha256"])
+def test_a_passport_that_is_not_a_dict_proves_no_cut(meta):
+    assert rebuild_transcript._built_from_a_cut_final(meta) is False
+
+
+def test_sidecar_failure_while_remembering_a_hash_is_a_refusal(tmp_path, monkeypatch):
+    def broken(*a, **k):
+        raise OSError("диск отвалился")
+    monkeypatch.setattr(live_sidecar, "remember", broken)
+    assert rebuild_transcript._remember_sha(tmp_path / "x.md", "minutes_sha256", "a" * 64) is False
+
+
+def test_minutes_passport_refusal_after_regeneration_is_said_aloud(tmp_path, monkeypatch):
+    """Без паспорта следующая перештамповка возьмёт имена живой сессии — об
+    отказе говорится громко, пока минутки нетронуты (DS I3 по #551)."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    mpath.write_text("# Минутки\n", encoding="utf-8")
+    said: list[str] = []
+    monkeypatch.setattr(rebuild_transcript, "log", said.append)
+    monkeypatch.setattr(live_sidecar, "attest", lambda *a, **k: False)
+    rebuild_transcript.record_minutes_passport(live, mpath, "regenerated", FINAL, {})
+    assert any("признак их нумерации не записан" in m for m in said)
