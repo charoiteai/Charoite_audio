@@ -912,3 +912,44 @@ def test_minutes_passport_refusal_after_regeneration_is_said_aloud(tmp_path, mon
     monkeypatch.setattr(live_sidecar, "attest", lambda *a, **k: False)
     rebuild_transcript.record_minutes_passport(live, mpath, "regenerated", FINAL, {})
     assert any("признак их нумерации не записан" in m for m in said)
+
+
+def test_unchanged_draft_is_moved_even_when_the_oracle_cannot_confirm_it(tmp_path, monkeypatch):
+    """Черновик признан машинным в начале (`minutes_sha256` = хеш байтов), за
+    вызов модели снимок не сменился, а оракул на этот миг не подтверждает
+    (файл стал нечитаемым при прежнем снимке — C1 DS n733-mut-out): решение
+    начала остаётся в силе, быт уходит в .prev/, а не остаётся протоколом."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    monkeypatch.setattr(rebuild_transcript, "_machine_bytes_now", lambda *a, **k: None)
+    _FakeLLM.fail = True
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and not mpath.exists()
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
+
+
+def test_draft_deleted_during_the_model_call_is_reported(tmp_path, monkeypatch):
+    """Черновик удалили, пока модель думала, модель отказала — переносить
+    нечего, и об этом сказано: исход «human», файла нет, .prev/ не создан."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    said: list[str] = []
+    monkeypatch.setattr(rebuild_transcript, "log", said.append)
+
+    def delete_then_fail(self, text, recording_note=None):
+        mpath.unlink()
+        raise RuntimeError("ollama лежит")
+        yield ""
+    monkeypatch.setattr(_FakeLLM, "minutes", delete_then_fail)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert owned == "human" and not mpath.exists() and not (tmp_path / ".prev").exists()
+    assert any("сменились под пересборкой" in m for m in said)
+
+
+def test_a_cut_key_that_differs_from_the_source_key_proves_no_cut():
+    """Регенерация из финала без среза сменила `minutes_source_sha256` — ключи
+    разошлись, срез не доказан (оба условия нужны, не одно)."""
+    meta = {"minutes_cut_source_sha256": "a" * 64, "minutes_source_sha256": "b" * 64}
+    assert rebuild_transcript._built_from_a_cut_final(meta) is False
+    assert rebuild_transcript._built_from_a_cut_final({"minutes_cut_source_sha256": "a" * 64,
+                                                       "minutes_source_sha256": "a" * 64}) is True
