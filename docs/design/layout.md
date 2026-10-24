@@ -160,7 +160,7 @@
 
 ## Пути, названные в документации и конфигах
 
-- `app/make_app.sh` ← README.md, app/README.md, docs/RELEASING.md, docs/SETUP.md, docs/ru/README.md, docs/ru/RELEASING.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/ru/scripts/README.md, docs/zh/README.md, docs/zh/RELEASING.md, docs/zh/SETUP.md, docs/zh/app/README.md, docs/zh/scripts/README.md, scripts/README.md
+- `app/make_app.sh` ← README.md, app/README.md, docs/ARCHITECTURE.md, docs/RELEASING.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/README.md, docs/ru/RELEASING.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/README.md, docs/zh/RELEASING.md, docs/zh/SETUP.md, docs/zh/app/README.md, docs/zh/scripts/README.md, scripts/README.md
 - `app/stage_code.sh` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `scripts/bench_extract.py` ← MANIFESTO.md, README.md, docs/MODELS.md, docs/ru/MANIFESTO.md, docs/ru/MODELS.md, docs/ru/README.md, docs/zh/MANIFESTO.md, docs/zh/MODELS.md, docs/zh/README.md
 - `scripts/bench_models.py` ← docs/FEATURES.md, docs/MODELS.md, docs/ru/MODELS.md, docs/zh/MODELS.md
