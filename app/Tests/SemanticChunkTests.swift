@@ -139,7 +139,7 @@ extension SemanticChunkTests {
 
         // следующий поиск после forget_meeting: файла на диске больше нет
         await index.refresh(files: [(kept, 1, "# Встреча\n\nПеренос сроков согласован.")],
-                                           pruneMissing: true)
+                            alive: [kept])
 
         let goneCount = await index.chunkCount(of: forgotten)
         let keptCount = await index.chunkCount(of: kept)
@@ -147,7 +147,7 @@ extension SemanticChunkTests {
         XCTAssertGreaterThan(keptCount, 0, "заодно снесли живую встречу")
     }
 
-    /// Без флага чистки частичный снимок не смеет выбрасывать чужие файлы.
+    /// Без `alive` частичный снимок не смеет выбрасывать чужие файлы.
     func testБезФлагаЧисткиИндексНеТеряетФайлы() async {
         let vocab = ["бюджет", "перенос"]
         let store = FileManager.default.temporaryDirectory
@@ -162,7 +162,7 @@ extension SemanticChunkTests {
 
         let bCount = await index.chunkCount(of: "b.md")
         XCTAssertGreaterThan(bCount, 0,
-                             "частичный снимок вычистил файл без флага pruneMissing")
+                             "частичный снимок вычистил файл без alive")
     }
 }
 
@@ -210,7 +210,7 @@ final class IndexOwnershipTests: XCTestCase {
         // упавший тест не оставит писателя в воротах: блок идёт раньше закрытия
         addTeardownBlock { await gate.release() }
         let started = await index.refreshInBackground(
-            files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], pruneMissing: false)
+            files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], walk: index.testWalk())
         guard started else { return XCTFail("первый снимок не принят") }
         let stream = entered.stream
         let inside = await finishesWithin(seconds: 10) { for await _ in stream { break } }
@@ -218,7 +218,7 @@ final class IndexOwnershipTests: XCTestCase {
 
         // пока задача идёт, второй снимок пропускается, а не ставит второго писателя
         let second = await index.refreshInBackground(
-            files: [(path: "D.md", mtime: 1, text: "# D\n\nдругое")], pruneMissing: true)
+            files: [(path: "D.md", mtime: 1, text: "# D\n\nдругое")], walk: index.testWalk(["D.md"]))
         XCTAssertFalse(second)
 
         let closing = Task {
@@ -242,7 +242,7 @@ final class IndexOwnershipTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.path),
                        "закрытый экземпляр записал файл индекса после ответа эмбеддера")
         let afterClose = await index.refreshInBackground(
-            files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], pruneMissing: false)
+            files: [(path: "C.md", mtime: 1, text: "# C\n\nтекст узла")], walk: index.testWalk())
         XCTAssertFalse(afterClose, "закрытый экземпляр принял новую задачу")
     }
 
@@ -270,7 +270,7 @@ final class IndexOwnershipTests: XCTestCase {
         }
         let started = await index.refreshInBackground(
             files: [(path: "A.md", mtime: 1, text: small),
-                    (path: "B.md", mtime: 1, text: big)], pruneMissing: false)
+                    (path: "B.md", mtime: 1, text: big)], walk: index.testWalk())
         guard started else { return XCTFail("снимок не принят") }
         let stream = entered.stream
         let inside = await finishesWithin(seconds: 10) { for await _ in stream { break } }

@@ -16,6 +16,14 @@ enum GraphFolders {
     static let cores = ["Ядра", "Cores", "核心"]
     static var all: [String] { meetings + nodes + dossiers + docs }
 
+    /// Служебная ли папка корня — литерал таблицы для имени в форме сравнения
+    /// (регистр, ё→е, форма Unicode); чужое имя — nil. Литерал, а не дисковое
+    /// имя: печатать можно только то, что лежит в таблице (журнал обхода, №768).
+    static func serviceTop(_ name: String) -> String? {
+        let f = fold(name)
+        return all.first { fold($0) == f }
+    }
+
     /// Префиксы служебного файла — зеркало `service_prefixes` схемы Чароита
     /// (src/charoite_schema.py; тест сверяет литерал). Указатели папок, карта
     /// содержания, кандидаты, индекс досье пишет конвейер: это навигация, не

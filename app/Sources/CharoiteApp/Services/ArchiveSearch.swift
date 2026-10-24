@@ -434,8 +434,7 @@ enum ArchiveSearch {
         //
         // Скрытое по НАМЕРЕНИЮ (.obsidian, .trash, .git) отсекаем по имени —
         // это надёжнее флага, который ставит не пользователь.
-        guard let walker = FileManager.default.enumerator(
-            at: graph, includingPropertiesForKeys: keys)
+        guard let walk = await beginGraphWalk(graph, keys: keys, index: semanticIndex)
         else { return Outcome(text: "", rels: [], verdict: .unavailable) }
         // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
         // «Документация/Стенограммы встреч», побайтовая копия — в
@@ -448,7 +447,7 @@ enum ArchiveSearch {
         //
         // Оригинал выигрывает: сортируем так, чтобы архивные копии шли
         // последними, и первый увиденный текст остаётся единственным.
-        let urls = walker.compactMap { $0 as? URL }
+        let urls = walk.walker.compactMap { $0 as? URL }
             .filter { $0.pathExtension == "md" }
             .filter { url in
                 // Точка в начале любого компонента пути = служебное:
@@ -498,8 +497,16 @@ enum ArchiveSearch {
         // Переименованные и удалённые файлы не должны занимать память вечно.
         await GraphCache.shared.retain(keys: liveKeys)
         // папка без заметок — пусто; заметки есть, но не открылись (iCloud
-        // выгрузил, нет прав) — не читали, значит не проверено
-        guard !all.isEmpty else { return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty) }
+        // выгрузил, нет прав) — не читали, значит не проверено. Prune тут нет:
+        // пустой обход индекс не трогает (out2 C1, `WalkErrors.alive`).
+        guard !all.isEmpty else {
+            return Outcome(text: "", rels: [], verdict: unread > 0 ? .unverified : .empty)
+        }
+        // Что живо для индекса — те же ключи, что для кэша текстов: файл, который
+        // не открылся, на диске есть и записи не теряет; незаперечисленное
+        // поддерево не прунится. После раннего выхода: журнал неполного обхода
+        // пишет только поиск, который дойдёт до индекса (out3 Sonnet M3).
+        let indexWalk = SemanticIndex.Walk(seq: walk.seq, alive: walk.errors.alive(liveKeys))
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
         }
@@ -616,15 +623,13 @@ enum ArchiveSearch {
         // НАСТОЯЩИЙ mtime: dateTs у встреч — дата из имени, она не меняется
         // при правке, и правленый файл никогда не переиндексировался бы
         let snapshot = all.map { (path: $0.rel, mtime: $0.mtime, text: $0.text) }
-        // pruneMissing: снимок здесь — весь прочитанный граф, поэтому чего в
-        // нём нет, того нет и на диске. Так забытая встреча уходит и из
-        // индекса, а не живёт там превью-блоками (аудит 16.08). Непрочитанный
-        // файл в снимок не попадает и тоже прунится — №768.
+        // Prune по живым ключам обхода: забытая встреча уходит и из индекса,
+        // а не живёт там превью-блоками (аудит 16.08).
         // Задачу ставит сам индекс — она его собственность, её можно
         // дождаться и закрыть (№534). Хоп на актор ждёт, если в нём идёт
         // синхронная секция фоновой задачи (загрузка файла индекса, нарезка
         // блоков, persist) — тот же актор similarChecked выше ждал и раньше.
-        await semanticIndex.refreshInBackground(files: snapshot, pruneMissing: true)
+        await semanticIndex.refreshInBackground(files: snapshot, walk: indexWalk)
 
         // разнообразие: одна встреча (заметка+архив+стенограмма) ≤ 1-2 слота
         var shown = diversify(merged, limit: limit)
