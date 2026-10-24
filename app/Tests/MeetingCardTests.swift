@@ -196,8 +196,27 @@ final class MeetingCardTests: XCTestCase {
         XCTAssertEqual(snap.review?.state, "ok")
         XCTAssertEqual(snap.review?.result, .init(touched: 5, applied: 3))
         let line = try XCTUnwrap(MeetingProcessingPolicy.cloudReviewLine(for: snap))
-        XCTAssertTrue(line.contains("3") && !line.contains("5"),
-                      "число — перенесённые в граф правки, а не тронутые в копии: \(line)")
+        let three = try XCTUnwrap(line.range(of: "3"), line)
+        let five = try XCTUnwrap(line.range(of: "5"), "легли не все — видно, сколько тронуто: \(line)")
+        XCTAssertLessThan(three.lowerBound, five.lowerBound,
+                          "первое число — перенесённые в граф правки, а не тронутые в копии: \(line)")
+    }
+
+    func testCloudReviewLineCountsOnlyWhatMatters() throws {
+        let base = #"{"schema_version":1,"meeting_id":"m","state":"ready","stage":"complete","#
+            + #""started_at":1,"updated_at":2,"transcript_path":"/t.md","review":{"state":"ok","result":"#
+        let all = try XCTUnwrap(MeetingProcessingPolicy.cloudReviewLine(
+            for: try snapshot(base + #"{"touched":2,"applied":2}}}"#)))
+        XCTAssertEqual(all.filter { $0 == "2" }.count, 1, "легли все — одно число: \(all)")
+        XCTAssertNil(MeetingProcessingPolicy.cloudReviewLine(
+            for: try snapshot(base + #"{"touched":0,"applied":0}}}"#)), "нули карточка не пишет")
+        let refused = try XCTUnwrap(MeetingProcessingPolicy.cloudReviewLine(
+            for: try snapshot(base + #"{"touched":4,"applied":0}}}"#)))
+        XCTAssertTrue(refused.contains("0") && refused.contains("4"),
+                      "всё ушло в карантин — не «0» как у ревизии без правок: \(refused)")
+        let noTouched = try snapshot(base + #"{"applied":1}}}"#)
+        XCTAssertNotNil(MeetingProcessingPolicy.cloudReviewLine(for: noTouched),
+                        "писатель без touched строку не гасит")
     }
 
     func testNoResultMeansNoCloudReviewLine() throws {

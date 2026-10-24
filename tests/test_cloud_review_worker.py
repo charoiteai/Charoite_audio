@@ -2188,6 +2188,58 @@ def test_the_review_stage_carries_what_reached_the_graph(tmp_path, monkeypatch):
     assert "ЮPay" in core.read_text(encoding="utf-8")
 
 
+
+@pytest.mark.parametrize("broken, expected", [
+    ({"Квен.md"}, {"touched": 2, "applied": 1}),
+    ({"Квен.md", "Платёжный провайдер.md"}, None),
+])
+def test_a_partial_transfer_shows_what_did_reach_the_graph(tmp_path, monkeypatch, broken, expected):
+    """№779 (I2 обеих голов n779-out1): перенос упал на одном файле, сверка не
+    сошлась — этап «failed», но правка, которая легла, в графе, и карточка
+    должна её назвать. Прежнего итога нет: число пишет сама ветка
+    частичного переноса, а не перенос из прошлого этапа. Не легло ничего —
+    итога нет вовсе: «0» назвал бы упавший перенос ревизией без правок."""
+    import json
+    import meeting_processing
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    core = graph / "Ядра" / "Платёжный провайдер.md"
+    original = core.read_text(encoding="utf-8")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    store = meeting_processing.MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "updating_graph")
+    status = store.ready(transcript, note=None)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    real_write = cloud_review.safe_write.write_text
+
+    def flaky(path, text, **kw):
+        if path.name in broken:
+            raise OSError(28, "No space left on device")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    class Result:
+        returncode = 0
+
+    def edits(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"])
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            original.replace("Решено", "Решено — ЮPay"), encoding="utf-8")
+        (pen / "Системы").mkdir(exist_ok=True)
+        (pen / "Системы" / "Квен.md").write_text("# Квен\nмодель\n", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", edits)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_ERROR
+    assert ("ЮPay" in core.read_text(encoding="utf-8")) == (expected is not None)
+    review = json.loads(status.read_text(encoding="utf-8"))["review"]
+    assert review["state"] == "failed"
+    assert review.get("result") == expected, review
+
 def test_a_stub_keeps_the_displaced_body_in_quarantine(tmp_path):
     """Тело узла, ставшего заглушкой-редиректом, лежит в карантине прогона.
 

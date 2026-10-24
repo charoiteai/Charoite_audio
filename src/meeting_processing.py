@@ -73,7 +73,8 @@ def _review_doc(prev: object, state: str, note: str, now: float,
     `running`, `failed` и уборку устаревших, иначе карточка встречи теряла
     число на первом же повторе (№779, DS C2 n779-in2). Нулевой итог повтора
     прежний ненулевой не вытесняет: правки первого прогона в графе остались
-    (Sonnet I1 n779-in3)."""
+    (Sonnet I1 n779-in3). Всё это — в пределах одного прогона конвейера:
+    `processing()` нового снимает `review` целиком."""
     doc = dict(prev) if isinstance(prev, dict) else {}
     doc.update({"state": state, "note": str(note)[:300], "updated_at": now})
     if result is not None:
@@ -307,13 +308,10 @@ class MeetingStatusStore:
             if part and parts:
                 payload["part"] = int(part)
                 payload["parts"] = int(parts)
-            # Этап ревизии новый прогон снимает (его «ok» не должен глушить
-            # ревизию пересобранной встречи), но итог прошлой — правки, уже
-            # лежащие в графе, — остаётся: ревизию после пересборки заново не
-            # гоняют, и карточка иначе теряла бы число навсегда (№779).
-            prev = current.get("review")
-            if isinstance(prev, dict) and isinstance(prev.get("result"), dict):
-                payload["review"] = {"result": prev["result"]}
+            # Ревизию, этап и итог, новый прогон снимает целиком: итог прошлой
+            # посчитан по прежней стенограмме, а после пересборки ревизия идёт
+            # заново (graph_updater сравнивает её с более новой стенограммой) —
+            # перенесённое число карточка выдала бы за итог текущей (№779).
             self._prune(now)
             return payload
 

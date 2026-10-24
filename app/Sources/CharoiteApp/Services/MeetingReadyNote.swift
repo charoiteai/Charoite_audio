@@ -52,12 +52,22 @@ extension MeetingProcessingPolicy {
     /// легло в граф. Считается из живого снимка в теле вида, как `readyNote`:
     /// ревизия кончается после «готово», и кэш карточки её не догнал бы.
     /// `nil` — итога нет (ревизии не было, она идёт или ничего не перенесла
-    /// до этой версии). Число — перенесённые правки, а не тронутые в копии.
+    /// до этой версии) или облако ничего не трогало: нули карточка не пишет.
+    /// Число — перенесённые правки; тронутые в копии — вторым числом, только
+    /// если легли не все (остальные в карантине, n779-out1).
     static func cloudReviewLine(for snapshot: MeetingProcessingSnapshot) -> String? {
-        guard let applied = snapshot.review?.result?.applied else { return nil }
-        return L.t("Ревизия Claude: правок графа — \(applied)",
-                   "Claude review: \(applied) graph edits",
-                   "Claude 复审：图谱修改 \(applied) 处")
+        guard let result = snapshot.review?.result else { return nil }
+        let applied = result.applied
+        let touched = max(result.touched ?? applied, applied)
+        if touched == 0 { return nil }
+        if applied == touched {
+            return L.t("Ревизия Claude: правок графа — \(applied)",
+                       "Claude review: graph edits — \(applied)",
+                       "Claude 复审：图谱修改 \(applied) 处")
+        }
+        return L.t("Ревизия Claude: правок графа — \(applied) из \(touched)",
+                   "Claude review: graph edits — \(applied) of \(touched)",
+                   "Claude 复审：图谱修改 \(applied) 处（共 \(touched) 处）")
     }
 
     /// «Готово» — или «Готово, <пометка>».
@@ -90,7 +100,9 @@ extension MeetingProcessingSnapshot {
     /// а не потеря всей встречи из окна.
     struct ReviewStage: Decodable, Equatable, Sendable {
         struct Result: Decodable, Equatable, Sendable {
-            let touched: Int
+            /// Необязательно: карточке нужно `applied`, писатель без
+            /// `touched` не должен гасить строку (DS M1 n779-out1).
+            let touched: Int?
             let applied: Int
         }
 

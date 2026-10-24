@@ -492,10 +492,11 @@ def test_review_stage_survives_ready_and_failed_but_not_a_new_run(tmp_path):
     assert "review" not in json.loads(path.read_text(encoding="utf-8")), "новый прогон — новая ревизия"
 
 
-def test_review_result_outlives_stages_retries_and_a_new_run(tmp_path):
+def test_review_result_outlives_stages_and_retries_but_not_a_new_run(tmp_path):
     """№779: итог ревизии (правки, уже лежащие в графе) — для карточки встречи.
-    Его не стирают ни запись этапа, ни уборка устаревших, ни новый прогон
-    конвейера; нулевой повтор прежний итог не вытесняет."""
+    Его не стирают ни запись этапа, ни уборка устаревших; нулевой повтор
+    прежний итог не вытесняет. Новый прогон конвейера снимает его вместе с
+    этапом: итог посчитан по прежней стенограмме (Haiku C1 n779-out1)."""
     import meeting_processing
     live = _transcript(tmp_path)
     clock = [100.0]
@@ -519,8 +520,12 @@ def test_review_result_outlives_stages_retries_and_a_new_run(tmp_path):
     store.review(live, "ok", "правок облака: 4", result={"touched": 4, "applied": 2})
     assert review()["result"] == {"touched": 4, "applied": 2}
     store.processing(live, "transcribing", part=1, parts=2)
-    assert review() == {"result": {"touched": 4, "applied": 2}}, "новый прогон снимает этап, но не итог"
+    assert review() == {}, "итог прежней стенограммы пережил новый прогон"
     assert store.review_state(live) is None
+    store.ready(live, note=None)
+    store.review(live, "ok", "правок облака: 0", result={"touched": 0, "applied": 0})
+    assert review()["result"] == {"touched": 0, "applied": 0}, \
+        "ревизия пересобранной встречи показала бы число прежней"
 
 
 def test_a_first_review_with_nothing_applied_is_still_a_result(tmp_path):
