@@ -484,7 +484,7 @@ def test_short_final_with_after_call_record_moves_the_draft_without_the_model(
     assert rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, names) == "human"
     assert not mpath.exists() and _FakeLLM.calls == []
     # лог не обещает пересборку, которой при короткой речи не будет (M1 Sonnet out3)
-    assert any("минуток не будет" in m for m in said)
+    assert any("пересборка их не соберёт" in m for m in said)
     assert not any("соберутся" in m for m in said)
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
     _FakeLLM.fail = False
@@ -501,6 +501,17 @@ def test_cut_note_does_not_reach_the_model(tmp_path, monkeypatch):
     assert rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {}) == "regenerated"
     assert _FakeLLM.calls == [FINAL.rstrip("\n")]
     assert "ужин" not in mpath.read_text(encoding="utf-8")
+
+
+def test_short_cut_final_moves_the_draft_even_without_the_after_call_file(tmp_path, monkeypatch):
+    """M1 Haiku n733-mut-out4: признак — строка среза в финале, файла хвоста нет
+    (STT пуст) — короткий путь тоже уносит черновик в .prev/, модель не зовётся."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    assert not rebuild_transcript.after_call_path(live).exists()
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
+    assert owned == "human" and not mpath.exists() and _FakeLLM.calls == []
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
 
 
 def test_short_final_with_after_call_record_and_no_draft_builds_nothing(tmp_path, monkeypatch):
@@ -525,6 +536,23 @@ def test_mcp_minutes_written_while_reading_a_short_cut_final_go_away(tmp_path, m
     owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
     assert owned == "human" and not mpath.exists() and _FakeLLM.calls == []
     assert "ужин" in (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8")
+
+
+def test_mcp_minutes_of_this_very_speech_written_meanwhile_stay(tmp_path, monkeypatch):
+    """I DS n733-mut-out4: минуток на старте не было, MCP «Минутки» записали их за
+    чтение источника по той же речи (запись после звонка пуста, паспорт — хеш этой
+    речи). Это свежие минутки, а не черновик с бытом: остаются на месте, «fresh»."""
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    real_of = rebuild_transcript.meeting_source.of
+
+    def of_after_mcp(live_path, final_text):
+        src = real_of(live_path, final_text)
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- смета\n", src.sha(), cut=False)
+        return src
+    monkeypatch.setattr(rebuild_transcript.meeting_source, "of", of_after_mcp)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
+    assert owned == "fresh" and "смета" in mpath.read_text(encoding="utf-8")
+    assert not (tmp_path / ".prev" / mpath.name).exists() and _FakeLLM.calls == []
 
 
 def test_minutes_built_from_a_cut_final_survive_a_short_cut_final(tmp_path, monkeypatch):
@@ -565,7 +593,7 @@ def test_model_refusal_with_after_call_record_moves_the_live_draft_away(
     assert _FakeLLM.calls, "модель звалась"
     assert owned == "human" and not mpath.exists()
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
-    assert any("соберутся" in m for m in said) and not any("минуток не будет" in m for m in said)
+    assert any("соберутся" in m for m in said) and not any("не соберёт" in m for m in said)
     assert live_sidecar.derivative_state(mpath, meta, "minutes", "0" * 64) == live_sidecar.MISSING
     rebuild_transcript.record_minutes_passport(live, mpath, owned, _cut(FINAL), {})
     assert not mpath.exists(), "паспорт и канон не воскрешают файл"
@@ -644,8 +672,9 @@ def test_refusal_with_a_failing_move_keeps_the_file_and_does_not_raise(tmp_path,
         raise OSError("read-only")
     monkeypatch.setattr(rebuild_transcript.os, "replace", boom)
     (tmp_path / ".prev").write_text("не каталог", encoding="utf-8")   # mkdir тоже падает (M1 out4)
-    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
-    assert owned == "human" and mpath.read_text(encoding="utf-8") == draft
+    # длинный финал: путь отказа модели, а не порога (M1 Sonnet n733-mut-out4)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert _FakeLLM.calls and owned == "human" and mpath.read_text(encoding="utf-8") == draft
 
 
 def test_model_refusal_without_after_call_record_restamps_as_before(tmp_path, monkeypatch):

@@ -2335,7 +2335,7 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         # _defer_live_draft: MCP мог записать их за чтение источника (I1 DS out3).
         log(f"минутки не пересобраны: речи короче {MINUTES_MIN_CHARS} знаков")
         if after_call:
-            return _defer_live_draft(mpath, before, current, live, meta, live_names, short=True)
+            return _defer_live_draft(mpath, before, current, live, meta, live_names, source, short=True)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     from llm import LLM
     # Тяжёлый вызов не спорит с идущей встречей (GLM Imp-2), но и очередь
@@ -2347,12 +2347,12 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
         log(f"минутки не пересобраны ({type(e).__name__}: {e})")
         if after_call:
-            return _defer_live_draft(mpath, before, current, live, meta, live_names)
+            return _defer_live_draft(mpath, before, current, live, meta, live_names, source, short=False)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if not doc:
         log("минутки не пересобраны (модель промолчала)")
         if after_call:
-            return _defer_live_draft(mpath, before, current, live, meta, live_names)
+            return _defer_live_draft(mpath, before, current, live, meta, live_names, source, short=False)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     # Те же шаги, что у кнопки «Протокол», — общим входом минуток (№732):
     # сверка по тому множеству, что видела модель (речь + оговорка, DS I5),
@@ -2429,7 +2429,8 @@ def _machine_bytes_now(mpath: pathlib.Path, live: pathlib.Path, meta):
 
 
 def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pathlib.Path,
-                      meta: dict, live_names: dict[str, str], short: bool = False) -> str:
+                      meta: dict, live_names: dict[str, str], source: meeting_source.MeetingSource,
+                      *, short: bool) -> str:
     """Запись после звонка (№733), а модель минутки не дала: отказала или не
     звалась — речь звонка короче порога (`short`). Машинные минутки собраны
     не по этой речи — черновик живой ленты или финал прохода, который хвост
@@ -2439,7 +2440,8 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pa
     Пометка на месте файла была бы новым состоянием, которое чужой писатель
     (мост ревизии, рука) запирает навсегда: хеш не совпал — «правлено руками»
     (Critical DS out2). Нет файла — состояние MISSING оракула производных:
-    его собирают и следующая пересборка, и ретро-обход (`POLICY_RETRO`).
+    его собирают и следующая пересборка, и ретро-обход (`POLICY_RETRO`) — кроме
+    `short`: тот же порог их не соберёт, как короткую встречу без черновика.
     «Собраны из финала» (`minutes_source_sha256`) чистоты не доказывает:
     прежний финал мог хвост не вынести (до №733, сомнение в канале) — Critical
     DS и Important Sonnet out3. Доказывает другое — паспорт: последняя
@@ -2461,6 +2463,11 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pa
             log("минутки сменились под пересборкой — оставлены как есть")
             return "human"
         meta, before, current = taken
+        if source.matches(meta.get("minutes_source_sha256")):
+            # MCP собрал их за ожидание по этой самой речи — свежие, не черновик
+            # с бытом (I DS n733-mut-out4)
+            log("минутки собраны по этой речи, пока шла пересборка — оставлены")
+            return "fresh"
     if live_sidecar.valid_sha(meta.get("minutes_source_sha256")):
         live_names = {}   # минутки с паспортом источника — не черновик живой ленты (I1 DS)
     if _built_from_a_cut_final(meta):
@@ -2478,10 +2485,10 @@ def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pa
         log(f"минутки: не перенесены в .prev/ ({exc}) — оставлены как есть")
         return "human"
     if short:
-        log("минутки: черновик живой ленты с записью после звонка → .prev/, "
-            f"минуток не будет: речь звонка короче {MINUTES_MIN_CHARS} знаков")
+        log("минутки собраны не по этой речи (запись после звонка) → .prev/; "
+            f"пересборка их не соберёт: речь звонка короче {MINUTES_MIN_CHARS} знаков")
     else:
-        log("минутки: черновик живой ленты с записью после звонка → .prev/, "
+        log("минутки собраны не по этой речи (запись после звонка) → .prev/, "
             "соберутся следующей пересборкой или ретро-обходом")
     return "human"
 
