@@ -66,23 +66,19 @@ def _review_is_stale(data: object, now: float, stale_after: float) -> bool:
     return age >= stale_after
 
 
-def _review_doc(prev: object, state: str, note: str, now: float,
+def _review_doc(state: str, note: str, now: float,
                 result: dict[str, int] | None = None) -> dict[str, Any]:
-    """Поле `review` для записи этапа — слиянием с прежним, а не литералом:
-    `result` (итог, о котором известно, что правки легли в граф) переживает
-    `running`, `failed` и уборку устаревших, иначе карточка встречи теряла
-    число на первом же повторе (№779, DS C2 n779-in2). Нулевой итог повтора
-    прежний ненулевой не вытесняет: правки первого прогона в графе остались
-    (Sonnet I1 n779-in3). Всё это — в пределах одного прогона конвейера:
-    `processing()` нового снимает `review` целиком."""
-    doc = dict(prev) if isinstance(prev, dict) else {}
-    doc.update({"state": state, "note": str(note)[:300], "updated_at": now})
+    """Поле `review` для записи этапа: итог (`result`) — только той попытки,
+    что его пишет. Любая запись этапа без итога его снимает: «running» новой
+    ревизии не показывает число прошлой, «failed» без перенесённого — тоже
+    (№779, n779-out2: опоздавший воркер прежней стенограммы и правило «ноль не
+    вытесняет» держали чужое число через два прогона). Через границу прогона
+    итог несёт `processing()`: повтор без новой стенограммы ревизию не
+    перезапускает, и итог остаётся верным."""
+    doc: dict[str, Any] = {"state": state, "note": str(note)[:300], "updated_at": now}
     if result is not None:
-        old = doc.get("result")
-        old_applied = old.get("applied") if isinstance(old, dict) else None
-        if result.get("applied", 0) > 0 or not isinstance(old_applied, int) or old_applied <= 0:
-            doc["result"] = {"touched": int(result.get("touched", 0)),
-                             "applied": int(result.get("applied", 0))}
+        doc["result"] = {"touched": int(result.get("touched", 0)),
+                         "applied": int(result.get("applied", 0))}
     return doc
 
 
@@ -308,10 +304,15 @@ class MeetingStatusStore:
             if part and parts:
                 payload["part"] = int(part)
                 payload["parts"] = int(parts)
-            # Ревизию, этап и итог, новый прогон снимает целиком: итог прошлой
-            # посчитан по прежней стенограмме, а после пересборки ревизия идёт
-            # заново (graph_updater сравнивает её с более новой стенограммой) —
-            # перенесённое число карточка выдала бы за итог текущей (№779).
+            # Этап ревизии новый прогон снимает (его «ok» не должен глушить
+            # ревизию пересобранной встречи), итог — оставляет. Ревизию заново
+            # запускает тот же предикат, что и раньше (`fresh` в graph_updater:
+            # стенограмма новее файла ревизии), и её первая же запись этапа
+            # («running») итог снимает; без перезапуска итог относится к той же
+            # стенограмме (№779, n779-out2: снятие здесь теряло его навсегда).
+            prev = current.get("review")
+            if isinstance(prev, dict) and isinstance(prev.get("result"), dict):
+                payload["review"] = {"result": prev["result"]}
             self._prune(now)
             return payload
 
@@ -497,7 +498,7 @@ class MeetingStatusStore:
             if state in ("failed", "retrying") and isinstance(prev, dict) and prev.get("state") == "ok":
                 return None
             updated = dict(current)
-            updated["review"] = _review_doc(prev, state, note, float(self._now()), result)
+            updated["review"] = _review_doc(state, note, float(self._now()), result)
             return updated
 
         # «ok» — доставка, как исход встречи: потерянная, она оставила бы
@@ -537,8 +538,7 @@ class MeetingStatusStore:
                     if not _review_is_stale(data, now, stale_after):
                         continue
                     data["review"] = _review_doc(
-                        data.get("review"), "failed",
-                        "воркер ревизии не завершил работу (этап устарел)", now)
+                        "failed", "воркер ревизии не завершил работу (этап устарел)", now)
                     try:
                         self._write_path(path, data)
                     except OSError:

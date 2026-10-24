@@ -492,11 +492,12 @@ def test_review_stage_survives_ready_and_failed_but_not_a_new_run(tmp_path):
     assert "review" not in json.loads(path.read_text(encoding="utf-8")), "новый прогон — новая ревизия"
 
 
-def test_review_result_outlives_stages_and_retries_but_not_a_new_run(tmp_path):
+def test_review_result_belongs_to_the_attempt_that_wrote_it(tmp_path):
     """№779: итог ревизии (правки, уже лежащие в графе) — для карточки встречи.
-    Его не стирают ни запись этапа, ни уборка устаревших; нулевой повтор
-    прежний итог не вытесняет. Новый прогон конвейера снимает его вместе с
-    этапом: итог посчитан по прежней стенограмме (Haiku C1 n779-out1)."""
+    Он только той попытки, что его записала: «running» новой ревизии и
+    упавшая без переноса попытка его снимают, уборка устаревших — тоже, а
+    нулевой итог заменяет прежний (n779-out2: правило «ноль не вытесняет»
+    держало число прежней стенограммы через два прогона)."""
     import meeting_processing
     live = _transcript(tmp_path)
     clock = [100.0]
@@ -510,19 +511,41 @@ def test_review_result_outlives_stages_and_retries_but_not_a_new_run(tmp_path):
     store.review(live, "ok", "правок облака: 5", result={"touched": 5, "applied": 3})
     assert review()["result"] == {"touched": 5, "applied": 3}
     store.review(live, "running", "осознанный повтор")
-    assert review()["state"] == "running" and review()["result"] == {"touched": 5, "applied": 3}
+    assert review()["state"] == "running" and "result" not in review(), \
+        "идущая ревизия показывала бы число прошлой"
+    store.review(live, "ok", "правок облака: 2", result={"touched": 2, "applied": 0})
+    assert review()["result"] == {"touched": 2, "applied": 0}, "ноль — тоже итог этой попытки"
+    store.review(live, "running", "ещё повтор")
     clock[0] += meeting_processing.REVIEW_STALE + 1
     store.unfinished()
-    assert review()["state"] == "failed" and review()["result"] == {"touched": 5, "applied": 3}, \
-        "уборка устаревших переписывала поле литералом и теряла итог"
-    store.review(live, "ok", "правок облака: 2", result={"touched": 2, "applied": 0})
-    assert review()["result"] == {"touched": 5, "applied": 3}, "нулевой повтор не стирает правки первого"
-    store.review(live, "ok", "правок облака: 4", result={"touched": 4, "applied": 2})
-    assert review()["result"] == {"touched": 4, "applied": 2}
+    assert review()["state"] == "failed" and "result" not in review()
+
+
+def test_review_result_crosses_a_run_only_until_the_review_restarts(tmp_path):
+    """№779 (n779-out2, DS C1 и Haiku C2): повтор конвейера без новой
+    стенограммы ревизию не перезапускает (`fresh` в graph_updater), и итог
+    должен его пережить — снятие в `processing()` теряло его навсегда. Новая
+    стенограмма ревизию перезапускает, и её первая запись снимает прежний итог
+    (Haiku C1 n779-out1). Опоздавший воркер прежнего прогона (Haiku C1
+    n779-out2) пишет итог после `processing()` — его снимает «running» новой."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 100.0)
+    store.processing(live, "updating_graph")
+    path = store.ready(live, note=None)
+
+    def review() -> dict:
+        return json.loads(path.read_text(encoding="utf-8")).get("review", {})
+
+    store.review(live, "ok", "правок облака: 5", result={"touched": 5, "applied": 3})
     store.processing(live, "transcribing", part=1, parts=2)
-    assert review() == {}, "итог прежней стенограммы пережил новый прогон"
+    assert review() == {"result": {"touched": 5, "applied": 3}}, "новый прогон снимает этап, но не итог"
     assert store.review_state(live) is None
     store.ready(live, note=None)
+    assert review()["result"] == {"touched": 5, "applied": 3}, "повтор без новой ревизии терял итог"
+    store.processing(live, "updating_graph")
+    store.review(live, "ok", "опоздавший воркер", result={"touched": 4, "applied": 4})
+    store.ready(live, note=None)
+    store.review(live, "running", "ревизия пересобранной стенограммы")
     store.review(live, "ok", "правок облака: 0", result={"touched": 0, "applied": 0})
     assert review()["result"] == {"touched": 0, "applied": 0}, \
         "ревизия пересобранной встречи показала бы число прежней"

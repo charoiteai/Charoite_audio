@@ -745,10 +745,12 @@ it signals degradation, it does not break the loop.
   its edits reached the graph — "graph edits — N", or "N of M" when some
   went to quarantine — read from the meeting status (`review.result`,
   written by the worker from its reconciliation, not parsed from the log),
-  so the line appears as soon as the review finishes and survives its
-  retry; a new pipeline run clears it until the meeting's next review.
-  Before, the review worked invisibly and its edits were only discoverable
-  in the logs. A review whose CLI failed to start or whose
+  so the line appears as soon as the review finishes. The count belongs to
+  the review attempt that wrote it: a review that touched nothing leaves no
+  line, a running or failed attempt without transferred edits hides it, and
+  a pipeline rerun keeps it only until the review restarts on a rebuilt
+  transcript. Before, the review worked invisibly and its edits were only
+  discoverable in the logs. A review whose CLI failed to start or whose
   answer broke off retries itself once — ten minutes later and not during a
   live meeting; a timeout is not retried. Its stage (running, retrying, ok,
   failed) lives in the meeting status as the `review` field without moving

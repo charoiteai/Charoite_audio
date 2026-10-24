@@ -723,10 +723,12 @@ holding the lock does not turn that outcome back into processing (the
 docstring of `MeetingStatusStore._update` is the source). The macOS app shows real progress, the
 cloud review stage (running, retrying, ok, failed) lives in the same status
 as the `review` field without moving readiness (with `review.result`
-{touched, applied} — the outcome that reached the graph, written by the
-worker and kept across the review's retries and expiry; a new pipeline run
-drops `review` whole, since the review reruns on the rebuilt transcript; the
-meeting card reads it from here, not from the log), keeps failures linked to the
+{touched, applied} — what reached the graph, owned by the review attempt
+that wrote it: every review stage write replaces it, so a running or failed
+attempt without transferred edits drops it; `processing()` of a new pipeline
+run carries it, since the review restarts only when the transcript is newer
+than its file, and that restart's first stage write drops it; the meeting
+card reads it from here, not from the log), keeps failures linked to the
 source transcript, and
 announces readiness only after the exact meeting note exists. The status file
 is named by the stamp of the ORIGINAL transcript, and that key is stored in

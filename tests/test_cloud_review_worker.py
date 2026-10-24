@@ -2179,14 +2179,14 @@ def test_the_review_stage_carries_what_reached_the_graph(tmp_path, monkeypatch):
         kwargs["stdout"].write("Ошибка: rate limit\n")
         return Refused()
 
-    # «running» осознанного повтора и упавший прогон не стирают итог, о
-    # котором известно, что он в графе; невалидный ответ своего не пишет
+    # итог — только той попытки, что его пишет: осознанный повтор с
+    # невалидным ответом своего не переносит, и прежнее число карточка за
+    # итог этой попытки не выдаёт (n779-out2)
     monkeypatch.setattr(cloud_review.subprocess, "run", invalid)
     assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_CLI
     review = json.loads(status.read_text(encoding="utf-8"))["review"]
-    assert review["state"] == "failed" and review["result"] == {"touched": 2, "applied": 1}
+    assert review["state"] == "failed" and "result" not in review
     assert "ЮPay" in core.read_text(encoding="utf-8")
-
 
 
 @pytest.mark.parametrize("broken, expected", [
@@ -2239,6 +2239,7 @@ def test_a_partial_transfer_shows_what_did_reach_the_graph(tmp_path, monkeypatch
     review = json.loads(status.read_text(encoding="utf-8"))["review"]
     assert review["state"] == "failed"
     assert review.get("result") == expected, review
+
 
 def test_a_stub_keeps_the_displaced_body_in_quarantine(tmp_path):
     """Тело узла, ставшего заглушкой-редиректом, лежит в карантине прогона.
