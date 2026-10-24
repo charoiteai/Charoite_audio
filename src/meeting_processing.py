@@ -66,6 +66,25 @@ def _review_is_stale(data: object, now: float, stale_after: float) -> bool:
     return age >= stale_after
 
 
+def _review_doc(prev: object, state: str, note: str, now: float,
+                result: dict[str, int] | None = None) -> dict[str, Any]:
+    """Поле `review` для записи этапа — слиянием с прежним, а не литералом:
+    `result` (итог, о котором известно, что правки легли в граф) переживает
+    `running`, `failed` и уборку устаревших, иначе карточка встречи теряла
+    число на первом же повторе (№779, DS C2 n779-in2). Нулевой итог повтора
+    прежний ненулевой не вытесняет: правки первого прогона в графе остались
+    (Sonnet I1 n779-in3)."""
+    doc = dict(prev) if isinstance(prev, dict) else {}
+    doc.update({"state": state, "note": str(note)[:300], "updated_at": now})
+    if result is not None:
+        old = doc.get("result")
+        old_applied = old.get("applied") if isinstance(old, dict) else None
+        if result.get("applied", 0) > 0 or not isinstance(old_applied, int) or old_applied <= 0:
+            doc["result"] = {"touched": int(result.get("touched", 0)),
+                             "applied": int(result.get("applied", 0))}
+    return doc
+
+
 def _names_of(path: pathlib.Path):
     """Признак имён по файлу, который уже найден.
 
@@ -288,6 +307,13 @@ class MeetingStatusStore:
             if part and parts:
                 payload["part"] = int(part)
                 payload["parts"] = int(parts)
+            # Этап ревизии новый прогон снимает (его «ok» не должен глушить
+            # ревизию пересобранной встречи), но итог прошлой — правки, уже
+            # лежащие в графе, — остаётся: ревизию после пересборки заново не
+            # гоняют, и карточка иначе теряла бы число навсегда (№779).
+            prev = current.get("review")
+            if isinstance(prev, dict) and isinstance(prev.get("result"), dict):
+                payload["review"] = {"result": prev["result"]}
             self._prune(now)
             return payload
 
@@ -442,7 +468,8 @@ class MeetingStatusStore:
 
         return self._update(transcript, mutate)
 
-    def review(self, transcript: pathlib.Path, state: str, note: str = "") -> pathlib.Path | None:
+    def review(self, transcript: pathlib.Path, state: str, note: str = "", *,
+               result: dict[str, int] | None = None) -> pathlib.Path | None:
         """Этап облачной ревизии — поле `review` поверх статуса, state и stage
         не трогаем: ревизия идёт отдельным воркером ПОСЛЕ «готово», и
         приложение показывало «готово» при идущей, повторяемой или упавшей
@@ -451,7 +478,9 @@ class MeetingStatusStore:
         разбора) — не заводим: запись без stage читалась бы как битая.
         `updated_at` самого статуса не сдвигается — по нему судят
         `unfinished` и `busy`, а ревизия не обработка. Документа ещё нет —
-        не заводим ни его, ни каталог, ни файл замка."""
+        не заводим ни его, ни каталог, ни файл замка. `result` —
+        `{touched, applied}` по вердикту сверки, его читает карточка встречи
+        (№779); не передан — прежний переносится."""
         transcript = pathlib.Path(transcript)
         if not self.directory.is_dir() or not self._path(transcript).is_file():
             return None
@@ -470,7 +499,7 @@ class MeetingStatusStore:
             if state in ("failed", "retrying") and isinstance(prev, dict) and prev.get("state") == "ok":
                 return None
             updated = dict(current)
-            updated["review"] = {"state": state, "note": str(note)[:300], "updated_at": float(self._now())}
+            updated["review"] = _review_doc(prev, state, note, float(self._now()), result)
             return updated
 
         # «ok» — доставка, как исход встречи: потерянная, она оставила бы
@@ -509,11 +538,9 @@ class MeetingStatusStore:
                         continue
                     if not _review_is_stale(data, now, stale_after):
                         continue
-                    data["review"] = {
-                        "state": "failed",
-                        "note": "воркер ревизии не завершил работу (этап устарел)",
-                        "updated_at": now,
-                    }
+                    data["review"] = _review_doc(
+                        data.get("review"), "failed",
+                        "воркер ревизии не завершил работу (этап устарел)", now)
                     try:
                         self._write_path(path, data)
                     except OSError:

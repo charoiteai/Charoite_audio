@@ -722,7 +722,10 @@ it, with the same atomic replace and a line on stderr, and a writer still
 holding the lock does not turn that outcome back into processing (the
 docstring of `MeetingStatusStore._update` is the source). The macOS app shows real progress, the
 cloud review stage (running, retrying, ok, failed) lives in the same status
-as the `review` field without moving readiness, keeps failures linked to the
+as the `review` field without moving readiness (with `review.result`
+{touched, applied} — the last outcome that reached the graph, written by the
+worker and kept across retries, expiry and a new pipeline run; the meeting
+card reads it from here, not from the log), keeps failures linked to the
 source transcript, and
 announces readiness only after the exact meeting note exists. The status file
 is named by the stamp of the ORIGINAL transcript, and that key is stored in

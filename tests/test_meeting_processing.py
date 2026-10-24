@@ -492,6 +492,66 @@ def test_review_stage_survives_ready_and_failed_but_not_a_new_run(tmp_path):
     assert "review" not in json.loads(path.read_text(encoding="utf-8")), "новый прогон — новая ревизия"
 
 
+def test_review_result_outlives_stages_retries_and_a_new_run(tmp_path):
+    """№779: итог ревизии (правки, уже лежащие в графе) — для карточки встречи.
+    Его не стирают ни запись этапа, ни уборка устаревших, ни новый прогон
+    конвейера; нулевой повтор прежний итог не вытесняет."""
+    import meeting_processing
+    live = _transcript(tmp_path)
+    clock = [100.0]
+    store = MeetingStatusStore(tmp_path, now=lambda: clock[0])
+    store.processing(live, "updating_graph")
+    path = store.ready(live, note=None)
+
+    def review() -> dict:
+        return json.loads(path.read_text(encoding="utf-8")).get("review", {})
+
+    store.review(live, "ok", "правок облака: 5", result={"touched": 5, "applied": 3})
+    assert review()["result"] == {"touched": 5, "applied": 3}
+    store.review(live, "running", "осознанный повтор")
+    assert review()["state"] == "running" and review()["result"] == {"touched": 5, "applied": 3}
+    clock[0] += meeting_processing.REVIEW_STALE + 1
+    store.unfinished()
+    assert review()["state"] == "failed" and review()["result"] == {"touched": 5, "applied": 3}, \
+        "уборка устаревших переписывала поле литералом и теряла итог"
+    store.review(live, "ok", "правок облака: 2", result={"touched": 2, "applied": 0})
+    assert review()["result"] == {"touched": 5, "applied": 3}, "нулевой повтор не стирает правки первого"
+    store.review(live, "ok", "правок облака: 4", result={"touched": 4, "applied": 2})
+    assert review()["result"] == {"touched": 4, "applied": 2}
+    store.processing(live, "transcribing", part=1, parts=2)
+    assert review() == {"result": {"touched": 4, "applied": 2}}, "новый прогон снимает этап, но не итог"
+    assert store.review_state(live) is None
+
+
+def test_a_first_review_with_nothing_applied_is_still_a_result(tmp_path):
+    """Без прежнего итога нулевой — тоже итог: облако посмотрело и не правило."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 100.0)
+    store.processing(live, "updating_graph")
+    path = store.ready(live, note=None)
+    store.review(live, "ok", "правок облака: 0", result={"touched": 0, "applied": 0})
+    assert json.loads(path.read_text(encoding="utf-8"))["review"]["result"] == {"touched": 0, "applied": 0}
+
+
+def test_review_contract_fixture_is_what_the_store_writes(tmp_path):
+    """Гейт контракта статуса между Python и приложением (№779): поле
+    `review` в общей фикстуре записано настоящим MeetingStatusStore, а
+    Swift-тест (MeetingCardTests) декодирует тот же файл. Смена ключей
+    ломает одну из сторон, а не молча выключает строку в карточке."""
+    fixture = json.loads((pathlib.Path(__file__).parent / "fixtures" / "meeting_status_review.json")
+                         .read_text(encoding="utf-8"))
+    live = _transcript(tmp_path)
+    ticks = iter([100.0, 120.0, 130.0])
+    store = MeetingStatusStore(tmp_path, now=lambda: next(ticks, 140.0))
+    store.processing(live, "updating_graph")
+    path = store.ready(live, note=None)
+    store.review(live, "ok", "правок облака: 5, перенесено в граф: Ядра/Тема.md",
+                 result={"touched": 5, "applied": 3})
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["review"] == fixture["review"]
+    assert set(written) == set(fixture), "ключи статуса разошлись с фикстурой приложения"
+
+
 def test_stale_running_or_retrying_review_expires_into_failed(tmp_path):
     """DS r1 I2, GLM r1 I3 по #546: воркер убит в паузе повтора — этап
     «retrying» не должен висеть вечно; unfinished() его протухает."""

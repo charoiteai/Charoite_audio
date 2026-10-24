@@ -741,10 +741,12 @@ it signals degradation, it does not break the loop.
   Obsidian, the participant protocol, "Copy summary", "Copy tasks", "Copy
   everything" and "Rebuild result" — into a mail without opening a single
   file. "Meeting ready" no longer means "go figure out a markdown
-  file". When a cloud review ran for the meeting, the card honestly shows
-  its outcome from the log: "N graph edits", with an unsaved review file
-  highlighted — before, the review worked invisibly and its edits were
-  only discoverable in the logs. A review whose CLI failed to start or whose
+  file". When a cloud review ran for the meeting, the card shows how many of
+  its edits reached the graph — "N graph edits" — read from the meeting
+  status (`review.result`, written by the worker from its reconciliation,
+  not parsed from the log), so the line appears as soon as the review
+  finishes and survives a retry or a rebuild of the meeting; before, the
+  review worked invisibly and its edits were only discoverable in the logs. A review whose CLI failed to start or whose
   answer broke off retries itself once — ten minutes later and not during a
   live meeting; a timeout is not retried. Its stage (running, retrying, ok,
   failed) lives in the meeting status as the `review` field without moving
