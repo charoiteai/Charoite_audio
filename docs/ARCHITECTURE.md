@@ -1241,6 +1241,9 @@ when the mode goes off (`lowpowermode` is read where the output has no
 info layer never wrote the live line, so its clear neither replaces the live
 line nor clears a red error. A problem layer's clear (memory) still goes the
 general way: its set wrote the live line in red, and only the clear resets it.
+Informational topics need an app that names them: app 0.82 would put
+`power` into the channel-loss layer, so the daemon ships inside the bundle
+(`app/make_app.sh`) and an old app never meets a new daemon.
 
 **The incomplete-recording note is a fact about the recording, not speech; a
 derivative has one source.** Before №316/№317 a derivative (minutes, debrief,
