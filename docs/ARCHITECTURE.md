@@ -1864,12 +1864,9 @@ map states them in one line. The Swift rules are `GraphFolders.isServiceFile`
 `_` is not judged by it, a test reads the Python literal so the two copies
 cannot drift) and `GraphFolders.isChatExcluded` (service, but not the map). The
 local walk applies it to the canonical path, so a symlink to an index stays an
-index. A running brain server (:8100) returns index blocks too, with paths from
-the vault root (`<graph folder>/_MOC.md`): `ArchiveSearch.brainOutcome` drops
-such blocks from the text and the sources together, judging the path from the
-graph root. When nothing but index blocks came back, the chat falls through to
-the local search: the brain spent its slots on indexes, and the dossier
-summaries it puts above the blocks are files the local search reads itself.
+index. The chat searches only locally: it no longer reads the optional brain
+server (:8100), whose free-text answer lost the first dossier when parsed and
+took longer than the chat's 4-second wait on 19 of 20 queries (№754).
 
 **Context budget.** Output is capped: no single source takes more than 40% of
 the budget, a source left with under 300 characters is dropped whole, and the
@@ -1937,9 +1934,8 @@ with it, the full path through synthesis. The turn is assembled by the same
 code as the chat (`ChatRetrieval`: the chat's query builder over the question, 25×1000
 with a 25 000-character budget, the chat prompt, and the same fit to the model window —
 whole memory blocks dropped from the weakest until system, memory and question fit
-`num_ctx − num_predict`). Search runs on the local engine over
-the graph folder: a chat that goes through a running brain server (:8100) is
-not measured. `CHAROITE_BENCH_ARM=legacy` switches to the former search
+`num_ctx − num_predict`). Search runs on the same local engine over
+the graph folder as the chat. `CHAROITE_BENCH_ARM=legacy` switches to the former search
 parameters (5×1200) for comparison. A question the model did not answer keeps
 its facts in the total with zero hits, and the run fails with its own message
 rather than as a quality drop. The report lands in
@@ -2000,8 +1996,8 @@ pinned bench is what caught a prompt "improvement" of mine that was actually a
 regression.
 
 `scripts/memory_bench.py` measures the daemon's memory (`src/charoite_graph/graph_search.py`)
-— what the owner sees during a meeting; `--brain` and `--legacy` keep the old
-contours for before/after comparisons. It still cannot answer questions about
+— what the owner sees during a meeting; `--legacy` keeps the old local
+contour for before/after comparisons. It still cannot answer questions about
 the app's search, which is a separate Swift implementation.
 
 `--profile answer|live|expand` measures each daemon consumer through its own
@@ -2012,10 +2008,7 @@ if it reached the block's fragments or nodes, never the header; a miss is
 named "cut by budget" when the search found it and the budget dropped it.
 `--stats` with a profile skips the model and is the nightly signal. `live`
 runs without graph nodes, so it is an upper bound for non-confident results.
-`--profile companion` measures the app chat's companion server with the chat's
-25×1000 (owner only, questions slower than the chat's 4 s deadline are out of
-comparison; what the server returns, before the chat fits it to the model window); the
-default `raw` keeps the old contour. `--no-dossiers` (daemon profiles only)
+The default `raw` keeps the old contour. `--no-dossiers` (daemon profiles only)
 runs the profile without the dossiers axis: topic summaries are not looked up
 at all — neither the "📁" section nor their evidence in the verdict; dossier
 files keep their role and never take a retrieval slot. For `answer` the profile

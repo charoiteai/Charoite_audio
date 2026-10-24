@@ -115,38 +115,6 @@ final class ChatRetrievalTests: XCTestCase {
         }
     }
 
-    /// Ответ brain-сервера разбирается в одном месте; срез по первому
-    /// «\n\n» терял строку причины и пустое «не проверено» клал в блок.
-    func testРазборОтветаBrainСервера() throws {
-        let weak = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
-            "⚠ Похоже, почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n"
-            + "Найдено в vault (1 из 9):\n\n• Граф/Ядра/А.md\n  …текст…"), folder: "Граф"))
-        XCTAssertEqual(weak.verdict, .weak)
-        XCTAssertEqual(weak.note, "Похоже, почти ничего нет (слабые совпадения). Ниже ближайшее найденное:")
-        XCTAssertEqual(weak.text, ArchiveSearch.lowConfidenceMarker + "• Граф/Ядра/А.md\n  …текст…")
-        XCTAssertEqual(weak.rels, ["Ядра/А.md"])
-
-        let confident = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
-            "Найдено в vault (1 из 9):\n\n• Граф/Б.md\n  …б…"), folder: "Граф"))
-        XCTAssertEqual(confident.verdict, .confident)
-        XCTAssertEqual(confident.text, "• Граф/Б.md\n  …б…")
-
-        let unverified = try XCTUnwrap(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
-            "⚠ Найдено по словам, семантикой не проверено (кэш)\nНайдено в vault (1 из 9):\n\n• Граф/В.md\n  …в…"),
-            folder: "Граф"))
-        XCTAssertEqual(unverified.verdict, .unverified)
-        XCTAssertEqual(unverified.rels, ["В.md"])
-
-        // «⚠» без выдачи — пусто не доказано: решает локальный поиск
-        XCTAssertNil(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
-            "⚠ По словам ничего не нашлось по «x» в графе, семантикой не проверено (кэш) — не считать доказанным отсутствием"),
-            folder: "Граф"))
-
-        // «Ничего не найдено» сервера — `empty`, как в базе (долг №637)
-        XCTAssertEqual(ArchiveSearch.brainOutcome(ArchiveSearch.brainSlice(
-            "Ничего не найдено по «x» в графе (искали без: архив)"), folder: "Граф")?.verdict, .empty)
-    }
-
     func testСтатусИзВердикта() throws {
         guard L.lang == "ru" else { throw XCTSkip("строки статуса — на языке интерфейса, проверяем русские") }
         let ctx = { (t: String, v: ArchiveSearch.Verdict) in ChatRetrieval.contextBlock(self.outcome(t, v)) }

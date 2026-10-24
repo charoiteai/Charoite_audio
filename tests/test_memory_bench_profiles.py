@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import pathlib
-import re
 import sys
 import types
 
@@ -33,7 +32,6 @@ def no_bypass(monkeypatch):
         raise AssertionError("бенч профиля искал мимо brain.search")
     monkeypatch.setattr(mb, "search", boom)
     monkeypatch.setattr(mb, "search_legacy", boom)
-    monkeypatch.setattr(mb, "search_brain", boom)
 
 
 def test_stats_goes_only_through_brain_search(monkeypatch, no_bypass):
@@ -136,45 +134,21 @@ def test_live_never_synthesizes(monkeypatch, no_bypass):
     assert out[0].ok and model == ""
 
 
-def test_companion_over_the_chat_deadline_is_out_of_comparison(monkeypatch):
-    monkeypatch.setattr(mb, "require_brain", lambda *a, **kw: None)
-    hits = iter([mb.BrainHit(mb.BRAIN_ALIVE, "есть Олег", False, 1.0),
-                 mb.BrainHit(mb.BRAIN_ALIVE, "есть Олег", True, mb.COMPANION_DEADLINE_S + 0.5)])
-    seen = []
-
-    def fake(graph, q, **kw):
-        seen.append(kw)
-        return next(hits)
-
-    monkeypatch.setattr(mb, "search_brain", fake)
-    out = mb.run_companion(DEMO, [{"q": "a", "must": ["Олег"]}, {"q": "b", "must": ["Олег"]}], demo=False)
-    assert [q.comparable for q in out] == [True, False]
-    assert [q.status for q in out] == ["ok", "weak"]
-    assert seen[0] == {"limit": mb.COMPANION_LIMIT, "snippet": mb.COMPANION_SNIPPET, "timeout": 25}
-
-
-def test_companion_limits_follow_the_chat_params():
-    src = (ROOT / "app/Sources/CharoiteApp/Services/ChatRetrieval.swift").read_text(encoding="utf-8")
-    m = re.search(r"static let chat = Params\(limit: (\d+), snippet: (\d+),", src)
-    assert m, "ChatRetrieval.Params.chat не найден"
-    assert (mb.COMPANION_LIMIT, mb.COMPANION_SNIPPET) == (int(m[1]), int(m[2]))
-
-
 def test_percentile_is_nearest_rank():
     assert mb.percentile([3.0, 1.0, 2.0, 4.0], 0.5) == 2.0
     assert mb.percentile([3.0, 1.0, 2.0, 4.0], 0.95) == 4.0
     assert mb.percentile([], 0.5) == 0.0
 
 
-def test_brain_and_legacy_flags_belong_to_raw(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "answer", "--brain"])
+def test_legacy_flag_belongs_to_raw(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "answer", "--legacy"])
     with pytest.raises(SystemExit):
         mb.main()
     assert "raw" in capsys.readouterr().err
 
 
 def test_profiles_match_brain():
-    assert set(mb.PROFILE_CHOICES) == set(brain.PROFILES) | {"raw", "companion"}
+    assert set(mb.PROFILE_CHOICES) == set(brain.PROFILES) | {"raw"}
 
 
 # ---------------------------------------------------------------- база и тревога (P6)
@@ -771,7 +745,7 @@ def test_broken_line_is_skipped_not_fatal(tmp_path, capsys):
 
 
 def test_record_flags_are_validated(monkeypatch, capsys):
-    for argv in (["--record"], ["--profile", "companion", "--record"],
+    for argv in (["--record"],
                  ["--profile", "answer", "--record", "--limit", "3"], ["--profile", "answer", "--reason", "x"],
                  ["--profile", "answer", "--accept"], ["--profile", "answer", "--run", "abc"]):
         monkeypatch.setattr(sys, "argv", ["memory_bench.py", *argv])

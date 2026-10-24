@@ -142,9 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.bool(forKey: "charoite.calendarBriefs") {
             CalendarService.shared.enable()
         }
-        // Тихий прогрев brain-компаньона: холодный первый скан графа мог не
-        // уложиться в таймаут запроса — первый вопрос пользователя падал на
-        // медленный локальный фолбэк. Пустой запрос строит кэш заранее.
+        // Тихий прогрев локального поиска: холодный первый скан графа
+        // достаётся первому вопросу пользователя. Пустой запрос строит кэш заранее.
         Task.detached(priority: .background) {
             _ = await ArchiveSearch.search(query: "прогрев", limit: 1, snippet: 100,
                                           semanticIndex: .shared)

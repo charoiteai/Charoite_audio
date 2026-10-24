@@ -128,33 +128,6 @@ final class ChatTurnWindowTests: XCTestCase {
         XCTAssertTrue(memory.contains("из 40 кусков"))
     }
 
-    /// DS C1 = Sonnet I2 (in2): brain-путь бюджета не знает — 25×1000 отдаёт
-    /// 76–88 тыс. знаков; окно режет его по кускам, досье — последними.
-    func testBrainВыдачаПодОкном() throws {
-        func dossier(_ name: String) -> String {
-            "\(ArchiveSearch.dossierHead) «\(name)» (граф, источников 9, собрано 2026-10-18)\n# Досье: \(name)\n\n## Сейчас\n"
-                + String(repeating: "д", count: 3_400)
-        }
-        var server = dossier("Первое") + "\n\n" + dossier("Второе") + "\n\nНайдено в vault (25 из 3186):\n\n"
-        for i in 0..<25 {
-            server += "• граф/Встречи/2026-10-\(String(format: "%02d", i + 1))_1000.md\n  "
-                + String(repeating: "в", count: 3_000) + "\n\n"
-        }
-        XCTAssertGreaterThan(server.count, 76_000)
-        let o = try XCTUnwrap(ArchiveSearch.brainOutcome(server, folder: "граф"))
-        XCTAssertEqual(o.parts?.count, 27)
-        XCTAssertEqual(o.parts?.prefix(2).map(\.rel), [nil, nil])
-        let fitted = ChatRetrieval.fit(o, system: system, prompt: "что решили по пилоту")
-        let kept = try XCTUnwrap(fitted.parts)
-        XCTAssertLessThan(kept.count, 27)
-        XCTAssertTrue(kept[0].text.hasPrefix(ArchiveSearch.dossierHead), "досье сильнее блоков")
-        XCTAssertEqual(fitted.rels, kept.compactMap(\.rel))
-        XCTAssertEqual(fitted.rels?.first, "Встречи/2026-10-01_1000.md")
-        let memory = ChatRetrieval.contextBlock(fitted).block
-        XCTAssertLessThanOrEqual(turnTokens(system: system, block: memory, history: [])
-                                 + ChatRetrieval.messageTokens("что решили по пилоту"), ChatRetrieval.Window.input)
-    }
-
     /// Не уместился ни один кусок — «поиск неполный», а не «в памяти этого нет».
     func testНиОдногоКускаНеОтказВПамяти() {
         let huge = Part(text: block("Встречи/a.md", 200_000), rel: "Встречи/a.md", rank: 0)

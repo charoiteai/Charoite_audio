@@ -238,8 +238,8 @@ final class LocalChatService: ObservableObject {
             let lowConf = context.hidesSources
             // Чипы под ответом — точный список хитов поиска (Outcome.rels);
             // упоминание пути в чужом сниппете источником не считается
-            // (круг-1: DS/Codex/GLM). Brain-ветка структуры не отдаёт —
-            // честный запасной разбор текста. Слабые совпадения чипами не
+            // (круг-1: DS/Codex/GLM). Выдача без rels (собранная руками) —
+            // запасной разбор текста. Слабые совпадения чипами не
             // выдаём — их нельзя показывать как опору ответа.
             weakMatches = context.weak
             searchIncomplete = context.searchIncomplete
