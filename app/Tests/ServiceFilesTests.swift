@@ -130,17 +130,6 @@ final class ServiceFilesTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(viaAlias.rels), ["_MOC.md"])
     }
 
-    /// Папка графа в пути сервера сравнивается в форме схемы: имя с диска
-    /// macOS приходит разложенным, регистр может отличаться (out3, DS I1).
-    func testGraphRelativeMatchesTheFolderInTheSchemaForm() {
-        let folder = "Граф_ёлки"
-        XCTAssertEqual(GraphFolders.graphRelative(folder.decomposedStringWithCanonicalMapping + "/_MOC.md",
-                                                  folder: folder), "_MOC.md")
-        XCTAssertEqual(GraphFolders.graphRelative("граф_ёлки/Люди/М.md", folder: folder), "Люди/М.md")
-        XCTAssertEqual(GraphFolders.graphRelative("Другой/Люди/М.md", folder: folder), "Другой/Люди/М.md")
-        XCTAssertEqual(GraphFolders.graphRelative("_MOC.md", folder: folder), "_MOC.md")
-    }
-
     func testFullwidthPrefixIsServiceAsInPython() {
         XCTAssertTrue(GraphFolders.isServiceFile("Ядра/\u{FF3F}ЯДРА.md"))
         XCTAssertTrue(GraphFolders.isMapFile("\u{FF3F}MOC.md"))

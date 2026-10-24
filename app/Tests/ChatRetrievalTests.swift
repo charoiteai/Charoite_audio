@@ -79,7 +79,7 @@ final class ChatRetrievalTests: XCTestCase {
         let weakText = ChatRetrieval.contextBlock(outcome(m + "- a.md\nт", .weak))
         XCTAssertTrue(weakText.weak)
         XCTAssertTrue(weakText.hidesSources)
-        // оговорка сервера доходит до модели и при непустой выдаче
+        // оговорка поиска доходит до модели и при непустой выдаче
         let noted = ChatRetrieval.contextBlock(outcome("- a.md\nт", .weak, note: "почти ничего нет"), lang: "ru")
         XCTAssertTrue(noted.block.contains("(почти ничего нет)"))
         // «найдено» без текста не бывает

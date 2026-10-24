@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             CalendarService.shared.enable()
         }
         // Тихий прогрев локального поиска: холодный первый скан графа
-        // достаётся первому вопросу пользователя. Пустой запрос строит кэш заранее.
+        // достаётся первому вопросу пользователя. Запрос-маркер «прогрев» строит кэш заранее.
         Task.detached(priority: .background) {
             _ = await ArchiveSearch.search(query: "прогрев", limit: 1, snippet: 100,
                                           semanticIndex: .shared)

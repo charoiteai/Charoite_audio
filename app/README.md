@@ -182,3 +182,7 @@ the owner's manifest signature and the Developer ID signature check out. Both
 are off under `CHAROITE_NO_CLOUD`. The cloud layers — Claude during a meeting,
 the cloud chat engine — are opt-in and run in the daemon; see
 [Privacy](../PRIVACY.md).
+The chat searches the graph on the Mac itself and does not read the optional
+memory server on localhost:8100. Forgetting or renaming a meeting does notify
+that server (whether `sufler.brain` is on or not), so facts it already holds
+follow the meeting; it is still localhost.
