@@ -1,13 +1,13 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 86.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 87.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
 - **base** (зависит от: —; модулей 16): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
-- **runtime** (зависит от: base; модулей 6): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `privacy`
+- **runtime** (зависит от: base; модулей 7): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 1): `cloud`
@@ -231,6 +231,7 @@
 - `src/graph_updater.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/live_gate.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/llm.py` ← config/config.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
+- `src/machine_power.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/main.py` ← README.md, docs/ARCHITECTURE.md, docs/MODELS.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/MODELS.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/MODELS.md, docs/zh/README.md, docs/zh/SETUP.md
 - `src/mcp_server.py` ← README.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/README.md, docs/zh/SETUP.md
 - `src/meeting_archive.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md

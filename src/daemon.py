@@ -1060,10 +1060,10 @@ def main():
     _stop_event = stop          # emit сможет остановить нас при обрыве пайпа
     # SIGTERM (Swift terminate по грейсу) → штатный стоп с finally, а не убийство
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    power_notice = stt_runtime.PowerNotice()    # режим питания (№783), как mem_notice ниже
     # Одно состояние на встречу: новый объект на каждом heartbeat слал бы
     # слой заново и заново красил строку статуса.
     mem_notice = stt_runtime.MemoryNotice()
-    power_notice = stt_runtime.PowerNotice()
     try:
         hub.start()
     except Exception as e:  # noqa: BLE001 — «ни один аудиоканал не открылся» и подобное
