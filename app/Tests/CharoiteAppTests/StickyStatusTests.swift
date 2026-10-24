@@ -104,6 +104,28 @@ final class StickyStatusTests: XCTestCase {
         XCTAssertEqual(s.stickyInfo, text)
     }
 
+    func testPowerNoticeSetAndRemovalKeepLiveLineAndError() {
+        // Справка энергосбережения (№783): постановка и снятие — только слой.
+        // Снятие в общей ветке затёрло бы живую строку и висящую красную
+        // ошибку (Sonnet C1 входного круга №783). Тема — stt_runtime.TOPIC_POWER.
+        let s = SuflerService()
+        let failure = "модель подсказок не отвечает"
+        s.consumeForTest(#"{"type":"status","text":"\#(failure)","error":true}"#)
+        let notice = "Режим энергосбережения: подсказки идут медленнее"
+        s.consumeForTest(#"{"type":"status","text":"\#(notice)","sticky":true,"topic":"power"}"#)
+        XCTAssertEqual(SuflerService.StickyTopic.power, "power")
+        XCTAssertEqual(s.stickyInfo, notice)
+        XCTAssertNil(s.stickyStatus, "справка не проблема")
+        XCTAssertEqual(s.status, failure)
+        XCTAssertTrue(s.statusIsError)
+        s.consumeForTest(#"{"type":"status","text":"режим энергосбережения выключен","sticky":false,"topic":"power"}"#)
+        XCTAssertNil(s.stickyInfo, "снятие убирает слой")
+        XCTAssertEqual(s.status, failure, "снятие справки не затирает живую строку")
+        XCTAssertTrue(s.statusIsError, "снятие справки не снимает красную ошибку")
+        XCTAssertLessThan(SuflerService.stickyRank[SuflerService.StickyTopic.retention]!,
+                          SuflerService.stickyRank[SuflerService.StickyTopic.power]!)
+    }
+
     func testStickyWithoutErrorFlagIsStillSticky() {
         // контракт: липкость и окраска — независимые ключи; липкость не
         // зависит от error

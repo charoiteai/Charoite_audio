@@ -10,7 +10,8 @@ extension SuflerService {
     /// Явный ранг вместо порядка кейсов: «меньший rawValue выигрывает»
     /// читается как опечатка (Minor DS входного круга).
     static let stickyRank: [String: Int] = [StickyTopic.channelLoss: 0, StickyTopic.capture: 1,
-                                            StickyTopic.notifications: 2, StickyTopic.retention: 3]
+                                            StickyTopic.notifications: 2, StickyTopic.retention: 3,
+                                            StickyTopic.power: 4]
 
     /// Серьёзность темы: слои-проблемы («собеседников не будет», «права на
     /// микрофон нет») стоят выше живой строки и красятся красным; слои-справки
@@ -22,7 +23,10 @@ extension SuflerService {
     /// Срок хранения записей не понят (`retention`) — тоже справка: старые
     /// записи не удаляются, но встрече это не мешает; красный слой прятал бы
     /// живую строку до конца встречи (Sonnet и Haiku, круг 2 по #809).
-    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications, StickyTopic.retention]
+    /// Режим энергосбережения (`power`, №783) — справка: подсказки медленнее,
+    /// запись цела.
+    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications, StickyTopic.retention,
+                                                StickyTopic.power]
 
     var orderedLayers: [(key: String, value: String)] {
         stickyLayers.sorted { a, b in
@@ -53,10 +57,13 @@ extension SuflerService {
     /// Событие слоя-справки (срок хранения) — только хвост к живой строке: живую
     /// строку оно не заменяет и не красит, иначе тот же текст шёл бы дважды и
     /// красным (Haiku, круг 3 по #809). true — событие поглощено слоем.
+    /// Снятие справки (`sticky: false`) поглощается так же: в общей ветке оно
+    /// затирало бы живую строку текстом «режим выключен» и снимало бы висящую
+    /// красную ошибку (Sonnet C1 входного круга №783).
     func takeInfoLayer(_ obj: [String: Any], _ text: String) -> Bool {
-        guard obj["sticky"] as? Bool == true, let topic = obj["topic"] as? String,
+        guard let sticky = obj["sticky"] as? Bool, let topic = obj["topic"] as? String,
               Self.stickyInfoTopics.contains(topic) else { return false }
-        setSticky(topic, text)
+        setSticky(topic, sticky ? text : nil)
         return true
     }
 
@@ -65,5 +72,6 @@ extension SuflerService {
         static let capture = "capture"
         static let notifications = "notifications"
         static let retention = "retention"           // stt_runtime.TOPIC_RETENTION
+        static let power = "power"                   // stt_runtime.TOPIC_POWER
     }
 }

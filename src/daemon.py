@@ -53,6 +53,7 @@ import channel_trace  # noqa: E402
 import decision_gate  # noqa: E402
 import live_nemotron  # noqa: E402
 import live_sidecar  # noqa: E402
+import machine_power  # noqa: E402
 import meeting_source  # noqa: E402
 import privacy  # noqa: E402
 
@@ -837,6 +838,25 @@ def _note_memory(notice: stt_runtime.MemoryNotice) -> None:
         print(f"давление памяти: {e}", file=sys.stderr, flush=True)
 
 
+def _note_power(notice: stt_runtime.PowerNotice) -> None:
+    """Режим энергосбережения — там же, где давление памяти (№783).
+
+    Подсказки в этом режиме идут медленнее (№583), человек видит медленные
+    подсказки, а не причину. Исключение отсюда не выходит, как у `_note_memory`.
+    """
+    try:
+        low = machine_power.read_low_power()
+    except Exception as e:  # noqa: BLE001 — сбой меры не трогает слой
+        print(f"режим питания не прочитан: {e}", file=sys.stderr, flush=True)
+        return
+    try:
+        stt_runtime.announce_power(
+            notice, low, emit=emit,
+            log=lambda line: print(line, file=sys.stderr, flush=True))
+    except Exception as e:  # noqa: BLE001 — статус не смеет ронять встречу
+        print(f"режим питания: {e}", file=sys.stderr, flush=True)
+
+
 def main():
     # Маска — первой строкой: она состояние процесса и корня не касается, а
     # закрыть всё созданное позже обязана независимо от того, где данные
@@ -1043,6 +1063,7 @@ def main():
     # Одно состояние на встречу: новый объект на каждом heartbeat слал бы
     # слой заново и заново красил строку статуса.
     mem_notice = stt_runtime.MemoryNotice()
+    power_notice = stt_runtime.PowerNotice()
     try:
         hub.start()
     except Exception as e:  # noqa: BLE001 — «ни один аудиоканал не открылся» и подобное
@@ -1058,6 +1079,8 @@ def main():
     # Старт записи — до главного цикла: давление уже критичное человек видит
     # сразу, а не через первый heartbeat.
     _note_memory(mem_notice)
+    # Режим энергосбережения — так же сразу (№783).
+    _note_power(power_notice)
     # Возраст записи — по СТЕННЫМ часам (потолок длительности обязан быть
     # шестью часами, а не шестью часами бодрствования: монотонные часы macOS
     # во сне стоят), тишина — по монотонным (сон — не тишина в комнате).
@@ -3563,6 +3586,9 @@ def main():
                 emit(hb_event)
                 # Давление — только на переходе уровня, не на каждом hb (№319).
                 _note_memory(mem_notice)
+                # Режим питания — тоже на переходе: шнур выдернули посреди
+                # встречи — `pmset -g` уже отвечает за батарею (№783).
+                _note_power(power_notice)
                 # Сторож слоя авто-подсказок: умерший поток — перезапуск и
                 # честная строка человеку (класс утреннего краша stt_loop:
                 # 40 минут тишины без единого слова). Потолок — три

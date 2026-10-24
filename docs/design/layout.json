@@ -21,7 +21,8 @@
     "runtime": [
       "live_gate",
       "config_loader",
-      "privacy"
+      "privacy",
+      "machine_power"
     ],
     "llm": [
       "llm",
