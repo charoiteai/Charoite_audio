@@ -266,14 +266,16 @@ def memory_log_line(level: int) -> str | None:
 def power_layer(low: bool) -> "Status":
     """Справка режима энергосбережения: поставить (True) или снять (False).
 
-    Без `error`: запись цела, медленнее только подсказки. «Медленнее», а не
-    «вдвое»: вдвое — замер одной машины (№583), у другой цифра своя. Адрес
-    настройки в тексте — человек на встрече искать её не пойдёт (DS M2 входа).
+    Без `error`: запись цела, медленнее только модели. «Модели на этой
+    машине», а не «подсказки»: при облачном движке подсказки идут не
+    отсюда, а распознавание — всегда здесь (DS I2 выхода). «Медленнее», а не
+    «вдвое»: вдвое — замер одной машины (№583). Адрес настройки в тексте —
+    человек на встрече искать её не пойдёт (DS M2 входа).
     """
     if low:
         return Status(
-            "Режим энергосбережения: подсказки идут медленнее. Выключить — "
-            "Системные настройки → Аккумулятор → Режим энергосбережения",
+            "Режим энергосбережения: модели на этой машине работают медленнее. "
+            "Выключить — Системные настройки → Аккумулятор → Режим энергосбережения",
             sticky=True, topic=TOPIC_POWER)
     return Status("режим энергосбережения выключен", sticky=False, topic=TOPIC_POWER)
 
@@ -342,20 +344,25 @@ class MemoryNotice:
         self._layer = bool(status.sticky)
 
 
-def announce_memory(notice: MemoryNotice, state, *, emit, log) -> None:
-    """Один шаг проверки давления.
+def announce_layer(notice, reading, *, emit, log) -> None:
+    """Один шаг слоя по замеру — общий для давления памяти и режима питания.
 
     Статус на провод — через `status_event`, как все остальные. Строка
-    уровня 2 — в журнал, на провод не идёт. `ack` — после `emit`: упавшая
-    посылка не считается доставленной, следующий замер того же уровня
-    повторит её.
+    журнала (уровень 2 памяти, смена режима питания) на провод не идёт.
+    `ack` — после `emit`: упавшая посылка не считается доставленной,
+    следующий замер того же уровня повторит её.
     """
-    status, line = notice.consider(state)
+    status, line = notice.consider(reading)
     if status is not None:
         emit(status_event(status))
         notice.ack(status)
     if line:
         log(line)
+
+
+def announce_memory(notice: MemoryNotice, state, *, emit, log) -> None:
+    """Один шаг проверки давления (`announce_layer`)."""
+    announce_layer(notice, state, emit=emit, log=log)
 
 
 class PowerNotice:
@@ -392,8 +399,9 @@ class PowerNotice:
 
 
 def announce_power(notice: PowerNotice, low: bool | None, *, emit, log) -> None:
-    """Один шаг проверки режима питания — тот же порядок, что `announce_memory`."""
-    announce_memory(notice, low, emit=emit, log=log)
+    """Один шаг проверки режима питания (`announce_layer`)."""
+    announce_layer(notice, low, emit=emit, log=log)
+
 
 def realtime_factor(audio_s: float, transcription_ms: float) -> float | None:
     """Во сколько раз быстрее реального времени идёт распознавание.

@@ -7,8 +7,10 @@
 
 Читаем `pmset -g`: он печатает настройки АКТИВНОГО источника питания, поэтому
 выдернутый шнур посреди встречи меняет ответ сам. Значение `powermode` на
-Apple Silicon: 1 — энергосбережение. Ключ `lowpowermode` старых Intel-маков
-не разбираем: продукт только для Apple Silicon (README). `pmset -g batt`
+Apple Silicon: 1 — энергосбережение; оба профиля (`pmset -g custom`, сеть и
+батарея) на MacBookPro18,2 с macOS 27 несут `powermode` (24.10). Машины, у
+которых в выводе вместо него `lowpowermode`, читаются по нему: значение 1 там
+то же (Sonnet I1 и DS M5 выхода). `pmset -g batt`
 ночного гейта (`scripts/night_gate.py`) — другой вывод (источник и заряд),
 не этот.
 """
@@ -26,24 +28,29 @@ TIMEOUT_S = 2.0
 # текст читался бы как «режим обычный» и снимал бы справку (DS I1 входного круга).
 _HEADER = "System-wide power settings"
 # Якорь по строке целиком: подстрока `powermode` сидит и в `lowpowermode`
-# (Sonnet I2 входного круга).
-_POWERMODE = re.compile(r"^[ \t]*powermode[ \t]+(\d+)[ \t]*$", re.M)
+# (Sonnet I2 входного круга). Порядок — приоритет: `lowpowermode` читается,
+# только если строки `powermode` нет.
+_KEYS = tuple(re.compile(rf"^[ \t]*{key}[ \t]+(\d+)[ \t]*$", re.M)
+              for key in ("powermode", "lowpowermode"))
 
 
 def parse_low_power(text: str) -> bool | None:
     """Вывод `pmset -g` → включено ли энергосбережение.
 
-    None — вывод не узнан (нет шапки) или противоречив (две строки `powermode`
-    с разными значениями): слой справки не трогаем. Узнанный вывод без строки
-    `powermode` — не энергосбережение: профиль источника без ключа не должен
+    None — вывод не узнан (нет шапки) или противоречив (две строки ключа
+    с разными значениями): слой справки не трогаем. Узнанный вывод без обоих
+    ключей — не энергосбережение: профиль источника без ключа не должен
     оставлять поднятую справку висеть до конца встречи (DS I1 входного круга).
     """
     if not isinstance(text, str) or _HEADER not in text:
         return None
-    values = {int(m) for m in _POWERMODE.findall(text)}
-    if len(values) > 1:
-        return None
-    return values == {LOW_POWER_MODE}
+    for key in _KEYS:
+        values = {int(m) for m in key.findall(text)}
+        if len(values) > 1:
+            return None
+        if values:
+            return values == {LOW_POWER_MODE}
+    return False
 
 
 def read_low_power(run=subprocess.run) -> bool | None:

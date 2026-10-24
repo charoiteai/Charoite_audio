@@ -1236,9 +1236,11 @@ until that writer clears its own topic. Topic `power` (№783) is named and
 informational: macOS Low Power Mode (`powermode 1` in `pmset -g` of the active
 power source, `src/machine_power.py`) slows hints down roughly twofold on the
 measuring machine, so the daemon raises a layer without `error` and clears it
-when the mode goes off. An informational layer is consumed by
-`takeInfoLayer` both ways: its clear neither replaces the live line nor
-clears a red error.
+when the mode goes off (`lowpowermode` is read where the output has no
+`powermode`). `takeLayerOnly` consumes an informational layer both ways and
+the clear of any topic except `channel_loss`: such a clear neither replaces
+the live line nor clears a red error; "channel is back" still reaches the
+live line.
 
 **The incomplete-recording note is a fact about the recording, not speech; a
 derivative has one source.** Before №316/№317 a derivative (minutes, debrief,

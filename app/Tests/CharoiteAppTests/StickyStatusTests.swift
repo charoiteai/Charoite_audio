@@ -126,6 +126,22 @@ final class StickyStatusTests: XCTestCase {
                           SuflerService.stickyRank[SuflerService.StickyTopic.power]!)
     }
 
+    func testProblemLayerClearKeepsLiveLineAndError() {
+        // Снятие слоя-проблемы (память) — только слой: «давление памяти спало»
+        // в общей ветке затирало красный отказ диска (Haiku C1 выхода №783).
+        // Отбой потери канала по-прежнему пишет живую строку.
+        let s = SuflerService()
+        s.consumeForTest(#"{"type":"status","text":"ПАМЯТЬ НА ИСХОДЕ","sticky":true,"error":true,"topic":"memory"}"#)
+        let refusal = "ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА"
+        s.consumeForTest(#"{"type":"status","text":"\#(refusal)","error":true,"topic":"disk"}"#)
+        s.consumeForTest(#"{"type":"status","text":"давление памяти спало","sticky":false,"topic":"memory"}"#)
+        XCTAssertNil(s.stickyStatus, "слой памяти снят")
+        XCTAssertEqual(s.status, refusal, "снятие слоя не затирает живую строку")
+        XCTAssertTrue(s.statusIsError, "снятие слоя не снимает красный отказ")
+        s.consumeForTest(#"{"type":"status","text":"ожил","sticky":false,"topic":"channel_loss"}"#)
+        XCTAssertEqual(s.status, "ожил", "отбой канала — новость для живой строки")
+    }
+
     func testStickyWithoutErrorFlagIsStillSticky() {
         // контракт: липкость и окраска — независимые ключи; липкость не
         // зависит от error

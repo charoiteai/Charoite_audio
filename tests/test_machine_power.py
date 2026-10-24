@@ -46,14 +46,23 @@ def test_авто_режим_не_энергосбережение():
 def test_узнанный_вывод_без_ключа_снимает_справку():
     """Профиль источника без `powermode` — не энергосбережение, а не «не знаю»:
     иначе поднятая справка висела бы до конца встречи (DS I1 входного круга)."""
-    text = "\n".join(line for line in REAL_AC_HIGH.splitlines() if "powermode" not in line)
-    assert mp.parse_low_power(text) is False
+    assert mp.parse_low_power(_without_powermode(REAL_AC_HIGH)) is False
 
 
-def test_lowpowermode_не_путается_с_powermode():
-    """Ключ Intel-маков содержит `powermode` подстрокой (Sonnet I2 входного круга)."""
-    text = "\n".join(line for line in REAL_AC_HIGH.splitlines() if "powermode" not in line)
-    assert mp.parse_low_power(text + "\n lowpowermode         1\n") is False
+def _without_powermode(text):
+    return "\n".join(line for line in text.splitlines() if "powermode" not in line) + "\n"
+
+
+@pytest.mark.parametrize("value, low", [("1", True), ("0", False)])
+def test_lowpowermode_читается_без_powermode(value, low):
+    """Вывод с ключом `lowpowermode` вместо `powermode` (Sonnet I1, DS M5 выхода)."""
+    assert mp.parse_low_power(_without_powermode(REAL_AC_HIGH) + f" lowpowermode         {value}\n") is low
+
+
+def test_powermode_важнее_lowpowermode():
+    """Подстрока `powermode` в `lowpowermode` не путает ключи (Sonnet I2 входного круга)."""
+    assert mp.parse_low_power(REAL_AC_HIGH + " lowpowermode         1\n") is False
+    assert mp.parse_low_power(SYNTHETIC_AC_LOW + " lowpowermode         0\n") is True
 
 
 @pytest.mark.parametrize("text", ["", "pmset: command failed", None, b"System-wide power settings:"])
@@ -63,6 +72,8 @@ def test_неузнанный_вывод_не_трогает_справку(text
 
 def test_два_разных_значения_не_трогают_справку():
     assert mp.parse_low_power(REAL_AC_HIGH + " powermode            1\n") is None
+    two = _without_powermode(REAL_AC_HIGH) + " lowpowermode         1\n lowpowermode         0\n"
+    assert mp.parse_low_power(two) is None
 
 
 class _Res:
@@ -80,7 +91,7 @@ def test_запуск_pmset_полным_путём_без_stdin(monkeypatch):
 
     assert mp.read_low_power(run) is True
     assert seen["cmd"] == ["/usr/bin/pmset", "-g"]
-    assert seen["stdin"] is subprocess.DEVNULL and seen["timeout"] == mp.TIMEOUT_S
+    assert seen["stdin"] is subprocess.DEVNULL and seen["timeout"] == 2.0
 
 
 @pytest.mark.parametrize("run", [

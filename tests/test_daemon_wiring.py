@@ -664,6 +664,18 @@ def test_the_memory_guard_turns_red_on_a_broken_wiring(edits, says):
     ([("                _note_power(power_notice)",
        "                _note_power(stt_runtime.PowerNotice())")], "не имя power_notice"),
     ([("    power_notice = stt_runtime.PowerNotice()\n", "")], "не ровно одно присваивание power_notice"),
+    ([("    # Режим энергосбережения — так же сразу (№783).\n    _note_power(power_notice)\n",
+       "    # Режим энергосбережения — так же сразу (№783).\n"),
+      ("    power_notice = stt_runtime.PowerNotice()\n",
+       "    power_notice = stt_runtime.PowerNotice()\n    _note_power(power_notice)\n")],
+     "вызов _note_power(power_notice) выше hub.start()"),
+    ([("                _note_power(power_notice)\n", ""),
+      ("                if now_mono - owner_pulse_at[0] > 60.0:\n"
+       "                    owner_pulse_at[0] = now_mono\n",
+       "                if now_mono - owner_pulse_at[0] > 60.0:\n"
+       "                    _note_power(power_notice)\n"
+       "                    owner_pulse_at[0] = now_mono\n")],
+     "вызов _note_power(power_notice) вне блока emit(hb_event)"),
 ])
 def test_the_power_guard_turns_red_on_a_broken_wiring(edits, says):
     """Отрицательная сторона для режима питания: тот же сторож видит его порчи (№783)."""
