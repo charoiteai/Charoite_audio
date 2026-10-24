@@ -570,6 +570,22 @@ def test_review_result_crosses_a_run_only_for_the_same_transcript(tmp_path):
         "ревизия пересобранной встречи показала бы число прежней"
 
 
+def test_an_outdated_review_result_drops_only_the_count(tmp_path):
+    """Мутанты двери n779 (CI #855): граница «стенограмма новее итога»
+    строгая — записанная в ту же секунду стенограмма та же; не прочиталась —
+    итог остаётся; устаревший итог снимает только число, этап и пояснение
+    карточка видит по-прежнему."""
+    from meeting_processing import _review_outlived
+    live = _transcript(tmp_path)
+    at = live.stat().st_mtime
+    review = {"state": "ok", "note": "правок облака: 5", "updated_at": at,
+              "result": {"touched": 5, "applied": 3, "at": at}}
+    assert _review_outlived(review, live) == review, "та же секунда — та же стенограмма"
+    assert _review_outlived(review, tmp_path / "нет.md") == review, "не прочиталась — итог остаётся"
+    os.utime(live, (at + 1, at + 1))
+    assert _review_outlived(review, live) == {"state": "ok", "note": "правок облака: 5", "updated_at": at}
+
+
 def test_a_first_review_with_nothing_applied_is_still_a_result(tmp_path):
     """Без прежнего итога нулевой — тоже итог: облако посмотрело и не правило."""
     live = _transcript(tmp_path)
