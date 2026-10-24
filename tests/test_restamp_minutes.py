@@ -557,11 +557,17 @@ def test_model_refusal_with_after_call_record_moves_the_live_draft_away(
     _FakeLLM.fail = fail
     if not fail:
         monkeypatch.setattr(_FakeLLM, "answer", answer)
-    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {"Собеседник 2": "Инга"})
+    said: list[str] = []
+    monkeypatch.setattr(rebuild_transcript, "log", said.append)
+    # финал длиннее порога: короткий уходит в .prev/ раньше модели (вариант 2),
+    # и тест не дошёл бы до отказа (выжившие мутанты двери CI #852)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {"Собеседник 2": "Инга"})
+    assert _FakeLLM.calls, "модель звалась"
     assert owned == "human" and not mpath.exists()
     assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
+    assert any("соберутся" in m for m in said) and not any("минуток не будет" in m for m in said)
     assert live_sidecar.derivative_state(mpath, meta, "minutes", "0" * 64) == live_sidecar.MISSING
-    rebuild_transcript.record_minutes_passport(live, mpath, owned, _cut(SAID), {})
+    rebuild_transcript.record_minutes_passport(live, mpath, owned, _cut(FINAL), {})
     assert not mpath.exists(), "паспорт и канон не воскрешают файл"
 
 
@@ -623,8 +629,8 @@ def test_cut_in_the_final_is_the_only_sign_even_without_the_after_call_file(tmp_
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     assert not rebuild_transcript.after_call_path(live).exists()
     _FakeLLM.fail = True
-    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {})
-    assert owned == "human" and not mpath.exists()
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert _FakeLLM.calls and owned == "human" and not mpath.exists()
 
 
 def test_refusal_with_a_failing_move_keeps_the_file_and_does_not_raise(tmp_path, monkeypatch):
