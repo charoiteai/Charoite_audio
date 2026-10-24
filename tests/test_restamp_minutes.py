@@ -842,11 +842,15 @@ def test_mcp_minutes_written_while_the_model_fails_with_no_minutes_before_go_awa
 
 
 def test_model_refusal_with_no_minutes_at_all_leaves_nothing(tmp_path, monkeypatch):
-    """Минуток не было и нет — переносить нечего, файла не появляется."""
+    """Минуток не было и нет — переносить нечего, файла не появляется, и лог
+    не говорит, что они «сменились» (M3 Sonnet = M1 Haiku n733-mut-out2)."""
     live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    said: list[str] = []
+    monkeypatch.setattr(rebuild_transcript, "log", said.append)
     _FakeLLM.fail = True
     assert rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {}) == "human"
     assert not mpath.exists() and not (tmp_path / ".prev").exists()
+    assert not any("сменились" in m for m in said)
 
 
 def test_mcp_minutes_stay_when_the_previous_version_cannot_be_kept(tmp_path, monkeypatch):
