@@ -54,22 +54,18 @@ extension SuflerService {
     /// (Important GLM выходного круга: два слоя обрезались двумя строками).
     var stickyProblemCount: Int { orderedLayers.filter { !Self.stickyInfoTopics.contains($0.key) }.count }
 
-    /// Событие, которое меняет только слой, а не живую строку. Справка (срок
-    /// хранения, режим питания) — хвост к живой строке: живую строку она не
-    /// заменяет и не красит, иначе тот же текст шёл бы дважды и красным (Haiku,
-    /// круг 3 по #809). Снятие любого слоя с темой, кроме потери канала («канал
-    /// снова пишется» — новость для живой строки), — тоже только слой: в общей
-    /// ветке «давление памяти спало» затирало бы живую строку и висящую красную
-    /// ошибку (Sonnet C1 входа и Haiku C1 выхода №783). true — событие поглощено.
-    func takeLayerOnly(_ obj: [String: Any], _ text: String) -> Bool {
-        guard let sticky = obj["sticky"] as? Bool,
-              let topic = (obj["topic"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) else { return false }
-        if Self.stickyInfoTopics.contains(topic) {
-            setSticky(topic, sticky ? text : nil)
-            return true
-        }
-        guard !sticky, topic != StickyTopic.channelLoss else { return false }
-        setSticky(topic, nil)
+    /// Событие слоя-справки (срок хранения, режим питания) — только хвост к
+    /// живой строке: живую строку оно не заменяет и не красит, иначе тот же
+    /// текст шёл бы дважды и красным (Haiku, круг 3 по #809). Снятие справки
+    /// поглощается так же: справка живую строку не писала, и её снятие в общей
+    /// ветке затирало бы живую строку и красную ошибку (Sonnet C1 входа №783).
+    /// Снятие слоя-проблемы (память) идёт общей веткой, как до №783: его
+    /// постановка писала живую строку, и только снятие её возвращает (out2 №783).
+    /// true — событие поглощено слоем.
+    func takeInfoLayer(_ obj: [String: Any], _ text: String) -> Bool {
+        guard let sticky = obj["sticky"] as? Bool, let topic = obj["topic"] as? String,
+              Self.stickyInfoTopics.contains(topic) else { return false }
+        setSticky(topic, sticky ? text : nil)
         return true
     }
 
