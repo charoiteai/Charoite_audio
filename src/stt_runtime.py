@@ -187,6 +187,9 @@ TOPIC_MEMORY = "memory"
 # обещанного в PRIVACY. Липкий слой — человек видит его, пока не исправит
 # config.yaml, а не строку в stderr демона, которую никто не читает.
 TOPIC_RETENTION = "retention"
+# Режим энергосбережения macOS (№783): подсказки идут медленнее, запись цела.
+# Справка, а не проблема — в приложении тема стоит в `stickyInfoTopics`.
+TOPIC_POWER = "power"
 # kern.memorystatus_vm_pressure_level: 1 — норма, 2 — предупреждение
 # (на машине с локальной моделью это фон), 4 — критично.
 MEMORY_NORMAL = 1
@@ -260,6 +263,27 @@ def memory_log_line(level: int) -> str | None:
     return None
 
 
+def power_layer(low: bool) -> "Status":
+    """Справка режима энергосбережения: поставить (True) или снять (False).
+
+    Без `error`: запись цела, медленнее только модели. «Модели на этой
+    машине», а не «подсказки»: при облачном движке подсказки идут не
+    отсюда, а распознавание — всегда здесь (DS I2 выхода). «Медленнее», а не
+    «вдвое»: вдвое — замер одной машины (№583). Адрес настройки в тексте —
+    человек на встрече искать её не пойдёт (DS M2 входа).
+    """
+    if low:
+        return Status(
+            "Режим энергосбережения: модели на этой машине работают медленнее. "
+            "Выключить — Системные настройки → Аккумулятор → Режим энергосбережения",
+            sticky=True, topic=TOPIC_POWER)
+    return Status("режим энергосбережения выключен", sticky=False, topic=TOPIC_POWER)
+
+
+def power_log_line(low: bool) -> str:
+    return "режим питания: " + ("энергосбережение" if low else "обычный")
+
+
 def _pressure_level(state: dict | None) -> int | None:
     """Уровень из ответа `memory_state`, либо None — мера не читается.
 
@@ -320,20 +344,64 @@ class MemoryNotice:
         self._layer = bool(status.sticky)
 
 
-def announce_memory(notice: MemoryNotice, state, *, emit, log) -> None:
-    """Один шаг проверки давления.
+def announce_layer(notice, reading, *, emit, log) -> None:
+    """Один шаг слоя по замеру — общий для давления памяти и режима питания.
 
     Статус на провод — через `status_event`, как все остальные. Строка
-    уровня 2 — в журнал, на провод не идёт. `ack` — после `emit`: упавшая
-    посылка не считается доставленной, следующий замер того же уровня
-    повторит её.
+    журнала (уровень 2 памяти, смена режима питания) на провод не идёт.
+    `ack` — после `emit`: упавшая посылка не считается доставленной,
+    следующий замер того же уровня повторит её.
     """
-    status, line = notice.consider(state)
+    status, line = notice.consider(reading)
     if status is not None:
         emit(status_event(status))
         notice.ack(status)
     if line:
         log(line)
+
+
+def announce_memory(notice: MemoryNotice, state, *, emit, log) -> None:
+    """Один шаг проверки давления (`announce_layer`)."""
+    announce_layer(notice, state, emit=emit, log=log)
+
+
+class PowerNotice:
+    """Последний прочитанный режим питания и дошла ли справка до провода.
+
+    Устроен как `MemoryNotice`: посылка только на переходе, снятие — только
+    если справка была поднята (на обычной машине «режим выключен» в начале
+    каждой встречи был бы шумом), флаг слоя — в `ack` после `emit`. None —
+    режим не прочитан: слой не трогаем и последнее состояние не сбрасываем.
+    Строка журнала — на каждой смене режима, и на первой (режим встречи).
+    """
+
+    def __init__(self) -> None:
+        self._low: bool | None = None
+        self._layer = False
+
+    def consider(self, low: bool | None) -> tuple["Status | None", str | None]:
+        if low is None:
+            return None, None
+        fresh = low != self._low
+        self._low = low
+        status = None
+        if low and not self._layer:
+            status = power_layer(True)
+        elif not low and self._layer:
+            status = power_layer(False)
+        return status, power_log_line(low) if fresh else None
+
+    def ack(self, status: "Status") -> None:
+        """Слой учтён только после того, как событие ушло на провод."""
+        if status.sticky is None:
+            return
+        self._layer = bool(status.sticky)
+
+
+def announce_power(notice: PowerNotice, low: bool | None, *, emit, log) -> None:
+    """Один шаг проверки режима питания (`announce_layer`)."""
+    announce_layer(notice, low, emit=emit, log=log)
+
 
 def realtime_factor(audio_s: float, transcription_ms: float) -> float | None:
     """Во сколько раз быстрее реального времени идёт распознавание.

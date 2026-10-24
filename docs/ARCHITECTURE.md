@@ -1232,7 +1232,18 @@ held by the heartbeat) and `memory` when pressure is critical (level 4 sets
 the layer, level 1 clears it and the clear carries the topic, level 2 is a
 journal line only, no reading leaves the layer alone). Unknown topics rank
 after the named ones and are not informational, so the line stays on screen
-until that writer clears its own topic.
+until that writer clears its own topic. Topic `power` (№783) is named and
+informational: macOS Low Power Mode (`powermode 1` in `pmset -g` of the active
+power source, `src/machine_power.py`) slows hints down roughly twofold on the
+measuring machine, so the daemon raises a layer without `error` and clears it
+when the mode goes off (`lowpowermode` is read where the output has no
+`powermode`). `takeInfoLayer` consumes an informational layer both ways: an
+info layer never wrote the live line, so its clear neither replaces the live
+line nor clears a red error. A problem layer's clear (memory) still goes the
+general way: its set wrote the live line in red, and only the clear resets it.
+Informational topics need an app that names them: app 0.82 would put
+`power` into the channel-loss layer, so the daemon ships inside the bundle
+(`app/make_app.sh`) and an old app never meets a new daemon.
 
 **The incomplete-recording note is a fact about the recording, not speech; a
 derivative has one source.** Before №316/№317 a derivative (minutes, debrief,

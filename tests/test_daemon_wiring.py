@@ -13,6 +13,7 @@
 исполняет (фаза 5 брифа модулей, №324); до него таблица — честный временный гейт.
 """
 import ast
+import dataclasses
 import pathlib
 import sys
 
@@ -379,17 +380,32 @@ def _contains_call(stmt: ast.stmt, name: str) -> bool:
     return False
 
 
-def _arg_is_mem_notice(call: ast.Call) -> bool:
+@dataclasses.dataclass(frozen=True)
+class Wire:
+    """Слой статуса, который `main` проверяет на старте записи и на heartbeat:
+    функция-мера, имя состояния и его конструктор. Давление памяти (№319) и
+    режим питания (№783) проведены одинаково — один сторож на оба (DS I3 и
+    Haiku I1 входного круга №783)."""
+    note: str
+    var: str
+    ctor: str
+
+
+MEMORY = Wire("_note_memory", "mem_notice", "stt_runtime.MemoryNotice")
+POWER = Wire("_note_power", "power_notice", "stt_runtime.PowerNotice")
+
+
+def _arg_is_var(call: ast.Call, w: Wire) -> bool:
     return (len(call.args) == 1 and not call.keywords
-            and isinstance(call.args[0], ast.Name) and call.args[0].id == "mem_notice")
+            and isinstance(call.args[0], ast.Name) and call.args[0].id == w.var)
 
 
-def _is_good_note(stmt: ast.stmt) -> bool:
-    """Отдельный оператор `_note_memory(mem_notice)`."""
+def _is_good_note(stmt: ast.stmt, w: Wire) -> bool:
+    """Отдельный оператор `_note_memory(mem_notice)` (или того же вида для `w`)."""
     if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
         return False
     call = stmt.value
-    return _call_name(call) == "_note_memory" and _arg_is_mem_notice(call)
+    return _call_name(call) == w.note and _arg_is_var(call, w)
 
 
 def _is_emit_hb(stmt: ast.stmt) -> bool:
@@ -400,28 +416,28 @@ def _is_emit_hb(stmt: ast.stmt) -> bool:
             and isinstance(call.args[0], ast.Name) and call.args[0].id == "hb_event")
 
 
-def _is_mem_assign(stmt: ast.stmt) -> bool:
+def _is_var_assign(stmt: ast.stmt, w: Wire) -> bool:
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return False
     target = stmt.targets[0]
-    if not isinstance(target, ast.Name) or target.id != "mem_notice":
+    if not isinstance(target, ast.Name) or target.id != w.var:
         return False
     value = stmt.value
     return (isinstance(value, ast.Call) and not value.args and not value.keywords
-            and _call_name(value) == "stt_runtime.MemoryNotice")
+            and _call_name(value) == w.ctor)
 
 
-def _direct_note_calls(body: list[ast.stmt]) -> list[ast.Call]:
+def _direct_note_calls(body: list[ast.stmt], w: Wire) -> list[ast.Call]:
     calls = []
     for stmt in body:
         if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
-                and _call_name(stmt.value) == "_note_memory"):
+                and _call_name(stmt.value) == w.note):
             calls.append(stmt.value)
     return calls
 
 
-def _owned_note_calls(fn: ast.FunctionDef) -> list[ast.Call]:
-    """Все вызовы `_note_memory` в `main`, без вложенных функций."""
+def _owned_note_calls(fn: ast.FunctionDef, w: Wire) -> list[ast.Call]:
+    """Все вызовы `w.note` в `main`, без вложенных функций."""
     calls: list[ast.Call] = []
     stack = [fn]
     while stack:
@@ -429,18 +445,18 @@ def _owned_note_calls(fn: ast.FunctionDef) -> list[ast.Call]:
         for child in ast.iter_child_nodes(node):
             if _skip_nested(child):
                 continue
-            if isinstance(child, ast.Call) and _call_name(child) == "_note_memory":
+            if isinstance(child, ast.Call) and _call_name(child) == w.note:
                 calls.append(child)
             stack.append(child)
     return calls
 
 
-def _good_note_sites(fn: ast.FunctionDef) -> list[tuple[list[ast.stmt], int]]:
+def _good_note_sites(fn: ast.FunctionDef, w: Wire) -> list[tuple[list[ast.stmt], int]]:
     sites: list[tuple[list[ast.stmt], int]] = []
 
     def walk(body: list[ast.stmt]) -> None:
         for i, stmt in enumerate(body):
-            if _is_good_note(stmt):
+            if _is_good_note(stmt, w):
                 sites.append((body, i))
             if _skip_nested(stmt):
                 continue
@@ -467,7 +483,7 @@ def _bodies_with_direct(fn: ast.FunctionDef, pred) -> list[list[ast.stmt]]:
     return found
 
 
-def _assign_in_loop(fn: ast.FunctionDef) -> list[bool]:
+def _assign_in_loop(fn: ast.FunctionDef, w: Wire) -> list[bool]:
     """Для каждого `mem_notice = stt_runtime.MemoryNotice()` — внутри ли цикла."""
     flags: list[bool] = []
 
@@ -475,7 +491,7 @@ def _assign_in_loop(fn: ast.FunctionDef) -> list[bool]:
         for stmt in body:
             if _skip_nested(stmt):
                 continue
-            if _is_mem_assign(stmt):
+            if _is_var_assign(stmt, w):
                 flags.append(in_loop)
             deeper = in_loop or isinstance(stmt, (ast.For, ast.While, ast.AsyncFor))
             for inner in _child_bodies(stmt):
@@ -485,65 +501,75 @@ def _assign_in_loop(fn: ast.FunctionDef) -> list[bool]:
     return flags
 
 
-def memory_wiring_problems(source: str) -> list[str]:
-    """Нарушения проводки давления памяти в `main`. Пустой список — порядок.
+def layer_wiring_problems(source: str, w: Wire) -> list[str]:
+    """Нарушения проводки слоя `w` в `main`. Пустой список — порядок.
 
     Одно `mem_notice = stt_runtime.MemoryNotice()` вне циклов и вне вложенных
     функций. `_note_memory(mem_notice)` — в том же списке, что оператор с
     `hub.start()`, и после него. Второй такой вызов — в том же блоке, что
     `emit(hb_event)`. Любой вызов `_note_memory` в `main` получает имя
-    `mem_notice`, а не другое выражение.
+    `mem_notice`, а не другое выражение. Для режима питания — те же правила
+    с его именами.
     """
     tree = ast.parse(source)
     main = _function(tree, "main")
     if main is None:
         return ["нет main — сторож смотрит мимо"]
+    good_call = f"{w.note}({w.var})"
     problems: list[str] = []
-    flags = _assign_in_loop(main)
+    flags = _assign_in_loop(main, w)
     inside = sum(flags)
     if inside:
-        problems.append("присваивание mem_notice внутри цикла")
+        problems.append(f"присваивание {w.var} внутри цикла")
     elif len(flags) - inside != 1:
-        problems.append("в main не ровно одно присваивание mem_notice вне циклов")
-    if any(not _arg_is_mem_notice(call) for call in _owned_note_calls(main)):
-        problems.append("вызов _note_memory получает не имя mem_notice")
+        problems.append(f"в main не ровно одно присваивание {w.var} вне циклов")
+    if any(not _arg_is_var(call, w) for call in _owned_note_calls(main, w)):
+        problems.append(f"вызов {w.note} получает не имя {w.var}")
     start_i = next((i for i, stmt in enumerate(main.body) if _contains_call(stmt, "hub.start")), None)
     if start_i is None:
         problems.append("в main нет hub.start() — сторож смотрит мимо")
     else:
-        after = any(_is_good_note(stmt) for stmt in main.body[start_i + 1:])
-        before = any(_is_good_note(stmt) for stmt in main.body[:start_i])
+        after = any(_is_good_note(stmt, w) for stmt in main.body[start_i + 1:])
+        before = any(_is_good_note(stmt, w) for stmt in main.body[:start_i])
         if not after:
             if before:
-                problems.append("вызов _note_memory(mem_notice) выше hub.start()")
+                problems.append(f"вызов {good_call} выше hub.start()")
             else:
-                problems.append("после hub.start() нет _note_memory(mem_notice)")
+                problems.append(f"после hub.start() нет {good_call}")
     hb_bodies = _bodies_with_direct(main, _is_emit_hb)
     if len(hb_bodies) != 1:
         problems.append("в main нет emit(hb_event) — сторож смотрит мимо")
     else:
         hb_body = hb_bodies[0]
-        direct = _direct_note_calls(hb_body)
-        good = [call for call in direct if _arg_is_mem_notice(call)]
+        direct = _direct_note_calls(hb_body, w)
+        good = [call for call in direct if _arg_is_var(call, w)]
         if not good:
-            if any(not _arg_is_mem_notice(call) for call in direct):
+            if any(not _arg_is_var(call, w) for call in direct):
                 pass  # «не имя mem_notice» уже сказано выше
             else:
                 startup = []
                 if start_i is not None:
                     startup = [(main.body, i) for i, stmt in enumerate(main.body)
-                               if i > start_i and _is_good_note(stmt)]
-                others = [site for site in _good_note_sites(main) if site not in startup
+                               if i > start_i and _is_good_note(stmt, w)]
+                others = [site for site in _good_note_sites(main, w) if site not in startup
                           and site[0] is not hb_body]
                 if others:
-                    problems.append("вызов _note_memory(mem_notice) вне блока emit(hb_event)")
+                    problems.append(f"вызов {good_call} вне блока emit(hb_event)")
                 else:
-                    problems.append("heartbeat без _note_memory(mem_notice)")
+                    problems.append(f"heartbeat без {good_call}")
     return problems
+
+
+def memory_wiring_problems(source: str) -> list[str]:
+    return layer_wiring_problems(source, MEMORY)
 
 
 def test_the_daemon_wires_memory_pressure():
     assert memory_wiring_problems(DAEMON.read_text(encoding="utf-8")) == []
+
+
+def test_the_daemon_wires_power_mode():
+    assert layer_wiring_problems(DAEMON.read_text(encoding="utf-8"), POWER) == []
 
 
 def _apply(edits: list[tuple[str, str]]) -> str:
@@ -627,4 +653,31 @@ def _apply(edits: list[tuple[str, str]]) -> str:
 def test_the_memory_guard_turns_red_on_a_broken_wiring(edits, says):
     """Отрицательная сторона: каждая порча проводки давления даёт своё нарушение."""
     problems = memory_wiring_problems(_apply(edits))
+    assert any(says in p for p in problems), problems
+
+
+@pytest.mark.parametrize("edits, says", [
+    ([("    # Режим энергосбережения — так же сразу (№783).\n    _note_power(power_notice)\n",
+       "    # Режим энергосбережения — так же сразу (№783).\n")],
+     "после hub.start() нет _note_power(power_notice)"),
+    ([("                _note_power(power_notice)\n", "")], "heartbeat без _note_power(power_notice)"),
+    ([("                _note_power(power_notice)",
+       "                _note_power(stt_runtime.PowerNotice())")], "не имя power_notice"),
+    ([("    power_notice = stt_runtime.PowerNotice()\n", "")], "не ровно одно присваивание power_notice"),
+    ([("    # Режим энергосбережения — так же сразу (№783).\n    _note_power(power_notice)\n",
+       "    # Режим энергосбережения — так же сразу (№783).\n"),
+      ("    power_notice = stt_runtime.PowerNotice()\n",
+       "    power_notice = stt_runtime.PowerNotice()\n    _note_power(power_notice)\n")],
+     "вызов _note_power(power_notice) выше hub.start()"),
+    ([("                _note_power(power_notice)\n", ""),
+      ("                if now_mono - owner_pulse_at[0] > 60.0:\n"
+       "                    owner_pulse_at[0] = now_mono\n",
+       "                if now_mono - owner_pulse_at[0] > 60.0:\n"
+       "                    _note_power(power_notice)\n"
+       "                    owner_pulse_at[0] = now_mono\n")],
+     "вызов _note_power(power_notice) вне блока emit(hb_event)"),
+])
+def test_the_power_guard_turns_red_on_a_broken_wiring(edits, says):
+    """Отрицательная сторона для режима питания: тот же сторож видит его порчи (№783)."""
+    problems = layer_wiring_problems(_apply(edits), POWER)
     assert any(says in p for p in problems), problems

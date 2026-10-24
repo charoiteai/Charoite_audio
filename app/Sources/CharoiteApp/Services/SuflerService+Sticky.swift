@@ -10,7 +10,8 @@ extension SuflerService {
     /// Явный ранг вместо порядка кейсов: «меньший rawValue выигрывает»
     /// читается как опечатка (Minor DS входного круга).
     static let stickyRank: [String: Int] = [StickyTopic.channelLoss: 0, StickyTopic.capture: 1,
-                                            StickyTopic.notifications: 2, StickyTopic.retention: 3]
+                                            StickyTopic.notifications: 2, StickyTopic.retention: 3,
+                                            StickyTopic.power: 4]
 
     /// Серьёзность темы: слои-проблемы («собеседников не будет», «права на
     /// микрофон нет») стоят выше живой строки и красятся красным; слои-справки
@@ -22,7 +23,10 @@ extension SuflerService {
     /// Срок хранения записей не понят (`retention`) — тоже справка: старые
     /// записи не удаляются, но встрече это не мешает; красный слой прятал бы
     /// живую строку до конца встречи (Sonnet и Haiku, круг 2 по #809).
-    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications, StickyTopic.retention]
+    /// Режим энергосбережения (`power`, №783) — справка: подсказки медленнее,
+    /// запись цела.
+    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications, StickyTopic.retention,
+                                                StickyTopic.power]
 
     var orderedLayers: [(key: String, value: String)] {
         stickyLayers.sorted { a, b in
@@ -50,13 +54,18 @@ extension SuflerService {
     /// (Important GLM выходного круга: два слоя обрезались двумя строками).
     var stickyProblemCount: Int { orderedLayers.filter { !Self.stickyInfoTopics.contains($0.key) }.count }
 
-    /// Событие слоя-справки (срок хранения) — только хвост к живой строке: живую
-    /// строку оно не заменяет и не красит, иначе тот же текст шёл бы дважды и
-    /// красным (Haiku, круг 3 по #809). true — событие поглощено слоем.
+    /// Событие слоя-справки (срок хранения, режим питания) — только хвост к
+    /// живой строке: живую строку оно не заменяет и не красит, иначе тот же
+    /// текст шёл бы дважды и красным (Haiku, круг 3 по #809). Снятие справки
+    /// поглощается так же: справка живую строку не писала, и её снятие в общей
+    /// ветке затирало бы живую строку и красную ошибку (Sonnet C1 входа №783).
+    /// Снятие слоя-проблемы (память) идёт общей веткой, как до №783: его
+    /// постановка писала живую строку, и только снятие её возвращает (out2 №783).
+    /// true — событие поглощено слоем.
     func takeInfoLayer(_ obj: [String: Any], _ text: String) -> Bool {
-        guard obj["sticky"] as? Bool == true, let topic = obj["topic"] as? String,
+        guard let sticky = obj["sticky"] as? Bool, let topic = obj["topic"] as? String,
               Self.stickyInfoTopics.contains(topic) else { return false }
-        setSticky(topic, text)
+        setSticky(topic, sticky ? text : nil)
         return true
     }
 
@@ -65,5 +74,6 @@ extension SuflerService {
         static let capture = "capture"
         static let notifications = "notifications"
         static let retention = "retention"           // stt_runtime.TOPIC_RETENTION
+        static let power = "power"                   // stt_runtime.TOPIC_POWER
     }
 }

@@ -486,6 +486,11 @@ def test_темы_липких_слоёв_одинаковы_в_python_и_swift(
              / "SuflerService+Sticky.swift").read_text(encoding="utf-8")
     assert f'static let channelLoss = "{stt_runtime.TOPIC_CHANNEL}"' in swift
     assert 'static let capture = "capture"' in swift and 'static let notifications = "notifications"' in swift
+    assert f'static let retention = "{stt_runtime.TOPIC_RETENTION}"' in swift
+    assert f'static let power = "{stt_runtime.TOPIC_POWER}"' in swift
+    # справка, а не проблема: без темы в stickyInfoTopics слой встал бы красным над живой строкой
+    info = swift[swift.index("static let stickyInfoTopics"):]
+    assert "StickyTopic.power" in info[:info.index("]")]
 
 
 def test_дверь_статуса_пишет_в_stderr_только_недоставленный_отказ(capsys):
@@ -711,4 +716,78 @@ def test_недоставленное_снятие_слоя_памяти_пов�
         daemon._note_memory(notice)
     assert [e["sticky"] for e in sent] == [True, False]
     assert sent[1]["topic"] == "memory"
+    assert "провод оборван" in capsys.readouterr().err
+
+
+def _drive_power(monkeypatch, modes):
+    """Демонская дверь режима питания: мера — `read_low_power`, провод — `emit`."""
+    import daemon
+    seq = iter(modes)
+
+    def measure():
+        item = next(seq)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr(daemon.machine_power, "read_low_power", measure)
+    sent: list = []
+    monkeypatch.setattr(daemon, "emit", sent.append)
+    return daemon, stt_runtime.PowerNotice(), sent
+
+
+def test_справка_энергосбережения_на_проводе_без_ошибки():
+    """Справка — липкая, тема power, без error: запись цела (№783)."""
+    up = stt_runtime.status_event(stt_runtime.power_layer(True))
+    assert up["sticky"] is True and up["topic"] == "power" and up["error"] is False
+    assert "Режим энергосбережения" in up["text"] and "Аккумулятор" in up["text"]
+    assert "вдвое" not in up["text"]
+    down = stt_runtime.status_event(stt_runtime.power_layer(False))
+    assert down["sticky"] is False and down["topic"] == "power" and down["error"] is False
+
+
+def test_режим_питания_шлётся_только_на_переходе(monkeypatch, capsys):
+    """False → True → True → None → False → False → True.
+
+    Обычная машина на старте ничего не шлёт (снятие без поднятого слоя —
+    шум); None слой не трогает; строка журнала — на каждой смене режима.
+    """
+    modes = [False, True, True, None, False, False, True]
+    daemon, notice, sent = _drive_power(monkeypatch, modes)
+    for _ in modes:
+        daemon._note_power(notice)
+    err = capsys.readouterr().err
+    assert [e["sticky"] for e in sent] == [True, False, True]
+    assert {e["topic"] for e in sent} == {"power"}
+    assert err.count("режим питания: энергосбережение") == 2
+    assert err.count("режим питания: обычный") == 2
+
+
+def test_сбой_чтения_режима_не_трогает_справку(monkeypatch, capsys):
+    """Исключение меры: справка стоит, следующий False снимает её."""
+    daemon, notice, sent = _drive_power(monkeypatch, [True, OSError("pmset пропал"), False])
+    for _ in range(3):
+        daemon._note_power(notice)
+    assert [e["sticky"] for e in sent] == [True, False]
+    assert "режим питания не прочитан" in capsys.readouterr().err
+
+
+def test_недоставленная_справка_энергосбережения_повторяется(monkeypatch, capsys):
+    """emit упал на постановке — следующий heartbeat в том же режиме шлёт снова."""
+    import daemon
+    sent = []
+    left = {"n": 1}
+
+    def emit(obj):
+        if left["n"]:
+            left["n"] -= 1
+            raise RuntimeError("провод оборван")
+        sent.append(obj)
+
+    monkeypatch.setattr(daemon, "emit", emit)
+    monkeypatch.setattr(daemon.machine_power, "read_low_power", lambda: True)
+    notice = stt_runtime.PowerNotice()
+    daemon._note_power(notice)
+    daemon._note_power(notice)
+    assert [e["sticky"] for e in sent] == [True]
     assert "провод оборван" in capsys.readouterr().err

@@ -50,7 +50,8 @@ final class SuflerService: ObservableObject {
     @Published var statusErrorFromDaemon = false   // setter внутренний: пишет SuflerService+Status
 
     /// Липкие предупреждения про всю встречу — слоями по владельцу (№310):
-    /// `channel_loss` демона, `capture` захвата, `notifications`. Один `String?`
+    /// `channel_loss` демона, `capture` захвата, `notifications`; справки демона
+    /// `retention` и `power` (№783), проблемы `disk`, `memory`. Один `String?`
     /// на троих давал отбой демона поверх чужого слоя. Приоритет, серьёзность и
     /// чтение — в `SuflerService+Sticky.swift`; старт чистит все слои.
     @Published private(set) var stickyLayers: [String: String] = [:]

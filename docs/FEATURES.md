@@ -1203,6 +1203,16 @@ it signals degradation, it does not break the loop.
   transition only, once when recording starts and then on the main-loop
   heartbeat. The doctor's 5 GB and 20 GB lines are unchanged: they answer
   whether the models fit, not whether this meeting does.
+- **Low Power Mode is named while hints slow down** — with macOS Low Power
+  Mode on, the local hint model ran about half as fast on the measuring
+  machine (28–31 tokens/s against 57–70, №583). The daemon reads `pmset -g`
+  (settings of the active power source) when recording starts and on every
+  heartbeat; `powermode 1` puts up an informational layer on topic `power`
+  («Режим энергосбережения: модели на этой машине работают медленнее…» —
+  "Low Power Mode: models on this machine are slower", with the path to the
+  setting), without the red error
+  colour. The layer comes down when the mode goes off — or the power cord is
+  plugged into a profile without it. A failed read leaves the layer as it is.
 - **The transcript says where the audio is missing** — a channel that drops
   out, comes back, leaves a gap or never returns is one structured event of
   the audio hub, and its trace lands in three places at once: the sidecar

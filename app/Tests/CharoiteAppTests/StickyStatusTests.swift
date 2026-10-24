@@ -104,6 +104,41 @@ final class StickyStatusTests: XCTestCase {
         XCTAssertEqual(s.stickyInfo, text)
     }
 
+    func testPowerNoticeSetAndRemovalKeepLiveLineAndError() {
+        // Справка энергосбережения (№783): постановка и снятие — только слой.
+        // Снятие в общей ветке затёрло бы живую строку и висящую красную
+        // ошибку (Sonnet C1 входного круга №783). Тема — stt_runtime.TOPIC_POWER.
+        let s = SuflerService()
+        let failure = "модель подсказок не отвечает"
+        s.consumeForTest(#"{"type":"status","text":"\#(failure)","error":true}"#)
+        let notice = "Режим энергосбережения: подсказки идут медленнее"
+        s.consumeForTest(#"{"type":"status","text":"\#(notice)","sticky":true,"topic":"power"}"#)
+        XCTAssertEqual(SuflerService.StickyTopic.power, "power")
+        XCTAssertEqual(s.stickyInfo, notice)
+        XCTAssertNil(s.stickyStatus, "справка не проблема")
+        XCTAssertEqual(s.status, failure)
+        XCTAssertTrue(s.statusIsError)
+        s.consumeForTest(#"{"type":"status","text":"режим энергосбережения выключен","sticky":false,"topic":"power"}"#)
+        XCTAssertNil(s.stickyInfo, "снятие убирает слой")
+        XCTAssertEqual(s.status, failure, "снятие справки не затирает живую строку")
+        XCTAssertTrue(s.statusIsError, "снятие справки не снимает красную ошибку")
+        XCTAssertLessThan(SuflerService.stickyRank[SuflerService.StickyTopic.retention]!,
+                          SuflerService.stickyRank[SuflerService.StickyTopic.power]!)
+    }
+
+    func testProblemLayerClearStillResetsItsRedLiveLine() {
+        // Постановка слоя-проблемы (память) пишет живую строку красным; её
+        // снятие обязано вернуть строку и цвет. Поглощение снятия слоем
+        // оставляло «ПАМЯТЬ НА ИСХОДЕ» красным при снятом слое (out2 №783).
+        let s = SuflerService()
+        s.consumeForTest(#"{"type":"status","text":"ПАМЯТЬ НА ИСХОДЕ","sticky":true,"error":true,"topic":"memory"}"#)
+        XCTAssertTrue(s.statusIsError)
+        s.consumeForTest(#"{"type":"status","text":"давление памяти спало","sticky":false,"topic":"memory"}"#)
+        XCTAssertNil(s.stickyStatus, "слой памяти снят")
+        XCTAssertEqual(s.status, "давление памяти спало")
+        XCTAssertFalse(s.statusIsError, "снятие возвращает цвет живой строки")
+    }
+
     func testStickyWithoutErrorFlagIsStillSticky() {
         // контракт: липкость и окраска — независимые ключи; липкость не
         // зависит от error
