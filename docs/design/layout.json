@@ -67,6 +67,7 @@
       "transcript",
       "live_sidecar",
       "channel_trace",
+      "meeting_tail",
       "transcript_origin",
       "action_items",
       "speaker_names",
