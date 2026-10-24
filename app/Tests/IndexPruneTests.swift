@@ -143,7 +143,7 @@ final class IndexPruneTests: XCTestCase {
     /// Удаление доходит до файла индекса сразу, а не после эмбеддера: выход
     /// или зависшая Ollama оставили бы превью в файле (out2 Sonnet I2).
     func testPruneReachesDiskBeforeEmbedding() async throws {
-        let forgotten = "Встречи/забытая-768.md", slow = "Ядра/затор-768.md"
+        let forgotten = "Встречи/забытая-768.md", slow = "Люди/затор-768.md"  // папка есть в графе: запись в несуществующую падала errno 2
         let graph = try makeTestGraph([(forgotten, "решили: бюджет проекта режем"),
                                        ("Люди/узел-768.md", "узел про бюджет проекта")])
         defer { try? FileManager.default.removeItem(at: graph) }
