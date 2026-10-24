@@ -465,18 +465,37 @@ def _cut(text: str) -> str:
         text, rebuild_transcript.AFTER_CALL_CUT_NOTE.format(end="10:40", last="10:52"))
 
 
-def test_short_final_with_after_call_record_regenerates_the_draft(tmp_path, monkeypatch):
-    """№733: черновик демона собран по живой ленте, где запись после звонка ещё
-    внутри. Хвост вынесен этой пересборкой — короткий финал всё равно идёт в
-    модель: перештамповка отдала бы быт после звонка в протокол. Пометка среза
-    в модель не идёт — она заметка, не речь (Critical Sonnet out2)."""
+@pytest.mark.parametrize("first_fails", [True, False])
+def test_short_final_with_after_call_record_moves_the_draft_without_the_model(
+        tmp_path, monkeypatch, first_fails):
+    """№733, вариант 2 главной (C1 DS n733-mut-out2): черновик демона собран по
+    живой ленте, где запись после звонка ещё внутри; хвост вынесен, речи после
+    среза меньше порога. Перештамповка отдала бы быт в протокол, а модель на
+    короткой речи не зовётся — порог коротких встреч: черновик уходит в .prev/.
+    Исход один при отказавшей и исправной модели, и повторный проход его не
+    меняет: модель не зовётся ни разу."""
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
-    owned = rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, {"Собеседник 2": "Инга"})
-    out = mpath.read_text(encoding="utf-8")
-    assert owned != "human" and _FakeLLM.calls == [SAID.rstrip("\n")]
-    assert "ужин" not in out and "- [ ] **Инга** — прислать смету" in out
+    names = {"Собеседник 2": "Инга"}
+    _FakeLLM.fail = first_fails
+    assert rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, names) == "human"
+    assert not mpath.exists()
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
+    _FakeLLM.fail = False
+    assert rebuild_transcript.finalize_minutes(live, _cut(SAID), meta, {}, names) == "human"
+    assert not mpath.exists() and _FakeLLM.calls == []
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == draft
+
+
+def test_cut_note_does_not_reach_the_model(tmp_path, monkeypatch):
+    """Пометка среза — заметка финала, не речь: в промпт не идёт (Critical Sonnet out2)."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    rebuild_transcript.after_call_path(live).write_text("# После звонка\n", encoding="utf-8")
+    assert rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {}) == "regenerated"
+    assert _FakeLLM.calls == [FINAL.rstrip("\n")]
+    assert "ужин" not in mpath.read_text(encoding="utf-8")
 
 
 def test_short_final_with_after_call_record_and_no_draft_builds_nothing(tmp_path, monkeypatch):
@@ -916,9 +935,9 @@ def test_minutes_passport_refusal_after_regeneration_is_said_aloud(tmp_path, mon
 
 def test_unchanged_draft_is_moved_even_when_the_oracle_cannot_confirm_it(tmp_path, monkeypatch):
     """Черновик признан машинным в начале (`minutes_sha256` = хеш байтов), за
-    вызов модели снимок не сменился, а оракул на этот миг не подтверждает
-    (файл стал нечитаемым при прежнем снимке — C1 DS n733-mut-out): решение
-    начала остаётся в силе, быт уходит в .prev/, а не остаётся протоколом."""
+    вызов модели снимок не сменился — оракул на этой ветке не переспрашивается
+    (подмена `_machine_bytes_now` на «не подтверждаю» исхода не меняет, C1 DS
+    n733-mut-out): решение начала в силе, быт уходит в .prev/."""
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     monkeypatch.setattr(rebuild_transcript, "_machine_bytes_now", lambda *a, **k: None)
@@ -953,3 +972,52 @@ def test_a_cut_key_that_differs_from_the_source_key_proves_no_cut():
     assert rebuild_transcript._built_from_a_cut_final(meta) is False
     assert rebuild_transcript._built_from_a_cut_final({"minutes_cut_source_sha256": "a" * 64,
                                                        "minutes_source_sha256": "a" * 64}) is True
+
+
+@pytest.mark.parametrize("cut, source", [("мусор", "мусор"), ("", "")])
+def test_equal_keys_that_are_not_a_hash_prove_no_cut(cut, source):
+    """Пара совпала, но это не хеш — срез не доказан (I2 DS n733-mut-out2)."""
+    meta = {"minutes_cut_source_sha256": cut, "minutes_source_sha256": source}
+    assert not rebuild_transcript._built_from_a_cut_final(meta)
+
+
+def test_draft_replaced_between_the_decision_and_the_move_stays(tmp_path, monkeypatch):
+    """Снимок совпал при решении, а перед переносом сменился — чужие байты не
+    уезжают в .prev/: исход «human», файл на месте (I1 Haiku n733-mut-out2)."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nужин и мусор\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    real_snapshot = rebuild_transcript.safe_write.stat_snapshot
+    after_refusal: list[int] = []
+
+    def stat_snapshot(path):
+        if after_refusal and pathlib.Path(path) == mpath:
+            after_refusal.append(1)
+            if len(after_refusal) > 2:          # вторая сверка снимка в _defer_live_draft
+                return ("подменён",)
+        return real_snapshot(path)
+
+    def refuse(self, text, recording_note=None):
+        after_refusal.append(0)
+        raise RuntimeError("ollama лежит")
+        yield ""
+    monkeypatch.setattr(rebuild_transcript.safe_write, "stat_snapshot", stat_snapshot)
+    monkeypatch.setattr(_FakeLLM, "minutes", refuse)
+    owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
+    assert len(after_refusal) == 3, "снимок сверялся дважды после отказа"
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == draft
+    assert not (tmp_path / ".prev").exists()
+
+
+def test_mcp_minutes_written_without_a_cut_while_the_model_succeeds_stay(tmp_path, monkeypatch):
+    """Без среза в финале гонку не судит оракул: минутки MCP, записанные за
+    удачный вызов модели, остаются как есть — прежнее поведение (M4 DS
+    n733-mut-out2)."""
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    def mcp_then_answer(self, text, recording_note=None):
+        live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- смета\n", "b" * 64, cut=False)
+        yield _FakeLLM.answer
+    monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_answer)
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert owned == "human" and mpath.read_text(encoding="utf-8") == "# Минутки\n- смета\n"

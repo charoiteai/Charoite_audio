@@ -2323,13 +2323,17 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # Финал вынес запись после звонка (№733), а минутки на месте собраны не
     # по этой речи (свежие вышли выше): перештамповать их — значит, возможно,
     # отдать быт в протокол. Признак один — строка среза в этом финале.
-    # При нём короткий финал всё равно идёт в модель.
     after_call = source.cut
-    if len(speech) < MINUTES_MIN_CHARS and not (after_call and current is not None):
+    if len(speech) < MINUTES_MIN_CHARS:
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
-        # прежнее поведение №146, перештамповка.
+        # прежнее поведение №146, перештамповка. После среза черновик уходит
+        # в .prev/ без модели — порог коротких встреч, исход один при любой
+        # модели (№733: иначе отказ модели переносил черновик, а следующий
+        # проход по порогу модель уже не звал).
         log(f"минутки не пересобраны: речи короче {MINUTES_MIN_CHARS} знаков")
+        if after_call and current is not None:
+            return _defer_live_draft(mpath, before, current, live, meta, live_names)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     from llm import LLM
     # Тяжёлый вызов не спорит с идущей встречей (GLM Imp-2), но и очередь
