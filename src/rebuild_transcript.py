@@ -2341,12 +2341,12 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
         log(f"минутки не пересобраны ({type(e).__name__}: {e})")
         if after_call:
-            return _defer_live_draft(mpath, live, meta, live_names)
+            return _defer_live_draft(mpath, before, current, live, meta, live_names)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if not doc:
         log("минутки не пересобраны (модель промолчала)")
         if after_call:
-            return _defer_live_draft(mpath, live, meta, live_names)
+            return _defer_live_draft(mpath, before, current, live, meta, live_names)
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     # Те же шаги, что у кнопки «Протокол», — общим входом минуток (№732):
     # сверка по тому множеству, что видела модель (речь + оговорка, DS I5),
@@ -2422,8 +2422,8 @@ def _machine_bytes_now(mpath: pathlib.Path, live: pathlib.Path, meta):
         return None
 
 
-def _defer_live_draft(mpath: pathlib.Path, live: pathlib.Path, meta: dict,
-                      live_names: dict[str, str]) -> str:
+def _defer_live_draft(mpath: pathlib.Path, before, current: str | None, live: pathlib.Path,
+                      meta: dict, live_names: dict[str, str]) -> str:
     """Отказ модели при записи после звонка (№733): машинные минутки собраны
     не по этой речи — черновик живой ленты или финал прохода, который хвост
     не вынес; они уходят в .prev/, файла минуток нет.
@@ -2446,19 +2446,21 @@ def _defer_live_draft(mpath: pathlib.Path, live: pathlib.Path, meta: dict,
     и судятся тем же правилом, а не остаются на месте (C1 Haiku проверки правок
     Opus). Байты, которых паспорт не знает, — правка человека, не трогаем.
     """
-    if safe_write.stat_snapshot(mpath) is None:
-        return "human"    # файла нет — переносить нечего: MISSING соберут следующие проходы
-    taken = _machine_bytes_now(mpath, live, meta)
-    if taken is None:
-        log("минутки сменились под пересборкой — оставлены как есть")
-        return "human"
-    meta, before, current = taken
+    meta = _passport_now(live, meta)
+    now = safe_write.stat_snapshot(mpath)
+    if now is not None and now != before:
+        taken = _machine_bytes_now(mpath, live, meta)
+        if taken is None:
+            log("минутки сменились под пересборкой — оставлены как есть")
+            return "human"
+        meta, before, current = taken
     if live_sidecar.valid_sha(meta.get("minutes_source_sha256")):
         live_names = {}   # минутки с паспортом источника — не черновик живой ленты (I1 DS)
     if _built_from_a_cut_final(meta):
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
-    if safe_write.stat_snapshot(mpath) != before:
-        log("минутки сменились под пересборкой — оставлены как есть")
+    if current is None or safe_write.stat_snapshot(mpath) != before:
+        if current is not None:
+            log("минутки сменились под пересборкой — оставлены как есть")
         return "human"
     prev_dir = live.parent / ".prev"
     # перенос, а не удаление: проиграй гонку — в .prev/ уедут чужие байты, но не пропадут
