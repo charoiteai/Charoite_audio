@@ -831,19 +831,31 @@ def test_model_refusal_with_no_minutes_at_all_leaves_nothing(tmp_path, monkeypat
 
 
 def test_mcp_minutes_stay_when_the_previous_version_cannot_be_kept(tmp_path, monkeypatch):
-    """Удачная модель, MCP записали минутки под пересборкой, а `.prev/` не
-    создаётся — заменять без копии нельзя: исход «human», байты MCP на месте."""
+    """Удачная модель, MCP записали минутки под пересборкой, а копия их байтов
+    в `.prev/` не создаётся — заменять без копии нельзя: исход «human», байты
+    MCP на месте. `.prev` ломается после первой копии (черновика) — на записи
+    по снимку, которую MCP уже обогнали."""
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\nсмета\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    real_write = rebuild_transcript.safe_write.write_text
+    armed = []
+
+    def write_text(path, *a, **k):
+        if armed and pathlib.Path(path) == mpath:
+            armed.clear()
+            shutil.rmtree(tmp_path / ".prev")
+            (tmp_path / ".prev").write_text("не каталог\n", encoding="utf-8")
+        return real_write(path, *a, **k)
 
     def mcp_then_answer(self, text, recording_note=None):
         live_sidecar.write_derivative(live, mpath, "minutes", "# Минутки\n- ужин\n", "b" * 64, cut=False)
-        shutil.rmtree(tmp_path / ".prev")
-        (tmp_path / ".prev").write_text("не каталог\n", encoding="utf-8")
+        armed.append(True)
         yield _FakeLLM.answer
+    monkeypatch.setattr(rebuild_transcript.safe_write, "write_text", write_text)
     monkeypatch.setattr(_FakeLLM, "minutes", mcp_then_answer)
     owned = rebuild_transcript.finalize_minutes(live, _cut(FINAL), meta, {}, {})
     assert owned == "human" and mpath.read_text(encoding="utf-8") == "# Минутки\n- ужин\n"
+    assert (tmp_path / ".prev").is_file(), "до второй копии дошло"
 
 
 def test_mcp_minutes_stay_when_the_replacement_loses_a_second_race(tmp_path, monkeypatch):
