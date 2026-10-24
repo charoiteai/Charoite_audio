@@ -1,0 +1,20 @@
+{
+  "key": "2026-07-31_141501",
+  "meeting_id": "2026-07-31_141501",
+  "review": {
+    "note": "правок облака: 5, перенесено в граф: Ядра/Тема.md",
+    "result": {
+      "applied": 3,
+      "at": 130.0,
+      "touched": 5
+    },
+    "state": "ok",
+    "updated_at": 130.0
+  },
+  "schema_version": 1,
+  "stage": "complete",
+  "started_at": 100.0,
+  "state": "ready",
+  "transcript_path": "/tmp/charoite/transcripts/2026-07-31_141501.md",
+  "updated_at": 120.0
+}

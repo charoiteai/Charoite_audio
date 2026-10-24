@@ -1243,7 +1243,19 @@ def _log_line(log: pathlib.Path, line: str) -> None:
         print(f"[cloud-review] {line}")
 
 
-def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
+def _review_result(v: Verdict | None, *, delivered: bool) -> dict[str, int] | None:
+    """Итог сверки для карточки встречи (№779): сколько облако правило и
+    сколько из этого лежит в графе. Невалидный ответ в граф не попал — итога
+    нет; несверенный перенос — только если часть правок всё-таки легла."""
+    if v is None or v.rolled_back or v.touched < 0:
+        return None
+    if not delivered and not v.applied:
+        return None
+    return {"touched": v.touched, "applied": len(v.applied)}
+
+
+def _review_stage(transcript: pathlib.Path, state: str, note: str = "",
+                  result: dict[str, int] | None = None) -> None:
     """Этап ревизии в статусе встречи: приложение видело «готово» при идущей
     или упавшей ревизии (№240). Статуса нет — не заводим; сбой — не гейт.
 
@@ -1257,7 +1269,7 @@ def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
         from meeting_processing import MeetingStatusStore
         store = MeetingStatusStore(_root())
         # терминальность «ok» — внутри store.review, одной записью (GLM r2 по #556)
-        if store.review(transcript, state, note) is None and state in ("failed", "retrying"):
+        if store.review(transcript, state, note, result=result) is None and state in ("failed", "retrying"):
             print(f"этап ревизии не понижен до «{state}»: статуса нет или ревизия уже доставлена («ok»)")
     except Exception as e:  # noqa: BLE001 — статус вторичен, ревизия важнее
         print(f"статус этапа ревизии не записан: {e}")
@@ -1596,6 +1608,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             code = -1
 
     ok = published = checked = False
+    verdict: Verdict | None = None  # итог сверки — в статус встречи для карточки (№779)
     lines: list[str] = []          # лог пишется в конце, best-effort
     try:
         # Битый stdout (не UTF-8, исчезнувший файл) — это невалидный ответ,
@@ -1645,6 +1658,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # переносится: граф не был тронут вовсе.
                 v = apply_from_copy(before, cloud_pen, graph, qdir,
                                     backup=backup, valid=ok and published)
+                verdict = v
                 # облако тоже правит узлы — указатели папок должны это видеть
                 # (luna I9); сбой указателя не отменяет перенос
                 for folder in sorted({a.split("/", 1)[0] for a in v.applied}
@@ -1917,10 +1931,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # причина — таймаут, если он был: карточка не должна винить сверку
         # за 30-минутный потолок (GLM r1 M2 по #546); оба кода без повтора
         _review_stage(transcript, "failed", "таймаут; перенос правок не сверен" if timed_out
-                      else "перенос правок не сверен")
+                      else "перенос правок не сверен", _review_result(verdict, delivered=False))
         return RC_TIMEOUT if timed_out else RC_ERROR   # ревизия, может, и есть, но граф не сверен
     if published:
-        _review_stage(transcript, "ok", next((ln.strip() for ln in lines if "правок облака" in ln), lines[0].strip() if lines else ""))
+        _review_stage(transcript, "ok", next((ln.strip() for ln in lines if "правок облака" in ln), lines[0].strip() if lines else ""),
+                      _review_result(verdict, delivered=True))
         return RC_OK
     _review_stage(transcript, "failed", lines[0].strip() if lines else "ревизия не сохранена")
     if timed_out:

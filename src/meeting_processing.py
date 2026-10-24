@@ -66,6 +66,41 @@ def _review_is_stale(data: object, now: float, stale_after: float) -> bool:
     return age >= stale_after
 
 
+def _review_doc(state: str, note: str, now: float,
+                result: dict[str, int] | None = None) -> dict[str, Any]:
+    """Поле `review` для записи этапа: итог (`result`) — только той попытки,
+    что его пишет. Любая запись этапа без итога его снимает: «running» новой
+    ревизии не показывает число прошлой, «failed» без перенесённого — тоже
+    (№779, n779-out2: опоздавший воркер прежней стенограммы и правило «ноль не
+    вытесняет» держали чужое число через два прогона). Через границу прогона
+    итог несёт `processing()`: повтор без новой стенограммы ревизию не
+    перезапускает, и итог остаётся верным. `at` — когда итог записан: по нему
+    исход прогона узнаёт стенограмму, переписанную после ревизии."""
+    doc: dict[str, Any] = {"state": state, "note": str(note)[:300], "updated_at": now}
+    if result is not None:
+        doc["result"] = {"touched": int(result.get("touched", 0)),
+                         "applied": int(result.get("applied", 0)), "at": now}
+    return doc
+
+
+def _review_outlived(review: dict[str, Any], final: pathlib.Path) -> dict[str, Any]:
+    """`review` без итога, если стенограмма переписана после него: прогон
+    пересобрал её, а ревизия не перезапустилась (облако выключено) или ещё
+    ждёт замка графа — число прежней стенограммы карточка выдала бы за итог
+    этой (n779-out3, DS I1 = Haiku I1). Тот же признак, что `fresh` в
+    graph_updater: стенограмма новее ревизии. Не прочиталась — итог остаётся."""
+    result = review.get("result")
+    if not isinstance(result, dict):
+        return review
+    try:
+        newer = final.stat().st_mtime > float(result.get("at", 0) or 0)
+    except (OSError, TypeError, ValueError):
+        return review
+    if not newer:
+        return review
+    return {k: v for k, v in review.items() if k != "result"}
+
+
 def _names_of(path: pathlib.Path):
     """Признак имён по файлу, который уже найден.
 
@@ -288,6 +323,15 @@ class MeetingStatusStore:
             if part and parts:
                 payload["part"] = int(part)
                 payload["parts"] = int(parts)
+            # Этап ревизии новый прогон снимает (его «ok» не должен глушить
+            # ревизию пересобранной встречи), итог — оставляет. Ревизию заново
+            # запускает тот же предикат, что и раньше (`fresh` в graph_updater:
+            # стенограмма новее файла ревизии), и её первая же запись этапа
+            # («running») итог снимает; без перезапуска итог относится к той же
+            # стенограмме (№779, n779-out2: снятие здесь теряло его навсегда).
+            prev = current.get("review")
+            if isinstance(prev, dict) and isinstance(prev.get("result"), dict):
+                payload["review"] = {"result": prev["result"]}
             self._prune(now)
             return payload
 
@@ -349,7 +393,9 @@ class MeetingStatusStore:
             # конвейера и успевал записать «running» раньше, чем тот собрал
             # документ заново без поля (DS r1 I1, GLM r1 I1 по #546)
             if isinstance(current.get("review"), dict):
-                payload["review"] = current["review"]
+                review = _review_outlived(current["review"], final)
+                if review:
+                    payload["review"] = review
             return payload
 
         return _required(self._update(transcript, mutate, terminal=True))
@@ -442,7 +488,8 @@ class MeetingStatusStore:
 
         return self._update(transcript, mutate)
 
-    def review(self, transcript: pathlib.Path, state: str, note: str = "") -> pathlib.Path | None:
+    def review(self, transcript: pathlib.Path, state: str, note: str = "", *,
+               result: dict[str, int] | None = None) -> pathlib.Path | None:
         """Этап облачной ревизии — поле `review` поверх статуса, state и stage
         не трогаем: ревизия идёт отдельным воркером ПОСЛЕ «готово», и
         приложение показывало «готово» при идущей, повторяемой или упавшей
@@ -451,7 +498,10 @@ class MeetingStatusStore:
         разбора) — не заводим: запись без stage читалась бы как битая.
         `updated_at` самого статуса не сдвигается — по нему судят
         `unfinished` и `busy`, а ревизия не обработка. Документа ещё нет —
-        не заводим ни его, ни каталог, ни файл замка."""
+        не заводим ни его, ни каталог, ни файл замка. `result` —
+        `{touched, applied}` по вердикту сверки, его читает карточка встречи
+        (№779); не передан — этап остаётся без итога: итог принадлежит
+        попытке, которая его пишет (`_review_doc`)."""
         transcript = pathlib.Path(transcript)
         if not self.directory.is_dir() or not self._path(transcript).is_file():
             return None
@@ -470,7 +520,7 @@ class MeetingStatusStore:
             if state in ("failed", "retrying") and isinstance(prev, dict) and prev.get("state") == "ok":
                 return None
             updated = dict(current)
-            updated["review"] = {"state": state, "note": str(note)[:300], "updated_at": float(self._now())}
+            updated["review"] = _review_doc(state, note, float(self._now()), result)
             return updated
 
         # «ok» — доставка, как исход встречи: потерянная, она оставила бы
@@ -509,11 +559,8 @@ class MeetingStatusStore:
                         continue
                     if not _review_is_stale(data, now, stale_after):
                         continue
-                    data["review"] = {
-                        "state": "failed",
-                        "note": "воркер ревизии не завершил работу (этап устарел)",
-                        "updated_at": now,
-                    }
+                    data["review"] = _review_doc(
+                        "failed", "воркер ревизии не завершил работу (этап устарел)", now)
                     try:
                         self._write_path(path, data)
                     except OSError:
@@ -545,7 +592,9 @@ class MeetingStatusStore:
                 "attempts": int(current.get("attempts", 0)) + 1,
             }
             if isinstance(current.get("review"), dict):
-                payload["review"] = current["review"]
+                review = _review_outlived(current["review"], pathlib.Path(payload["transcript_path"]))
+                if review:
+                    payload["review"] = review
             return payload
 
         return _required(self._update(transcript, mutate, terminal=True))

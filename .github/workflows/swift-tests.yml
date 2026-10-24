@@ -17,6 +17,9 @@ on:
       - ".github/workflows/swift-tests.yml"
       # ServiceFilesTests сверяет префиксы GraphFolders с литералом схемы (№750)
       - "src/charoite_schema.py"
+      # MeetingCardTests декодирует статус, который пишет MeetingStatusStore:
+      # писатель меняется только вместе с фикстурой — её правка будит Swift (№779)
+      - "tests/fixtures/meeting_status_review.json"
   push:
     paths:
       - "app/**"
@@ -27,6 +30,9 @@ on:
       - ".github/workflows/swift-tests.yml"
       # ServiceFilesTests сверяет префиксы GraphFolders с литералом схемы (№750)
       - "src/charoite_schema.py"
+      # MeetingCardTests декодирует статус, который пишет MeetingStatusStore:
+      # писатель меняется только вместе с фикстурой — её правка будит Swift (№779)
+      - "tests/fixtures/meeting_status_review.json"
 
 concurrency:
   # PR ключуется НОМЕРОМ: head_ref — имя ветки без владельца форка,

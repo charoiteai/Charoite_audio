@@ -43,6 +43,9 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
     /// (`recording_not_ready`, `channel_lost`, `failed`): граф построен по
     /// живому черновику, результат можно пересобрать (№500).
     let rebuildSkipped: String?
+    /// Этап облачной ревизии и её итог (№779). Входит в равенство снимка:
+    /// ревизия кончается после «готово», и только так карточка её догоняет.
+    let review: ReviewStage?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -58,6 +61,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         case parts
         case namesPending = "names_pending"
         case rebuildSkipped = "rebuild_skipped"
+        case review
     }
 
     /// Свой init с умолчаниями вместо memberwise: прогресс есть только у
@@ -67,7 +71,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
          startedAt: TimeInterval, updatedAt: TimeInterval, transcriptPath: String,
          notePath: String?, error: String?,
          part: Int? = nil, parts: Int? = nil, namesPending: Bool? = nil,
-         rebuildSkipped: String? = nil) {
+         rebuildSkipped: String? = nil, review: ReviewStage? = nil) {
         self.schemaVersion = schemaVersion
         self.meetingID = meetingID
         self.state = state
@@ -81,6 +85,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         self.parts = parts
         self.namesPending = namesPending
         self.rebuildSkipped = rebuildSkipped
+        self.review = review
     }
 }
 

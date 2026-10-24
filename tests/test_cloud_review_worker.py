@@ -2129,6 +2129,181 @@ def test_run_once_tells_cli_failure_from_timeout_and_writes_the_review_stage(tmp
     assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     data = json.loads(status.read_text(encoding="utf-8"))
     assert data["review"]["state"] == "ok" and data["state"] == "ready"
+    assert "result" not in data["review"], "без правки графа сверки нет — и итога правок нет"
+
+
+def test_the_review_stage_carries_what_reached_the_graph(tmp_path, monkeypatch):
+    """№779: карточка встречи берёт итог ревизии из статуса, а не из строки
+    лога (лог писал «правок облака», карточка искала «правок графа» — строка
+    не показывалась с 28.08). Число — сколько правок легло в граф, а не
+    сколько облако трогало в копии: запрещённая правка не переносится."""
+    import json
+    import meeting_processing
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    core = graph / "Ядра" / "Платёжный провайдер.md"
+    original = core.read_text(encoding="utf-8")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    store = meeting_processing.MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "updating_graph")
+    status = store.ready(transcript, note=None)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+
+    class Result:
+        returncode = 0
+
+    def edits(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"])
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            original.replace("Решено", "Решено — ЮPay"), encoding="utf-8")
+        # стенограммы в графе правит конвейер — эта правка запрещена
+        (pen / "Документация" / "Стенограммы встреч" / f"{stamp}.md").write_text(
+            "облако переписало стенограмму", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", edits)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    assert "ЮPay" in core.read_text(encoding="utf-8")
+    review = json.loads(status.read_text(encoding="utf-8"))["review"]
+    assert review["state"] == "ok" and "правок облака" in review["note"], review
+    assert {k: v for k, v in review["result"].items() if k != "at"} == {"touched": 2, "applied": 1}
+
+    class Refused:
+        returncode = 1
+
+    def invalid(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"])
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text("стёрто\n", encoding="utf-8")
+        kwargs["stdout"].write("Ошибка: rate limit\n")
+        return Refused()
+
+    # итог — только той попытки, что его пишет: осознанный повтор с
+    # невалидным ответом своего не переносит, и прежнее число карточка за
+    # итог этой попытки не выдаёт (n779-out2)
+    monkeypatch.setattr(cloud_review.subprocess, "run", invalid)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_CLI
+    review = json.loads(status.read_text(encoding="utf-8"))["review"]
+    assert review["state"] == "failed" and "result" not in review
+    assert "ЮPay" in core.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("broken, expected", [
+    ({"Квен.md"}, {"touched": 2, "applied": 1}),
+    ({"Квен.md", "Платёжный провайдер.md"}, None),
+])
+def test_a_partial_transfer_shows_what_did_reach_the_graph(tmp_path, monkeypatch, broken, expected):
+    """№779 (I2 обеих голов n779-out1): перенос упал на одном файле, сверка не
+    сошлась — этап «failed», но правка, которая легла, в графе, и карточка
+    должна её назвать. Прежнего итога нет: число пишет сама ветка
+    частичного переноса, а не перенос из прошлого этапа. Не легло ничего —
+    итога нет вовсе: «0» назвал бы упавший перенос ревизией без правок."""
+    import json
+    import meeting_processing
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    core = graph / "Ядра" / "Платёжный провайдер.md"
+    original = core.read_text(encoding="utf-8")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    store = meeting_processing.MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "updating_graph")
+    status = store.ready(transcript, note=None)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    real_write = cloud_review.safe_write.write_text
+
+    def flaky(path, text, **kw):
+        if path.name in broken:
+            raise OSError(28, "No space left on device")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    class Result:
+        returncode = 0
+
+    def edits(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"])
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            original.replace("Решено", "Решено — ЮPay"), encoding="utf-8")
+        (pen / "Системы").mkdir(exist_ok=True)
+        (pen / "Системы" / "Квен.md").write_text("# Квен\nмодель\n", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", edits)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_ERROR
+    assert ("ЮPay" in core.read_text(encoding="utf-8")) == (expected is not None)
+    review = json.loads(status.read_text(encoding="utf-8"))["review"]
+    assert review["state"] == "failed"
+    got = review.get("result")
+    assert ({k: v for k, v in got.items() if k != "at"} if got else None) == expected, review
+
+
+def test_a_review_whose_edits_all_stayed_out_still_has_a_result(tmp_path, monkeypatch):
+    """Мутант двери n779 (CI #855, `delivered=True`): сверенная ревизия, чьи
+    правки все запрещены, — итог «0 из 1», а не «итога нет»: облако правило,
+    в граф не легло ничего, и это ответ этой попытки."""
+    import json
+    import meeting_processing
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    store = meeting_processing.MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "updating_graph")
+    status = store.ready(transcript, note=None)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+
+    class Result:
+        returncode = 0
+
+    def forbidden(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"])
+        (pen / "Документация" / "Стенограммы встреч" / f"{stamp}.md").write_text(
+            "облако переписало стенограмму", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", forbidden)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    review = json.loads(status.read_text(encoding="utf-8"))["review"]
+    assert review["state"] == "ok"
+    assert {k: v for k, v in review["result"].items() if k != "at"} == {"touched": 1, "applied": 0}
+
+
+@pytest.mark.parametrize("verdict, delivered, expected", [
+    (cloud_review.Verdict(touched=0), True, {"touched": 0, "applied": 0}),
+    (cloud_review.Verdict(touched=-1), True, None),
+    (cloud_review.Verdict(touched=2, applied=["a.md"], rolled_back=True), True, None),
+    (cloud_review.Verdict(touched=2), False, None),
+    (cloud_review.Verdict(touched=2, applied=["a.md"]), False, {"touched": 2, "applied": 1}),
+    (None, True, None),
+])
+def test_review_result_is_what_the_reconciliation_says(verdict, delivered, expected):
+    """Мутант двери n779 (CI #855, `touched < 0`): ревизия без правок — итог
+    «0», снимка нет (-1) — итога нет."""
+    assert cloud_review._review_result(verdict, delivered=delivered) == expected
+
+
+def test_a_refused_review_stage_downgrade_is_said_once(tmp_path, monkeypatch, capsys):
+    """Мутанты двери n779 (CI #855): строка «этап не понижен» — только когда
+    «failed» не лёг поверх «ok» соседа; обычная запись «failed» молчит."""
+    import meeting_processing
+    transcript, _rev, _log = _meeting(tmp_path)
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    store = meeting_processing.MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "updating_graph")
+    store.ready(transcript, note=None)
+    cloud_review._review_stage(transcript, "failed", "CLI упал")
+    assert "не понижен" not in capsys.readouterr().out
+    cloud_review._review_stage(transcript, "ok", "правок облака: 1")
+    cloud_review._review_stage(transcript, "failed", "CLI упал")
+    assert "не понижен до «failed»" in capsys.readouterr().out
 
 
 def test_a_stub_keeps_the_displaced_body_in_quarantine(tmp_path):

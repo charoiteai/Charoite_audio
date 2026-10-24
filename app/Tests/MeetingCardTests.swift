@@ -177,37 +177,79 @@ final class MeetingCardTests: XCTestCase {
         XCTAssertEqual(MeetingCardLoader.tasksText(card: card), "- дело один\n- дело два")
     }
 
-    // MARK: лог облачной ревизии
+    // MARK: облачная ревизия — из статуса встречи (№779)
 
-    func testCloudReviewTakesTheLastRun() {
-        // в логе три прогона: правдой считается последний
-        let log = """
-        [cloud-review] 2026-08-03_1130: файлов в запросе 3, режим правка графа
-        [cloud-review] ревизия НЕ сохранена (код -1, 0 знаков) — см. x.partial
-        [cloud-review] правок графа: 83, откатано запрещённых: Саммари.md
-        [cloud-review] 2026-08-03_1130: файлов в запросе 4, режим правка графа
-        [cloud-review] ревизия сохранена: 2026-08-03_1130_Тема_ревизия_claude.md
-        [cloud-review] правок графа: 103, откатано запрещённых: Граф.md
-        """
-        let r = MeetingCardLoader.cloudReview(fromLog: log)
-        XCTAssertEqual(r, CloudReviewResult(edits: 103, saved: true))
+    /// Общая фикстура контракта: её пишет настоящий MeetingStatusStore
+    /// (tests/test_meeting_processing.py сверяет), здесь — декодер приложения.
+    private func reviewFixture() throws -> Data {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return try Data(contentsOf: root.appendingPathComponent("tests/fixtures/meeting_status_review.json"))
     }
 
-    func testCloudReviewUnsavedRevisionIsHonest() {
-        let log = """
-        [cloud-review] таймаут 1800с — разбор прерван
-        [cloud-review] ревизия НЕ сохранена (код -1, 0 знаков) — см. x.partial
-        [cloud-review] правок графа: 83, откатано запрещённых: Саммари.md
-        """
-        let r = MeetingCardLoader.cloudReview(fromLog: log)
-        XCTAssertEqual(r, CloudReviewResult(edits: 83, saved: false))
+    private func snapshot(_ json: String) throws -> MeetingProcessingSnapshot {
+        try JSONDecoder().decode(MeetingProcessingSnapshot.self, from: Data(json.utf8))
     }
 
-    func testCloudReviewWithoutEditsLineIsNil() {
-        // ревизия ещё идёт или упала до разбора — итога нет
-        let log = "[cloud-review] 2026-08-03_1130: файлов в запросе 3\n"
-        XCTAssertNil(MeetingCardLoader.cloudReview(fromLog: log))
-        XCTAssertNil(MeetingCardLoader.cloudReview(fromLog: ""))
+    func testCloudReviewLineComesFromTheStatusThePipelineWrites() throws {
+        let snap = try JSONDecoder().decode(MeetingProcessingSnapshot.self, from: reviewFixture())
+        XCTAssertEqual(snap.review?.state, "ok")
+        XCTAssertEqual(snap.review?.result, .init(touched: 5, applied: 3))
+        let line = try XCTUnwrap(MeetingProcessingPolicy.cloudReviewLine(for: snap))
+        let three = try XCTUnwrap(line.range(of: "3"), line)
+        let five = try XCTUnwrap(line.range(of: "5"), "легли не все — видно, сколько тронуто: \(line)")
+        XCTAssertLessThan(three.lowerBound, five.lowerBound,
+                          "первое число — перенесённые в граф правки, а не тронутые в копии: \(line)")
+    }
+
+    func testCloudReviewLineCountsOnlyWhatMatters() throws {
+        let base = #"{"schema_version":1,"meeting_id":"m","state":"ready","stage":"complete","#
+            + #""started_at":1,"updated_at":2,"transcript_path":"/t.md","review":{"state":"ok","result":"#
+        let all = try XCTUnwrap(MeetingProcessingPolicy.cloudReviewLine(
+            for: try snapshot(base + #"{"touched":2,"applied":2}}}"#)))
+        XCTAssertEqual(all.filter { $0 == "2" }.count, 1, "легли все — одно число: \(all)")
+        XCTAssertNil(MeetingProcessingPolicy.cloudReviewLine(
+            for: try snapshot(base + #"{"touched":0,"applied":0}}}"#)), "нули карточка не пишет")
+        let refused = try XCTUnwrap(MeetingProcessingPolicy.cloudReviewLine(
+            for: try snapshot(base + #"{"touched":4,"applied":0}}}"#)))
+        XCTAssertTrue(refused.contains("0") && refused.contains("4"),
+                      "всё ушло в карантин — не «0» как у ревизии без правок: \(refused)")
+        let noTouched = try snapshot(base + #"{"applied":1}}}"#)
+        XCTAssertNotNil(MeetingProcessingPolicy.cloudReviewLine(for: noTouched),
+                        "писатель без touched строку не гасит")
+    }
+
+    func testNoResultMeansNoCloudReviewLine() throws {
+        // ревизия идёт, упала до сверки или статус записан до этой версии
+        let base = #"{"schema_version":1,"meeting_id":"m","state":"ready","stage":"complete","#
+            + #""started_at":1,"updated_at":2,"transcript_path":"/t.md""#
+        XCTAssertNil(MeetingProcessingPolicy.cloudReviewLine(for: try snapshot(base + "}")))
+        let running = try snapshot(base + #","review":{"state":"running","note":"x","updated_at":3}}"#)
+        XCTAssertEqual(running.review?.state, "running")
+        XCTAssertNil(MeetingProcessingPolicy.cloudReviewLine(for: running))
+    }
+
+    func testABrokenReviewFieldDoesNotDropTheMeeting() throws {
+        // строгий декод уронил бы весь снимок, и встреча пропала бы из окна
+        let base = #"{"schema_version":1,"meeting_id":"m","state":"ready","stage":"complete","#
+            + #""started_at":1,"updated_at":2,"transcript_path":"/t.md","review":"#
+        let number = try snapshot(base + "42}")
+        XCTAssertEqual(number.meetingID, "m")
+        XCTAssertNil(number.review?.state)
+        let badResult = try snapshot(base + #"{"state":"ok","result":{"applied":"много"}}}"#)
+        XCTAssertEqual(badResult.review?.state, "ok", "кривой итог не уносит этап")
+        XCTAssertNil(badResult.review?.result)
+        XCTAssertNil(MeetingProcessingPolicy.cloudReviewLine(for: badResult))
+    }
+
+    func testAFinishedReviewChangesTheSnapshot() throws {
+        // ревизия кончается после «готово»: без поля в равенстве снимка
+        // библиотека не пересобирала запись встречи
+        let base = #"{"schema_version":1,"meeting_id":"m","state":"ready","stage":"complete","#
+            + #""started_at":1,"updated_at":2,"transcript_path":"/t.md","review":"#
+        let running = try snapshot(base + #"{"state":"running"}}"#)
+        let done = try snapshot(base + #"{"state":"ok","result":{"touched":2,"applied":1}}}"#)
+        XCTAssertNotEqual(running, done)
     }
 
     // MARK: команда переименования
