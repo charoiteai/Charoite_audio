@@ -227,6 +227,12 @@ def _one_line(text: str) -> str:
     return " ".join(str(text).split())
 
 
+def _left(e: night_cloud.NightCloudError) -> str:
+    """Ушёл ли запрос — только здесь, в строке шага: дверь знает это под замком
+    отправки, бриф этого не утверждает (решение по out4)."""
+    return "запрос мог уйти" if e.sent else "ничего не отправлено"
+
+
 def _ask_tinfoil(cfg: dict, prompt: str, graph: pathlib.Path) -> night_cloud.Reply:
     """Ревизия через дверь Tinfoil; любой неуспех — выход своим кодом.
 
@@ -244,14 +250,13 @@ def _ask_tinfoil(cfg: dict, prompt: str, graph: pathlib.Path) -> night_cloud.Rep
         print(f"провайдер ночи не принят: {e}")
         sys.exit(EXIT_PRIVACY_REFUSED)
     except night_cloud.DeadlineExpired as e:
-        print(f"время ночного прогона вышло — ревизия ядер завтра ({e})")
+        print(f"время ночного прогона вышло — ревизия ядер завтра, {_left(e)} ({e})")
         sys.exit(0)
     except night_cloud.AttestationFailed as e:
-        sent = "запрос мог уйти" if e.sent else "ничего не отправлено"
-        print(f"аттестация провайдера не прошла — {sent}: {e}")
+        print(f"аттестация провайдера не прошла — {_left(e)}: {e}")
         sys.exit(EXIT_ATTESTATION_FAILED)
     except night_cloud.ProviderUnavailable as e:
-        print(f"провайдер ночи недоступен: {e}")
+        print(f"провайдер ночи недоступен — {_left(e)}: {e}")
         sys.exit(EXIT_PROVIDER_UNAVAILABLE)
     except night_cloud.ReplyRejected as e:
         print(f"ревизия не принята: {e}")

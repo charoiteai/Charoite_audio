@@ -20,8 +20,11 @@
   `_exchange` в одном потоке под одним сроком `Deadline`; истёкший срок — не
   провал аттестации, а «ночь кончилась» (свой класс);
 - переход к отправке — одно место под замком вместе с проверкой срока:
-  сторож срока знает, ушёл ли запрос, и это пишется в исход (`sent`);
-- класс исхода по исключению и стадии обмена решает одна таблица `_classify`;
+  сторож срока знает, ушёл ли запрос (`sent` у исключения — для строки шага);
+- класс ошибки обмена — два: «аттестация» только по правилу SDK о сертификате,
+  прочее — «недоступен» (`_classify`, решение главной по out4);
+- причина в файле состояния собирается в одной точке `_cause`: без ключа и
+  без путей машины — бриф пишется в граф;
 - исход каждой попытки — в файл состояния по графу; утренний бриф берёт
   сигнал аттестации только оттуда, не из текста модели.
 """
@@ -55,9 +58,6 @@ _ATTESTATION_HEADING = re.compile(r"^\s*#+\s*аттестация\b", re.IGNOREC
 #: Шаги документа аттестации SDK 0.15.0. Нет шага — не «всё прошло», а
 #: «проверено не всё»: SDK, переименовавший шаг, даёт громкий отказ (out1 S-I1).
 REQUIRED_STEPS = ("fetch_digest", "verify_code", "verify_enclave", "compare_measurements")
-#: Начало текста ValueError у SDK 0.15.0, когда недоступен список роутеров:
-#: это сеть, а не подмена (замер 25.10, E2).
-_ROUTER_LIST_FAILED = "Failed to fetch router"
 #: Признак сбоя проверки сертификата в тексте SSLError — тот же, что у SDK 0.15.0
 #: (`tinfoil.client._CERTIFICATE_VERIFY_ERROR_MARKERS`).
 _CERTIFICATE_VERIFY_MARKERS = ("certificate_verify_failed", "certificate verify failed")
@@ -67,20 +67,24 @@ class NightCloudError(Exception):
     """Исход двери, отличный от принятого ответа. Причина — без ключа.
 
     `sent` — начата ли отправка запроса до исхода; ставит `send` (out2 C1, C2).
+    Читает только строка шага; в файл состояния и бриф не идёт (решение по out4).
     """
     sent: bool = False
 
 
 class AttestationFailed(NightCloudError):
-    """Подпись, отпечаток или сверка с релизом не сошлись.
+    """Документ аттестации не прошёл проверку двери (`_verified`) или сбой
+    сертификата по правилу SDK (`_certificate_error`).
 
-    До отправки (конструктор, документ) — ни байта не ушло. На отправке (TLS
-    не сошёлся при `create`) — `sent=True`: тело могло уйти после рукопожатия.
+    Документ проверяется до отправки — ни байта не ушло. Сбой сертификата SDK
+    ловит при установке соединения, до байтов запроса; `sent` у исключения
+    честно говорит, начинался ли переход к отправке.
     """
 
 
 class ProviderUnavailable(NightCloudError):
-    """Нет пакета, ключа, сети; HTTP-отказ или обрыв потока."""
+    """Всё, что не аттестация: нет пакета, ключа, сети; отказ конструктора SDK
+    без сбоя сертификата; HTTP-отказ или обрыв потока."""
 
 
 class ReplyRejected(NightCloudError):
@@ -119,6 +123,15 @@ def _scrub(text: str, secret: str) -> str:
     """Текст ошибки без ключа: SDK и openai вправе процитировать заголовок."""
     text = str(text)
     return text.replace(secret, "<ключ>") if secret else text
+
+
+def _cause(text, secret: str = "") -> str:
+    """Причина для файла состояния — одна точка сборки (решение главной по out4).
+
+    Её читает утренний бриф, а бриф пишется в граф: без ключа, без путей машины
+    (`privacy.scrub_local_paths`), не длиннее 300 знаков.
+    """
+    return privacy.scrub_local_paths(_scrub(text, secret))[0][:300]
 
 
 def _reason(e: BaseException, secret: str) -> str:
@@ -170,58 +183,38 @@ def _close_quietly(stream) -> None:
             pass
 
 
-def _chain(e: BaseException) -> list[BaseException]:
+def _causes(e: BaseException) -> list[BaseException]:
+    """Само исключение и его явные причины `raise … from …`. Неявный
+    `__context__` не идёт: исключение, брошенное в обработчике чужой ошибки,
+    своей причиной её не делает (out4 S-I1, H-I1; решение главной)."""
     out: list[BaseException] = []
     while e is not None and e not in out and len(out) < 16:
         out.append(e)
-        # `raise … from None` прячет __context__: подавленная причина класс не решает (out2 DS-M2)
-        e = e.__cause__ if e.__suppress_context__ else (e.__cause__ or e.__context__)
+        e = e.__cause__
     return out
 
 
 def _certificate_error(x: BaseException) -> bool:
     """Сбой проверки сертификата — правило самого SDK (`tinfoil.client._is_certificate_error`,
-    0.15.0): несовпадение закреплённого ключа, SSLCertVerificationError, SSLError
-    с «certificate verify failed». Такие случаются при установке соединения, до
-    байтов запроса; прочие SSLError — ввод-вывод посреди обмена (out3 S-I1, DS-I2).
-    Любое исключение модуля tinfoil.* — тоже: происхождение решает раньше стадии
-    (out3 H-C1)."""
-    if type(x).__module__.split(".")[0] == "tinfoil":
+    0.15.0): несовпадение закреплённого ключа (`_PinMismatchError`),
+    SSLCertVerificationError, SSLError с «certificate verify failed». По
+    докстроке SDK такие случаются при установке соединения, до байтов запроса."""
+    # класс SDK по имени и модулю: верхний уровень двери SDK не импортирует (in3 K6)
+    if type(x).__name__ == "_PinMismatchError" and type(x).__module__.split(".")[0] == "tinfoil":
         return True
-    name = type(x).__name__
-    if isinstance(x, ssl.SSLCertVerificationError) or name == "SSLCertVerificationError":
+    if isinstance(x, ssl.SSLCertVerificationError):
         return True
-    if isinstance(x, ssl.SSLError) or name == "SSLError":
+    if isinstance(x, ssl.SSLError):
         return any(m in str(x).lower() for m in _CERTIFICATE_VERIFY_MARKERS)
     return False
 
 
-def _classify(e: BaseException, stage: str) -> type[NightCloudError]:
-    """Одна таблица «исключение → класс исхода» (out1 S-I3, H-I2).
-
-    Стадии `_exchange`: attest (конструктор), connect (`create` — рукопожатие и
-    отправка), stream (ответ уже идёт). Сверху вниз, первое совпадение по
-    цепочке причин:
-    - сбой проверки сертификата (`_certificate_error`) — аттестация на любой стадии;
-    - attest: любой TLS-сбой — аттестация (до отправки, сигнал громкий);
-    - stream — недоступен: запрос ушёл и принят, обрыв посреди ответа —
-      транспорт, а не подмена (out2 C2);
-    - нет пакета внутри SDK, битый JSON, сеть (OSError, прочие SSLError) — недоступен;
-    - attest: ValueError «Failed to fetch router» — сеть, прочее — аттестация;
-    - connect: прочее (HTTP-отказ, обрыв) — недоступен.
-    """
-    chain = _chain(e)
-    if any(_certificate_error(x) for x in chain):
-        return AttestationFailed
-    if stage == "attest" and any(isinstance(x, ssl.SSLError) or type(x).__name__ == "SSLError" for x in chain):
-        return AttestationFailed
-    if stage == "stream":
-        return ProviderUnavailable
-    if isinstance(e, (ImportError, json.JSONDecodeError, OSError)):
-        return ProviderUnavailable
-    if stage == "attest":
-        if isinstance(e, ValueError) and str(e).startswith(_ROUTER_LIST_FAILED):
-            return ProviderUnavailable
+def _classify(e: BaseException) -> type[NightCloudError]:
+    """Два класса, без своих эвристик по стадиям (решение главной по out4):
+    сбой сертификата по правилу SDK в самом исключении или его явных причинах —
+    аттестация; всё прочее — недоступен. Отказ документа аттестации решает не
+    эта таблица, а `_verified`."""
+    if any(_certificate_error(x) for x in _causes(e)):
         return AttestationFailed
     return ProviderUnavailable
 
@@ -300,11 +293,6 @@ def _update_state(path: pathlib.Path, graph_key: str, change: Callable[[dict], N
         entry = data.get(graph_key)
         entry = entry if isinstance(entry, dict) else {}
         change(entry)
-        attempt = entry.get("last_attempt")
-        if isinstance(attempt, dict) and isinstance(attempt.get("reason"), str):
-            # причину читает утренний бриф, а бриф пишется в граф: путь с именем
-            # учётки туда не уходит (out1 DS-I3) — чистит единственный писатель
-            attempt["reason"] = privacy.scrub_local_paths(attempt["reason"])[0]
         data[graph_key] = entry
         tmp = path.with_name(path.name + ".tmp")
         try:
@@ -366,7 +354,7 @@ def reject(state_path: pathlib.Path, graph_key: str, reason: str) -> None:
     def change(entry: dict) -> None:
         attempt = entry.get("last_attempt")
         if isinstance(attempt, dict):
-            attempt.update(outcome="rejected", reason=reason[:300], accepted=False)
+            attempt.update(outcome="rejected", reason=_cause(reason), accepted=False)
 
     _quietly("отказ в ответе", lambda: _update_state(state_path, graph_key, change))
 
@@ -388,12 +376,11 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
     except (NightCloudError, privacy.PrivacyRefused):
         raise
     except Exception as e:  # noqa: BLE001 — класс решает таблица
-        raise _classify(e, "attest")("аттестация: " + _reason(e, key)) from None
+        raise _classify(e)("аттестация: " + _reason(e, key)) from None
     line, fingerprint, release = _verified(client)
     box["attested"] = (fingerprint, release)
     chunks: list[str] = []
     finish = None
-    stage = "connect"
     try:
         # max_retries=0: повтор после отправки — вторая копия текста; таймаут —
         # между байтами, общий срок держит _under_deadline снаружи
@@ -408,7 +395,6 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
         stream = api.chat.completions.create(
             model=model, messages=[{"role": "user", "content": prompt}], stream=True,
             max_tokens=MAX_TOKENS, reasoning_effort=effort)
-        stage = "stream"
         try:
             with box["lock"]:
                 # сторож закрывает поток, который видит; не увидел — закрываем здесь
@@ -431,19 +417,8 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
     except NightCloudError:
         raise
     except Exception as e:  # noqa: BLE001 — openai/httpx без импорта: класс решает таблица
-        raise _classify(e, stage)("поток: " + _reason(e, key)) from None
+        raise _classify(e)("поток: " + _reason(e, key)) from None
     return "".join(chunks).strip(), finish, line
-
-
-def _record(attempt: dict) -> Callable[[dict], None]:
-    """Запись исхода попытки. Провал аттестации пишется ещё и отдельно: следующая
-    ночь без сети перезапишет `last_attempt`, а тревога о подмене должна дожить
-    до брифа, как и смена отпечатка (out3 DS-I1)."""
-    def change(entry: dict) -> None:
-        entry["last_attempt"] = attempt
-        if attempt.get("outcome") == "attestation":
-            entry["attestation_failure"] = {k: attempt.get(k) for k in ("at", "reason", "sent")}
-    return change
 
 
 #: Класс исхода → запись в состоянии; сверху вниз, первое совпадение.
@@ -464,7 +439,7 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
     now = _now()
     attempt = {"at": now, "date": now[:10], "provider": "tinfoil", "model": "",
                "outcome": "unavailable", "reason": "", "fingerprint": "", "release": "",
-               "sent": False, "accepted": False}
+               "accepted": False}
     key = ""
     box: dict = {"lock": threading.Lock()}
     try:
@@ -500,17 +475,17 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
     except NightCloudError as e:
         e.sent = bool(box.get("sent"))
         outcome = next((o for cls, o in _OUTCOMES if isinstance(e, cls)), "unavailable")
-        attempt.update(outcome=outcome, reason=_scrub(e, key)[:300])
+        attempt.update(outcome=outcome, reason=_cause(e, key))
         raise
     except privacy.PrivacyRefused as e:
-        attempt.update(outcome="refused", reason=str(e)[:300])
+        attempt.update(outcome="refused", reason=_cause(e))
         raise
     except Exception as e:  # noqa: BLE001 — непредвиденное: исход записан, наружу классом двери
-        attempt.update(outcome="unavailable", reason=_reason(e, key))
+        attempt.update(outcome="unavailable", reason=_cause(_reason(e, key)))
         err = ProviderUnavailable(_reason(e, key))
         err.sent = bool(box.get("sent"))
         raise err from None
     finally:
         # исход пишется всегда (in3 S-I4), но сбой записи не подменяет исход попытки
-        attempt["sent"] = bool(box.get("sent"))
-        _quietly("исход попытки", lambda: _update_state(state_path, graph_key, _record(attempt)))
+        _quietly("исход попытки",
+                 lambda: _update_state(state_path, graph_key, lambda entry: entry.update(last_attempt=attempt)))
