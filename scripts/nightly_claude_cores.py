@@ -247,7 +247,8 @@ def _ask_tinfoil(cfg: dict, prompt: str, graph: pathlib.Path) -> night_cloud.Rep
         print(f"время ночного прогона вышло — ревизия ядер завтра ({e})")
         sys.exit(0)
     except night_cloud.AttestationFailed as e:
-        print(f"аттестация провайдера не прошла — ничего не отправлено: {e}")
+        sent = "запрос мог уйти" if e.sent else "ничего не отправлено"
+        print(f"аттестация провайдера не прошла — {sent}: {e}")
         sys.exit(EXIT_ATTESTATION_FAILED)
     except night_cloud.ProviderUnavailable as e:
         print(f"провайдер ночи недоступен: {e}")

@@ -248,6 +248,14 @@ def test_night_provider_typo_is_a_refusal_not_a_default(value):
         privacy.night_provider({"sufler": {"cloud_night_provider": value}})
 
 
+def test_night_provider_refusal_quotes_the_value_briefly():
+    """Значение в сообщении — repr и не длиннее 40 знаков: длинный мусор из
+    конфига не разворачивается в журнал ночи (out1 H-M1)."""
+    with pytest.raises(privacy.PrivacyRefused) as ei:
+        privacy.night_provider({"sufler": {"cloud_night_provider": "t" * 100}})
+    assert "'" + "t" * 39 in str(ei.value) and "t" * 41 not in str(ei.value)
+
+
 def test_night_provider_is_not_a_toggle():
     """Провайдер — не разрешение: в KEYS его нет, отправку решает cloud_enrich."""
     assert "cloud_night_provider" not in privacy.KEYS

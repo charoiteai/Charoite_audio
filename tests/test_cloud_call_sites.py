@@ -684,14 +684,37 @@ def test_no_other_place_calls_the_sdk():
     assert known <= found, "зарегистрированный выход SDK не зовёт SDK: " + ", ".join(sorted(known - found))
 
 
-def test_door_transport_is_for_tests_only():
-    """`transport` подменяет аттестующий конструктор — в коде продукта его не
-    передаёт никто (out1 S-M1, DS-M3): иначе фабрика без аттестации — обход."""
+def _renamed_sdk_imports(tree: ast.AST) -> list[str]:
+    """`from tinfoil import TinfoilAI as T` и `import *`: вызов `T(...)` уже не
+    узнать по имени, и реестр выходов SDK его не видит (out2 S-M2, H-M2)."""
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and not node.level \
+                and node.module.split(".")[0] in SDK_PACKAGES:
+            out += [f"{node.module}.{a.name} as {a.asname or '*'}" for a in node.names
+                    if a.asname or a.name == "*"]
+    return out
+
+
+def test_sdk_names_are_never_renamed_on_import():
     bad = []
     for path in _py_files():
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("night_cloud.send") \
-                    and any(k.arg in ("transport", None) for k in n.keywords):
-                bad.append(f"{path.relative_to(REPO)}:{n.lineno}")
-    assert not bad, "night_cloud.send с transport или **kwargs вне тестов: " + ", ".join(bad)
+        bad += [f"{path.relative_to(REPO)}: {r}" for r in _renamed_sdk_imports(tree)]
+    assert not bad, "имя SDK переименовано при импорте: " + "; ".join(bad)
+
+
+def test_rename_detector_sees_alias_and_star():
+    tree = ast.parse("from tinfoil import TinfoilAI as T\nfrom openai import *\n"
+                     "from tinfoil import TinfoilAI\nimport httpx as h\n")
+    assert _renamed_sdk_imports(tree) == ["tinfoil.TinfoilAI as T", "openai.* as *"]
+
+
+def test_door_has_no_substitute_transport():
+    """Фабрику клиента у двери не подменить аргументом: параметра нет, тесты
+    подменяют `_attest` в модуле (out2 S-M2) — в коде продукта нечего сторожить."""
+    tree = ast.parse((REPO / SDK_DOOR).read_text(encoding="utf-8"))
+    (send,) = [f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name == "send"]
+    params = [a.arg for a in send.args.args + send.args.kwonlyargs]
+    assert params == ["cfg", "prompt", "deadline", "state_path", "graph_key"]
+    assert send.args.vararg is None and send.args.kwarg is None

@@ -83,6 +83,12 @@ _NIGHT_OUTCOMES = {
     "refused": "провайдер не принят политикой",
     "delivered": "ответ получен, но отчёт не подтверждён",
 }
+#: Те же исходы, когда отправка уже началась (`sent` в состоянии двери): фраза
+#: «ничего не отправлено» тогда ложь (out2 C1, C2).
+_NIGHT_OUTCOMES_SENT = {
+    "attestation": "TLS провайдера НЕ сошёлся при отправке — запрос мог уйти",
+    "deadline": "ночь кончилась после отправки запроса — ответа нет",
+}
 
 
 def _age_h(stamp, now: dt.datetime) -> float | None:
@@ -118,14 +124,17 @@ def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
     out = []
     attempt = entry.get("last_attempt") if isinstance(entry.get("last_attempt"), dict) else {}
     age = _age_h(attempt.get("at"), now)
-    if age is not None and 0 <= age <= max_age_h and not attempt.get("accepted"):
-        what = _NIGHT_OUTCOMES.get(attempt.get("outcome"), f"исход {attempt.get('outcome')!r}")
+    # давность меньше нуля — часы ушли назад, а не «старая попытка»: показываем (out2 DS-M5)
+    if age is not None and age <= max_age_h and not attempt.get("accepted"):
+        outcome = attempt.get("outcome")
+        what = (attempt.get("sent") is True and _NIGHT_OUTCOMES_SENT.get(outcome)) \
+            or _NIGHT_OUTCOMES.get(outcome, f"исход {outcome!r}")
         reason = " ".join(str(attempt.get("reason") or "").split())[:200]
         out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) не отработала: "
                    f"{what}" + (f" ({reason})" if reason else ""))
     change = entry.get("fingerprint_change") if isinstance(entry.get("fingerprint_change"), dict) else {}
     age = _age_h(change.get("at"), now)
-    if age is not None and 0 <= age <= change_age_h:
+    if age is not None and age <= change_age_h:
         out.append(f"- отпечаток роутера Tinfoil сменился: релиз {change.get('from_release') or '?'} "
                    f"({change.get('from') or '?'}) → {change.get('to_release') or '?'} "
                    f"({change.get('to') or '?'})")

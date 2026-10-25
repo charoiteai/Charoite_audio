@@ -19,7 +19,9 @@
 - весь обмен с провайдером (аттестация, документ, поток) — одна функция
   `_exchange` в одном потоке под одним сроком `Deadline`; истёкший срок — не
   провал аттестации, а «ночь кончилась» (свой класс);
-- класс исхода по исключению решает одна таблица `_classify`;
+- переход к отправке — одно место под замком вместе с проверкой срока:
+  сторож срока знает, ушёл ли запрос, и это пишется в исход (`sent`);
+- класс исхода по исключению и стадии обмена решает одна таблица `_classify`;
 - исход каждой попытки — в файл состояния по графу; утренний бриф берёт
   сигнал аттестации только оттуда, не из текста модели.
 """
@@ -32,6 +34,7 @@ import os
 import pathlib
 import re
 import ssl
+import threading
 import time
 from typing import Callable
 
@@ -58,11 +61,19 @@ _ROUTER_LIST_FAILED = "Failed to fetch router"
 
 
 class NightCloudError(Exception):
-    """Исход двери, отличный от принятого ответа. Причина — без ключа."""
+    """Исход двери, отличный от принятого ответа. Причина — без ключа.
+
+    `sent` — начата ли отправка запроса до исхода; ставит `send` (out2 C1, C2).
+    """
+    sent: bool = False
 
 
 class AttestationFailed(NightCloudError):
-    """Подпись, отпечаток или сверка с релизом не сошлись: ни байта не ушло."""
+    """Подпись, отпечаток или сверка с релизом не сошлись.
+
+    До отправки (конструктор, документ) — ни байта не ушло. На отправке (TLS
+    не сошёлся при `create`) — `sent=True`: тело могло уйти после рукопожатия.
+    """
 
 
 class ProviderUnavailable(NightCloudError):
@@ -119,8 +130,9 @@ def _under_deadline(fn: Callable, args: tuple, deadline: Deadline, box: dict):
     Поток — daemon: брошенный по сроку не держит выход процесса. Результат
     брошенного потока не читается никогда, исключение потока — в контейнер,
     наружу его поднимает вызывающий поток. `box` общий с `fn`: по сроку здесь
-    ставится `cancel` и закрывается открытый поток ответа — молчащий сервер
-    (только keepalive) не держит шаг дольше срока.
+    под `box["lock"]` ставится `cancel` и читается `sent` — после этого рабочий
+    поток отправку не начнёт, а сторож знает, начал ли (out2 C1); открытый
+    поток ответа закрывается — молчащий сервер не держит шаг дольше срока.
     """
     def run():
         try:
@@ -133,9 +145,12 @@ def _under_deadline(fn: Callable, args: tuple, deadline: Deadline, box: dict):
                                     "ночной шаг выходит, не дожидаясь сети")
     worker.join(deadline.remaining())
     if worker.is_alive():
-        box["cancel"] = True
-        _close_quietly(box.get("stream"))
-        where = "посреди ответа" if "attested" in box else "во время аттестации"
+        with box["lock"]:
+            box["cancel"] = True
+            sent, stream = box.get("sent", False), box.get("stream")
+        _close_quietly(stream)
+        where = ("после отправки запроса" if sent else
+                 "до отправки, после аттестации" if "attested" in box else "во время аттестации")
         raise DeadlineExpired(f"срок шага вышел {where}")
     if "error" in box:
         raise box["error"]
@@ -156,21 +171,27 @@ def _chain(e: BaseException) -> list[BaseException]:
     out: list[BaseException] = []
     while e is not None and e not in out and len(out) < 16:
         out.append(e)
-        e = e.__cause__ or e.__context__
+        # `raise … from None` прячет __context__: подавленная причина класс не решает (out2 DS-M2)
+        e = e.__cause__ if e.__suppress_context__ else (e.__cause__ or e.__context__)
     return out
 
 
 def _classify(e: BaseException, stage: str) -> type[NightCloudError]:
     """Одна таблица «исключение → класс исхода» (out1 S-I3, H-I2).
 
-    Сверху вниз, первое совпадение по цепочке причин:
+    Стадии `_exchange`: attest (конструктор), connect (`create` — рукопожатие и
+    отправка), stream (ответ уже идёт). Сверху вниз, первое совпадение:
+    - стадия stream — недоступен всегда: запрос ушёл и принят, TLS-обрыв
+      посреди ответа — транспорт, а не подмена (out2 C2);
     - TLS не сошёлся (ssl.SSLError, SSLError requests) или ошибка самого SDK
       Tinfoil (модуль tinfoil.*, в т.ч. несовпадение закреплённого ключа в
       чате) — аттестация: проверить провайдера нельзя, сигнал громкий;
     - нет пакета внутри SDK, битый JSON, сеть (OSError) — недоступен;
     - аттестация: ValueError «Failed to fetch router» — сеть, прочее — аттестация;
-    - чат: прочее (HTTP-отказ, обрыв) — недоступен.
+    - connect: прочее (HTTP-отказ, обрыв) — недоступен.
     """
+    if stage == "stream":
+        return ProviderUnavailable
     chain = _chain(e)
     for x in chain:
         if isinstance(x, ssl.SSLError) or type(x).__name__ in ("SSLError", "SSLCertVerificationError"):
@@ -283,10 +304,14 @@ def _now() -> str:
 
 
 def _quietly(what: str, fn: Callable[[], None]) -> None:
-    """Сбой записи состояния не подменяет исход ревизии (out1 S-M3)."""
+    """Сбой записи состояния не подменяет исход ревизии (out1 S-M3, out2 DS-M1).
+
+    Любой, не только OSError: вызов стоит в `finally` и подменил бы уже
+    решённый класс исхода необработанным исключением.
+    """
     try:
         fn()
-    except OSError as e:
+    except Exception as e:  # noqa: BLE001 — журнал исхода не решает исход
         print(f"night_cloud: {what} не записан: {type(e).__name__}", flush=True)
 
 
@@ -334,7 +359,8 @@ def _exchange(cfg: dict, key: str, build: Callable, prompt: str, model: str, eff
     Гейт — первым оператором: функция и есть выход SDK в реестре сторожа.
     Возвращает (текст, finish_reason, строка аттестации); отпечаток и релиз —
     в `box["attested"]` сразу после проверки документа, чтобы исход попытки
-    знал их и при сбое потока.
+    знал их и при сбое потока. `box["sent"]` ставится под замком в одном месте —
+    перед `create`, вместе с последней проверкой срока и отмены.
     """
     if not privacy.cloud_enrich_enabled(cfg):
         raise privacy.PrivacyRefused("облако выключено: sufler.cloud_enrich")
@@ -346,24 +372,34 @@ def _exchange(cfg: dict, key: str, build: Callable, prompt: str, model: str, eff
         raise _classify(e, "attest")("аттестация: " + _reason(e, key)) from None
     line, fingerprint, release = _verified(client)
     box["attested"] = (fingerprint, release)
-    left = deadline.remaining()
-    if left <= 0 or box.get("cancel"):
-        raise DeadlineExpired("срок шага вышел до отправки")
     chunks: list[str] = []
     finish = None
+    stage = "connect"
     try:
         # max_retries=0: повтор после отправки — вторая копия текста; таймаут —
         # между байтами, общий срок держит _under_deadline снаружи
-        api = client.client.with_options(timeout=max(0.001, min(left, READ_TIMEOUT_S)),
-                                         max_retries=0)
+        api = client.client.with_options(
+            timeout=max(0.001, min(deadline.remaining(), READ_TIMEOUT_S)), max_retries=0)
+        with box["lock"]:
+            # единственный переход к отправке: сторож, поставивший cancel под тем
+            # же замком, либо видит sent, либо знает, что create не начнётся (out2 C1)
+            if box.get("cancel") or deadline.remaining() <= 0:
+                raise DeadlineExpired("срок шага вышел до отправки")
+            box["sent"] = True
         stream = api.chat.completions.create(
             model=model, messages=[{"role": "user", "content": prompt}], stream=True,
             max_tokens=MAX_TOKENS, reasoning_effort=effort)
-        box["stream"] = stream
+        stage = "stream"
         try:
+            with box["lock"]:
+                # сторож закрывает поток, который видит; не увидел — закрываем здесь
+                box["stream"] = stream
+                cancelled = box.get("cancel")
+            if cancelled:
+                raise DeadlineExpired("срок шага вышел после отправки запроса")
             for chunk in stream:
                 if box.get("cancel") or deadline.remaining() <= 0:
-                    raise DeadlineExpired("срок шага вышел посреди ответа")
+                    raise DeadlineExpired("срок шага вышел после отправки запроса")
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -376,32 +412,39 @@ def _exchange(cfg: dict, key: str, build: Callable, prompt: str, model: str, eff
     except NightCloudError:
         raise
     except Exception as e:  # noqa: BLE001 — openai/httpx без импорта: класс решает таблица
-        raise _classify(e, "chat")("поток: " + _reason(e, key)) from None
+        raise _classify(e, stage)("поток: " + _reason(e, key)) from None
     return "".join(chunks).strip(), finish, line
 
 
+#: Класс исхода → запись в состоянии; сверху вниз, первое совпадение.
+_OUTCOMES = ((AttestationFailed, "attestation"), (DeadlineExpired, "deadline"),
+             (ReplyRejected, "rejected"), (ProviderUnavailable, "unavailable"))
+
+
 def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path,
-         graph_key: str, transport: Callable | None = None) -> Reply:
+         graph_key: str) -> Reply:
     """Отправить промпт ночной ревизии провайдеру Tinfoil и вернуть ответ.
 
-    `transport` — только для тестов: фабрика `(cfg, key) -> клиент` вместо
-    аттестующего конструктора; документ аттестации проверяется и у неё.
-    Исключения — классы двери и PrivacyRefused.
+    Фабрика клиента — всегда аттестующий `_attest` (тесты подменяют его в
+    модуле): параметра «свой транспорт» у двери нет — в коде продукта нечего
+    сторожить (out2 S-M2). Исключения — классы двери и PrivacyRefused; у класса
+    двери `sent` — начиналась ли отправка. Исход пишется всегда, и отказ гейта
+    тоже (out2 H-I1).
     """
-    if not privacy.cloud_enrich_enabled(cfg):
-        raise privacy.PrivacyRefused("облако выключено: sufler.cloud_enrich")
-    if privacy.night_provider(cfg) != "tinfoil":
-        raise privacy.PrivacyRefused("ночной провайдер не tinfoil — дверь Tinfoil не отправляет")
-    model = cloud.model(cfg, "cloud_night_tinfoil_model")
-    effort = cloud.tinfoil_effort(cfg)
-    key_path = cloud.tinfoil_key_path(cfg)
     now = _now()
-    attempt = {"at": now, "date": now[:10], "provider": "tinfoil", "model": model,
+    attempt = {"at": now, "date": now[:10], "provider": "tinfoil", "model": "",
                "outcome": "unavailable", "reason": "", "fingerprint": "", "release": "",
-               "accepted": False}
+               "sent": False, "accepted": False}
     key = ""
-    box: dict = {}
+    box: dict = {"lock": threading.Lock()}
     try:
+        if not privacy.cloud_enrich_enabled(cfg):
+            raise privacy.PrivacyRefused("облако выключено: sufler.cloud_enrich")
+        if privacy.night_provider(cfg) != "tinfoil":
+            raise privacy.PrivacyRefused("ночной провайдер не tinfoil — дверь Tinfoil не отправляет")
+        model = cloud.model(cfg, "cloud_night_tinfoil_model")
+        attempt["model"] = model
+        key_path = cloud.tinfoil_key_path(cfg)
         key = cloud.read_secret(key_path)
         if not key:
             raise ProviderUnavailable(f"нет ключа Tinfoil: {key_path}")
@@ -409,7 +452,7 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
             raise DeadlineExpired("срок шага вышел до аттестации")
         try:
             text, finish, line = _under_deadline(
-                _exchange, (cfg, key, transport or _attest, prompt, model, effort, deadline),
+                _exchange, (cfg, key, _attest, prompt, model, cloud.tinfoil_effort(cfg), deadline),
                 deadline, box)
         finally:
             fingerprint, release = box.get("attested", ("", ""))
@@ -424,25 +467,21 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
         attempt.update(outcome="delivered", reason="")
         return Reply(text=text, provider="tinfoil", model=model, attestation=line,
                      fingerprint=fingerprint, release=release)
-    except AttestationFailed as e:
-        attempt.update(outcome="attestation", reason=_scrub(e, key)[:300])
-        raise
-    except DeadlineExpired as e:
-        attempt.update(outcome="deadline", reason=str(e))
-        raise
-    except ReplyRejected as e:
-        attempt.update(outcome="rejected", reason=_scrub(e, key)[:300])
-        raise
-    except ProviderUnavailable as e:
-        attempt.update(outcome="unavailable", reason=_scrub(e, key)[:300])
+    except NightCloudError as e:
+        e.sent = bool(box.get("sent"))
+        outcome = next((o for cls, o in _OUTCOMES if isinstance(e, cls)), "unavailable")
+        attempt.update(outcome=outcome, reason=_scrub(e, key)[:300])
         raise
     except privacy.PrivacyRefused as e:
         attempt.update(outcome="refused", reason=str(e)[:300])
         raise
     except Exception as e:  # noqa: BLE001 — непредвиденное: исход записан, наружу классом двери
         attempt.update(outcome="unavailable", reason=_reason(e, key))
-        raise ProviderUnavailable(_reason(e, key)) from None
+        err = ProviderUnavailable(_reason(e, key))
+        err.sent = bool(box.get("sent"))
+        raise err from None
     finally:
         # исход пишется всегда (in3 S-I4), но сбой записи не подменяет исход попытки
+        attempt["sent"] = bool(box.get("sent"))
         _quietly("исход попытки",
                  lambda: _update_state(state_path, graph_key, lambda entry: entry.update(last_attempt=attempt)))
