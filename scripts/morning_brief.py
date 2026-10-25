@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
+import night_cloud  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 from charoite_paths import harden_umask, log_path, resolve_root  # noqa: E402
@@ -114,26 +115,23 @@ def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
     и бриф наутро видят ту же попытку (out1 S-I5, DS-I4). Смена отпечатка живёт
     `change_age_h` — пропущенный бриф одного утра её не теряет (out1 H-M2).
     """
-    path = resolve_root(__file__) / "logs" / "night_cloud_state.json"
-    try:
-        entry = json.loads(path.read_text(encoding="utf-8"))[str(graph.expanduser().resolve())]
-    except (OSError, ValueError, KeyError, TypeError):
-        return []
-    if not isinstance(entry, dict):
-        return []
+    # запись уже в форме двери: свободного текста в ней нет (решение главной по out5)
+    entry = night_cloud.read_entry(resolve_root(__file__) / "logs" / "night_cloud_state.json",
+                                   str(graph.expanduser().resolve()))
     now = now or dt.datetime.now().astimezone()
     out = []
-    attempt = entry.get("last_attempt") if isinstance(entry.get("last_attempt"), dict) else {}
+    attempt = entry.get("last_attempt", {})
     age = _age_h(attempt.get("at"), now)
     # давность меньше нуля — часы ушли назад, а не «старая попытка»: показываем (out2 DS-M5)
     if _fresh(age, max_age_h) and not attempt.get("accepted"):
-        outcome = attempt.get("outcome")
-        # ушёл ли запрос, бриф не утверждает: факт — в строке ночного шага (решение по out4)
-        what = _NIGHT_OUTCOMES.get(outcome, f"исход {outcome!r}")
-        reason = " ".join(str(attempt.get("reason") or "").split())[:200]
+        # ушёл ли запрос и почему, бриф не говорит: факт и текст — в строке ночного шага
+        what = _NIGHT_OUTCOMES.get(attempt.get("outcome"), "исход не записан")
+        detail = [f"HTTP {attempt['http_status']}"] if attempt.get("http_status") else []
+        if attempt.get("finish_reason") not in (None, "stop"):
+            detail.append(f"finish_reason={attempt['finish_reason']}")
         out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) не отработала: "
-                   f"{what}" + (f" ({reason})" if reason else ""))
-    change = entry.get("fingerprint_change") if isinstance(entry.get("fingerprint_change"), dict) else {}
+                   f"{what}" + (f" ({', '.join(detail)})" if detail else ""))
+    change = entry.get("fingerprint_change", {})
     age = _age_h(change.get("at"), now)
     if _fresh(age, change_age_h):
         out.append(f"- отпечаток роутера Tinfoil сменился: релиз {change.get('from_release') or '?'} "

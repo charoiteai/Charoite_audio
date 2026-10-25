@@ -15,6 +15,7 @@ import importlib.util
 import json
 import json as _json
 import pathlib
+import re
 import ssl
 import sys
 import threading
@@ -76,8 +77,10 @@ class FakeClient:
     """Клиент SDK: документ аттестации и `client.with_options(...).chat.completions.create`."""
 
     def __init__(self, stream=None, verified=True, steps_ok=True, create_error=None,
-                 create_wait: threading.Event | None = None, options_delay: float = 0.0):
-        self.create_wait, self.options_delay = create_wait, options_delay
+                 create_wait: threading.Event | None = None, options_delay: float = 0.0,
+                 options_wait: threading.Event | None = None, options_entered: threading.Event | None = None):
+        self.create_wait, self.options_delay, self.options_wait = create_wait, options_delay, options_wait
+        self.options_entered = options_entered
         self.stream = stream if stream is not None else FakeStream([_chunk(SECTIONS), _chunk(None, "stop")])
         self.options: list[dict] = []
         self.creates: list[dict] = []
@@ -107,6 +110,10 @@ class FakeClient:
             def with_options(**kw):
                 outer.options.append(kw)
                 time.sleep(outer.options_delay)
+                if outer.options_entered is not None:
+                    outer.options_entered.set()   # рабочий прошёл аттестацию и готовит запрос
+                if outer.options_wait is not None:
+                    outer.options_wait.wait(5)   # рабочий стоит, пока сторож не объявит срок
                 return Api
 
         self.client = Inner
@@ -169,9 +176,9 @@ def test_gate_or_provider_refusal_never_touches_the_transport(tmp_path, sufler):
     assert not factory.client.creates
     # отказ — тоже исход ночи: бриф видит его, а не прошлую попытку (out2 H-I1)
     attempt = _state(tmp_path)["last_attempt"]
-    assert attempt["outcome"] == "refused" and attempt["reason"]
-    # факт отправки — только в исключении и строке шага, в состоянии его нет (решение по out4)
-    assert "sent" not in attempt
+    assert attempt["outcome"] == "refused"
+    # факт отправки и текст причины — только в исключении и строке шага (решения по out4, out5)
+    assert "sent" not in attempt and "reason" not in attempt
 
 
 def test_absent_provider_is_anthropic_and_the_door_refuses(tmp_path):
@@ -202,34 +209,42 @@ def test_missing_key_is_unavailable_and_nothing_is_built(tmp_path):
     assert _state(tmp_path)["last_attempt"]["outcome"] == "unavailable"
 
 
-def test_state_reason_carries_no_home_path(tmp_path):
-    """Причину читает бриф, бриф пишется в граф: путь с именем учётки — нет (out1 DS-I3)."""
+def test_step_line_carries_no_home_path(tmp_path):
+    """Текст причины уходит только в строку шага — и там без пути с именем учётки (out1 DS-I3)."""
     home_key = pathlib.Path.home() / ".config" / "charoite" / "__нет_ключа_792__"
     cfg = _cfg(tmp_path, cloud_night_tinfoil_key_path=str(home_key))
-    with pytest.raises(night_cloud.ProviderUnavailable):
+    with pytest.raises(night_cloud.ProviderUnavailable) as ei:
         _send(tmp_path, cfg, Factory())
-    reason = _state(tmp_path)["last_attempt"]["reason"]
-    assert str(pathlib.Path.home()) not in reason and "~/.config/charoite/__нет_ключа_792__" in reason
+    assert str(pathlib.Path.home()) not in str(ei.value)
+    assert "~/.config/charoite/__нет_ключа_792__" in str(ei.value)
 
 
 _HOME_FILE = str(pathlib.Path.home() / "Library" / "__792__" / "cert.pem")
+_ACCOUNT = pathlib.Path.home().name
 
 
-def _no_home(tmp_path) -> str:
-    reason = _state(tmp_path)["last_attempt"]["reason"]
-    assert str(pathlib.Path.home()) not in reason and "__792__" in reason
-    return reason
+def _no_home(text: str) -> None:
+    assert str(pathlib.Path.home()) not in text and "__792__" in text
 
 
 @pytest.mark.parametrize("error", [
     ValueError(f"no such file: {_HOME_FILE}"),                       # недоступен
     ssl.SSLCertVerificationError(f"cafile {_HOME_FILE}"),            # аттестация
 ])
-def test_cause_from_the_provider_carries_no_home_path(tmp_path, error):
-    """Путь машины в тексте исключения SDK не доходит до брифа (out4 C1, решение главной п. 3)."""
-    with pytest.raises(night_cloud.NightCloudError):
+def test_provider_cause_carries_no_home_path(tmp_path, error):
+    with pytest.raises(night_cloud.NightCloudError) as ei:
         _send(tmp_path, _cfg(tmp_path), Factory(error=error))
-    _no_home(tmp_path)
+    _no_home(str(ei.value))
+
+
+@pytest.mark.parametrize("pad", [170, 180, 185, 190, 200, 260])
+def test_long_cause_keeps_no_fragment_of_the_account(tmp_path, pad):
+    """Обрезка раньше чистки оставляла «/Users/<обрывок имени>» (out5 C): чистка — на
+    целом тексте, обрезки нет."""
+    error = ValueError("x" * pad + " " + _HOME_FILE)
+    with pytest.raises(night_cloud.ProviderUnavailable) as ei:
+        _send(tmp_path, _cfg(tmp_path), Factory(error=error))
+    assert _ACCOUNT[:4] not in str(ei.value).replace("x", "")
 
 
 def test_unexpected_error_cause_carries_no_home_path(tmp_path, monkeypatch):
@@ -237,9 +252,9 @@ def test_unexpected_error_cause_carries_no_home_path(tmp_path, monkeypatch):
         raise RuntimeError(f"bad config {_HOME_FILE}")
 
     monkeypatch.setattr(night_cloud.cloud, "model", broken)
-    with pytest.raises(night_cloud.ProviderUnavailable):
+    with pytest.raises(night_cloud.ProviderUnavailable) as ei:
         _send(tmp_path, _cfg(tmp_path), Factory())
-    _no_home(tmp_path)
+    _no_home(str(ei.value))
 
 
 def test_refusal_cause_carries_no_home_path(tmp_path, monkeypatch):
@@ -247,16 +262,115 @@ def test_refusal_cause_carries_no_home_path(tmp_path, monkeypatch):
         raise privacy.PrivacyRefused(f"политика из {_HOME_FILE}")
 
     monkeypatch.setattr(night_cloud.privacy, "night_provider", refuse)
-    with pytest.raises(privacy.PrivacyRefused):
+    with pytest.raises(privacy.PrivacyRefused) as ei:
         _send(tmp_path, _cfg(tmp_path), Factory())
-    _no_home(tmp_path)
+    _no_home(str(ei.value))
 
 
-def test_rejected_reply_cause_carries_no_home_path(tmp_path):
-    _send(tmp_path, _cfg(tmp_path), Factory())   # доставлено — вызывающий отклоняет
-    night_cloud.reject(tmp_path / "logs" / "night_cloud_state.json", "G", f"нет секций, см. {_HOME_FILE}")
-    assert _state(tmp_path)["last_attempt"]["outcome"] == "rejected"
-    _no_home(tmp_path)
+def test_failing_scrub_hides_the_cause_and_keeps_the_class(tmp_path, monkeypatch):
+    """Чистка путей упала (нет HOME) — причина скрыта, класс и исход те же (out5 DS-M3)."""
+    def no_home(*a, **k):
+        raise RuntimeError("Could not determine home directory")
+
+    monkeypatch.setattr(night_cloud.privacy, "scrub_local_paths", no_home)
+    with pytest.raises(night_cloud.ProviderUnavailable) as ei:
+        _send(tmp_path, _cfg(tmp_path), Factory(error=ValueError(f"x {_HOME_FILE}")))
+    assert "причина скрыта" in str(ei.value) and "__792__" not in str(ei.value)
+    assert _state(tmp_path)["last_attempt"]["outcome"] == "unavailable"
+
+
+# ── форма файла состояния: механизм на класс «строка в граф» (решение главной по out5) ──
+
+#: Лист файла состояния — только такая строка: без пробелов, слешей, кириллицы.
+_LEAF = re.compile(r"[A-Za-z0-9._:+-]{0,80}")
+
+
+def _leaves(node):
+    if isinstance(node, dict):
+        for v in node.values():
+            yield from _leaves(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _leaves(v)
+    else:
+        yield node
+
+
+def _assert_state_in_form(tmp_path) -> dict:
+    raw = (tmp_path / "logs" / "night_cloud_state.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    for entry in data.values():
+        assert set(entry) <= {"last_attempt", "last_accepted", "previous_accepted", "fingerprint_change"}
+        for leaf in _leaves(entry):
+            if isinstance(leaf, str):
+                assert _LEAF.fullmatch(leaf), f"строка вне формы: {leaf!r}"
+            else:
+                assert leaf is None or isinstance(leaf, (bool, int)), leaf
+        assert "reason" not in entry.get("last_attempt", {})
+    return data["G"]
+
+
+def _api_status(code, text):
+    return type("APIStatusError", (Exception,), {"status_code": code})(text)
+
+
+@pytest.mark.parametrize("cfg_extra,factory,outcome", [
+    ({"cloud_enrich": False}, lambda: Factory(), "refused"),
+    ({"cloud_night_tinfoil_key_path": _HOME_FILE}, lambda: Factory(), "unavailable"),
+    ({}, lambda: Factory(error=ValueError(f"SNP measurement mismatch {_HOME_FILE}")), "unavailable"),
+    ({}, lambda: Factory(error=ssl.SSLCertVerificationError(f"pin {_HOME_FILE}")), "attestation"),
+    ({}, lambda: Factory(client=FakeClient(verified=False)), "attestation"),
+    ({}, lambda: Factory(client=FakeClient(create_error=_api_status(503, f"busy {_HOME_FILE}"))), "unavailable"),
+    ({}, lambda: Factory(client=FakeClient(stream=FakeStream([_chunk("## Противоречия\n"),
+                                                              ConnectionResetError(_HOME_FILE)]))), "unavailable"),
+    ({}, lambda: Factory(client=FakeClient(stream=FakeStream([_chunk("a"), _chunk(None, "length")]))), "rejected"),
+    ({"cloud_night_tinfoil_model": f"model with spaces {_HOME_FILE}"}, lambda: Factory(), "delivered"),
+])
+def test_state_after_every_outcome_holds_no_string_outside_its_form(tmp_path, cfg_extra, factory, outcome):
+    """После любого исхода в файле только перечисления, коды, отпечатки и метки
+    времени — «нет строк вне формы», а не «нет пути» (решение главной по out5)."""
+    try:
+        _send(tmp_path, _cfg(tmp_path, **cfg_extra), factory())
+    except (night_cloud.NightCloudError, privacy.PrivacyRefused):
+        pass
+    entry = _assert_state_in_form(tmp_path)
+    assert entry["last_attempt"]["outcome"] == outcome
+
+
+def test_state_keeps_http_status_and_finish_reason(tmp_path):
+    with pytest.raises(night_cloud.ProviderUnavailable):
+        _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(create_error=_api_status(503, "busy"))))
+    assert _assert_state_in_form(tmp_path)["last_attempt"]["http_status"] == 503
+    stream = FakeStream([_chunk("a"), _chunk(None, "length")])
+    with pytest.raises(night_cloud.ReplyRejected):
+        _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(stream=stream)))
+    attempt = _assert_state_in_form(tmp_path)["last_attempt"]
+    assert attempt["finish_reason"] == "length" and attempt["http_status"] is None
+
+
+def test_accept_and_reject_keep_the_form(tmp_path):
+    _send(tmp_path, _cfg(tmp_path), Factory())
+    night_cloud.reject(tmp_path / "logs" / "night_cloud_state.json", "G")
+    assert _assert_state_in_form(tmp_path)["last_attempt"]["outcome"] == "rejected"
+    reply = _send(tmp_path, _cfg(tmp_path), Factory())
+    night_cloud.accept(tmp_path / "logs" / "night_cloud_state.json", "G", reply)
+    entry = _assert_state_in_form(tmp_path)
+    assert entry["last_attempt"]["outcome"] == "accepted" and entry["last_accepted"]["fingerprint"]
+
+
+def test_conform_drops_old_fields_and_values_out_of_form():
+    """Файл прежней версии (reason, sent, attestation_failure) и чужие значения
+    выпадают и у писателя, и у брифа — одна функция формы."""
+    entry = {"last_attempt": {"at": "2026-10-26T02:00:00+03:00", "outcome": "attestation",
+                              "reason": f"SNP {_HOME_FILE}", "sent": True, "provider": "x y",
+                              "release": "v1", "fingerprint": "AB" * 16, "http_status": True,
+                              "finish_reason": "stop because"},
+             "attestation_failure": {"at": "2026-10-26T02:00:00+03:00", "reason": _HOME_FILE},
+             "fingerprint_change": {"at": "вчера", "from": "ab" * 8}}
+    assert night_cloud.conform_entry(entry) == {
+        "last_attempt": {"at": "2026-10-26T02:00:00+03:00", "outcome": "attestation"},
+        "fingerprint_change": {"from": "ab" * 8}}
+    assert night_cloud.conform_entry(None) == {} and night_cloud.conform_entry({"last_attempt": "x"}) == {}
 
 
 def test_key_never_leaks_into_errors_state_or_stderr(tmp_path, capsys):
@@ -336,11 +450,23 @@ def _tinfoil_error(name="_PinMismatchError"):
     return type(name, (ValueError,), {"__module__": "tinfoil.client"})("pin")
 
 
+#: Классы отказа проверки SDK (`tinfoil/attestation/types.py`) — без импорта SDK.
+_SdkAttestationError = type("AttestationError", (Exception,), {"__module__": "tinfoil.attestation.types"})
+_SdkMeasurementMismatch = type("MeasurementMismatchError", (_SdkAttestationError,),
+                               {"__module__": "tinfoil.attestation.types"})
+
+
 @pytest.mark.parametrize("error,cls", [
     # сбой сертификата по правилу SDK — аттестация (out1 S-I3, H-I2)
     (ssl.SSLError("CERTIFICATE_VERIFY_FAILED"), night_cloud.AttestationFailed),
     (ssl.SSLCertVerificationError("self-signed"), night_cloud.AttestationFailed),
     (_tinfoil_error(), night_cloud.AttestationFailed),
+    # отказ проверки SDK: релиз не тот в режиме Sigstore (опыт wrong_repo, out5)
+    (_SdkMeasurementMismatch("measurement mismatch"), night_cloud.AttestationFailed),
+    (_SdkAttestationError("bad bundle"), night_cloud.AttestationFailed),
+    # тот же класс не из SDK — не аттестация: решает модуль, а не имя
+    (type("AttestationError", (Exception,), {"__module__": "otherlib.errors"})("x"),
+     night_cloud.ProviderUnavailable),
     # прочее — недоступен, и голый ValueError SDK о несовпадении замера тоже:
     # своих эвристик сверх правила SDK нет (решение главной по out4, п. 2);
     # отправки в обоих классах нет — конструктор не вернул клиента
@@ -358,6 +484,8 @@ def test_constructor_errors_are_classified(tmp_path, monkeypatch, error, cls):
     with pytest.raises(cls) as ei:
         _send(tmp_path, _cfg(tmp_path), None)
     assert type(ei.value) is cls and ei.value.sent is False
+    # слово «аттестация» — только у класса аттестации (out5 DS-M2)
+    assert str(ei.value).startswith("аттестация") is (cls is night_cloud.AttestationFailed)
 
 
 def test_attesting_constructor_asks_the_gate_itself(tmp_path, monkeypatch):
@@ -402,9 +530,9 @@ def test_errors_while_the_reply_streams(tmp_path, error, cls, outcome):
     assert _state(tmp_path)["last_attempt"]["outcome"] == outcome
 
 
-def test_only_explicit_causes_decide_the_class():
-    """Класс решают само исключение и явные `from`; `raise … from None` и неявный
-    `__context__` — нет (out2 DS-M2, out4 S-I1, H-I1; решение главной п. 2)."""
+def test_class_follows_the_sdk_cause_chain():
+    """Цепочка — как у SDK: `__cause__ or __context__`, и `from None` её не прячет
+    (`_is_certificate_error` 0.15.0; решение главной по out5)."""
     try:
         try:
             raise ssl.SSLCertVerificationError("старая ошибка сертификата")
@@ -412,15 +540,16 @@ def test_only_explicit_causes_decide_the_class():
             raise ValueError("HTTP 503") from None
     except ValueError as e:
         hidden = e
-    assert night_cloud._classify(hidden) is night_cloud.ProviderUnavailable
+    assert night_cloud._classify(hidden) is night_cloud.AttestationFailed
     try:
         try:
             raise ssl.SSLCertVerificationError("рукопожатие")
         except ssl.SSLError:
-            raise ValueError("ошибка в обработчике")   # неявный контекст — не причина
+            raise ValueError("ошибка в обработчике")   # неявный контекст — тоже цепочка SDK
     except ValueError as e:
         implicit = e
-    assert night_cloud._classify(implicit) is night_cloud.ProviderUnavailable
+    assert night_cloud._classify(implicit) is night_cloud.AttestationFailed
+    assert night_cloud._classify(ValueError("HTTP 503")) is night_cloud.ProviderUnavailable
     try:
         try:
             raise ssl.SSLCertVerificationError("рукопожатие")
@@ -477,31 +606,44 @@ def test_deadline_cuts_a_hanging_attestation_and_sends_nothing(tmp_path):
 def _split_clock(seconds: float, hold: threading.Event | None = None):
     """Срок, который истекает только у сторожа: в главном потоке часы настоящие,
     в рабочем стоят на старте — остановить отправку рабочего может только
-    отмена сторожа, не его собственная проверка срока. `hold` взведён — первый
-    же вызов часов рабочим ждёт его (до 2 с): рабочий застревает внутри
-    перехода к отправке, пока сторож объявляет срок."""
+    отмена сторожа, не его собственная проверка срока.
+
+    `hold` взведён — первый вызов часов рабочим после `armed` (он внутри
+    перехода к отправке) отмечает `inside` и ждёт `hold` до 2 с. Часы сторожа,
+    пока рабочий этого теста жив, ждут `inside`: срок объявляется, когда рабочий
+    уже внутри перехода, по событию, а не по запасу времени (out5 DS-I1). Без
+    `hold` событие `inside` ставит сам тест (например, из `with_options`)."""
     main, start = threading.get_ident(), time.monotonic()
-    armed = []
+    before = {t.ident for t in threading.enumerate()}
+    armed, inside = [], threading.Event()
 
     def clock():
         if threading.get_ident() == main:
+            if any(t.name == "night-cloud-exchange" and t.ident not in before
+                   for t in threading.enumerate()):
+                inside.wait(3)
             return time.monotonic()
         if hold is not None and armed and not armed.pop():
+            inside.set()
             hold.wait(2)
         return start
 
-    return night_cloud.Deadline(start + seconds, clock), armed
+    return night_cloud.Deadline(start + seconds, clock), armed, inside
 
 
 def test_deadline_between_attestation_and_create_sends_nothing(tmp_path):
     """Сторож объявил срок, пока рабочий готовил запрос: `create` после этого
     не начинается — его не пускает отмена под замком, а не своя проверка срока
     рабочего (out2 C1, out4 Important 5 — сторож поведением, не текстом)."""
-    client = FakeClient(options_delay=0.6)
-    deadline, _ = _split_clock(0.3)
-    with pytest.raises(night_cloud.DeadlineExpired, match="до отправки") as ei:
-        _send(tmp_path, _cfg(tmp_path), Factory(client=client), deadline=deadline)
-    time.sleep(0.8)   # рабочий дошёл до замка отправки и увидел отмену
+    release = threading.Event()
+    deadline, _, inside = _split_clock(0.3)
+    client = FakeClient(options_wait=release, options_entered=inside)
+    try:
+        with pytest.raises(night_cloud.DeadlineExpired, match="до отправки") as ei:
+            _send(tmp_path, _cfg(tmp_path), Factory(client=client), deadline=deadline)
+    finally:
+        release.set()   # срок объявлен — рабочий идёт к замку отправки
+    time.sleep(0.5)   # рабочий дошёл до замка отправки и увидел отмену
     assert not client.creates, "запрос ушёл после того, как сторож объявил срок"
     assert ei.value.sent is False
 
@@ -526,7 +668,7 @@ def test_send_flag_and_cancel_meet_under_one_lock(tmp_path):
             self.client = Hooked
 
     client = Client()
-    deadline, armed = _split_clock(0.3, hold)
+    deadline, armed, _ = _split_clock(0.3, hold)
     try:
         with pytest.raises(night_cloud.DeadlineExpired) as ei:
             _send(tmp_path, _cfg(tmp_path), Factory(client=client), deadline=deadline)
@@ -706,7 +848,7 @@ def test_accept_and_reject_survive_an_unwritable_state(tmp_path, capsys):
     blocker.write_text("x", encoding="utf-8")
     reply = night_cloud.Reply(text="t", provider="tinfoil", model="m", attestation="a")
     night_cloud.accept(blocker / "state.json", "G", reply)
-    night_cloud.reject(blocker / "state.json", "G", "нет секций")
+    night_cloud.reject(blocker / "state.json", "G")
     assert capsys.readouterr().out.count("не записан") == 2
 
 
@@ -812,8 +954,18 @@ def test_cores_step_says_whether_the_request_left(cores_step, monkeypatch, capsy
 
     monkeypatch.setattr(cores_step.ncc.night_cloud, "send", fail)
     assert _exit_code(cores_step.ncc.main) == code
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err   # причина и факт отправки — в stderr шага, лог ночи
     assert said in out and ("ничего не отправлено" in out) is (not sent)
+
+
+def test_cores_step_wrong_release_is_code_14_and_sends_nothing(cores_step, monkeypatch, capsys):
+    """Релиз роутера не тот (SDK: MeasurementMismatchError, режим Sigstore) —
+    код 14 «аттестация», ни одного `create` (опыт wrong_repo, out5)."""
+    factory = Factory(error=_SdkMeasurementMismatch("measurement mismatch"))
+    monkeypatch.setattr(cores_step.ncc.night_cloud, "_attest", factory)
+    assert _exit_code(cores_step.ncc.main) == EXIT_ATTESTATION_FAILED
+    assert factory.calls == 1 and not factory.client.creates
+    assert "ничего не отправлено" in capsys.readouterr().err
 
 
 def test_cores_step_provider_typo_is_a_policy_refusal_before_anything(cores_step, monkeypatch):
@@ -845,14 +997,15 @@ def test_cores_step_writes_report_with_attestation_in_frontmatter_and_accepts(co
     assert accepted and accepted[0][2] is reply
 
 
-def test_cores_step_rejects_reply_without_sections_and_records_it(cores_step, monkeypatch):
+def test_cores_step_rejects_reply_without_sections_and_records_it(cores_step, monkeypatch, capsys):
     reply = night_cloud.Reply(text="просто текст", provider="tinfoil", model="m", attestation="a")
     rejected = []
     monkeypatch.setattr(cores_step.ncc.night_cloud, "send", lambda *a, **k: reply)
     monkeypatch.setattr(cores_step.ncc.night_cloud, "accept", lambda *a: pytest.fail("принят без секций"))
     monkeypatch.setattr(cores_step.ncc.night_cloud, "reject", lambda *a: rejected.append(a))
     assert _exit_code(cores_step.ncc.main) == 2
-    assert rejected and "нет секций" in rejected[0][2]
+    assert rejected and len(rejected[0]) == 2, "в состояние — только исход, без текста"
+    assert "нет секций" in capsys.readouterr().out
 
 
 # ── досье при tinfoil ──
@@ -916,19 +1069,28 @@ def test_brief_reports_failed_attempt_and_changed_fingerprint_from_state(tmp_pat
     graph.mkdir()
     # попытка до полуночи, бриф наутро — та же ночь (out1 S-I5, DS-I4)
     _write_state(root, graph, {"last_attempt": {"at": _at(9), "provider": "tinfoil", "outcome": "attestation",
-                                                "reason": "SNP measurement mismatch", "accepted": False}})
+                                                "reason": f"SNP measurement mismatch {_HOME_FILE}",
+                                                "http_status": 403, "accepted": False}})
     (line,) = mb._night_cloud(graph, NOW)
-    assert "аттестация провайдера НЕ прошла" in line and "mismatch" in line
+    assert "аттестация провайдера НЕ прошла" in line and "HTTP 403" in line
+    assert "mismatch" not in line and "__792__" not in line, "текст причины в бриф не идёт (out5)"
+    # поле, которое бриф печатает, но не той формы, — выпадает и при чтении (одна форма на оба конца)
+    _write_state(root, graph, {"last_attempt": {"at": _at(9), "provider": f"tinfoil {_HOME_FILE}",
+                                                "outcome": "unavailable", "accepted": False},
+                               "fingerprint_change": {"at": _at(9), "from_release": _HOME_FILE,
+                                                      "to_release": "v0.0.167", "from": "cd" * 8, "to": "ab" * 8}})
+    lines = mb._night_cloud(graph, NOW)
+    assert len(lines) == 2 and not any("__792__" in x for x in lines), lines
     _write_state(root, graph, {"last_attempt": {"at": _at(9), "outcome": "delivered", "accepted": False}})
     (line,) = mb._night_cloud(graph, NOW)
     assert "не подтверждён" in line and "исход" not in line, "доставлено — не провал (out1 DS-M6)"
     _write_state(root, graph, {"last_attempt": {"at": _at(40), "outcome": "attestation", "accepted": False}})
     assert mb._night_cloud(graph, NOW) == [], "старше 36 ч — не сегодняшняя ночь"
-    change = {"at": _at(50), "from_release": "v1", "to_release": "v2", "from": "cd" * 8, "to": "ab" * 8}
+    change = {"at": _at(50), "from_release": "v0.0.166", "to_release": "v0.0.167", "from": "cd" * 8, "to": "ab" * 8}
     _write_state(root, graph, {"last_attempt": {"at": _at(9), "outcome": "accepted", "accepted": True},
                                "fingerprint_change": change})
     (line,) = mb._night_cloud(graph, NOW)
-    assert "сменился" in line and "v1" in line and "v2" in line, "пропущенный бриф не теряет смену"
+    assert "сменился" in line and "v0.0.166" in line and "v0.0.167" in line, "пропущенный бриф не теряет смену"
     change["at"] = _at(100)
     _write_state(root, graph, {"last_attempt": {"at": _at(9), "outcome": "accepted", "accepted": True},
                                "fingerprint_change": change})

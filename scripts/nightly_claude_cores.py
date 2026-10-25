@@ -239,6 +239,8 @@ def _ask_tinfoil(cfg: dict, prompt: str, graph: pathlib.Path) -> night_cloud.Rep
     Коды разные, потому что ночь читает их разными метками: отказ политики,
     подмена (аттестация), недоступность и «не ревизия» — четыре разных утра.
     Истёкший срок — не сбой: ночь кончилась, ревизия завтра (in3 S-I3).
+    Причина — в stderr шага (лог ночи): текст двери уже без ключа и путей, в файл
+    состояния и бриф он не идёт (решение главной по out5).
     """
     started = time.monotonic()
     left = live_gate.step_left(STEP_BUDGET_S, started, started)
@@ -247,19 +249,19 @@ def _ask_tinfoil(cfg: dict, prompt: str, graph: pathlib.Path) -> night_cloud.Rep
         return night_cloud.send(cfg, prompt, deadline=deadline, state_path=_state_path(),
                                 graph_key=_graph_key(graph))
     except privacy.PrivacyRefused as e:
-        print(f"провайдер ночи не принят: {e}")
+        print(f"провайдер ночи не принят: {e}", file=sys.stderr)
         sys.exit(EXIT_PRIVACY_REFUSED)
     except night_cloud.DeadlineExpired as e:
-        print(f"время ночного прогона вышло — ревизия ядер завтра, {_left(e)} ({e})")
+        print(f"время ночного прогона вышло — ревизия ядер завтра, {_left(e)} ({e})", file=sys.stderr)
         sys.exit(0)
     except night_cloud.AttestationFailed as e:
-        print(f"аттестация провайдера не прошла — {_left(e)}: {e}")
+        print(f"аттестация провайдера не прошла — {_left(e)}: {e}", file=sys.stderr)
         sys.exit(EXIT_ATTESTATION_FAILED)
     except night_cloud.ProviderUnavailable as e:
-        print(f"провайдер ночи недоступен — {_left(e)}: {e}")
+        print(f"провайдер ночи недоступен — {_left(e)}: {e}", file=sys.stderr)
         sys.exit(EXIT_PROVIDER_UNAVAILABLE)
     except night_cloud.ReplyRejected as e:
-        print(f"ревизия не принята: {e}")
+        print(f"ревизия не принята: {e}", file=sys.stderr)
         sys.exit(2)
 
 
@@ -387,7 +389,7 @@ def main() -> None:
         # ложился в граф как «ночная ревизия», а бриф молча терял разделы
         # (аудит 17.08). Не пишем, говорим вслух, код ≠ 0 — ночь увидит.
         if reply is not None:
-            night_cloud.reject(_state_path(), _graph_key(graph), problem)
+            night_cloud.reject(_state_path(), _graph_key(graph))
         print(f"ревизия не принята: {problem} ({stderr[:200]})")
         sys.exit(2)
     day = dt.date.today().isoformat()

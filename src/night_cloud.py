@@ -21,10 +21,13 @@
   провал аттестации, а «ночь кончилась» (свой класс);
 - переход к отправке — одно место под замком вместе с проверкой срока:
   сторож срока знает, ушёл ли запрос (`sent` у исключения — для строки шага);
-- класс ошибки обмена — два: «аттестация» только по правилу SDK о сертификате,
-  прочее — «недоступен» (`_classify`, решение главной по out4);
-- причина в файле состояния собирается в одной точке `_cause`: без ключа и
-  без путей машины — бриф пишется в граф;
+- класс ошибки обмена — два: «аттестация» по правилу SDK (сертификат) или его
+  `AttestationError`, прочее — «недоступен» (`_classify`, решения главной по out4, out5);
+- в файле состояния свободного текста нет: перечисление исхода, HTTP-код,
+  finish_reason, отпечаток и релиз — форма проверяется одним писателем
+  (`conform_entry`) и при записи, и при чтении брифом; бриф пишется в граф;
+- текст причины — только в исключении (строка шага, лог ночи), собранный в
+  одной точке `_cause`: без ключа и без путей машины;
 - исход каждой попытки — в файл состояния по графу; утренний бриф берёт
   сигнал аттестации только оттуда, не из текста модели.
 """
@@ -73,12 +76,13 @@ class NightCloudError(Exception):
 
 
 class AttestationFailed(NightCloudError):
-    """Документ аттестации не прошёл проверку двери (`_verified`) или сбой
-    сертификата по правилу SDK (`_certificate_error`).
+    """Документ аттестации не прошёл проверку двери (`_verified`), проверку
+    самого SDK (`_attestation_error`) или сбой сертификата по правилу SDK
+    (`_certificate_error`).
 
-    Документ проверяется до отправки — ни байта не ушло. Сбой сертификата SDK
-    ловит при установке соединения, до байтов запроса; `sent` у исключения
-    честно говорит, начинался ли переход к отправке.
+    Документ проверяется до отправки — тогда ни байта не ушло. Сбой
+    сертификата возможен и посреди ответа (несовпадение ключа энклава); `sent`
+    у исключения честно говорит, начинался ли переход к отправке.
     """
 
 
@@ -126,18 +130,31 @@ def _scrub(text: str, secret: str) -> str:
 
 
 def _cause(text, secret: str = "") -> str:
-    """Причина для файла состояния — одна точка сборки (решение главной по out4).
+    """Текст причины для строки шага — одна точка сборки (решения главной по out4, out5).
 
-    Её читает утренний бриф, а бриф пишется в граф: без ключа, без путей машины
-    (`privacy.scrub_local_paths`), не длиннее 300 знаков.
+    Сначала ключ и пути машины (`privacy.scrub_local_paths`), обрезки нет:
+    обрезка до чистки оставляла обрывок пути (out5 C). Чистка не решает
+    исход: упала — причина скрыта целиком, а не отдана сырой.
     """
-    return privacy.scrub_local_paths(_scrub(text, secret))[0][:300]
+    try:
+        return privacy.scrub_local_paths(_scrub(text, secret))[0]
+    except Exception as e:  # noqa: BLE001 — уборка не подменяет исход (out5 DS-M3)
+        return f"<причина скрыта: пути не вычищены, {type(e).__name__}>"
 
 
 def _reason(e: BaseException, secret: str) -> str:
     code = getattr(e, "status_code", None)
     head = f"{type(e).__name__}" + (f" HTTP {code}" if code else "")
-    return f"{head}: {_scrub(e, secret)[:200]}"
+    return f"{head}: {_scrub(e, secret)}"
+
+
+def _http_status(e: BaseException) -> int | None:
+    """HTTP-код из цепочки причин (openai `APIStatusError.status_code`) — для состояния."""
+    for x in _causes(e):
+        code = getattr(x, "status_code", None)
+        if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
+            return code
+    return None
 
 
 def _under_deadline(fn: Callable, args: tuple, deadline: Deadline, box: dict):
@@ -184,13 +201,12 @@ def _close_quietly(stream) -> None:
 
 
 def _causes(e: BaseException) -> list[BaseException]:
-    """Само исключение и его явные причины `raise … from …`. Неявный
-    `__context__` не идёт: исключение, брошенное в обработчике чужой ошибки,
-    своей причиной её не делает (out4 S-I1, H-I1; решение главной)."""
+    """Цепочка причин так же, как её обходит SDK (`tinfoil.client._is_certificate_error`,
+    0.15.0): `__cause__ or __context__` — правило SDK целиком (решение главной по out5)."""
     out: list[BaseException] = []
     while e is not None and e not in out and len(out) < 16:
         out.append(e)
-        e = e.__cause__
+        e = e.__cause__ or e.__context__
     return out
 
 
@@ -209,12 +225,21 @@ def _certificate_error(x: BaseException) -> bool:
     return False
 
 
+def _attestation_error(x: BaseException) -> bool:
+    """Отказ проверки самого SDK: класс `AttestationError` из `tinfoil.attestation.*`
+    или его наследник (`MeasurementMismatchError` — релиз не тот, режим Sigstore;
+    опыт wrong_repo 26.10). По имени и модулю в MRO — SDK не импортируется (in3 K6)."""
+    return any(k.__name__ == "AttestationError" and k.__module__.startswith("tinfoil.attestation")
+               for k in type(x).__mro__)
+
+
 def _classify(e: BaseException) -> type[NightCloudError]:
-    """Два класса, без своих эвристик по стадиям (решение главной по out4):
-    сбой сертификата по правилу SDK в самом исключении или его явных причинах —
-    аттестация; всё прочее — недоступен. Отказ документа аттестации решает не
-    эта таблица, а `_verified`."""
-    if any(_certificate_error(x) for x in _causes(e)):
+    """Два класса, без своих эвристик по стадиям (решение главной по out4, п. 2 с
+    расширением по опыту out5): сбой сертификата по правилу SDK или его
+    `AttestationError` в самом исключении или его явных причинах — аттестация;
+    всё прочее — недоступен. Голый ValueError закреплённого measurement= (режим
+    pin) — недоступен: pin вне этапа 1. Отказ документа решает `_verified`."""
+    if any(_certificate_error(x) or _attestation_error(x) for x in _causes(e)):
         return AttestationFailed
     return ProviderUnavailable
 
@@ -273,6 +298,67 @@ def _verified(client) -> tuple[str, str, str]:
     return line, fingerprint, release
 
 
+#: Исходы попытки — перечисление; «refused» — отказ политики (out2 H-I1),
+#: «delivered» — ответ пришёл, вызывающий его ещё не принял (out1 DS-M6).
+OUTCOMES = ("accepted", "attestation", "unavailable", "deadline", "rejected", "refused", "delivered")
+#: finish_reason по спецификации chat completions (openai SDK) — белый список.
+FINISH_REASONS = ("stop", "length", "content_filter", "tool_calls", "function_call")
+_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z)?")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_HEX = re.compile(r"[0-9a-f]{16,128}")
+_RELEASE = re.compile(r"v?\d{1,6}\.\d{1,6}\.\d{1,6}")
+_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
+
+
+def _form(rx: re.Pattern):
+    return lambda v: isinstance(v, str) and rx.fullmatch(v) is not None
+
+
+def _empty_or(rx: re.Pattern):
+    return lambda v: v == "" or _form(rx)(v)
+
+
+def _http(v) -> bool:
+    return v is None or (isinstance(v, int) and not isinstance(v, bool) and 100 <= v <= 599)
+
+
+_RECORD = {"at": _form(_STAMP), "date": _form(_DATE), "fingerprint": _empty_or(_HEX),
+           "release": _empty_or(_RELEASE), "model": _empty_or(_MODEL)}
+#: Форма записи графа в файле состояния: раздел → поле → проверка значения.
+#: Свободного текста нет ни в одном поле (решение главной по out5).
+_STATE_FORM = {
+    "last_attempt": {**_RECORD, "provider": lambda v: v == "tinfoil",
+                     "outcome": lambda v: v in OUTCOMES, "http_status": _http,
+                     "finish_reason": lambda v: v is None or v in FINISH_REASONS,
+                     "accepted": lambda v: isinstance(v, bool)},
+    "last_accepted": _RECORD,
+    "previous_accepted": _RECORD,
+    "fingerprint_change": {"at": _form(_STAMP), "from": _empty_or(_HEX), "to": _empty_or(_HEX),
+                           "from_release": _empty_or(_RELEASE), "to_release": _empty_or(_RELEASE)},
+}
+
+
+def conform_entry(entry) -> dict:
+    """Запись графа в форме `_STATE_FORM`: чужой раздел, чужое поле или значение
+    не той формы выпадает. Зовут оба конца: писатель перед записью и бриф при
+    чтении — строке вне формы негде попасть в граф (out4 C, out5 C)."""
+    out: dict = {}
+    if not isinstance(entry, dict):
+        return out
+    for section, fields in _STATE_FORM.items():
+        record = entry.get(section)
+        if isinstance(record, dict):
+            kept = {k: v for k, v in record.items() if k in fields and fields[k](v)}
+            if kept:
+                out[section] = kept
+    return out
+
+
+def read_entry(path: pathlib.Path, graph_key: str) -> dict:
+    """Запись графа из файла состояния, уже в форме — для брифа."""
+    return conform_entry(_read_state(path).get(graph_key))
+
+
 def _read_state(path: pathlib.Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -293,7 +379,7 @@ def _update_state(path: pathlib.Path, graph_key: str, change: Callable[[dict], N
         entry = data.get(graph_key)
         entry = entry if isinstance(entry, dict) else {}
         change(entry)
-        data[graph_key] = entry
+        data[graph_key] = conform_entry(entry)
         tmp = path.with_name(path.name + ".tmp")
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -349,12 +435,13 @@ def accept(state_path: pathlib.Path, graph_key: str, reply: Reply) -> None:
     _quietly("приём ответа", lambda: _update_state(state_path, graph_key, change))
 
 
-def reject(state_path: pathlib.Path, graph_key: str, reason: str) -> None:
-    """Ответ пришёл, но вызывающий его не принял (нет секций)."""
+def reject(state_path: pathlib.Path, graph_key: str) -> None:
+    """Ответ пришёл, но вызывающий его не принял (нет секций). Причину печатает
+    вызывающий в строку шага: в состоянии текста нет (решение главной по out5)."""
     def change(entry: dict) -> None:
         attempt = entry.get("last_attempt")
         if isinstance(attempt, dict):
-            attempt.update(outcome="rejected", reason=_cause(reason), accepted=False)
+            attempt.update(outcome="rejected", accepted=False)
 
     _quietly("отказ в ответе", lambda: _update_state(state_path, graph_key, change))
 
@@ -376,7 +463,11 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
     except (NightCloudError, privacy.PrivacyRefused):
         raise
     except Exception as e:  # noqa: BLE001 — класс решает таблица
-        raise _classify(e)("аттестация: " + _reason(e, key)) from None
+        box["http_status"] = _http_status(e)
+        cls = _classify(e)
+        # слово от класса, не от места броска: «аттестация» — только у аттестации (out5 DS-M2)
+        raise cls(("аттестация: " if cls is AttestationFailed else "клиент провайдера: ")
+                  + _reason(e, key)) from None
     line, fingerprint, release = _verified(client)
     box["attested"] = (fingerprint, release)
     chunks: list[str] = []
@@ -417,6 +508,7 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
     except NightCloudError:
         raise
     except Exception as e:  # noqa: BLE001 — openai/httpx без импорта: класс решает таблица
+        box["http_status"] = _http_status(e)
         raise _classify(e)("поток: " + _reason(e, key)) from None
     return "".join(chunks).strip(), finish, line
 
@@ -438,8 +530,8 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
     """
     now = _now()
     attempt = {"at": now, "date": now[:10], "provider": "tinfoil", "model": "",
-               "outcome": "unavailable", "reason": "", "fingerprint": "", "release": "",
-               "accepted": False}
+               "outcome": "unavailable", "http_status": None, "finish_reason": None,
+               "fingerprint": "", "release": "", "accepted": False}
     key = ""
     box: dict = {"lock": threading.Lock()}
     try:
@@ -462,6 +554,7 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
         finally:
             fingerprint, release = box.get("attested", ("", ""))
             attempt.update(fingerprint=fingerprint, release=release)
+        attempt["finish_reason"] = finish
         if finish != "stop":
             raise ReplyRejected(f"finish_reason={finish}, {len(text)} зн.")
         if not text:
@@ -469,23 +562,26 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
         if _ATTESTATION_HEADING.search(text):
             raise ReplyRejected(f"ответ модели содержит «{ATTESTATION_HEADER}» — подделка сигнала")
         # «доставлено» — не «принято»: принимает вызывающий после проверки секций (out1 DS-M6)
-        attempt.update(outcome="delivered", reason="")
+        attempt["outcome"] = "delivered"
         return Reply(text=text, provider="tinfoil", model=model, attestation=line,
                      fingerprint=fingerprint, release=release)
     except NightCloudError as e:
         e.sent = bool(box.get("sent"))
-        outcome = next((o for cls, o in _OUTCOMES if isinstance(e, cls)), "unavailable")
-        attempt.update(outcome=outcome, reason=_cause(e, key))
+        e.args = (_cause(e, key),)   # строка шага — без ключа и путей
+        attempt["outcome"] = next((o for cls, o in _OUTCOMES if isinstance(e, cls)), "unavailable")
         raise
     except privacy.PrivacyRefused as e:
-        attempt.update(outcome="refused", reason=_cause(e))
+        e.args = (_cause(e),)
+        attempt["outcome"] = "refused"
         raise
     except Exception as e:  # noqa: BLE001 — непредвиденное: исход записан, наружу классом двери
-        attempt.update(outcome="unavailable", reason=_cause(_reason(e, key)))
-        err = ProviderUnavailable(_reason(e, key))
+        attempt["http_status"] = _http_status(e)
+        err = ProviderUnavailable(_cause(_reason(e, key)))
         err.sent = bool(box.get("sent"))
         raise err from None
     finally:
+        if attempt["http_status"] is None:
+            attempt["http_status"] = box.get("http_status")
         # исход пишется всегда (in3 S-I4), но сбой записи не подменяет исход попытки
         _quietly("исход попытки",
                  lambda: _update_state(state_path, graph_key, lambda entry: entry.update(last_attempt=attempt)))
