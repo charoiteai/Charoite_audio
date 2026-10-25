@@ -58,6 +58,9 @@ REQUIRED_STEPS = ("fetch_digest", "verify_code", "verify_enclave", "compare_meas
 #: Начало текста ValueError у SDK 0.15.0, когда недоступен список роутеров:
 #: это сеть, а не подмена (замер 25.10, E2).
 _ROUTER_LIST_FAILED = "Failed to fetch router"
+#: Признак сбоя проверки сертификата в тексте SSLError — тот же, что у SDK 0.15.0
+#: (`tinfoil.client._CERTIFICATE_VERIFY_ERROR_MARKERS`).
+_CERTIFICATE_VERIFY_MARKERS = ("certificate_verify_failed", "certificate verify failed")
 
 
 class NightCloudError(Exception):
@@ -176,28 +179,44 @@ def _chain(e: BaseException) -> list[BaseException]:
     return out
 
 
+def _certificate_error(x: BaseException) -> bool:
+    """Сбой проверки сертификата — правило самого SDK (`tinfoil.client._is_certificate_error`,
+    0.15.0): несовпадение закреплённого ключа, SSLCertVerificationError, SSLError
+    с «certificate verify failed». Такие случаются при установке соединения, до
+    байтов запроса; прочие SSLError — ввод-вывод посреди обмена (out3 S-I1, DS-I2).
+    Любое исключение модуля tinfoil.* — тоже: происхождение решает раньше стадии
+    (out3 H-C1)."""
+    if type(x).__module__.split(".")[0] == "tinfoil":
+        return True
+    name = type(x).__name__
+    if isinstance(x, ssl.SSLCertVerificationError) or name == "SSLCertVerificationError":
+        return True
+    if isinstance(x, ssl.SSLError) or name == "SSLError":
+        return any(m in str(x).lower() for m in _CERTIFICATE_VERIFY_MARKERS)
+    return False
+
+
 def _classify(e: BaseException, stage: str) -> type[NightCloudError]:
     """Одна таблица «исключение → класс исхода» (out1 S-I3, H-I2).
 
     Стадии `_exchange`: attest (конструктор), connect (`create` — рукопожатие и
-    отправка), stream (ответ уже идёт). Сверху вниз, первое совпадение:
-    - стадия stream — недоступен всегда: запрос ушёл и принят, TLS-обрыв
-      посреди ответа — транспорт, а не подмена (out2 C2);
-    - TLS не сошёлся (ssl.SSLError, SSLError requests) или ошибка самого SDK
-      Tinfoil (модуль tinfoil.*, в т.ч. несовпадение закреплённого ключа в
-      чате) — аттестация: проверить провайдера нельзя, сигнал громкий;
-    - нет пакета внутри SDK, битый JSON, сеть (OSError) — недоступен;
-    - аттестация: ValueError «Failed to fetch router» — сеть, прочее — аттестация;
+    отправка), stream (ответ уже идёт). Сверху вниз, первое совпадение по
+    цепочке причин:
+    - сбой проверки сертификата (`_certificate_error`) — аттестация на любой стадии;
+    - attest: любой TLS-сбой — аттестация (до отправки, сигнал громкий);
+    - stream — недоступен: запрос ушёл и принят, обрыв посреди ответа —
+      транспорт, а не подмена (out2 C2);
+    - нет пакета внутри SDK, битый JSON, сеть (OSError, прочие SSLError) — недоступен;
+    - attest: ValueError «Failed to fetch router» — сеть, прочее — аттестация;
     - connect: прочее (HTTP-отказ, обрыв) — недоступен.
     """
+    chain = _chain(e)
+    if any(_certificate_error(x) for x in chain):
+        return AttestationFailed
+    if stage == "attest" and any(isinstance(x, ssl.SSLError) or type(x).__name__ == "SSLError" for x in chain):
+        return AttestationFailed
     if stage == "stream":
         return ProviderUnavailable
-    chain = _chain(e)
-    for x in chain:
-        if isinstance(x, ssl.SSLError) or type(x).__name__ in ("SSLError", "SSLCertVerificationError"):
-            return AttestationFailed
-        if type(x).__module__.split(".")[0] == "tinfoil":
-            return AttestationFailed
     if isinstance(e, (ImportError, json.JSONDecodeError, OSError)):
         return ProviderUnavailable
     if stage == "attest":
@@ -352,7 +371,7 @@ def reject(state_path: pathlib.Path, graph_key: str, reason: str) -> None:
     _quietly("отказ в ответе", lambda: _update_state(state_path, graph_key, change))
 
 
-def _exchange(cfg: dict, key: str, build: Callable, prompt: str, model: str, effort: str,
+def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
               deadline: Deadline, box: dict) -> tuple[str, str | None, str]:
     """Весь обмен с провайдером — в одном потоке под сроком `_under_deadline`.
 
@@ -365,7 +384,7 @@ def _exchange(cfg: dict, key: str, build: Callable, prompt: str, model: str, eff
     if not privacy.cloud_enrich_enabled(cfg):
         raise privacy.PrivacyRefused("облако выключено: sufler.cloud_enrich")
     try:
-        client = build(cfg, key)
+        client = _attest(cfg, key)   # фабрика не параметр: подменить её нечем, кроме модуля (out3 S-M3)
     except (NightCloudError, privacy.PrivacyRefused):
         raise
     except Exception as e:  # noqa: BLE001 — класс решает таблица
@@ -416,6 +435,17 @@ def _exchange(cfg: dict, key: str, build: Callable, prompt: str, model: str, eff
     return "".join(chunks).strip(), finish, line
 
 
+def _record(attempt: dict) -> Callable[[dict], None]:
+    """Запись исхода попытки. Провал аттестации пишется ещё и отдельно: следующая
+    ночь без сети перезапишет `last_attempt`, а тревога о подмене должна дожить
+    до брифа, как и смена отпечатка (out3 DS-I1)."""
+    def change(entry: dict) -> None:
+        entry["last_attempt"] = attempt
+        if attempt.get("outcome") == "attestation":
+            entry["attestation_failure"] = {k: attempt.get(k) for k in ("at", "reason", "sent")}
+    return change
+
+
 #: Класс исхода → запись в состоянии; сверху вниз, первое совпадение.
 _OUTCOMES = ((AttestationFailed, "attestation"), (DeadlineExpired, "deadline"),
              (ReplyRejected, "rejected"), (ProviderUnavailable, "unavailable"))
@@ -452,7 +482,7 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
             raise DeadlineExpired("срок шага вышел до аттестации")
         try:
             text, finish, line = _under_deadline(
-                _exchange, (cfg, key, _attest, prompt, model, cloud.tinfoil_effort(cfg), deadline),
+                _exchange, (cfg, key, prompt, model, cloud.tinfoil_effort(cfg), deadline),
                 deadline, box)
         finally:
             fingerprint, release = box.get("attested", ("", ""))
@@ -483,5 +513,4 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
     finally:
         # исход пишется всегда (in3 S-I4), но сбой записи не подменяет исход попытки
         attempt["sent"] = bool(box.get("sent"))
-        _quietly("исход попытки",
-                 lambda: _update_state(state_path, graph_key, lambda entry: entry.update(last_attempt=attempt)))
+        _quietly("исход попытки", lambda: _update_state(state_path, graph_key, _record(attempt)))

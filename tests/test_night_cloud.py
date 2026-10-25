@@ -319,7 +319,11 @@ def _tinfoil_error(name="_PinMismatchError"):
 
 @pytest.mark.parametrize("error,cls", [
     (_tinfoil_error(), night_cloud.AttestationFailed),     # закреплённый ключ энклава не тот
-    (ssl.SSLError("bad cert"), night_cloud.AttestationFailed),
+    (ssl.SSLCertVerificationError("self-signed"), night_cloud.AttestationFailed),
+    (ssl.SSLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"), night_cloud.AttestationFailed),
+    # обрыв TLS при чтении заголовков — ввод-вывод, не подмена (правило SDK, out3 S-I1, DS-I2)
+    (ssl.SSLError("bad record mac"), night_cloud.ProviderUnavailable),
+    (ssl.SSLEOFError("eof"), night_cloud.ProviderUnavailable),
     (type("APIStatusError", (Exception,), {"status_code": 503})("busy"), night_cloud.ProviderUnavailable),
 ])
 def test_chat_stage_errors_are_classified(tmp_path, error, cls):
@@ -329,22 +333,27 @@ def test_chat_stage_errors_are_classified(tmp_path, error, cls):
     assert ei.value.sent is True and _state(tmp_path)["last_attempt"]["sent"] is True
 
 
-@pytest.mark.parametrize("error", [ssl.SSLError("bad record mac"), _tinfoil_error(), ConnectionResetError("rst")])
-def test_errors_while_the_reply_streams_are_not_attestation(tmp_path, error):
-    """Ответ уже идёт — TLS-обрыв посреди потока не «ничего не отправлено» (out2 C2)."""
+@pytest.mark.parametrize("error,cls,outcome", [
+    (ssl.SSLError("bad record mac"), night_cloud.ProviderUnavailable, "unavailable"),
+    (ConnectionResetError("rst"), night_cloud.ProviderUnavailable, "unavailable"),
+    # происхождение решает раньше стадии: ошибка SDK посреди ответа — аттестация (out3 H-C1)
+    (_tinfoil_error(), night_cloud.AttestationFailed, "attestation"),
+])
+def test_errors_while_the_reply_streams(tmp_path, error, cls, outcome):
+    """Ответ уже идёт — обрыв посреди потока не «ничего не отправлено» (out2 C2)."""
     stream = FakeStream([_chunk("## Противоречия\n"), error])
-    with pytest.raises(night_cloud.ProviderUnavailable) as ei:
+    with pytest.raises(cls) as ei:
         _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(stream=stream)))
     assert ei.value.sent is True and stream.closed
     attempt = _state(tmp_path)["last_attempt"]
-    assert attempt["outcome"] == "unavailable" and attempt["sent"] is True
+    assert attempt["outcome"] == outcome and attempt["sent"] is True
 
 
 def test_suppressed_context_does_not_decide_the_class():
     """`raise … from None` прячет причину — и от таблицы тоже (out2 DS-M2)."""
     try:
         try:
-            raise ssl.SSLError("старая TLS-ошибка")
+            raise ssl.SSLCertVerificationError("старая ошибка сертификата")
         except ssl.SSLError:
             raise ValueError("HTTP 503") from None
     except ValueError as e:
@@ -352,7 +361,7 @@ def test_suppressed_context_does_not_decide_the_class():
     assert night_cloud._classify(hidden, "connect") is night_cloud.ProviderUnavailable
     try:
         try:
-            raise ssl.SSLError("рукопожатие")
+            raise ssl.SSLCertVerificationError("рукопожатие")
         except ssl.SSLError:
             raise ValueError("обёртка")   # неявная причина — видна
     except ValueError as e:
@@ -826,7 +835,8 @@ def test_brief_says_the_request_left_when_it_did(tmp_path):
     mb = _load_brief()
     graph = tmp_path / "g"
     graph.mkdir()
-    for outcome, said in (("attestation", "запрос мог уйти"), ("deadline", "после отправки запроса")):
+    for outcome, said in (("attestation", "запрос мог уйти"), ("deadline", "после отправки запроса"),
+                          ("unavailable", "запрос мог уйти")):
         _write_state(root, graph, {"last_attempt": {"at": _at(9), "outcome": outcome, "sent": True,
                                                     "accepted": False}})
         (line,) = mb._night_cloud(graph, NOW)
@@ -835,6 +845,10 @@ def test_brief_says_the_request_left_when_it_did(tmp_path):
                                                 "accepted": False}})
     (line,) = mb._night_cloud(graph, NOW)
     assert "ничего не отправлено" in line
+    # нет поля — не утверждаем ни того, ни другого (out3 S-M1, DS-M1)
+    _write_state(root, graph, {"last_attempt": {"at": _at(9), "outcome": "attestation", "accepted": False}})
+    (line,) = mb._night_cloud(graph, NOW)
+    assert "аттестация провайдера НЕ прошла" in line and "отправлено" not in line and "мог уйти" not in line
 
 
 def test_brief_windows_and_a_clock_that_went_back(tmp_path):
@@ -857,6 +871,7 @@ def test_brief_windows_and_a_clock_that_went_back(tmp_path):
     assert len(lines(-2)) == 1, "метка на 2 ч впереди часов — всё равно сегодняшняя ночь"
     assert len(lines(0, change_h=71.5)) == 1 and lines(0, change_h=72.5) == []
     assert len(lines(0, change_h=-1)) == 1
+    assert lines(-25) == [] and lines(0, change_h=-500) == [], "метка далеко впереди — сбой часов, не вечная тревога"
 
 
 # ── доктор: провайдер ночи ──
@@ -887,3 +902,39 @@ def test_doctor_warns_about_a_key_without_the_provider(tmp_path, monkeypatch, ca
     doctor.check_night_provider({"sufler": {"cloud_night_tinfoil_key_path": str(key)}})
     out = capsys.readouterr().out
     assert "есть ключ Tinfoil" in out and "незнакомые" not in out
+
+
+def test_attestation_failure_outlives_the_next_night(tmp_path):
+    """Ночь 1 — провал аттестации, ночь 2 — нет ключа: тревога о подмене дожила
+    до брифа (out3 DS-I1)."""
+    cfg = _cfg(tmp_path)
+    with pytest.raises(night_cloud.AttestationFailed):
+        _send(tmp_path, cfg, Factory(client=FakeClient(verified=False)))
+    first = _state(tmp_path)["attestation_failure"]
+    assert first["sent"] is False and "security_verified" in first["reason"]
+    pathlib.Path(cfg["sufler"]["cloud_night_tinfoil_key_path"]).write_text("", encoding="utf-8")
+    with pytest.raises(night_cloud.ProviderUnavailable):
+        _send(tmp_path, cfg, Factory())
+    entry = _state(tmp_path)
+    assert entry["last_attempt"]["outcome"] == "unavailable" and entry["attestation_failure"] == first
+
+    root = tmp_path / "root"
+    charoite_paths.use_data_root(root, replace=True)
+    mb = _load_brief()
+    graph = tmp_path / "g"
+    graph.mkdir()
+    entry = {"last_attempt": {"at": _at(6), "outcome": "unavailable", "accepted": False},
+             "attestation_failure": {"at": _at(30), "reason": "SNP mismatch", "sent": False}}
+    _write_state(root, graph, entry)
+    lines = mb._night_cloud(graph, NOW)
+    assert len(lines) == 2 and "недоступен" in lines[0]
+    assert "аттестация Tinfoil не прошла 30 ч назад" in lines[1] and "SNP" in lines[1]
+    # та же попытка уже показана строкой исхода — второй строки нет
+    entry = {"last_attempt": {"at": _at(6), "outcome": "attestation", "accepted": False},
+             "attestation_failure": {"at": _at(6), "reason": "x", "sent": False}}
+    _write_state(root, graph, entry)
+    assert len(mb._night_cloud(graph, NOW)) == 1
+    entry["last_attempt"] = {"at": _at(1), "outcome": "accepted", "accepted": True}
+    entry["attestation_failure"]["at"] = _at(73)
+    _write_state(root, graph, entry)
+    assert mb._night_cloud(graph, NOW) == [], "старше 72 ч — молчим"

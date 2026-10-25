@@ -76,7 +76,7 @@ def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
 
 #: Исход попытки двери night_cloud → слова для брифа.
 _NIGHT_OUTCOMES = {
-    "attestation": "аттестация провайдера НЕ прошла — ничего не отправлено",
+    "attestation": "аттестация провайдера НЕ прошла",
     "unavailable": "провайдер недоступен",
     "rejected": "ответ не принят",
     "deadline": "ночь кончилась раньше ответа",
@@ -84,11 +84,22 @@ _NIGHT_OUTCOMES = {
     "delivered": "ответ получен, но отчёт не подтверждён",
 }
 #: Те же исходы, когда отправка уже началась (`sent` в состоянии двери): фраза
-#: «ничего не отправлено» тогда ложь (out2 C1, C2).
+#: «ничего не отправлено» тогда ложь (out2 C1, C2). `sent` трёхзначен: True —
+#: эти строки, False — «ничего не отправлено», нет поля — без утверждения (out3 S-M1).
 _NIGHT_OUTCOMES_SENT = {
-    "attestation": "TLS провайдера НЕ сошёлся при отправке — запрос мог уйти",
+    "attestation": "аттестация провайдера НЕ прошла после начала отправки — запрос мог уйти",
     "deadline": "ночь кончилась после отправки запроса — ответа нет",
+    "unavailable": "провайдер оборвал обмен после отправки — запрос мог уйти",
 }
+
+
+#: Метка впереди часов больше чем на сутки — не «часы ушли назад», а сбой:
+#: такая запись не стареет никогда и показывалась бы каждое утро (out3 S-M2).
+_FUTURE_H = 24
+
+
+def _fresh(age: float | None, window_h: float) -> bool:
+    return age is not None and -_FUTURE_H <= age <= window_h
 
 
 def _age_h(stamp, now: dt.datetime) -> float | None:
@@ -125,16 +136,27 @@ def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
     attempt = entry.get("last_attempt") if isinstance(entry.get("last_attempt"), dict) else {}
     age = _age_h(attempt.get("at"), now)
     # давность меньше нуля — часы ушли назад, а не «старая попытка»: показываем (out2 DS-M5)
-    if age is not None and age <= max_age_h and not attempt.get("accepted"):
+    if _fresh(age, max_age_h) and not attempt.get("accepted"):
         outcome = attempt.get("outcome")
         what = (attempt.get("sent") is True and _NIGHT_OUTCOMES_SENT.get(outcome)) \
             or _NIGHT_OUTCOMES.get(outcome, f"исход {outcome!r}")
+        if outcome == "attestation" and attempt.get("sent") is False:
+            what += " — ничего не отправлено"
         reason = " ".join(str(attempt.get("reason") or "").split())[:200]
         out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) не отработала: "
                    f"{what}" + (f" ({reason})" if reason else ""))
+    failure = entry.get("attestation_failure") if isinstance(entry.get("attestation_failure"), dict) else {}
+    age = _age_h(failure.get("at"), now)
+    shown = bool(out) and attempt.get("at") == failure.get("at")
+    if _fresh(age, change_age_h) and not shown:
+        # провал аттестации не стирается следующей ночью без сети (out3 DS-I1)
+        reason = " ".join(str(failure.get("reason") or "").split())[:200]
+        out.append(f"- ⚠️ аттестация Tinfoil не прошла {max(0, round(age))} ч назад"
+                   + (" — запрос мог уйти" if failure.get("sent") is True else "")
+                   + (f" ({reason})" if reason else ""))
     change = entry.get("fingerprint_change") if isinstance(entry.get("fingerprint_change"), dict) else {}
     age = _age_h(change.get("at"), now)
-    if age is not None and age <= change_age_h:
+    if _fresh(age, change_age_h):
         out.append(f"- отпечаток роутера Tinfoil сменился: релиз {change.get('from_release') or '?'} "
                    f"({change.get('from') or '?'}) → {change.get('to_release') or '?'} "
                    f"({change.get('to') or '?'})")
