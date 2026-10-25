@@ -473,6 +473,15 @@ def check_night_provider(cfg: dict) -> None:
     except Exception as e:  # noqa: BLE001 — модули продукта, диагноз назван
         line(WARN, f"провайдер ночи не проверен ({type(e).__name__})")
         return
+    sufler = (cfg or {}).get("sufler") or {}
+    known = set(cloud.DEFAULTS) | {"cloud_night_provider", "cloud_night_effort",
+                                   "cloud_night_tinfoil_effort", "cloud_night_tinfoil_key_path"}
+    stray = sorted(k for k in sufler if str(k).startswith("cloud_night") and k not in known)
+    stray += sorted(f"{k} (вне sufler)" for k in (cfg or {}) if str(k).startswith("cloud_night"))
+    if stray:
+        # опечатка в имени ключа = ключа нет = ночь идёт в Anthropic молча (out1 H-I3)
+        line(WARN, "незнакомые ключи ночного провайдера: " + ", ".join(stray),
+             "проверьте имя: sufler.cloud_night_provider, cloud_night_tinfoil_*")
     try:
         provider = privacy.night_provider(cfg or {})
     except privacy.PrivacyRefused as e:

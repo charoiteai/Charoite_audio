@@ -81,16 +81,31 @@ _NIGHT_OUTCOMES = {
     "rejected": "ответ не принят",
     "deadline": "ночь кончилась раньше ответа",
     "refused": "провайдер не принят политикой",
+    "delivered": "ответ получен, но отчёт не подтверждён",
 }
 
 
-def _night_cloud(graph: pathlib.Path, today: str | None = None) -> list[str]:
+def _age_h(stamp, now: dt.datetime) -> float | None:
+    """Давность метки двери в часах; нет метки или битая — None (не показываем)."""
+    try:
+        at = dt.datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.astimezone()
+    return (now - at).total_seconds() / 3600
+
+
+def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
+                 max_age_h: int = 36, change_age_h: int = 72) -> list[str]:
     """Строки об аттестации ночного провайдера — только из файла состояния двери.
 
     Текст отчёта пишет модель, и заголовок «Аттестация» в нём подделывается
     (in3 S-I5, №792); файл состояния пишет сама дверь. Строка — только когда
-    есть что сказать: сегодняшняя попытка не принята или отпечаток роутера
-    сменился против прошлого принятого.
+    есть что сказать: свежая попытка не принята или отпечаток роутера сменился.
+    Свежесть — по метке времени, не по календарной дате: ночь через полночь
+    и бриф наутро видят ту же попытку (out1 S-I5, DS-I4). Смена отпечатка живёт
+    `change_age_h` — пропущенный бриф одного утра её не теряет (out1 H-M2).
     """
     path = resolve_root(__file__) / "logs" / "night_cloud_state.json"
     try:
@@ -99,20 +114,21 @@ def _night_cloud(graph: pathlib.Path, today: str | None = None) -> list[str]:
         return []
     if not isinstance(entry, dict):
         return []
-    today = today or dt.date.today().isoformat()
+    now = now or dt.datetime.now().astimezone()
     out = []
     attempt = entry.get("last_attempt") if isinstance(entry.get("last_attempt"), dict) else {}
-    if attempt.get("date") == today and not attempt.get("accepted"):
+    age = _age_h(attempt.get("at"), now)
+    if age is not None and 0 <= age <= max_age_h and not attempt.get("accepted"):
         what = _NIGHT_OUTCOMES.get(attempt.get("outcome"), f"исход {attempt.get('outcome')!r}")
         reason = " ".join(str(attempt.get("reason") or "").split())[:200]
-        out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) сегодня не отработала: "
+        out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) не отработала: "
                    f"{what}" + (f" ({reason})" if reason else ""))
-    cur = entry.get("last_accepted") if isinstance(entry.get("last_accepted"), dict) else {}
-    prev = entry.get("previous_accepted") if isinstance(entry.get("previous_accepted"), dict) else {}
-    if cur.get("date") == today and prev.get("fingerprint") and cur.get("fingerprint") != prev.get("fingerprint"):
-        out.append(f"- отпечаток роутера Tinfoil сменился: релиз {prev.get('release') or '?'} "
-                   f"({str(prev.get('fingerprint'))[:16]}) → {cur.get('release') or '?'} "
-                   f"({str(cur.get('fingerprint') or '?')[:16]})")
+    change = entry.get("fingerprint_change") if isinstance(entry.get("fingerprint_change"), dict) else {}
+    age = _age_h(change.get("at"), now)
+    if age is not None and 0 <= age <= change_age_h:
+        out.append(f"- отпечаток роутера Tinfoil сменился: релиз {change.get('from_release') or '?'} "
+                   f"({change.get('from') or '?'}) → {change.get('to_release') or '?'} "
+                   f"({change.get('to') or '?'})")
     return out
 
 

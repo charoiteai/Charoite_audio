@@ -120,7 +120,7 @@ def night_provider(cfg: dict) -> str:
     if isinstance(raw, str) and raw in NIGHT_PROVIDERS:
         return raw
     raise PrivacyRefused(
-        f"sufler.cloud_night_provider = {raw!r}: допустимо {', '.join(NIGHT_PROVIDERS)} — "
+        f"sufler.cloud_night_provider = {repr(raw)[:40]}: допустимо {', '.join(NIGHT_PROVIDERS)} — "
         "ночная ревизия не отправлена")
 
 

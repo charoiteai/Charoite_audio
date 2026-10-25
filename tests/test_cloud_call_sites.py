@@ -46,9 +46,9 @@ EXITS = {
     ("scripts/cloud_review.py", "_run_locked"): "subprocess",
     ("scripts/nightly_claude_cores.py", "main"): "subprocess",
     ("scripts/nightly_dossier_review.py", "review"): "subprocess",
-    # ночная ревизия у Tinfoil (№792): аттестующий конструктор и поток ответа
+    # ночная ревизия у Tinfoil (№792): аттестующий конструктор и обмен под сроком
     ("src/night_cloud.py", "_attest"): "sdk",
-    ("src/night_cloud.py", "send"): "sdk",
+    ("src/night_cloud.py", "_exchange"): "sdk",
 }
 NETWORK_EXITS = tuple(k for k, kind in EXITS.items() if kind == "subprocess")
 SDK_EXITS = tuple(k for k, kind in EXITS.items() if kind == "sdk")
@@ -523,6 +523,11 @@ def test_sdk_exit_is_dominated_by_the_privacy_gate(filename, func):
     assert calls, f"{filename}:{func} числится выходом SDK, но не зовёт ни TinfoilAI, ни .chat.completions.create"
     unsafe = [ast.unparse(call) for call, guarded in calls if not guarded]
     assert not unsafe, f"{filename}:{func}: вызов SDK не перекрыт privacy-гейтом: {unsafe}"
+    # анализ доминирования не заходит в лямбды и вложенные def: SDK-вызов там
+    # не доказан ничем (out1 S-M4) — в выходе их быть не должно
+    walked = [n for n in ast.walk(fn) if _is_sdk_call(n)]
+    assert len(walked) == len(calls), (
+        f"{filename}:{func}: вызов SDK во вложенной функции или лямбде — гейт не доказан")
     own = _own_consts(fn)
     assert not (own & set(KILL_SWITCH_NAMES)), f"{filename}:{func} проверяет имя рубильника вручную"
 
@@ -623,6 +628,38 @@ def test_the_import_detector_sees_every_shape():
         assert not _sdk_imports(ast.parse(src)), src
 
 
+def _sdk_refs_not_called(tree: ast.AST) -> list[str]:
+    """`.chat.completions.create` и `TinfoilAI`, взятые ссылкой, а не вызовом.
+
+    Алиас `create = api.chat.completions.create; create(...)` прячет выход от
+    `_is_sdk_call` (out1 S-M4): ссылка без вызова — сама нарушение.
+    """
+    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    out = []
+    for n in ast.walk(tree):
+        if not isinstance(n, (ast.Attribute, ast.Name)) or id(n) in called:
+            continue
+        text = ast.unparse(n)
+        if text.endswith(".chat.completions.create") or text == "TinfoilAI" \
+                or text.endswith(".TinfoilAI"):
+            out.append(text)
+    return out
+
+
+def test_sdk_is_never_taken_by_reference():
+    bad = []
+    for path in _py_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        bad += [f"{path.relative_to(REPO)}: {r}" for r in _sdk_refs_not_called(tree)]
+    assert not bad, "SDK взят ссылкой, а не вызовом: " + "; ".join(bad)
+
+
+def test_reference_detector_sees_an_alias():
+    tree = ast.parse("create = api.chat.completions.create\ncreate(model=m)\n"
+                     "make = TinfoilAI\nok = api.chat.completions.create(model=m)\n")
+    assert _sdk_refs_not_called(tree) == ["api.chat.completions.create", "TinfoilAI"]
+
+
 def test_no_other_place_calls_the_sdk():
     """TinfoilAI и .chat.completions.create — только в зарегистрированных функциях.
 
@@ -645,3 +682,16 @@ def test_no_other_place_calls_the_sdk():
     unknown = sorted(found - known)
     assert not unknown, "вызов SDK вне реестра: " + ", ".join(unknown)
     assert known <= found, "зарегистрированный выход SDK не зовёт SDK: " + ", ".join(sorted(known - found))
+
+
+def test_door_transport_is_for_tests_only():
+    """`transport` подменяет аттестующий конструктор — в коде продукта его не
+    передаёт никто (out1 S-M1, DS-M3): иначе фабрика без аттестации — обход."""
+    bad = []
+    for path in _py_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("night_cloud.send") \
+                    and any(k.arg in ("transport", None) for k in n.keywords):
+                bad.append(f"{path.relative_to(REPO)}:{n.lineno}")
+    assert not bad, "night_cloud.send с transport или **kwargs вне тестов: " + ", ".join(bad)

@@ -479,6 +479,8 @@ choice.
 | `cloud_effort` | `medium` | reasoning effort for the post-meeting debrief (`low`…`max`, or `auto`). Headless `claude -p` otherwise runs at `high` (at `max` from a shell with a global setting): by 80 review logs (28.08–08.09) 22 debriefs hit the 30-minute ceiling on 34–47 graph edits and were quarantined; `medium` shortens the run so it fits those 30 minutes. The ceiling was not raised: the next meeting's worker waits for the graph lock just as long |
 | `cloud_live_effort` | `low` | in-meeting calls (thread fixes, answer to a question, 60–90 s ceilings): shorter reasoning, faster reply |
 | `cloud_night_effort` | `high` | nightly dossier and core reviews: 600 s ceiling and no graph lock, depth over speed |
+| `cloud_night_tinfoil_model` | `deepseek-v4-1-flash` | nightly core review when `cloud_night_provider: tinfoil` (attested router, see PRIVACY.md) |
+| `cloud_night_tinfoil_effort` | `max` | effort for the Tinfoil night review: `low`, `high`, `xhigh` or `max` (`medium` and `auto` are refused by the gateway; an unknown value falls back to `max` with a warning) |
 
 Defaults live in one place — `src/cloud.py` — and match the example configs; a
 mismatch fails a test. Previously the literal sat in every call site, and one
