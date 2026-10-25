@@ -148,6 +148,33 @@ def test_cloud_cli_down_marks_the_night_failed(tmp_path):
         assert "(cli)" in str(_status(tmp_path).get("failed", "")), _status(tmp_path)
 
 
+def _stub_exit(script: str, code: int) -> str:
+    return ("#!/bin/sh\n"
+            'case "$1" in\n'
+            f"  *{script}*) exit {code} ;;\n"
+            "  *) exit 0 ;;\n"
+            "esac\n")
+
+
+@pytest.mark.parametrize("script,code,label,said", [
+    ("nightly_claude_cores.py", 11, "claude-cores(провайдер)", "провайдер ночи не принят"),
+    ("nightly_claude_cores.py", 14, "claude-cores(аттестация)", "аттестация провайдера не прошла"),
+    ("nightly_claude_cores.py", 15, "claude-cores(недоступен)", "провайдер ночи недоступен"),
+    ("nightly_dossier_review.py", 11, "ревизия-досье(провайдер)", "провайдер ночи не принят"),
+    ("nightly_dossier_review.py", 16, "ревизия-досье(этап2)", "досье — этап 2"),
+])
+def test_night_provider_outcomes_have_their_own_labels(tmp_path, script, code, label, said):
+    """Отказ политики, подмена, недоступность и пропуск этапа — разные утра:
+    у каждого кода своя метка в статусе ночи (№792, in3 S-I2, DS-I6, S-I6).
+    Код 3 (`(cli)`) остаётся за CLI Claude — тест выше."""
+    r = _run(tmp_path, _stub_exit(script, code))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert said in r.stdout, r.stdout
+    failed = str(_status(tmp_path).get("failed", ""))
+    assert label in failed, failed
+    assert "(cli)" not in failed, failed
+
+
 def test_partially_failed_review_is_visible_but_not_fatal(tmp_path):
     """Часть тем не проверена — предупреждение в FAILED, ночь не авария."""
     r = _run(tmp_path, DOSSIER_REVIEW_PARTIAL)

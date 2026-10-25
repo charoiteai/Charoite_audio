@@ -26,22 +26,36 @@ import re
 import pytest
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
+REPO = SRC.parent
 
-# (файл, функция, что должно упоминаться внутри)
-NETWORK_EXITS = (
-    ("daemon.py", "cloud_loop"),
+# Реестр выходов в сеть: (путь от корня репозитория, функция) → вид выхода.
+# Вид решает, какой предикат у выхода: `subprocess` — запуск `claude` с
+# вычищенным env и бинарём из резолвера; `sdk` — клиент Tinfoil в процессе
+# (конструктор и есть аттестация, сеть). Ключ — путь, а не имя файла: два
+# `main` в разных папках не должны склеиваться (№792, in3 K7).
+EXITS = {
+    ("src/daemon.py", "cloud_loop"): "subprocess",
     # 05.08: облачная дописка к подсказке стала ревизором нити — то же место
     # выхода в сеть, новое имя и новая работа (правки строк вместо блока «☁️»).
-    ("daemon.py", "cloud_thread_refine"),
+    ("src/daemon.py", "cloud_thread_refine"): "subprocess",
     # разбор после встречи переехал из graph_updater.main в отдельный воркер:
     # тот ждёт claude с таймаутом, проверяет ответ и держит границы правок.
     # graph_updater теперь запускает питон, а не claude, — выходом в сеть быть
     # перестал, и держать его в списке значило бы охранять пустое место.
     # run() берёт замок графа и решает режим; сам вызов claude — в _run_locked.
-    ("cloud_review.py", "_run_locked"),
-    ("nightly_claude_cores.py", "main"),
-    ("nightly_dossier_review.py", "review"),
-)
+    ("scripts/cloud_review.py", "_run_locked"): "subprocess",
+    ("scripts/nightly_claude_cores.py", "main"): "subprocess",
+    ("scripts/nightly_dossier_review.py", "review"): "subprocess",
+    # ночная ревизия у Tinfoil (№792): аттестующий конструктор и поток ответа
+    ("src/night_cloud.py", "_attest"): "sdk",
+    ("src/night_cloud.py", "send"): "sdk",
+}
+NETWORK_EXITS = tuple(k for k, kind in EXITS.items() if kind == "subprocess")
+SDK_EXITS = tuple(k for k, kind in EXITS.items() if kind == "sdk")
+# Пакеты сетевого клиента Tinfoil: импортирует их только дверь, и только
+# внутри функций за гейтом — верхний уровень двери тянут тесты без SDK.
+SDK_PACKAGES = ("tinfoil", "openai", "httpx")
+SDK_DOOR = "src/night_cloud.py"
 
 # Оба имени одного рубильника. Точка выхода не должна упоминать их сама —
 # знать их обязан только src/privacy.py.
@@ -124,7 +138,20 @@ def _is_subprocess_call(node: ast.AST) -> bool:
         and node.func.attr in _LAUNCHERS
 
 
+def _is_sdk_call(node: ast.AST) -> bool:
+    """Сетевой вызов SDK Tinfoil: аттестующий конструктор или отправка чата."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = ast.unparse(node.func)
+    return func == "TinfoilAI" or func.endswith(".TinfoilAI") \
+        or func.endswith(".chat.completions.create")
+
+
 def _guarded_subprocess_calls(fn: ast.AST) -> list[tuple[ast.Call, bool]]:
+    return _guarded_calls(fn, _is_subprocess_call)
+
+
+def _guarded_calls(fn: ast.AST, is_exit) -> list[tuple[ast.Call, bool]]:
     """Сетевые вызовы функции и доказан ли privacy-гейт на их пути.
 
     Это маленький анализ потока управления, а не поиск по файлу. Разрешение
@@ -135,7 +162,7 @@ def _guarded_subprocess_calls(fn: ast.AST) -> list[tuple[ast.Call, bool]]:
     found: list[tuple[ast.Call, bool]] = []
 
     def visit_expr(node: ast.AST, permitted: bool) -> None:
-        if _is_subprocess_call(node):
+        if is_exit(node):
             found.append((node, permitted))
         if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
             return
@@ -194,7 +221,7 @@ def _subprocess_calls(fn: ast.AST) -> list[ast.Call]:
 
 
 def test_cloud_loop_respects_the_live_toggle():
-    fn = _func(SRC / "daemon.py", "cloud_loop")
+    fn = _func(REPO / "src/daemon.py", "cloud_loop")
     assert "toggles" in _names(fn), "живой тумблер UI не спрашивают перед отправкой"
 
 
@@ -248,9 +275,7 @@ def test_api_key_is_stripped_before_calling_claude(filename, func):
     Ровно это и происходит при неудачном merge или рефакторинге, и ровно
     это переводит продукт с подписки на потокенный биллинг.
     """
-    path = SRC / filename
-    if not path.exists():
-        path = path.parent.parent / "scripts" / path.name
+    path = REPO / filename
     module = ast.parse(path.read_text(encoding="utf-8"))
     fn = _func(path, func)
 
@@ -286,9 +311,7 @@ def test_switch_is_asked_through_privacy(filename, func):
     ревизия отправляла граф в Anthropic при выключенном рубильнике. Имён у
     рубильника два, и знать их обязано одно место — src/privacy.py.
     """
-    path = SRC / filename
-    if not path.exists():
-        path = path.parent.parent / "scripts" / path.name
+    path = REPO / filename
     fn = _func(path, func)
     launches = _guarded_subprocess_calls(fn)
     assert launches, f"{filename}:{func} числится выходом в сеть, но никого не запускает"
@@ -437,16 +460,16 @@ def test_no_other_place_starts_claude():
     # Резолвер пути к CLI (D-П4) упоминает бинарь, но сеть не трогает и
     # запуска не содержит — регистрировать его выходом значило бы требовать
     # выключатель у функции без запроса. Его охраняет test_claude_resolver.py.
-    known.add("cloud.py:claude_bin")
+    known.add("src/cloud.py:claude_bin")
     # Зонд `claude --version` (аудит 05.09) запускает CLI, но ничего не
     # отправляет: версия печатается локально. Выключатель — у вызывающих
     # ночных шагов, которые зовут зонд после privacy.cloud_enrich_enabled.
-    known.add("cloud.py:probe_claude")
-    known.add("cloud.py:claude_bin_checked")
+    known.add("src/cloud.py:probe_claude")
+    known.add("src/cloud.py:claude_bin_checked")
     # Рецепт регистрации MCP-сервера (№336): `claude mcp add …` — текст,
     # который владелец копирует в свой терминал; сервер его не запускает и
     # процессов не порождает, в сеть ничего не уходит.
-    known.add("mcp_server.py:_registration")
+    known.add("src/mcp_server.py:_registration")
     found = set()
     resolved = set()
     for root in (SRC, SRC.parent / "scripts"):
@@ -455,7 +478,7 @@ def test_no_other_place_starts_claude():
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                key = f"{path.name}:{node.name}"
+                key = f"{path.relative_to(REPO)}:{node.name}"
                 if _calls_claude_bin(node):
                     resolved.add(key)
                 if _mentions_claude(_own_consts(node)) or key in resolved:
@@ -470,7 +493,7 @@ def test_no_other_place_starts_claude():
                     top.add(node.value)
                 stack.extend(ast.iter_child_nodes(node))
             if _mentions_claude(top) or _calls_claude_bin(tree):
-                found.add(f"{path.name}:<module>")
+                found.add(f"{path.relative_to(REPO)}:<module>")
     unknown = sorted(found - known)
     assert not unknown, (
         "появился новый путь запуска claude: " + ", ".join(unknown)
@@ -483,3 +506,142 @@ def test_no_other_place_starts_claude():
     assert not missing, (
         "известный выход обязан звать cloud.claude_bin(), а не держать "
         "свою копию резолва: " + ", ".join(missing))
+
+
+# ── Выходы вида `sdk` (№792): клиент Tinfoil в процессе, без `claude` ──
+
+
+@pytest.mark.parametrize("filename,func", SDK_EXITS)
+def test_sdk_exit_is_dominated_by_the_privacy_gate(filename, func):
+    """Каждый сетевой вызов SDK перекрыт privacy-гейтом на своём пути.
+
+    Предикат — доминирование, а не порядок текста (in3 DS-I8): гейт во
+    вложенном `if` или в соседней функции выход не закрывает.
+    """
+    fn = _func(REPO / filename, func)
+    calls = _guarded_calls(fn, _is_sdk_call)
+    assert calls, f"{filename}:{func} числится выходом SDK, но не зовёт ни TinfoilAI, ни .chat.completions.create"
+    unsafe = [ast.unparse(call) for call, guarded in calls if not guarded]
+    assert not unsafe, f"{filename}:{func}: вызов SDK не перекрыт privacy-гейтом: {unsafe}"
+    own = _own_consts(fn)
+    assert not (own & set(KILL_SWITCH_NAMES)), f"{filename}:{func} проверяет имя рубильника вручную"
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("""
+def exit(cfg, key):
+    if not privacy.cloud_enrich_enabled(cfg):
+        raise privacy.PrivacyRefused("нет")
+    return TinfoilAI(api_key=key)
+""", True),
+    ("""
+def exit(cfg, key, diagnostic):
+    if diagnostic:
+        if not privacy.cloud_enrich_enabled(cfg):
+            raise privacy.PrivacyRefused("нет")
+    return TinfoilAI(api_key=key)
+""", False),
+    ("""
+def exit(cfg, api):
+    stream = api.chat.completions.create(model="m", messages=[])
+    if not privacy.cloud_enrich_enabled(cfg):
+        return
+    return stream
+""", False),
+    ("""
+def exit(cfg, key):
+    if privacy.cloud_enrich_enabled(cfg):
+        pass
+    return tinfoil.TinfoilAI(api_key=key)
+""", False),
+])
+def test_sdk_guard_is_tied_to_the_call_path(source, expected):
+    """Мутации гейта для вида sdk — те же, что для запуска процесса."""
+    fn = next(n for n in ast.walk(ast.parse(source))
+              if isinstance(n, ast.FunctionDef) and n.name == "exit")
+    calls = _guarded_calls(fn, _is_sdk_call)
+    assert len(calls) == 1
+    assert calls[0][1] is expected
+
+
+def _py_files():
+    for root in (SRC, REPO / "scripts"):
+        yield from sorted(root.rglob("*.py"))
+
+
+def _sdk_imports(tree: ast.AST) -> list[tuple[ast.AST, str]]:
+    """Импорты пакетов SDK по корневому имени, включая importlib и __import__
+    с литералом: `import httpx as h`, `from openai.types import X`,
+    `importlib.import_module("tinfoil.client")` (in3 DS-I9)."""
+    out = []
+    for node in ast.walk(tree):
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names = [node.module]
+        elif isinstance(node, ast.Call) and node.args \
+                and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str) \
+                and ast.unparse(node.func) in ("importlib.import_module", "import_module", "__import__"):
+            names = [node.args[0].value]
+        for name in names:
+            if name.split(".")[0] in SDK_PACKAGES:
+                out.append((node, name))
+    return out
+
+
+def test_sdk_packages_are_imported_only_inside_the_door():
+    """Пакеты SDK импортирует только дверь — и только внутри функций.
+
+    Импорт на верхнем уровне двери сделал бы её неимпортируемой без SDK (CI,
+    тесты, машина без extra), а импорт в другом модуле — второй путь в сеть
+    мимо гейта (in3 K6, DS-I9).
+    """
+    offenders = []
+    for path in _py_files():
+        rel = str(path.relative_to(REPO))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        hits = _sdk_imports(tree)
+        if rel != SDK_DOOR:
+            offenders += [f"{rel}:{node.lineno} {name}" for node, name in hits]
+            continue
+        inside = {id(n) for f in ast.walk(tree)
+                  if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(f)}
+        offenders += [f"{rel}:{node.lineno} {name} (верхний уровень)"
+                      for node, name in hits if id(node) not in inside]
+    assert not offenders, "импорт SDK вне функций двери: " + ", ".join(offenders)
+
+
+def test_the_import_detector_sees_every_shape():
+    """Сторож импорта сам нуждается в тесте: каждая форма ловится."""
+    for src in ("import httpx", "import httpx as h", "from openai.types import X",
+                "import tinfoil.client", "importlib.import_module('tinfoil')",
+                "__import__('openai')", "from tinfoil import TinfoilAI"):
+        assert _sdk_imports(ast.parse(src)), src
+    for src in ("import requests", "from .openai_like import x", "__import__(name)",
+                "import httpx_mock_free_name"):
+        assert not _sdk_imports(ast.parse(src)), src
+
+
+def test_no_other_place_calls_the_sdk():
+    """TinfoilAI и .chat.completions.create — только в зарегистрированных функциях.
+
+    Обратная сторона реестра: новый вызов SDK в другом месте — новый выход в
+    сеть, и он обязан попасть в EXITS со своим гейтом, а не появиться тихо.
+    """
+    known = {f"{f}:{fn}" for f, fn in SDK_EXITS}
+    found = set()
+    for path in _py_files():
+        rel = str(path.relative_to(REPO))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        owner: dict[int, str] = {}
+        for f in ast.walk(tree):
+            if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for n in ast.walk(f):
+                    owner[id(n)] = f.name   # внутренний def перезапишет внешний: обход сверху вниз
+        for node in ast.walk(tree):
+            if _is_sdk_call(node):
+                found.add(f"{rel}:{owner.get(id(node), '<module>')}")
+    unknown = sorted(found - known)
+    assert not unknown, "вызов SDK вне реестра: " + ", ".join(unknown)
+    assert known <= found, "зарегистрированный выход SDK не зовёт SDK: " + ", ".join(sorted(known - found))

@@ -145,6 +145,15 @@ sufler:
                           # debrief inside the 30-minute ceiling, high/max take up to 2x longer
   cloud_live_effort: low  # effort for in-meeting calls (thread, answer to a question)
   cloud_night_effort: high  # nightly dossier and core reviews: 600 s ceiling, depth first
+  # Nightly core review provider: anthropic (default, claude -p) or tinfoil — a
+  # model in an attested enclave; the client checks the AMD signature and the
+  # router code against a signed release (pip install 'charoite[tinfoil]', see
+  # PRIVACY.md). Dossiers are skipped under tinfoil for now. Any other value is a
+  # refusal: nothing is sent.
+  # cloud_night_provider: tinfoil
+  cloud_night_tinfoil_model: deepseek-v4-1-flash  # core review model at Tinfoil
+  cloud_night_tinfoil_effort: max  # effort at Tinfoil: low|high|xhigh|max (no medium)
+  cloud_night_tinfoil_key_path: ~/.config/charoite/tinfoil_key  # API key, mode 600
   cloud_edit_graph: false
   cloud_engine: false     # whole chat through the cloud gateway (see llm.engine: cloud)
   # ↑ LET THE CLOUD EDIT THE GRAPH (optional, off by default).

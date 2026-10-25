@@ -100,6 +100,30 @@ def cloud_edit_graph_enabled(cfg: dict, env: dict | None = None) -> bool:
     return _allowed(cfg, "cloud_edit_graph", env) and cloud_enrich_enabled(cfg, env)
 
 
+#: Куда уходит ночная облачная ревизия. Не тумблер (в KEYS не входит): решает
+#: не «можно ли», а «кому» — разрешение по-прежнему даёт cloud_enrich.
+NIGHT_PROVIDERS = ("anthropic", "tinfoil")
+
+
+def night_provider(cfg: dict) -> str:
+    """Провайдер ночной ревизии: `anthropic` (умолчание) или `tinfoil`.
+
+    Ключа нет вовсе — `anthropic`, как было до выбора. Ключ есть, но значение не
+    ровно одно из NIGHT_PROVIDERS (`None`, `false`, пустая строка, «Tinfoil»,
+    пробел) — PrivacyRefused: владелец пытался выбрать, и опечатка не должна
+    молча увести текст к провайдеру, от которого он уходил (№792, in3 K3).
+    """
+    sufler = cfg.get("sufler") or {}
+    if "cloud_night_provider" not in sufler:
+        return "anthropic"
+    raw = sufler["cloud_night_provider"]
+    if isinstance(raw, str) and raw in NIGHT_PROVIDERS:
+        return raw
+    raise PrivacyRefused(
+        f"sufler.cloud_night_provider = {raw!r}: допустимо {', '.join(NIGHT_PROVIDERS)} — "
+        "ночная ревизия не отправлена")
+
+
 DEFAULT_LLM_URL = address_policy.DEFAULT_OLLAMA_URL
 DEFAULT_MLX_URL = "http://127.0.0.1:8080"
 

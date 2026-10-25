@@ -27,6 +27,7 @@ import pathlib
 import re
 import sys
 
+import pytest
 import yaml
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -51,7 +52,8 @@ _DIRECT = re.compile(
 # Файлы, которые ходят в облако и потому обязаны спрашивать privacy.py.
 # scripts/ — тоже: ночная ревизия досье живёт там.
 DECIDERS = ("src/daemon.py", "src/graph_updater.py",
-            "scripts/nightly_dossier_review.py", "scripts/nightly_claude_cores.py")
+            "scripts/nightly_dossier_review.py", "scripts/nightly_claude_cores.py",
+            "src/night_cloud.py")
 
 # Документы, которые обещают пользователю приватность. Все языки, а не только
 # английский: обещание не имеет права отличаться от перевода к переводу.
@@ -218,3 +220,55 @@ def test_the_bypass_detector_sees_every_shape_of_read():
         assert _direct_reads(src), f"обход не замечен: {src}"
     for src in NOT_BYPASSES:
         assert not _direct_reads(src), f"ложная тревога: {src}"
+
+
+# ── Провайдер ночной ревизии (№792): не тумблер, а «кому» ──
+
+def test_night_provider_absent_means_anthropic():
+    """Ключа нет вовсе — путь как до выбора провайдера."""
+    assert privacy.night_provider({}) == "anthropic"
+    assert privacy.night_provider({"sufler": {}}) == "anthropic"
+    assert privacy.night_provider({"sufler": None}) == "anthropic"
+
+
+@pytest.mark.parametrize("value", ["anthropic", "tinfoil"])
+def test_night_provider_accepts_exact_values(value):
+    assert privacy.night_provider({"sufler": {"cloud_night_provider": value}}) == value
+
+
+@pytest.mark.parametrize("value", [None, "", False, 0, [], "Tinfoil", " tinfoil", "tinfoil ",
+                                   "TINFOIL", "tinfoi", "openai", True])
+def test_night_provider_typo_is_a_refusal_not_a_default(value):
+    """Ключ есть, но значение не ровно из NIGHT_PROVIDERS — отказ (in3 K3).
+
+    `None` — тоже: `cloud_night_provider:` без значения в YAML читается как
+    None, и владелец, начавший выбирать, не должен молча уйти в Anthropic.
+    """
+    with pytest.raises(privacy.PrivacyRefused):
+        privacy.night_provider({"sufler": {"cloud_night_provider": value}})
+
+
+def test_night_provider_is_not_a_toggle():
+    """Провайдер — не разрешение: в KEYS его нет, отправку решает cloud_enrich."""
+    assert "cloud_night_provider" not in privacy.KEYS
+    assert privacy.cloud_enrich_enabled({"sufler": {"cloud_night_provider": "tinfoil"}}, {}) is False
+
+
+def test_examples_carry_the_provider_only_commented():
+    """Пример читается как живой конфиг, если config.yaml нет: провайдер в нём —
+    только комментарием, и выбранный из примера провайдер — anthropic."""
+    for path in sorted((REPO / "config").glob("config.example*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        assert "# cloud_night_provider: tinfoil" in text, f"{path.name}: ключ провайдера не описан"
+        cfg = yaml.safe_load(text)
+        assert "cloud_night_provider" not in (cfg.get("sufler") or {}), f"{path.name}: провайдер живой"
+        assert privacy.night_provider(cfg) == "anthropic", path.name
+
+
+def test_privacy_docs_name_the_provider_and_its_values():
+    for doc in PRIVACY_DOCS:
+        text = (REPO / doc).read_text(encoding="utf-8")
+        assert "cloud_night_provider" in text, f"{doc} не называет cloud_night_provider"
+        for value in privacy.NIGHT_PROVIDERS:
+            assert f"`{value}`" in text, f"{doc} не называет значение {value}"
+        assert "user_cache_secret" in text, f"{doc} молчит о файле SDK ~/.tinfoil/user_cache_secret"

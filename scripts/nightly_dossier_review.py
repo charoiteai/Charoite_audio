@@ -43,6 +43,7 @@ import live_gate  # noqa: E402
 import privacy  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
+from exit_codes import EXIT_PRIVACY_REFUSED, EXIT_STAGE_PENDING  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
 
 
@@ -231,6 +232,15 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     # из теста, будущего воркера или после рефакторинга call graph.
     if not privacy.cloud_enrich_enabled(cfg):
         return None, "сбой: облако выключено"
+    # И провайдер — тоже здесь, а не только в main: при tinfoil досье ждут
+    # этапа 2 (№792), и текст досье не должен уйти в Anthropic вопреки выбору
+    # владельца, кто бы ни позвал review (in3 DS-I7, S-I6).
+    try:
+        provider = privacy.night_provider(cfg)
+    except privacy.PrivacyRefused as e:
+        return None, f"сбой: провайдер ночи не принят: {e}"
+    if provider != "anthropic":
+        return None, f"сбой: провайдер ночи {provider} — досье этим путём не отправляются"
     current = path.read_text(encoding="utf-8") if current is None else current
     head, old_body, sources, _manual = split_dossier(current)
     if sources is None:
@@ -552,6 +562,19 @@ def main() -> int:
     if not privacy.cloud_enrich_enabled(cfg):
         print("облако выключено рубильником — пропуск")
         return 0
+    try:
+        provider = privacy.night_provider(cfg)
+    except privacy.PrivacyRefused as e:
+        print(f"провайдер ночи не принят: {e} — ревизия досье не начата")
+        return EXIT_PRIVACY_REFUSED
+    if provider == "tinfoil":
+        # Молчаливый ноль не виден ни в статусе ночи, ни в брифе (in3 S-I6):
+        # свой код, ночь ставит метку пропуска.
+        print("досье через Tinfoil — этап 2 (№792), шаг пропущен: досье никуда не отправлены")
+        return EXIT_STAGE_PENDING
+    if provider != "anthropic":
+        print(f"провайдер ночи {provider!r} шагу досье неизвестен — ничего не отправлено")
+        return EXIT_PRIVACY_REFUSED
 
     if args.all_graphs:
         # Все vault-ы, а не только iCloud: настроенный graph_dir вне iCloud

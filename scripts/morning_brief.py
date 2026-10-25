@@ -74,6 +74,48 @@ def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
     return out
 
 
+#: Исход попытки двери night_cloud → слова для брифа.
+_NIGHT_OUTCOMES = {
+    "attestation": "аттестация провайдера НЕ прошла — ничего не отправлено",
+    "unavailable": "провайдер недоступен",
+    "rejected": "ответ не принят",
+    "deadline": "ночь кончилась раньше ответа",
+    "refused": "провайдер не принят политикой",
+}
+
+
+def _night_cloud(graph: pathlib.Path, today: str | None = None) -> list[str]:
+    """Строки об аттестации ночного провайдера — только из файла состояния двери.
+
+    Текст отчёта пишет модель, и заголовок «Аттестация» в нём подделывается
+    (in3 S-I5, №792); файл состояния пишет сама дверь. Строка — только когда
+    есть что сказать: сегодняшняя попытка не принята или отпечаток роутера
+    сменился против прошлого принятого.
+    """
+    path = resolve_root(__file__) / "logs" / "night_cloud_state.json"
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))[str(graph.expanduser().resolve())]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    if not isinstance(entry, dict):
+        return []
+    today = today or dt.date.today().isoformat()
+    out = []
+    attempt = entry.get("last_attempt") if isinstance(entry.get("last_attempt"), dict) else {}
+    if attempt.get("date") == today and not attempt.get("accepted"):
+        what = _NIGHT_OUTCOMES.get(attempt.get("outcome"), f"исход {attempt.get('outcome')!r}")
+        reason = " ".join(str(attempt.get("reason") or "").split())[:200]
+        out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) сегодня не отработала: "
+                   f"{what}" + (f" ({reason})" if reason else ""))
+    cur = entry.get("last_accepted") if isinstance(entry.get("last_accepted"), dict) else {}
+    prev = entry.get("previous_accepted") if isinstance(entry.get("previous_accepted"), dict) else {}
+    if cur.get("date") == today and prev.get("fingerprint") and cur.get("fingerprint") != prev.get("fingerprint"):
+        out.append(f"- отпечаток роутера Tinfoil сменился: релиз {prev.get('release') or '?'} "
+                   f"({str(prev.get('fingerprint'))[:16]}) → {cur.get('release') or '?'} "
+                   f"({str(cur.get('fingerprint') or '?')[:16]})")
+    return out
+
+
 def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
     """Строки брифа из logs/memory_bench_alert.json — тревога ночного бенча памяти
     (№629 ч. 2) про этот граф. Номера и категории вопросов, не тексты. Два состояния:
@@ -211,6 +253,9 @@ def build_brief(graph: pathlib.Path) -> str | None:
     health = _graph_health(graph) + _bench_alert(graph)
     if health:
         lines += ["## Здоровье графа (ночной doctor)"] + health + [""]
+    attest = _night_cloud(graph)
+    if attest:
+        lines += ["## Аттестация ночного провайдера"] + attest + [""]
 
     # ночная ревизия Opus: три риска — в самый верх брифа, хвосты — в конец.
     # Берём свежий отчёт (сегодня либо вчера), старый молча пропускаем.
@@ -225,7 +270,9 @@ def build_brief(graph: pathlib.Path) -> str | None:
                 return [ln for ln in m.group(1).strip().splitlines() if ln.strip()] if m else []
             risks = night_sect("Три (?:главных )?риска")
             tails = night_sect("Потерянные хвосты")
-            link = f"[[{rev.stem}|полный отчёт]]"
+            # вчерашний отчёт подписан датой: сегодняшней ревизии нет, и брифу
+            # не годится выдавать прошлую ночь за эту (№792)
+            link = f"[[{rev.stem}|полный отчёт{' за ' + day if shift else ''}]]"
             if risks:
                 # вставляем сразу после «# Сегодня …» и пустой строки
                 pos = lines.index("", lines.index("# Сегодня — контекст дня (по встречам " + last_day + ")"))

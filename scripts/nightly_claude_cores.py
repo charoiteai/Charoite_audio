@@ -6,7 +6,9 @@
 протухшие факты, кандидаты на слияние, потерянные хвосты).
 
 Уважает те же рубильники, что и пост-встречный enrich: sufler.cloud_enrich
-и SUFLER_NO_CLOUD — выключены значит молчим. Ядра уходят в Anthropic API.
+и SUFLER_NO_CLOUD — выключены значит молчим. Ядра уходят провайдеру ночи:
+Anthropic API (`claude -p`, по умолчанию) или Tinfoil через дверь
+src/night_cloud.py — его выбирает `sufler.cloud_night_provider: tinfoil`.
 """
 from __future__ import annotations
 
@@ -29,7 +31,10 @@ import charoite_paths  # noqa: E402 — путь к src задаётся стр�
 import cloud  # noqa: E402
 import privacy  # noqa: E402
 import live_gate  # noqa: E402
+import night_cloud  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
+from exit_codes import (EXIT_ATTESTATION_FAILED, EXIT_PRIVACY_REFUSED,  # noqa: E402
+                        EXIT_PROVIDER_UNAVAILABLE)
 
 FRESH_DAYS = 7
 MAX_CHARS = 60_000
@@ -71,6 +76,16 @@ INDEX_CHARS = 4000
 # алфавиту — всегда те же). Карта копится и сливается, а не заменяется
 # партией ночи (круг-1 по PR #380: замена ломала ротацию — показанное
 # позавчера считалось «новым» и вытесняло никогда не показанное).
+
+
+def _state_path() -> pathlib.Path:
+    """Исходы ночного провайдера по графам: утренний бриф берёт аттестацию отсюда,
+    а не из текста модели (№792, in3 S-I5)."""
+    return _root() / "logs" / "night_cloud_state.json"
+
+
+#: Потолок шага, как у `claude -p` ниже: ночь ждёт ревизию не дольше.
+STEP_BUDGET_S = 600
 
 
 def _graph_key(graph: pathlib.Path) -> str:
@@ -207,6 +222,41 @@ def report_problem(returncode: int, out: str) -> str:
     return ""
 
 
+def _one_line(text: str) -> str:
+    """Значение frontmatter в одну строку: перевод строки разорвал бы шапку."""
+    return " ".join(str(text).split())
+
+
+def _ask_tinfoil(cfg: dict, prompt: str, graph: pathlib.Path) -> night_cloud.Reply:
+    """Ревизия через дверь Tinfoil; любой неуспех — выход своим кодом.
+
+    Коды разные, потому что ночь читает их разными метками: отказ политики,
+    подмена (аттестация), недоступность и «не ревизия» — четыре разных утра.
+    Истёкший срок — не сбой: ночь кончилась, ревизия завтра (in3 S-I3).
+    """
+    started = time.monotonic()
+    left = live_gate.step_left(STEP_BUDGET_S, started, started)
+    deadline = night_cloud.Deadline.after(STEP_BUDGET_S if left is None else left)
+    try:
+        return night_cloud.send(cfg, prompt, deadline=deadline, state_path=_state_path(),
+                                graph_key=_graph_key(graph))
+    except privacy.PrivacyRefused as e:
+        print(f"провайдер ночи не принят: {e}")
+        sys.exit(EXIT_PRIVACY_REFUSED)
+    except night_cloud.DeadlineExpired as e:
+        print(f"время ночного прогона вышло — ревизия ядер завтра ({e})")
+        sys.exit(0)
+    except night_cloud.AttestationFailed as e:
+        print(f"аттестация провайдера не прошла — ничего не отправлено: {e}")
+        sys.exit(EXIT_ATTESTATION_FAILED)
+    except night_cloud.ProviderUnavailable as e:
+        print(f"провайдер ночи недоступен: {e}")
+        sys.exit(EXIT_PROVIDER_UNAVAILABLE)
+    except night_cloud.ReplyRejected as e:
+        print(f"ревизия не принята: {e}")
+        sys.exit(2)
+
+
 def prune_reports(graph: pathlib.Path, prefix: str, keep: int = KEEP_REPORTS) -> None:
     """Служебные отчёты копились в корне графа бесконечно (аудит GLM 17.08):
     держим последние keep, старые убираем."""
@@ -231,6 +281,14 @@ def main() -> None:
     if not privacy.cloud_enrich_enabled(cfg):
         print("облако выключено (cloud_enrich / kill-switch) — пропуск")
         return
+    # Кому — сразу после «можно ли» и до любого зонда: при tinfoil CLI Claude не
+    # нужен (in3 DS-I2), а опечатка в провайдере — отказ политики своим кодом,
+    # а не «CLI облака не отвечает» (in3 S-I2).
+    try:
+        provider = privacy.night_provider(cfg)
+    except privacy.PrivacyRefused as e:
+        print(f"провайдер ночи не принят: {e}")
+        sys.exit(EXIT_PRIVACY_REFUSED)
     graph = graphs.graph_dir(cfg)
     if graph is None:
         print("sufler.graph_dir не задан — пропуск")
@@ -262,15 +320,20 @@ def main() -> None:
         print("ни одно ядро не поместилось в бюджет — пропуск")
         return
 
-    model = cloud.model(cfg, "cloud_model")
-    try:
-        cloud.claude_bin_checked()       # зонд --version: битый бинарник — код 3 (аудит 05.09)
-    except cloud.CloudCLIUnavailable as e:
-        print(f"CLI облака не отвечает: {e}")
-        sys.exit(3)          # инфраструктура, не содержание — ночь видит код 3
-    claude = cloud.claude_bin()
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    cloud.add_proxy(env)
+    if provider == "anthropic":
+        model = cloud.model(cfg, "cloud_model")
+        try:
+            cloud.claude_bin_checked()       # зонд --version: битый бинарник — код 3 (аудит 05.09)
+        except cloud.CloudCLIUnavailable as e:
+            print(f"CLI облака не отвечает: {e}")
+            sys.exit(3)          # инфраструктура, не содержание — ночь видит код 3
+        claude = cloud.claude_bin()
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+        cloud.add_proxy(env)
+    elif provider != "tinfoil":
+        # NIGHT_PROVIDERS расширили, а шаг не научили: не отправлять никуда
+        print(f"провайдер ночи {provider!r} шагу ядер неизвестен — ничего не отправлено")
+        sys.exit(EXIT_PRIVACY_REFUSED)
     prompt = (
         "Ты ночной ревизор графа знаний рабочих встреч. Ниже ядра (сквозные "
         f"темы) за последние {FRESH_DAYS} дней и индекс.\n\n" + blob + "\n\n"
@@ -287,31 +350,39 @@ def main() -> None:
     if not live_gate.night_window_open(_root(), what="ревизия ядер"):
         print("время ночного прогона вышло — ревизия ядер завтра")
         sys.exit(0)
-    try:
-        # Ревизии не положено НИ ОДНОГО инструмента: ядра и индекс уже в
-        # промпте (blob выше), а Read/Grep/Glob, разрешённые прежним
-        # контрактом, были вектором инъекции — строка в ядре могла заставить
-        # ревизора прочитать произвольный файл и вписать его в отчёт
-        # (аудит 14.08). Единый контракт «только текст» — cloud.text_only_args.
-        r = subprocess.run(
-            [claude, "-p", prompt, "--model", model,
-             *cloud.effort_args(cloud.effort(cfg, "cloud_night_effort")),   # №214
-             *cloud.text_only_args()],
-            capture_output=True, text=True, timeout=600, env=env,
-            stdin=subprocess.DEVNULL)
-        out = (r.stdout or "").strip()
-    except OSError as e:
-        print(f"CLI облака не запустился: {e}")
-        sys.exit(3)          # бинарник сменился под ногами — код 3, не «не принята»
-    except Exception as e:  # noqa: BLE001
-        print(f"CLI облака не отработал: {e}")
-        sys.exit(2)          # авария облака — тоже не ревизия (ревью 17.08)
-    problem = report_problem(r.returncode, out)
+    reply = None
+    if provider == "tinfoil":
+        reply = _ask_tinfoil(cfg, prompt, graph)
+        out, model, returncode, stderr = reply.text, reply.model, 0, ""
+    elif provider == "anthropic":   # явно, не голым else: прочие отсеяны выше (in3 S-M2)
+        try:
+            # Ревизии не положено НИ ОДНОГО инструмента: ядра и индекс уже в
+            # промпте (blob выше), а Read/Grep/Glob, разрешённые прежним
+            # контрактом, были вектором инъекции — строка в ядре могла заставить
+            # ревизора прочитать произвольный файл и вписать его в отчёт
+            # (аудит 14.08). Единый контракт «только текст» — cloud.text_only_args.
+            r = subprocess.run(
+                [claude, "-p", prompt, "--model", model,
+                 *cloud.effort_args(cloud.effort(cfg, "cloud_night_effort")),   # №214
+                 *cloud.text_only_args()],
+                capture_output=True, text=True, timeout=600, env=env,
+                stdin=subprocess.DEVNULL)
+            out = (r.stdout or "").strip()
+        except OSError as e:
+            print(f"CLI облака не запустился: {e}")
+            sys.exit(3)          # бинарник сменился под ногами — код 3, не «не принята»
+        except Exception as e:  # noqa: BLE001
+            print(f"CLI облака не отработал: {e}")
+            sys.exit(2)          # авария облака — тоже не ревизия (ревью 17.08)
+        returncode, stderr = r.returncode, r.stderr or ""
+    problem = report_problem(returncode, out)
     if problem:
         # Отказ, лимит или обрыв — не ревизия: раньше любой непустой stdout
         # ложился в граф как «ночная ревизия», а бриф молча терял разделы
         # (аудит 17.08). Не пишем, говорим вслух, код ≠ 0 — ночь увидит.
-        print(f"ревизия не принята: {problem} ({(r.stderr or '')[:200]})")
+        if reply is not None:
+            night_cloud.reject(_state_path(), _graph_key(graph), problem)
+        print(f"ревизия не принята: {problem} ({stderr[:200]})")
         sys.exit(2)
     day = dt.date.today().isoformat()
     dest = graph / f"Служебное_ночная_ревизия_{day}.md"
@@ -323,8 +394,12 @@ def main() -> None:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
-                    f"# Ночная ревизия ядер ({model})\n\n{out}\n")
+            # Аттестация — во frontmatter, вне текста модели, и бриф её отсюда
+            # не читает: сигнал берётся из файла состояния двери (in3 S-I5).
+            head = f"---\ntype: служебное\nдата: {day}\nпровайдер: {provider}\nмодель: {model}\n"
+            if reply is not None:
+                head += f"аттестация: {_one_line(reply.attestation)}\n"
+            f.write(f"{head}---\n# Ночная ревизия ядер ({model})\n\n{out}\n")
         os.replace(tmp, dest)
     finally:
         tmp.unlink(missing_ok=True)   # обрыв между open и replace не оставит .md.tmp в графе (DS M3 по #561)
@@ -332,6 +407,9 @@ def main() -> None:
     # Чистка карты — по всем ядрам графа, не только свежим: несвежее, но
     # живое ядро память о показе не теряет (круг-2 по PR #380, Codex).
     _save_seen(graph, sent, {p.stem for p in cores.glob("*.md") if not p.name.startswith("_")})
+    if reply is not None:
+        # принят — только теперь: секции на месте и отчёт лёг в граф (in3 DS-I1)
+        night_cloud.accept(_state_path(), _graph_key(graph), reply)
     prune_reports(graph, "Служебное_ночная_ревизия_")
 
 

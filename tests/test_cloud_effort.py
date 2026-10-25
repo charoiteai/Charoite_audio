@@ -134,6 +134,8 @@ _MODEL_KEYS_BY_FILE = {
     "scripts/nightly_dossier_review.py": ["cloud_model"],
     # порядок вхождения в файле: подсказки (строка ~2011), затем живой ответ
     "src/daemon.py": ["cloud_hints_model", "cloud_live_model"],
+    # дверь ночной ревизии у Tinfoil: своя модель, не cloud_model Anthropic (№792, in3 K5)
+    "src/night_cloud.py": ["cloud_night_tinfoil_model"],
 }
 
 
