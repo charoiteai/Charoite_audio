@@ -161,3 +161,35 @@ def test_every_pool_word_declines():
         assert len(pii_fake._pools[g]) >= 40 and len(pii_fake._pools[g + "2"]) >= 400
         for x in pii_fake._pools[g] + pii_fake._pools[g + "2"]:
             assert pii_fake._inflect(morph, x, "datv", "sing", g, "Name") != x
+
+
+def test_link_with_a_fake_among_other_words_keeps_the_target():
+    """Узел — только когда вся цель ссылки из его подделок: «[[Встреча с <подделка> 12.10]]» —
+    заметка встречи; переписать её в «[[Дмитрий Орлов]]» значит записать в граф чужую ссылку
+    (n793-out4 H-C1)."""
+    src = "Дима пришёл, см. [[Встреча с Димой 12.10]] и [[Дима]]."
+    m, d, _f = _dressed(src, NODES[:1])
+    back, _left = pii_fake.undress(m.text, d, sent=m.text)
+    assert back == src.replace("[[Дима]]", "[[Дмитрий Орлов]]")
+
+
+def test_lowercase_word_of_the_reply_is_not_a_capitalised_fake(monkeypatch):
+    """Подделка «Корней» ушла с заглавной — «причины корней» в ответе остаются словом
+    (n793-out4 H-C2); «Корней сказал» — подделка."""
+    pii_fake._load()
+    monkeypatch.setitem(pii_fake._pools, "masc", ["Корней"])
+    m, d, _f = _dressed("Дима пришёл.", NODES[:1])
+    assert m.text == "Корней пришёл."
+    back, left = pii_fake.undress("Разберём причины корней проблемы. Корней сказал.", d, sent=m.text)
+    assert back == "Разберём причины корней проблемы. Дима сказал." and left == 0
+
+
+def test_fake_left_unresolved_goes_out_marked():
+    """Подделка, которая разбирается в две группы, не разворачивается и уходит в граф
+    помеченной «⟦?…⟧», как обещают сообщения вызывающих (n793-out4 S-I3)."""
+    m, d, _f = _dressed()
+    fake = dict(d.pairs["Ч1"])["Дима"]
+    d.pairs["Ч9"] = [("Петя", fake)]
+    d.canon["Ч9"] = None
+    back, left = pii_fake.undress(f"{fake} молчал.", d, sent=m.text)
+    assert back == f"⟦?{fake}⟧ молчал." and left == 1

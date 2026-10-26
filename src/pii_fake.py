@@ -192,7 +192,8 @@ class _Picker:
             self.rnd.shuffle(order)
             x = next((x for x in order if not self.taken(x)), None)
             if x is not None:
-                self.banned.add(_e(x))
+                # все формы выбранной: «Агат» (система) занимает и «Агата» (n793-out4 S-I2)
+                self.banned |= self._lexemes[x] | {_e(x)}
                 return x
         return None
 
@@ -377,6 +378,13 @@ def _orig_in_case(m, s: _Slot, cases: set) -> str | None:
     return None
 
 
+def _fits(s: _Slot, w: str) -> bool:
+    """Подделка-имя ушла с заглавной — строчное слово ответа не она: «причины корней»
+    при подделке «Корней» (n793-out4 H-C2). Подделка со строчной (система «портал») —
+    в любом регистре: в начале фразы модель напишет её с заглавной."""
+    return not s.fake[:1].isupper() or w[:1].isupper()
+
+
 def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
     """Ответ модели обратно в имена: `(текст, сколько подделок осталось)`. Счёт —
     в `d.back`. `sent` — отправленный текст: имена ответа, которых в нём не было, —
@@ -388,12 +396,12 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
 
     def one(mt: re.Match) -> str:
         w = mt.group(0)
-        hit = exact.get(_e(w), [])
+        hit = [s for s in exact.get(_e(w), ()) if _fits(s, w)]
         if hit and len({s.gid for s in hit}) == 1:
             d.back["exact"] += 1
             return next((s for s in hit if s.fake == w), hit[0]).orig
         lemmas, cases = _lemmas(m, w)
-        slots = [s for lem in lemmas for s in by_lemma.get(lem, ())]
+        slots = [s for lem in lemmas for s in by_lemma.get(lem, ()) if _fits(s, w)]
         if not slots or len({s.gid for s in slots}) != 1:
             if w[:1].isupper() and _e(w) not in sent_words and any(
                     ("Name" in p.tag or "Surn" in p.tag) for p in m.parse(w)):
@@ -411,15 +419,19 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
         d.back["canon"] += 1
         return d.canon.get(slots[0].gid) or slots[0].orig
 
-    # ссылка целиком на подделку — имя узла, а не форма: «[[Глеба Ладыгина]]» битая
+    def groups(w: str) -> set[str]:
+        lemmas, _c = _lemmas(m, w)
+        return ({s.gid for lem in lemmas for s in by_lemma.get(lem, ()) if _fits(s, w)}
+                | {s.gid for s in exact.get(_e(w), ()) if _fits(s, w)})
+
+    # ссылка целиком на подделку — имя узла, а не форма: «[[Глеба Ладыгина]]» битая.
+    # Только когда КАЖДОЕ слово цели — подделка этого узла, как `pii_mask.unmask`:
+    # «[[Встреча с Глебом 12.10]]» — заметка встречи, не узел человека (n793-out4 H-C1)
     def link(mt: re.Match) -> str:
         target = mt.group(1)
-        gids = set()
-        for w in _WORD.findall(target):
-            lemmas, _c = _lemmas(m, w)
-            gids |= {s.gid for lem in lemmas for s in by_lemma.get(lem, ())}
-            gids |= {s.gid for s in exact.get(_e(w), ())}
-        if len(gids) == 1 and d.canon.get(next(iter(gids))):
+        per = [groups(w) for w in _WORD.findall(target)]
+        gids = set().union(*per) if per else set()
+        if per and all(per) and len(gids) == 1 and d.canon.get(next(iter(gids))):
             d.back["exact"] += 1
             return "[[" + d.canon[next(iter(gids))]
         return "[[" + _WORD.sub(one, target)
@@ -427,9 +439,18 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
     text = re.sub(r"\[\[([^\]|#\n]+)", link, reply)
     parts = re.split(r"(\[\[[^\]|#\n]+)", text)
     text = "".join(p if p.startswith("[[") else _WORD.sub(one, p) for p in parts)
-    # осталась — слово, которое всё ещё разбирается в подделку (двум группам сразу и т. п.)
-    left = sum(1 for w in _WORD.findall(text)
-               if _e(w) in exact or _lemmas(m, w)[0] & by_lemma.keys())
+    # осталась — слово, которое всё ещё разбирается в подделку (двум группам сразу и т. п.):
+    # в граф оно уйдёт помеченным «⟦?…⟧», как обещают сообщения вызывающих (n793-out4 S-I3)
+    left = 0
+
+    def mark(mt: re.Match) -> str:
+        nonlocal left
+        if not groups(mt.group(0)):
+            return mt.group(0)
+        left += 1
+        return f"⟦?{mt.group(0)}⟧"
+
+    text = _WORD.sub(mark, text)
     d.back["left"] = left
     return text, left
 
