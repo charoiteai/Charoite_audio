@@ -1299,14 +1299,17 @@ confirms a date only inside the meeting-day window (`fact_check.due_dates`:
 the nearest such day not before "meeting − 7 days" and not before the meeting
 itself), and the day must be said as a day ("by the 28th", "28 числа"; not a
 full other date, a clock time, a bare count or a count after a preposition, "by
-28 people"); a weekday said with a preposition ("by Friday") confirms its nearest
-date, with "next" the one after, and "tomorrow" the next day. A part of the item
-is a deadline only if it starts as one ("by", "until", "через", "до", "today",
+28 people"); a weekday said in any form ("on Friday", "по пятницам") confirms
+its dates within two weeks of the meeting, and "tomorrow" the next day. A part
+of the item from the third on ("**Name** — task — deadline") is a deadline only
+if it starts as one ("by", "until", "через", "до", "today",
 a weekday) or is a whole date or time: "room 405" or "version 2.1" is the task,
 not a deadline. Such a part with a date is judged by its dates only; without
-one, by its numbers (reply stamps do not count) and time words. A date the Tasks
-chip would draw ("до/к/дедлайн DD.MM" anywhere, the `TaskDue.parse` rule) is
-judged wherever it stands and cut out of the task text, the mark following it.
+one, by its anchor only: a weekday or "today/tomorrow" said in any form, a clock
+time by its numbers (reply stamps do not count), "by the 28th" as a day; other
+words and numbers ("in 3 days", "urgent", "by release 3.4") are not judged. The
+name and the task text are not read: a date inside the task ("сдать отчёт до
+28.11") is not judged (one deadline parser shared with the app chip is №607).
 The gate walks every checkbox item of the minutes (the Tasks tab reads them all),
 splits on any dash, and judges against the same text as the footnote (speech
 plus note).

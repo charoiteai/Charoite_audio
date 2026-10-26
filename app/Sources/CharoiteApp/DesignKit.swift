@@ -295,14 +295,15 @@ struct TaskDue: Equatable {
                     break
                 }
             }
-            // «до 29.02» в невисокосном году: календарь молча даёт 01.03, а у
-            // протокола такой даты нет — статуса нет (№805 out2, DS M3, Haiku M3)
-            guard calendar.component(.day, from: target) == day else { return .later }
             days = daysAhead()
         } else if days < -183, let next = calendar.date(byAdding: .year, value: 1, to: target) {
             target = next
             days = daysAhead()
         }
+        // «до 29.02» в невисокосном году, «до 31.04»: календарь молча даёт 01.03 и
+        // 01.05, а у протокола такой даты нет — статуса нет, с якорем и без
+        // (№805 out2, DS M3, Haiku M3; out3, Haiku I6)
+        guard calendar.component(.day, from: target) == day else { return .later }
         if days < 0 { return .overdue(days: -days) }
         if days <= 7 { return .soon(days: days) }
         return .later

@@ -92,6 +92,15 @@ final class DesignKitTests: XCTestCase {
         XCTAssertGreaterThan(checked, 0)
     }
 
+    func testImpossibleDayHasNoStatusWithoutAnchor() throws {
+        // без якоря «до 31.04» за два дня до 01.05 было «через 2 дня» (№805 out3, Haiku I6)
+        let due = try XCTUnwrap(TaskDue.parse("подать до 31.04"))
+        XCTAssertEqual(due.status(now: date(2026, 4, 29), anchor: nil), .later)
+        XCTAssertEqual(due.status(now: date(2026, 4, 29), anchor: date(2026, 4, 29)), .later)
+        let live = try XCTUnwrap(TaskDue.parse("подать до 30.04"))
+        XCTAssertEqual(live.status(now: date(2026, 4, 29), anchor: nil), .soon(days: 1))
+    }
+
     func testOverdueCountsDaysWithinTheYear() throws {
         let due = try XCTUnwrap(TaskDue.parse("отчёт до 24.07"))
         guard case .overdue(let days) = due.status(now: date(2026, 8, 4), anchor: nil) else {
