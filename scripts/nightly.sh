@@ -347,7 +347,9 @@ $PY -c "import sys; sys.path.insert(0, 'src'); import graphs, graph_updater as g
 step "graph doctor (итог ночи)"
 # Второй замер — после tier3, досье и дедупа: утренний бриф показывает
 # цифры ПОСЛЕ ночных слияний, а не до них (GLM, круг-1 по #448 M13).
-$PY scripts/graph_doctor.py --all-graphs || {
+# Только этот проход сдвигает базу «новых сборных»: ранний проход сравнивает с
+# той же базой, и предупреждение доживает до позднего брифа (№611 out2 C1).
+$PY scripts/graph_doctor.py --all-graphs --advance-base || {
   echo "⚠️ graph doctor (итог) не отработал"; FAILED="$FAILED graph-doctor"
   rm -f "${CHAROITE_ROOT:-$PWD}/logs/graph_doctor.json"   # как и первый: отчёт до слияний — не итог (аудит 30.08)
 }

@@ -26,8 +26,11 @@ def safe_name(name: str) -> str:
     return s or "без имени"
 
 
+#: Слова меток диаризации — одни на метку-имя узла и метку-деятеля в тексте:
+#: два набора разъехались бы на первой правке (n611-s1-out1 DS I3).
+_SPEAKER_WORDS = ("собеседник", "участник", "спикер", "speaker", "participant", "发言人", "参会者")
 _PLACEHOLDER_RE = re.compile(
-    r"^(?:собеседник|участник|спикер|speaker|participant|发言人|参会者)(?: ?[\d一二三四五六七八九十]+)?$")
+    r"^(?:" + "|".join(_SPEAKER_WORDS) + r")(?: ?[\d一二三四五六七八九十]+)?$")
 _LABEL_TAIL_RE = re.compile(r"\s*[(（]([^()（）]*)[)）]\s*$")
 
 
@@ -64,6 +67,13 @@ def is_speaker_placeholder(name: str) -> bool:
     return bool(_PLACEHOLDER_RE.match(name_key(re.sub(r"[№#]", " ", bare))))
 
 
+def is_label_tag(inner: str) -> bool:
+    """Содержимое скобки — метка диаризации, в том числе с пометкой через запятую:
+    «Собеседник 1», «Собеседник 1, муж». Одно правило для писателя
+    (`strip_speaker_label`), доктора и миграции (n611-s1-out3 DS M1)."""
+    return any(is_speaker_placeholder(part) for part in (inner or "").split(","))
+
+
 def is_placeholder_node(stem: str) -> bool:
     """Узел в Люди — метка диаризации? «Собеседник 3», «Speaker 2 (муж)»,
     «Собеседник 1 (Саша)» — да: облако дописывало имя в скобках, но узел
@@ -72,7 +82,132 @@ def is_placeholder_node(stem: str) -> bool:
     if is_speaker_placeholder(bare):
         return True
     m = re.search(r"[(（]([^()（）]*)[)）]\s*$", stem)
-    return bool(m) and is_speaker_placeholder(m.group(1))   # один набор меток, что и для целого имени (luna I5)
+    return bool(m) and is_label_tag(m.group(1))   # один набор меток, что и для целого имени (luna I5)
+
+
+#: Метка диаризации деятелем в тексте: «Собеседник 3 предложил…», «слова Собеседника 3»,
+#: «[[Собеседник 3]]», «Спикер-3», «Собеседник 3/4», «发言人3决定». Число — до трёх цифр
+#: целым словом: «спикер 2024 года», «спикер 3D», «участник 14.09», «участник 2-й линии» —
+#: не метка (замер 27.10: все 23 совпадения не со словом «собеседник» в досье рабочего
+#: графа — даты и «2-й»; дробь «Собеседник 3/4» — в графах 70+ раз, метка). Граница —
+#: явным классом, не `\w`: иероглиф вплотную к номеру — следующее слово (n611-s1-out3).
+_WORD_CH = r"0-9A-Za-zА-Яа-яЁё_"
+_SPEAKER_IN_TEXT_RE = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё])(?:" + "|".join(_SPEAKER_WORDS) + r")(?:а|у|ом|е)?"
+    r"[\s\-_№#]*(?:\d{1,3}(?![" + _WORD_CH + r"])(?![.:]\d|-[A-Za-zА-Яа-яЁё])|[一二三四五六七八九十]+)",
+    re.IGNORECASE)
+
+#: Закрытая скобка без вложенных в пределах строки — пометка при имени или ремарка:
+#: одинокая «(» не склеивается с «1)» маркера списка абзацем ниже (Sonnet I3).
+_PAREN_RE = re.compile(r"[(（][^()（）\n]*[)）]")
+
+
+def has_speaker_actor(text: str) -> bool:
+    """Есть ли в тексте досье метка диаризации деятелем: за меткой нет человека,
+    и факты разных людей разных встреч сходятся на «Собеседнике 3» (№611, замер
+    27.10: 165 досье). Метка в закрытых скобках («Вера (Собеседник 4)», «(муж,
+    Собеседник 4)») — пометка при имени, а не деятель. Скобки вырезаются парами:
+    незакрытая «(» выше по тексту («:(», обрезанная ссылка) метку не прячет
+    (n611-s1-out2 DS I3)."""
+    text = text or ""
+    for _ in range(2):                 # «((Собеседник 3))» — вложенная пара
+        text = _PAREN_RE.sub(" ", text)
+    return bool(_SPEAKER_IN_TEXT_RE.search(text))
+
+
+def _is_tag(inner: str, tags: frozenset[str]) -> bool:
+    """Хвостовая скобка у имени — пометка, а не часть имени? Да, если в ней метка
+    диаризации («(Собеседник 1, муж)»), строчное слово («(аналитик)»), перечень
+    через запятую, аббревиатура заглавными («(ОТДЕЛ)») или имя узла Систем и Команд
+    из `tags` («(Витрина)»). Иначе слово с заглавной — часть имени («Иван (Иванов)»;
+    замер 27.10 на рабочем графе: из 16 скобок с заглавной 3 фамилии, 5 имён и
+    уменьшительных, 2 аббревиатуры систем, 4 метки, 1 перечень, 1 отчество)."""
+    inner = inner.strip()
+    return (not inner or inner[:1].islower() or "," in inner or _is_place_tag(inner, tags)
+            or bool(_LABEL_WORD_RE.search(inner)))
+
+
+#: Слово метки целым словом: «(Спикер 41)», но не фамилия «(Собеседников)» или
+#: «(СпикерСофт)» (n611-s1-out3 Sonnet M2, DS I3).
+_LABEL_WORD_RE = re.compile(r"(?<![A-Za-zА-Яа-яЁё])(?:" + "|".join(_SPEAKER_WORDS) + r")(?:а|у|ом|е)?"
+                            r"(?![A-Za-zА-Яа-яЁё])", re.IGNORECASE)
+
+
+def _is_place_tag(inner: str, tags: frozenset[str]) -> bool:
+    """Скобка называет место человека — аббревиатуру заглавными или узел Систем и
+    Команд: «Илья (ОТДЕЛ)». Такая пометка различает тёзок сама, узел не голый."""
+    inner = inner.strip()
+    return inner.isupper() or inner.casefold().replace("ё", "е") in tags
+
+
+def name_words(name: str, tags: frozenset[str] = frozenset()) -> list[str]:
+    """Слова имени человека для тёзок: «Саша (из минуток)» → [«саша»], «Дмитрий
+    (Фамилия)» → [«дмитрий», «фамилия»], «Жан-Пьер» → [«жан-пьер»].
+
+    Хвостовая скобка-пометка (`_is_tag`) снимается; `tags` — имена узлов Систем и
+    Команд графа в нижнем регистре, «ё» = «е»: «Иван (Витрина)» — Иван из Витрины,
+    а не тёзка «витрина» (n611-s1-out2 Sonnet I3). Дефис имя не режет — «Жан-Пьер»
+    один человек (Haiku I1); «ё» = «е»; число — не слово: копия «Саша 2» не полный
+    тёзка (Sonnet I3)."""
+    m = _LABEL_TAIL_RE.search(name or "")
+    if m and _is_tag(m.group(1), tags):
+        name = name[:m.start()]
+    words = []
+    for w in re.sub(r"[()（）]", " ", name or "").split():
+        w = re.sub(r"^[\W_]+|[\W_]+$", "", w).casefold().replace("ё", "е")
+        if w and not w.isdigit():
+            words.append(w)
+    return words
+
+
+def namesake_index(names, tags: frozenset[str] = frozenset()) -> dict[str, list[str]]:
+    """Слово имени (`name_words`) → многословные имена с этим словом.
+
+    Порядок слов не важен: «Саша Образцов» и «Образцов Саша» оба лягут под «саша».
+    Узел с местом в скобке («Илья (ОТДЕЛ)», «Иван (ИВАНОВ)») — отдельный человек, тёзка
+    голого «Илья» (n611-s1-out3 Sonnet I2, Haiku I3). Метки диаризации в индекс не
+    идут — за ними нет человека."""
+    index: dict[str, list[str]] = {}
+    for name in names:
+        words = name_words(name, tags)
+        tail = _LABEL_TAIL_RE.search(name)
+        placed = bool(tail) and _is_place_tag(tail.group(1), tags)
+        if (len(words) < 2 and not placed) or not words or is_placeholder_node(name):
+            continue
+        for w in dict.fromkeys(words):
+            index.setdefault(w, []).append(name)
+    return index
+
+
+def bare_namesakes(name: str, index: dict[str, list[str]], *, owner: str,
+                   tags: frozenset[str] = frozenset()) -> list[str]:
+    """Голое имя с тёзками: однословное имя («Саша»), у которого среди живых узлов
+    есть многословные с тем же словом («Саша Образцов», «Саша Сидоров») — их список,
+    иначе пусто.
+
+    `owner` — полное имя владельца, обязательно (пустая строка — владелец не
+    известен): узел владельца тёзкой не считается, владелец в своём графе один.
+    Узел владельца — все слова узла входят в имя владельца: «Пётр Лесков» при
+    владельце «Пётр Иванович Лесков» (n611-s1-out2 Sonnet 7). Голый «Саша» при
+    владельце «Саша Образцов» и живом «Саша Сидоров» — сборный: под ним владелец и
+    другой человек (n611-s1-out1). Однословный владелец («Пётр» в конфиге): голый
+    «Пётр» при живом «Пётр Лесков» — сборный по тому же правилу, модель отдаёт
+    «Пётр» и владельцу, и тёзке (n611-s1-out3 Sonnet I1, DS I4; снятие узла в out2 —
+    отменено).
+
+    Под голым именем граф копит факты разных людей: каждый «Саша» встречи садится
+    в один узел (№611, замер 27.10: 42 таких узла). Доктор считает по этому
+    предикату; затвор на входе (№611 этап 2) будет решать по нему же. Имя с числом
+    («Саша 2») — копия или метка, а не голое имя (n611-s1-out2 DS M3); имя с местом
+    в скобке («Илья (ОТДЕЛ)») тёзок уже различает — не голое."""
+    words = name_words(name, tags)
+    tail = _LABEL_TAIL_RE.search(name)
+    if (len(words) != 1 or is_placeholder_node(name) or (tail and _is_place_tag(tail.group(1), tags))
+            or any(w.isdigit() for w in re.sub(r"[()（）]", " ", name).split())):
+        return []
+    own = set(name_words(owner))
+    return sorted(n for n in index.get(words[0], [])
+                  if not (len(own) >= 2 and set(name_words(n, tags)) <= own))
 
 
 def strip_speaker_label(name: str) -> str:
@@ -86,7 +221,7 @@ def strip_speaker_label(name: str) -> str:
     целиком («Собеседник 2 (Саша)») не трогается: его отсеет
     `is_speaker_placeholder`, а человек в скобках — догадка облака, не факт."""
     m = _LABEL_TAIL_RE.search(name or "")
-    if not m or not is_speaker_placeholder(m.group(1)):
+    if not m or not is_label_tag(m.group(1)):
         return name
     bare = name[:m.start()].strip()
     return bare if bare and not is_speaker_placeholder(bare) else name

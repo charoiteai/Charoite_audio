@@ -108,7 +108,7 @@ def _kind(entry: cp.LogKind) -> str:
 
 
 # Имена, которые живут в logs/ рядом с журналами и под ретеншн попадать не должны.
-NOT_SWEPT = ["graph_doctor.json", "daemon.lock", "rebuild.lock", "mutation.lock",
+NOT_SWEPT = ["graph_doctor.json", "graph_feed.json", "graph_feed_base.json", "daemon.lock", "rebuild.lock", "mutation.lock",
              "nightly.json", f"rebuild-{STEM}.pid", "lexicon_candidates.md"]
 
 

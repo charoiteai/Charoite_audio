@@ -376,8 +376,13 @@ must end at night: after `NIGHTLY_MAX_H` hours (default 4) the heavy steps
 topics; what is left is picked up the next night, while the brief and the
 status are always written. The graph doctor (`scripts/graph_doctor.py`) is a
 deterministic lint without a model — broken links, diarization labels among
-People, orphans, duplicates and near-duplicates, `_MOC.md` coverage; its
-`logs/graph_doctor.json` feeds warnings into the brief, and the second pass
+People, orphans, duplicates and near-duplicates, `_MOC.md` coverage, collective
+nodes (a one-word name while full namesakes live — facts of different people
+under one node), people filed as Systems and dossiers with a diarization label as
+an actor; its `logs/graph_doctor.json` feeds warnings into the brief (collective
+nodes and people in Systems warn only on nodes new since the end of the previous night — the
+baseline `logs/graph_feed_base.json` is moved only by the night's final pass, so a new node shows in
+both briefs of that night), the full lists go to `logs/graph_feed.json`, and the second pass
 measures the graph after the night's merges. Memory vectors
 (`scripts/graph_search_index.py`) embed changed graph blocks with bge-m3 for
 the daemon's in-process memory (see "Graph memory lives in the daemon") —
