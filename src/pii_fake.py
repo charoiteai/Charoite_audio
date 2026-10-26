@@ -21,6 +21,7 @@ import random
 import re
 import secrets
 import threading
+from typing import Sequence
 
 import pii_mask
 
@@ -83,6 +84,10 @@ def _load():
             # в пул — только то, что словарь склоняет: «Есения» осталась бы в именительном
             for g in ("masc", "femn"):
                 _pools[g] = [x for x in NAMES[g] if _declines(m, x, "Name", g)]
+            # второй ярус — когда первый занят: на встрече до 90 людей (замер №793, 18 встреч №799)
+            import pii_fake_pool
+            _pools["masc2"], _pools["femn2"] = list(pii_fake_pool.MASC), list(pii_fake_pool.FEMN)
+            _pools["surn2"] = list(pii_fake_pool.SURNAMES)
             _pools["system"] = [x for x in SYSTEM_WORDS if _declines(m, x, None, None)]
             _morph = m
         return _morph
@@ -179,13 +184,17 @@ class _Picker:
             self._lexemes[word] = lexeme
         return "\0граф" in lexeme or bool(lexeme & self.banned)
 
-    def free(self, pool: list[str]) -> str | None:
-        cands = [x for x in pool if not self.taken(x)]
-        if not cands:
-            return None
-        x = self.rnd.choice(cands)
-        self.banned.add(_e(x))
-        return x
+    def free(self, *pools: Sequence[str]) -> str | None:
+        """Случайное свободное слово первого пула, где оно есть; ярусы по порядку.
+        Проверка `taken` дорогая (лексема и словарь графа) — до первого свободного."""
+        for pool in pools:
+            order = list(pool)
+            self.rnd.shuffle(order)
+            x = next((x for x in order if not self.taken(x)), None)
+            if x is not None:
+                self.banned.add(_e(x))
+                return x
+        return None
 
     def abbr(self) -> str:
         # как настоящие: «ЗЛК», «ОРИС» — три-четыре буквы, гласная не больше одной
@@ -223,10 +232,11 @@ def _person(pk: _Picker, forms: list[str]) -> list[str]:
                       if r in q.tag and gender in q.tag), p)
             if r not in parts:
                 if r == "Patr":
-                    name = pk.free(_pools["masc"])
+                    name = pk.free(_pools["masc"], _pools["masc2"])
                     parts[r] = _patronymic(name, gender) if name else None
                 else:
-                    parts[r] = pk.free(_pools[gender] if r == "Name" else SURNAMES)
+                    parts[r] = (pk.free(_pools[gender], _pools[gender + "2"]) if r == "Name"
+                                else pk.free(SURNAMES, _pools["surn2"]))
                 if parts[r] is None:
                     raise pii_mask.MaskRefused("пул подставных имён исчерпан — отправка отменена")
             case, num = _case(p)

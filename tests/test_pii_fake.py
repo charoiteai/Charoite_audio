@@ -64,13 +64,40 @@ def test_fake_never_matches_the_graph_or_the_sent_text():
             assert not pm._dictionary_spans(f, forms)
 
 
-def test_pool_exhausted_is_a_refusal():
+def test_pool_exhausted_is_a_refusal(monkeypatch):
+    """Оба яруса заняты — отказ, а не повтор подделки."""
     pii_fake._load()
+    monkeypatch.setitem(pii_fake._pools, "masc2", [])
     src = "Дима пришёл. " + " ".join(pii_fake._pools["masc"])
     forms = pm.build_forms(NODES, known=KNOWN)
     m = pm.mask(src, forms)
     with pytest.raises(pm.MaskRefused, match="пул"):
         pii_fake.dress(m, src, forms, seed=1)
+
+
+def test_first_tier_taken_falls_to_the_second():
+    pii_fake._load()
+    src = "Дима пришёл. " + " ".join(pii_fake._pools["masc"])
+    forms = pm.build_forms(NODES, known=KNOWN)
+    m = pm.mask(src, forms)
+    d = pii_fake.dress(m, src, forms, seed=1)
+    assert dict(d.pairs["Ч1"])["Дима"] in pii_fake._pools["masc2"]
+
+
+def test_a_meeting_of_a_hundred_and_twenty_people_gets_distinct_fakes():
+    """Замер №793: в промпте встречи до 90 людей (85 мужчин), первый ярус — 75 имён и
+    46 фамилий; c0107 падала отказом «пул исчерпан». Узлы — из второго яруса, чтобы и
+    он был частью занят."""
+    import pii_fake_pool
+    people = [f"{n} {s}" for n, s in zip(pii_fake_pool.MASC[:120], pii_fake_pool.SURNAMES[:120])]
+    nodes = tuple(pm.NodeForms(x) for x in people)
+    src = " ".join(f"{x} пришёл." for x in people)
+    forms = pm.build_forms(nodes, known=KNOWN)
+    m = pm.mask(src, forms)
+    d = pii_fake.dress(m, src, forms, seed=1)
+    fakes = [f for prs in d.pairs.values() for _o, f in prs]
+    assert len(d.pairs) == 120 and len(set(fakes)) == len(fakes)
+    assert not any(w in m.text for x in people for w in x.split())
 
 
 def test_fakes_change_between_requests_and_hold_within_one():
@@ -131,6 +158,6 @@ def test_every_pool_word_declines():
     """В пуле только склоняемое: «Есения» осталась бы в именительном («сказал Есения»)."""
     morph = pii_fake._load()
     for g in ("masc", "femn"):
-        assert len(pii_fake._pools[g]) >= 40
-        for x in pii_fake._pools[g]:
+        assert len(pii_fake._pools[g]) >= 40 and len(pii_fake._pools[g + "2"]) >= 400
+        for x in pii_fake._pools[g] + pii_fake._pools[g + "2"]:
             assert pii_fake._inflect(morph, x, "datv", "sing", g, "Name") != x
