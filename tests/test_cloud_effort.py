@@ -308,8 +308,9 @@ def test_both_model_keys_set_means_no_switch_notice(tmp_path, monkeypatch):
 # ── ночь у Tinfoil: усилие, путь ключа, чтение секрета (мутанты CI #857) ──
 
 class _Log:
-    """Поток лога ночи: строка видна читателю только после flush — как у
-    stdout/stderr, перенаправленных в файл лога."""
+    """Поток лога: строка видна читателю только после flush. Настоящий stderr
+    построчный (CPython ≥ 3.9) — заглушка держит контракт «строка видна при
+    любом потоке» (n792-mut DS-I1)."""
 
     def __init__(self):
         self.pending, self.seen = "", ""
@@ -362,7 +363,8 @@ def test_read_secret_missing_or_undecodable_is_an_empty_string(tmp_path):
     assert cloud.read_secret(bad) == ""
 
 
-def test_read_secret_warns_about_loose_mode_and_the_line_reaches_the_log(tmp_path, monkeypatch):
+@pytest.mark.parametrize("loose", [0o640, 0o604, 0o602])
+def test_read_secret_warns_about_loose_mode_and_the_line_reaches_the_log(tmp_path, monkeypatch, loose):
     key = tmp_path / "key"
     key.write_text("  tf-1234  \n", encoding="utf-8")
     key.chmod(0o600)
@@ -370,6 +372,6 @@ def test_read_secret_warns_about_loose_mode_and_the_line_reaches_the_log(tmp_pat
     monkeypatch.setattr(sys, "stderr", log)
     assert cloud.read_secret(key) == "tf-1234"
     assert log.seen == log.pending == "", "права 600 — без предупреждения"
-    key.chmod(0o640)
+    key.chmod(loose)
     assert cloud.read_secret(key) == "tf-1234"
     assert "доступен не только владельцу" in log.seen and "tf-1234" not in log.seen + log.pending

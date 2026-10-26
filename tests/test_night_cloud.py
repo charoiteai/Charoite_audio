@@ -9,12 +9,12 @@ CI без сети и без SDK: клиент подменяет фабрика
 """
 from __future__ import annotations
 
-import dataclasses
 import datetime as dt
 import importlib
 import importlib.util
 import json
 import json as _json
+import os
 import pathlib
 import re
 import ssl
@@ -1510,7 +1510,9 @@ def test_doctor_warns_about_a_key_without_the_provider(tmp_path, monkeypatch, ca
 
 class _Log:
     """Поток лога ночи: строка видна читателю только после flush — как у
-    stdout/stderr, перенаправленных в файл лога."""
+    stdout, перенаправленного в файл лога. Настоящий stderr построчный
+    (CPython ≥ 3.9), и flush там ничего не меняет; заглушка держит контракт
+    «строка видна при любом потоке» (n792-mut DS-I1)."""
 
     def __init__(self):
         self.pending, self.seen = "", ""
@@ -1544,10 +1546,10 @@ def test_door_error_raised_outside_send_claims_nothing_sent():
 
 def test_deadline_and_reply_cannot_be_changed_after_creation():
     deadline = night_cloud.Deadline.after(5)
-    with pytest.raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(AttributeError):
         deadline.at = 0.0
     reply = night_cloud.Reply(text="t", provider="tinfoil", model="m", attestation="a")
-    with pytest.raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(AttributeError):
         reply.text = "другой"
 
 
@@ -1622,15 +1624,11 @@ def test_state_file_of_another_shape_reads_as_empty(tmp_path):
     assert _state(tmp_path)["last_attempt"]["outcome"] == "delivered"
 
 
-def test_state_is_written_where_no_folder_exists_yet_without_noise(tmp_path, capsys):
+def test_state_is_written_where_no_folder_exists_yet_without_noise(tmp_path, monkeypatch, capsys):
     state = tmp_path / "новый корень" / "logs" / "night_cloud_state.json"
-    real = night_cloud._attest
-    night_cloud._attest = Factory()
-    try:
-        reply = night_cloud.send(_cfg(tmp_path), "ядра графа", deadline=night_cloud.Deadline.after(30),
-                                 state_path=state, graph_key="G")
-    finally:
-        night_cloud._attest = real
+    monkeypatch.setattr(night_cloud, "_attest", Factory())
+    reply = night_cloud.send(_cfg(tmp_path), "ядра графа", deadline=night_cloud.Deadline.after(30),
+                             state_path=state, graph_key="G")
     night_cloud.accept(state, "G", reply)
     entry = night_cloud.read_entry(state, "G")
     assert entry["last_accepted"]["fingerprint"] == "ab" * 32 and entry["last_attempt"]["accepted"] is True
@@ -1638,22 +1636,35 @@ def test_state_is_written_where_no_folder_exists_yet_without_noise(tmp_path, cap
 
 
 def test_state_file_is_private_from_its_first_byte(tmp_path, monkeypatch):
+    """Права файла в момент рождения, до первой записи. umask задан: под
+    ночной маской 077 файл с 0o644 тоже родился бы закрытым (n792-mut S-I1)."""
     seen = []
-    real = night_cloud.os.fchmod
+    real = night_cloud.os.open
 
-    def fchmod(fd, mode):
-        seen.append(stat.S_IMODE(night_cloud.os.fstat(fd).st_mode))
-        real(fd, mode)
+    def opened(path, flags, *a, **k):
+        fd = real(path, flags, *a, **k)
+        if str(path).endswith(".json.tmp"):
+            seen.append(stat.S_IMODE(night_cloud.os.fstat(fd).st_mode))
+        return fd
 
-    monkeypatch.setattr(night_cloud.os, "fchmod", fchmod)
-    _send(tmp_path, _cfg(tmp_path), Factory())
-    assert seen and all(m & 0o077 == 0 and m & 0o600 == 0o600 for m in seen), [oct(m) for m in seen]
+    monkeypatch.setattr(night_cloud.os, "open", opened)
+    old = os.umask(0o022)
+    try:
+        _send(tmp_path, _cfg(tmp_path), Factory())
+    finally:
+        os.umask(old)
+    assert seen and all(m == 0o600 for m in seen), [oct(m) for m in seen]
 
 
 def test_state_file_keeps_graph_names_readable(tmp_path):
     _send(tmp_path, _cfg(tmp_path), Factory(), graph_key="Граф встреч")
     raw = (tmp_path / "logs" / "night_cloud_state.json").read_text(encoding="utf-8")
-    assert '\n "Граф встреч": {\n  "last_attempt"' in raw, raw[:200]
+    assert '"Граф встреч"' in raw and "\\u" not in raw, raw[:200]
+    lines = raw.splitlines()
+    graph = next(ln for ln in lines if '"Граф встреч"' in ln)
+    attempt = next(ln for ln in lines if '"last_attempt"' in ln)
+    indent = lambda ln: len(ln) - len(ln.lstrip(" "))
+    assert indent(attempt) > indent(graph), "вложенность видна отступом (n792-mut DS-I2)"
 
 
 def test_busy_state_lock_says_so_in_the_log(tmp_path, monkeypatch):
@@ -1676,8 +1687,11 @@ def test_failed_state_write_says_so_in_the_log(tmp_path, monkeypatch):
 
 
 def test_rejected_reply_is_recorded_as_not_accepted(tmp_path):
-    _send(tmp_path, _cfg(tmp_path), Factory())
-    night_cloud.reject(tmp_path / "logs" / "night_cloud_state.json", "G")
+    reply = _send(tmp_path, _cfg(tmp_path), Factory())
+    state = tmp_path / "logs" / "night_cloud_state.json"
+    night_cloud.accept(state, "G", reply)
+    assert _state(tmp_path)["last_attempt"]["accepted"] is True
+    night_cloud.reject(state, "G")
     attempt = _state(tmp_path)["last_attempt"]
     assert attempt["outcome"] == "rejected" and attempt["accepted"] is False
 
@@ -1714,8 +1728,10 @@ def test_send_with_no_time_left_does_not_attest(tmp_path):
     assert _state(tmp_path)["last_attempt"]["outcome"] == "deadline"
 
 
-@pytest.mark.parametrize("left,want", [(7.0, 7.0), (None, None)])
-def test_cores_step_deadline_is_what_is_left_of_the_night(cores_step, monkeypatch, left, want):
+@pytest.mark.parametrize("night", [None, 7.0, -10.0])
+def test_cores_step_deadline_is_what_is_left_of_the_night(cores_step, monkeypatch, night):
+    """Настоящий `live_gate.step_left`: нет потолка — бюджет шага; до резерва
+    хвоста 7 с — 7 с; ночь вышла — 0, а не бюджет (n792-mut S-I2)."""
     ncc = cores_step.ncc
     sends = []
 
@@ -1723,23 +1739,32 @@ def test_cores_step_deadline_is_what_is_left_of_the_night(cores_step, monkeypatc
         sends.append(k["deadline"].remaining())
         raise night_cloud.DeadlineExpired("стоп")
 
-    monkeypatch.setattr(ncc.live_gate, "step_left", lambda *a, **k: left)
+    if night is not None:
+        until = time.time() + ncc.live_gate.NIGHT_TAIL_S + night
+        monkeypatch.setenv(ncc.live_gate.NIGHTLY_UNTIL_ENV, str(until))
     monkeypatch.setattr(ncc.night_cloud, "send", fake_send)
     assert _exit_code(ncc.main) == 0
-    want = ncc.STEP_BUDGET_S if want is None else want
-    assert want - 1 < sends[0] <= want
+    want = ncc.STEP_BUDGET_S if night is None else max(0.0, night)
+    assert sends and max(0.0, want - 1) <= sends[0] <= want, sends
 
 
 def _anthropic_step(cores_step, monkeypatch, tmp_path, script: str):
-    """Шаг ядер на ветке anthropic с настоящим подпроцессом: CLI — скрипт."""
+    """Шаг ядер на ветке anthropic с настоящим подпроцессом: CLI — скрипт.
+    Скрипт пишет свои аргументы в `argv` рядом, вызов — в `cores_step.runs`."""
     cli = tmp_path / "claude"
-    cli.write_text("#!/bin/sh\n" + script, encoding="utf-8")
+    cli.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{tmp_path / 'argv'}'\n" + script, encoding="utf-8")
     cli.chmod(0o755)
     cores_step.cfg["sufler"]["cloud_night_provider"] = "anthropic"
     ncc = cores_step.ncc
+    cores_step.runs = []
+
+    def run(*a, **k):
+        cores_step.runs.append(k)
+        return _REAL_RUN(*a, **k)
+
     monkeypatch.setattr(ncc.cloud, "claude_bin_checked", lambda *a, **k: None)
     monkeypatch.setattr(ncc.cloud, "claude_bin", lambda *a, **k: str(cli))
-    monkeypatch.setattr(ncc.subprocess, "run", _REAL_RUN)
+    monkeypatch.setattr(ncc.subprocess, "run", run)
     return ncc
 
 
@@ -1751,6 +1776,19 @@ def test_cores_step_anthropic_writes_the_cli_report_without_the_api_key(cores_st
     assert _exit_code(ncc.main) == 0
     (rep,) = cores_step.graph.glob("Служебное_ночная_ревизия_*.md")
     assert SECTIONS.strip() in rep.read_text(encoding="utf-8")
+
+
+def test_cores_step_anthropic_cli_gets_the_model_no_terminal_and_a_bound(cores_step, monkeypatch, tmp_path):
+    """Модель из конфига доходит до CLI, терминал CLI не читает, вызов ограничен
+    бюджетом шага (n792-mut H-I1, S-M3)."""
+    ncc = _anthropic_step(cores_step, monkeypatch, tmp_path, f"cat <<'R'\n{SECTIONS}R\n")
+    assert _exit_code(ncc.main) == 0
+    argv = (tmp_path / "argv").read_text(encoding="utf-8").splitlines()
+    model = ncc.cloud.model(cores_step.cfg, "cloud_model")
+    assert model and argv[argv.index("--model") + 1] == model, argv
+    (k,) = cores_step.runs
+    assert k["stdin"] is subprocess.DEVNULL
+    assert 0 < k["timeout"] <= ncc.STEP_BUDGET_S
 
 
 def test_cores_step_anthropic_failure_names_the_cli_reason(cores_step, monkeypatch, tmp_path, capsys):
