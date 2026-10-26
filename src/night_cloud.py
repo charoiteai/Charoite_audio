@@ -77,12 +77,13 @@ class NightCloudError(Exception):
 
 class AttestationFailed(NightCloudError):
     """Документ аттестации не прошёл проверку двери (`_verified`), проверку
-    самого SDK (`_attestation_error`) или сбой сертификата по правилу SDK
-    (`_certificate_error`).
+    самого SDK (`_attestation_error`, `_report_error`) или сбой сертификата по
+    правилу SDK (`_certificate_error`).
 
     Документ проверяется до отправки — тогда ни байта не ушло. Сбой
-    сертификата возможен и посреди ответа (несовпадение ключа энклава); `sent`
-    у исключения честно говорит, начинался ли переход к отправке.
+    сертификата SDK по своей докстроке даёт при установке соединения; ветка
+    потока классифицирует по тому же правилу, и `sent` у исключения говорит,
+    начинался ли переход к отправке.
     """
 
 
@@ -129,17 +130,25 @@ def _scrub(text: str, secret: str) -> str:
     return text.replace(secret, "<ключ>") if secret else text
 
 
+#: Потолок строки причины в логе ночи: тело ответа шлюза может цитировать запрос (out6 S-M2).
+_CAUSE_LIMIT = 2000
+
+
 def _cause(text, secret: str = "") -> str:
     """Текст причины для строки шага — одна точка сборки (решения главной по out4, out5).
 
-    Сначала ключ и пути машины (`privacy.scrub_local_paths`), обрезки нет:
-    обрезка до чистки оставляла обрывок пути (out5 C). Чистка не решает
-    исход: упала — причина скрыта целиком, а не отдана сырой.
+    Сначала ключ и пути машины (`privacy.scrub_local_paths`), потом потолок
+    длины: обрезка до чистки оставляла обрывок пути (out5 C), после чистки
+    пути в тексте уже нет. Чистка не решает исход: упала — причина скрыта
+    целиком, а не отдана сырой.
     """
     try:
-        return privacy.scrub_local_paths(_scrub(text, secret))[0]
+        text = privacy.scrub_local_paths(_scrub(text, secret))[0]
     except Exception as e:  # noqa: BLE001 — уборка не подменяет исход (out5 DS-M3)
         return f"<причина скрыта: пути не вычищены, {type(e).__name__}>"
+    if len(text) > _CAUSE_LIMIT:
+        text = f"{text[:_CAUSE_LIMIT]}… (обрезано {len(text) - _CAUSE_LIMIT} зн.)"
+    return text
 
 
 def _reason(e: BaseException, secret: str) -> str:
@@ -149,11 +158,16 @@ def _reason(e: BaseException, secret: str) -> str:
 
 
 def _http_status(e: BaseException) -> int | None:
-    """HTTP-код из цепочки причин (openai `APIStatusError.status_code`) — для состояния."""
-    for x in _causes(e):
-        code = getattr(x, "status_code", None)
+    """HTTP-код из исключения и его явных причин (`__cause__`; openai
+    `APIStatusError.status_code`) — для состояния. Неявный контекст не берётся:
+    ошибка, брошенная в обработчике чужого 503, своего кода не имеет (out6 DS-M3)."""
+    seen: list[BaseException] = []
+    while e is not None and e not in seen and len(seen) < 16:
+        seen.append(e)
+        code = getattr(e, "status_code", None)
         if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
             return code
+        e = e.__cause__
     return None
 
 
@@ -233,13 +247,32 @@ def _attestation_error(x: BaseException) -> bool:
                for k in type(x).__mro__)
 
 
+#: Провал проверки отчёта железа в SDK 0.15.0: модуль → класс. Они не наследники
+#: `AttestationError`; SDK оборачивает их в ValueError (`attestation_sev.py:88`,
+#: `attestation_tdx.py:268`).
+_REPORT_ERRORS = {"tinfoil.attestation.attestation_sev": "SevAttestationError",
+                  "tinfoil.attestation.attestation_tdx": "TdxAttestationError"}
+
+
+def _report_error(x: BaseException) -> bool:
+    """Отчёт железа SEV-SNP/TDX не прошёл проверку SDK — по имени и модулю в MRO."""
+    return any(_REPORT_ERRORS.get(k.__module__) == k.__name__ for k in type(x).__mro__)
+
+
 def _classify(e: BaseException) -> type[NightCloudError]:
     """Два класса, без своих эвристик по стадиям (решение главной по out4, п. 2 с
-    расширением по опыту out5): сбой сертификата по правилу SDK или его
-    `AttestationError` в самом исключении или его явных причинах — аттестация;
-    всё прочее — недоступен. Голый ValueError закреплённого measurement= (режим
-    pin) — недоступен: pin вне этапа 1. Отказ документа решает `_verified`."""
-    if any(_certificate_error(x) or _attestation_error(x) for x in _causes(e)):
+    расширениями по опытам out5, out6). Цепочка — `__cause__ or __context__`,
+    как у SDK (`_causes`):
+    - сбой сертификата по правилу SDK или его `AttestationError` — аттестация;
+    - провал отчёта железа SEV/TDX — аттестация, если в цепочке нет OSError:
+      сеть к KDS или коллатералу (requests.*, URLError, таймаут — все OSError)
+      даёт тот же класс SDK, а это недоступность (опыт e_sev_chain 26.10);
+    - всё прочее — недоступен. Голый ValueError закреплённого measurement=
+      (режим pin) — недоступен: pin вне этапа 1. Отказ документа решает `_verified`."""
+    chain = _causes(e)
+    if any(_certificate_error(x) or _attestation_error(x) for x in chain):
+        return AttestationFailed
+    if any(_report_error(x) for x in chain) and not any(isinstance(x, OSError) for x in chain):
         return AttestationFailed
     return ProviderUnavailable
 
@@ -279,15 +312,18 @@ def _verified(client) -> tuple[str, str, str]:
         bad = [name for name, st in steps.items() if getattr(st, "status", "") != "success"]
         if bad:
             raise AttestationFailed("шаги аттестации не success: " + ", ".join(sorted(map(str, bad))))
-        fingerprint = str(getattr(doc, "code_fingerprint", "") or "")
+        fingerprint = str(getattr(doc, "code_fingerprint", "") or "").strip().lower()
         if not fingerprint:
             raise AttestationFailed("документ аттестации без отпечатка кода")
+        if _HEX.fullmatch(fingerprint) is None:
+            # отпечаток, который форма состояния не сохранит, гасил бы сигнал смены (out6 DS-I1)
+            raise AttestationFailed("отпечаток кода не той формы (ждём hex)")
+        release = str(getattr(doc, "release_tag", "") or "")
+        host = str(getattr(doc, "enclave_host", "") or "")
     except AttestationFailed:
         raise
     except Exception as e:  # noqa: BLE001 — непроверяемый документ трактуем строго
         raise AttestationFailed(f"документ аттестации не читается: {type(e).__name__}") from None
-    release = str(getattr(doc, "release_tag", "") or "")
-    host = str(getattr(doc, "enclave_host", "") or "")
     try:
         from importlib.metadata import version
         sdk = version("tinfoil")
@@ -306,7 +342,7 @@ FINISH_REASONS = ("stop", "length", "content_filter", "tool_calls", "function_ca
 _STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z)?")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _HEX = re.compile(r"[0-9a-f]{16,128}")
-_RELEASE = re.compile(r"v?\d{1,6}\.\d{1,6}\.\d{1,6}")
+_RELEASE = re.compile(r"v?\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.]{1,32})?")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
 
 
@@ -360,11 +396,15 @@ def read_entry(path: pathlib.Path, graph_key: str) -> dict:
 
 
 def _read_state(path: pathlib.Path) -> dict:
+    """Файл состояния, каждая запись — в форме: запись прежней версии с текстом
+    причины не переживает ни чтения, ни следующей записи (out6 S-M4)."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}   # битый файл = первый запуск (in3 DS-I4)
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: conform_entry(v) for k, v in data.items()}
 
 
 def _update_state(path: pathlib.Path, graph_key: str, change: Callable[[dict], None]) -> None:

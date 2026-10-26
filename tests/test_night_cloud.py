@@ -247,6 +247,19 @@ def test_long_cause_keeps_no_fragment_of_the_account(tmp_path, pad):
     assert _ACCOUNT[:4] not in str(ei.value).replace("x", "")
 
 
+def test_long_cause_is_capped_after_the_scrub(tmp_path):
+    """Тело ответа шлюза может цитировать запрос — строка шага с потолком, и
+    путь у самой границы вычищен до обрезки (out6 S-M2, DS-M1)."""
+    limit = night_cloud._CAUSE_LIMIT
+    error = ValueError("x" * (limit - 40) + " " + _HOME_FILE + " " + "y" * 50_000)
+    with pytest.raises(night_cloud.ProviderUnavailable) as ei:
+        _send(tmp_path, _cfg(tmp_path), Factory(error=error))
+    text = str(ei.value)
+    assert len(text) < limit + 100 and "обрезано" in text, len(text)
+    assert _ACCOUNT[:4] not in text.replace("x", "").replace("y", "")
+    assert night_cloud._cause("коротко") == "коротко"
+
+
 def test_unexpected_error_cause_carries_no_home_path(tmp_path, monkeypatch):
     def broken(cfg, name):
         raise RuntimeError(f"bad config {_HOME_FILE}")
@@ -371,6 +384,8 @@ def test_conform_drops_old_fields_and_values_out_of_form():
         "last_attempt": {"at": "2026-10-26T02:00:00+03:00", "outcome": "attestation"},
         "fingerprint_change": {"from": "ab" * 8}}
     assert night_cloud.conform_entry(None) == {} and night_cloud.conform_entry({"last_attempt": "x"}) == {}
+    kept = night_cloud.conform_entry({"last_accepted": {"release": "v0.0.167-rc1"}})
+    assert kept == {"last_accepted": {"release": "v0.0.167-rc1"}}, "суффикс релиза не теряется (out6 S-M1)"
 
 
 def test_key_never_leaks_into_errors_state_or_stderr(tmp_path, capsys):
@@ -395,6 +410,68 @@ def test_failed_attestation_sends_nothing(tmp_path):
         _send(tmp_path, _cfg(tmp_path), factory)
     assert not factory.client.creates
     assert _state(tmp_path)["last_attempt"]["outcome"] == "attestation"
+
+
+def test_http_status_is_not_taken_from_an_implicit_context(tmp_path):
+    """Обрыв, брошенный в обработчике чужого 503, своего HTTP-кода не имеет;
+    явная обёртка (`from`) код несёт (out6 DS-M3)."""
+    try:
+        try:
+            raise _api_status(503, "busy")
+        except Exception:  # noqa: BLE001 — любой отказ, как у openai
+            raise ConnectionResetError("rst")   # noqa: B904 — неявный контекст и нужен
+    except ConnectionResetError as e:
+        reset = e
+    stream = FakeStream([_chunk("## Противоречия\n"), reset])
+    with pytest.raises(night_cloud.ProviderUnavailable):
+        _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(stream=stream)))
+    assert _assert_state_in_form(tmp_path)["last_attempt"]["http_status"] is None
+    wrapped = ConnectionError("openai")
+    wrapped.__cause__ = _api_status(502, "bad gateway")
+    with pytest.raises(night_cloud.ProviderUnavailable):
+        _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(create_error=wrapped)))
+    assert _assert_state_in_form(tmp_path)["last_attempt"]["http_status"] == 502
+
+
+def test_old_entries_of_other_graphs_lose_fields_out_of_form(tmp_path):
+    """Запись другого графа от прежней версии (reason с путём) не переживает
+    следующей записи файла (out6 S-M4, H-M3)."""
+    state = tmp_path / "logs" / "night_cloud_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"H": {"last_attempt": {"at": "2026-10-25T02:00:00+03:00",
+                                                        "outcome": "attestation", "reason": _HOME_FILE}},
+                                 "J": "строка вместо записи"}), encoding="utf-8")
+    _send(tmp_path, _cfg(tmp_path), Factory())
+    raw = state.read_text(encoding="utf-8")
+    assert "__792__" not in raw and '"reason"' not in raw and "строка" not in raw
+    data = json.loads(raw)
+    assert data["H"] == {"last_attempt": {"at": "2026-10-25T02:00:00+03:00", "outcome": "attestation"}}
+    assert data["J"] == {}
+
+
+class _RaisingDoc(types.SimpleNamespace):
+    @property
+    def release_tag(self):
+        raise RuntimeError("свойство документа сломано")
+
+
+def _raising_release_client() -> FakeClient:
+    client = FakeClient()
+    client.doc = _RaisingDoc(**{k: v for k, v in vars(client.doc).items() if k != "release_tag"})
+    return client
+
+
+def test_uppercase_fingerprint_is_normalised_and_compared(tmp_path):
+    """Отпечаток в другом регистре — тот же отпечаток: сохраняется в форме, и
+    смена назавтра видна (out6 DS-I1, H-I1)."""
+    state = tmp_path / "logs" / "night_cloud_state.json"
+    reply = _send(tmp_path, _cfg(tmp_path), Factory(client=_doc_client(code_fingerprint="AB" * 32)))
+    night_cloud.accept(state, "G", reply)
+    assert _assert_state_in_form(tmp_path)["last_accepted"]["fingerprint"] == "ab" * 32
+    reply = _send(tmp_path, _cfg(tmp_path), Factory(client=_doc_client(code_fingerprint="CD" * 32)))
+    night_cloud.accept(state, "G", reply)
+    change = _assert_state_in_form(tmp_path)["fingerprint_change"]
+    assert change["from"] == "ab" * 8 and change["to"] == "cd" * 8
 
 
 def _doc_client(**change) -> FakeClient:
@@ -424,9 +501,11 @@ def _broken_doc_client() -> FakeClient:
     _doc_client(steps={s: types.SimpleNamespace(status="success")
                        for s in ("fetch_digest", "verify_code", "verify_enclave")}),
     _doc_client(code_fingerprint=""),
+    _doc_client(code_fingerprint="sha256:" + "ab" * 32),   # форма не сохранит — смена погасла бы (out6 DS-I1)
     _broken_doc_client(),
+    _raising_release_client(),      # сбой чтения релиза — тоже документ (out6 DS-M5)
 ], ids=["not-verified", "step-failed", "verified-str", "steps-empty", "steps-none", "steps-list",
-        "step-missing", "no-fingerprint", "doc-raises"])
+        "step-missing", "no-fingerprint", "fingerprint-form", "doc-raises", "release-raises"])
 def test_unverified_document_is_an_attestation_failure(tmp_path, client):
     with pytest.raises(night_cloud.AttestationFailed):
         _send(tmp_path, _cfg(tmp_path), Factory(client=client))
@@ -456,6 +535,24 @@ _SdkMeasurementMismatch = type("MeasurementMismatchError", (_SdkAttestationError
                                {"__module__": "tinfoil.attestation.types"})
 
 
+def _chained(*errors: BaseException) -> BaseException:
+    """Цепочка как у SDK: каждое следующее — `__cause__` предыдущего."""
+    for outer, inner in zip(errors, errors[1:]):
+        outer.__cause__ = inner
+    return errors[0]
+
+
+def _report_error(platform="sev", module=None):
+    """Провал отчёта железа SDK 0.15.0: класс не наследник AttestationError."""
+    name = {"sev": "SevAttestationError", "tdx": "TdxAttestationError"}[platform]
+    module = module or f"tinfoil.attestation.attestation_{platform}"
+    return type(name, (Exception,), {"__module__": module})("Attestation verification failed!")
+
+
+#: requests.ConnectionError в SDK — наследник OSError (опыт e_sev_chain 26.10).
+_RequestsConnectionError = type("ConnectionError", (OSError,), {"__module__": "requests.exceptions"})
+
+
 @pytest.mark.parametrize("error,cls", [
     # сбой сертификата по правилу SDK — аттестация (out1 S-I3, H-I2)
     (ssl.SSLError("CERTIFICATE_VERIFY_FAILED"), night_cloud.AttestationFailed),
@@ -464,6 +561,21 @@ _SdkMeasurementMismatch = type("MeasurementMismatchError", (_SdkAttestationError
     # отказ проверки SDK: релиз не тот в режиме Sigstore (опыт wrong_repo, out5)
     (_SdkMeasurementMismatch("measurement mismatch"), night_cloud.AttestationFailed),
     (_SdkAttestationError("bad bundle"), night_cloud.AttestationFailed),
+    # отчёт железа не прошёл (подпись, измерение) — аттестация; цепочка как у SDK:
+    # ValueError ← SevAttestationError (опыт e_sev_chain 26.10, out6)
+    (_chained(ValueError("SEV attestation verification failed"), _report_error("sev")),
+     night_cloud.AttestationFailed),
+    (_chained(ValueError("TDX attestation verification failed"), _report_error("tdx")),
+     night_cloud.AttestationFailed),
+    # тот же класс SDK, но причина — сеть к KDS или коллатералу: недоступен
+    (_chained(ValueError("SEV attestation verification failed"), _report_error("sev"),
+              ValueError("Failed to fetch VCEK certificate"), _RequestsConnectionError("KDS")),
+     night_cloud.ProviderUnavailable),
+    (_chained(ValueError("TDX attestation verification failed"), _report_error("tdx"),
+              type("CollateralError", (Exception,), {})("HTTP GET failed"), TimeoutError("read")),
+     night_cloud.ProviderUnavailable),
+    # имя класса не из модуля SDK — не аттестация
+    (_chained(ValueError("x"), _report_error("sev", module="otherlib.sev")), night_cloud.ProviderUnavailable),
     # тот же класс не из SDK — не аттестация: решает модуль, а не имя
     (type("AttestationError", (Exception,), {"__module__": "otherlib.errors"})("x"),
      night_cloud.ProviderUnavailable),
@@ -597,10 +709,20 @@ def test_deadline_cuts_a_hanging_attestation_and_sends_nothing(tmp_path):
     finally:
         release.set()
     assert time.monotonic() - started < 3
-    time.sleep(0.3)   # брошенный рабочий проснулся: отправить он уже не вправе
+    _join_exchange()   # брошенный рабочий проснулся и вышел: отправить он уже не вправе
     assert not factory.client.creates
     assert ei.value.sent is False
     assert _state(tmp_path)["last_attempt"]["outcome"] == "deadline"
+
+
+def _join_exchange(timeout: float = 5.0) -> None:
+    """Дождаться выхода рабочих двери: «create не вызван» проверяется, когда
+    рабочий уже вышел, а не после паузы — медленный планировщик не прячет
+    мутанта (out6 S-I1, H-I2)."""
+    for t in threading.enumerate():
+        if t.name == "night-cloud-exchange":
+            t.join(timeout)
+            assert not t.is_alive(), "рабочий двери не вышел — проверка отправки ничего не доказывает"
 
 
 def _split_clock(seconds: float, hold: threading.Event | None = None):
@@ -643,7 +765,7 @@ def test_deadline_between_attestation_and_create_sends_nothing(tmp_path):
             _send(tmp_path, _cfg(tmp_path), Factory(client=client), deadline=deadline)
     finally:
         release.set()   # срок объявлен — рабочий идёт к замку отправки
-    time.sleep(0.5)   # рабочий дошёл до замка отправки и увидел отмену
+    _join_exchange()   # рабочий дошёл до замка отправки, увидел отмену и вышел
     assert not client.creates, "запрос ушёл после того, как сторож объявил срок"
     assert ei.value.sent is False
 
@@ -674,7 +796,7 @@ def test_send_flag_and_cancel_meet_under_one_lock(tmp_path):
             _send(tmp_path, _cfg(tmp_path), Factory(client=client), deadline=deadline)
     finally:
         hold.set()
-    time.sleep(0.5)   # без замка рабочий отпущен только теперь — и отправил бы
+    _join_exchange()   # без замка рабочий отпущен только теперь — и отправил бы до выхода
     assert armed == [], "часы рабочего не вызывались внутри перехода — опыт не про замок"
     assert ei.value.sent is bool(client.creates), "исход о срок и факт отправки разошлись"
 
@@ -1095,6 +1217,13 @@ def test_brief_reports_failed_attempt_and_changed_fingerprint_from_state(tmp_pat
     _write_state(root, graph, {"last_attempt": {"at": _at(9), "outcome": "accepted", "accepted": True},
                                "fingerprint_change": change})
     assert mb._night_cloud(graph, NOW) == [], "без свежей смены и сбоя — молчим"
+
+
+def test_every_outcome_word_has_a_brief_phrase():
+    """Слово исхода без фразы бриф напечатал бы как «исход не записан» — как битую
+    запись (out6 DS-M6). «accepted» — молчание, фразы ему не нужно."""
+    mb = _load_brief()
+    assert set(night_cloud.OUTCOMES) - {"accepted"} == set(mb._NIGHT_OUTCOMES)
 
 
 def test_brief_ignores_attestation_heading_in_the_report_text(tmp_path):
