@@ -805,7 +805,8 @@ collective nodes by the one predicate `graph_names.bare_namesakes` (the input ga
 will decide by it too) — into `logs/graph_doctor.json`, full lists into
 `logs/graph_feed.json`, both written atomically through `safe_write`; "new" collective
 nodes are counted against `logs/graph_feed_base.json`, the feed at the end of the previous night,
-which only `--advance-base` (the night's final pass) moves, and never before the report is written; the morning brief shows a summary and
+which only `--advance-base` (the night's final pass) moves, and never before the report and the feed are written,
+nor for a graph read below 80 % of its last night's notes; the morning brief shows a summary and
 warnings by thresholds (the broken-link threshold counts active links only).
 
 One resolver, `src/graph_links.py`, decides whether a `[[link]]` is alive

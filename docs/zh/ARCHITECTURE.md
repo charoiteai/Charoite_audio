@@ -506,7 +506,7 @@ error（首场实时会议，31.08）。
 `scripts/graph_doctor.py` 不用模型衡量每个图谱的健康——断链（活跃文件夹与流水线从不
 重读的 `Встречи-архив` 分开统计）、People 中的标签、孤立节点、重复、按名称键与忽略词序
 的近似重复、`_MOC.md` 覆盖率、按同一谓词 `graph_names.bare_namesakes` 统计的聚合节点——写入
-`logs/graph_doctor.json`，完整列表写入 `logs/graph_feed.json`，两者都经 `safe_write` 原子写入；「新」聚合节点对比 `logs/graph_feed_base.json`（上一夜结束时的清单），它只由 `--advance-base`（夜间最终一次运行）在报告写成之后推进；晨报显示汇总并按阈值给出
+`logs/graph_doctor.json`，完整列表写入 `logs/graph_feed.json`，两者都经 `safe_write` 原子写入；「新」聚合节点对比 `logs/graph_feed_base.json`（上一夜结束时的清单），它只由 `--advance-base`（夜间最终一次运行）在报告与清单都写成之后推进，读到的笔记少于上一夜 80 % 的图谱不推进基线；晨报显示汇总并按阈值给出
 警告（断链阈值只计活跃链接）。
 
 一个解析器 `src/graph_links.py` 为 doctor、云端审阅和各种清理统一判断 `[[链接]]` 是否

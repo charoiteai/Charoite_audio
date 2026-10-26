@@ -225,7 +225,7 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
     people_in_systems = []
     for p in nodes:
         if rel[p].startswith("Системы/") and not _is_stub(notes[p]):
-            words = graph_names.name_words(p.stem)
+            words = graph_names.name_words(p.stem, tags)   # один разбор с людьми (Haiku I1, DS M4)
             if " ".join(sorted(words)) in person_keys or (len(words) == 1 and words[0] in index):
                 people_in_systems.append(p)
     dossier_labels = [p for p in nodes if rel[p].startswith("Досье/") and not _is_stub(notes[p])
@@ -274,8 +274,8 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         warnings.append(f"файлов не в UTF-8: {len(not_utf8)} — правь в редакторе, "
                         "облако их не тронет"
                         + (f" (в архиве ещё {len(not_utf8_archive)})" if not_utf8_archive else ""))
-    # Сигнал — на НОВЫЕ узлы против базы, не на число: 41 узел, известный владельцу,
-    # горел бы каждую ночь, а «один слит, другой появился» число не меняет (Sonnet M3).
+    # Сигнал — на НОВЫЕ узлы против базы, не на число: 42 узла, известных владельцу,
+    # горели бы каждую ночь, а «один слит, другой появился» число не меняет (Sonnet M3).
     # База — лента итога прошлой ночи (`base_path`): ранний и итоговый проходы ночи и
     # ручной запуск днём сравнивают с одной базой, и новое горит в каждом брифе до
     # следующей ночи (n611-s1-out2 C1). Досье пересобираются каждую ночь — их счёт
@@ -290,13 +290,16 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         if prev_feed is None:
             fresh = now
         else:
-            was = {x.get("node") if isinstance(x, dict) else x for x in (prev_feed.get(key) or [])}
+            known = prev_feed.get(key)
+            was = {x.get("node") if isinstance(x, dict) else x
+                   for x in (known if isinstance(known, list) else [])}   # правленая руками база (Sonnet M4)
             fresh = [x for x in now if x not in was]
         if fresh:
             tail = "" if prev_feed is None else f", новых с прошлой ночи {len(fresh)}"
             warnings.append(text.format(n=len(now)) + tail + "; список — logs/graph_feed.json")
     rep["warnings"] = warnings
     rep["feed"] = {
+        "notes": len(notes),
         "collective": [{"node": p, "linked_from": len(linkers[q]), "namesakes": n}
                        for p, (q, n) in zip(collective_paths, collective)],
         "people_in_systems": [rel[p] for p in people_in_systems],
@@ -411,13 +414,13 @@ def main() -> int:
     # (nightly.sh), а полные списки отчёту не нужны — бриф читает только счёт (№611).
     # Все записи атомарные: читатель посреди записи не увидит обрезанный JSON.
     # Порядок: отчёт → лента → база. Отчёт не записан — код 1 и база стоит: сигнал
-    # о новых не уходит в базу, не дойдя до брифа (n611-s1-out2 Sonnet I2). База
+    # о новых не уходит в базу, не дойдя до брифа (n611-s1-out2 Sonnet I2). Лента не
+    # записана — база тоже стоит: она производная записанной ленты (out3 DS I1). База
     # обновляется только по графам этого прогона: граф, не прочитанный этой ночью
-    # (iCloud, `--graph`), сохраняет свою запись (Haiku I5).
-    writes = [(out, {"generated": now, "graphs": reps}), (feed_path(out), {"generated": now, "graphs": feeds})]
-    if a.advance_base:
-        writes.append((base_file, {"generated": now, "graphs": {**base, **feeds}}))
-    for path, body in writes:
+    # (iCloud, `--graph`), сохраняет свою запись (Haiku I5); граф, прочитанный меньше
+    # чем на 80 % прошлого, — тоже: файлы выгружены, неполная лента сделала бы
+    # завтра «новыми» все узлы (out3 Sonnet I4).
+    for path, body in ((out, {"generated": now, "graphs": reps}), (feed_path(out), {"generated": now, "graphs": feeds})):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             safe_write.write_text(path, json.dumps(body, ensure_ascii=False, indent=1))
@@ -425,7 +428,22 @@ def main() -> int:
             print(f"{path.name} не записан ({e})")
             if path == out:
                 return 1
+            a.advance_base = False
+    if a.advance_base:
+        moved = dict(base)
+        for g, feed in feeds.items():
+            was = (entry(base, pathlib.Path(g)) or {}).get("notes")
+            if isinstance(was, int) and feed["notes"] < 0.8 * was:
+                print(f"база {g} не сдвинута: заметок {feed['notes']} против {was} прошлой ночи")
+                continue
+            moved[g] = feed
+        try:
+            safe_write.write_text(base_file, json.dumps({"generated": now, "graphs": moved},
+                                                        ensure_ascii=False, indent=1))
+        except OSError as e:
+            print(f"{base_file.name} не записан ({e})")
     return 1 if a.strict and any(r["warnings"] for r in reps.values()) else 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
