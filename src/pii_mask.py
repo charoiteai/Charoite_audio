@@ -59,7 +59,7 @@ class Entry:
     tails: tuple[int, ...]
     kind: str                   # PERSON / SYSTEM
     group: str | None           # канон узла; None — форма у нескольких узлов
-    capital: bool = False       # люди: первое слово с заглавной («Белов», не «белов»)
+    capital: bool = False       # первое слово с заглавной: имя-слово («Роза», «Ракурс»), не «роза»
     exact: bool = False         # аббревиатура: регистр основы точный («ЗЛК», не «злк»)
 
 
@@ -141,6 +141,13 @@ def _distinctive(word: str, known: Callable[[str], bool]) -> bool:
     return not any(known(w) for w in {word.lower(), base, *(base + e for e in _INFLECT)})
 
 
+def _common_form(word: str, known: Callable[[str], bool]) -> bool:
+    """Есть ли в общем словаре сама форма или голая основа. Строже `_distinctive`: его
+    падежный перебор врёт для имён — «кузнец» + «ов» даёт фамилию из словаря, и
+    «Кузнецом» уходил открытым (№799 26.10)."""
+    return known(word.lower()) or known(_base(word)[0])
+
+
 def _base(word: str) -> tuple[str, int, bool]:
     """Основа слова-формы, потолок хвоста и точный ли регистр.
 
@@ -195,12 +202,12 @@ def build_forms(nodes: Iterable[NodeForms], *,
     # Чья основа: однофамильцы и тёзки дают форму без узла (правило `lexicon`:
     # основа у множества узлов — правило не создаётся, n793-in2 H-I4).
     owners: dict[tuple[str, str], set[str]] = {}
-    raw: list[tuple[list[str], str, str | None]] = []   # слова, вид, канон
+    raw: list[tuple[list[str], str, str | None, bool]] = []   # слова, вид, канон, заглавная
 
-    def add(words: list[str], kind: str, canon: str | None) -> None:
+    def add(words: list[str], kind: str, canon: str | None, plain: bool = False) -> None:
         if not words:
             return
-        raw.append((words, kind, canon))
+        raw.append((words, kind, canon, plain))
         if len(words) == 1:
             owners.setdefault((kind, _base(words[0])[0]), set()).add(canon or f"?{words[0]}")
 
@@ -217,6 +224,14 @@ def build_forms(nodes: Iterable[NodeForms], *,
         # Система: имя целиком — если в нём есть отличительное слово; отдельно —
         # только отличительные слова («ЗЛК» из «Шлюз ЗЛК», не «Шлюз»).
         if not any(_distinctive(w, known) for w in ws):
+            # Узел уходил открытым (№799 26.10). Слово, которого в словаре нет в этой самой
+            # форме («Ракурс»: есть только «ракурсы»), — с заглавной; имя с числом
+            # («Орбита 12.4-7») — целиком и с заглавной, как в имени. Общее слово как
+            # есть («Проблема», «Арена») — нет: замер дал сотни замен речи.
+            if ws[0][:1].isupper() and (
+                    len(ws) == 1 and not _common_form(ws[0], known)
+                    or len(ws) > 1 and any(c.isdigit() for c in name)):
+                add(ws, kind, canon, plain=True)
             return
         add(ws, kind, canon)
         if len(ws) > 1:
@@ -229,12 +244,15 @@ def build_forms(nodes: Iterable[NodeForms], *,
             add_name(name, PERSON if n.person else SYSTEM, n.name)
     for stub, target, person in stubs:
         node = by_name.get(target) if target else None
-        # вид — по папке заглушки, не по цели: заглушка системы без цели не человек
+        # вид — по живой цели («Кузнец» в Командах → человек, №799 26.10), без цели — по
+        # папке заглушки: заглушка системы без цели не человек
+        if node is not None:
+            person = node.person
         add_name(stub, PERSON if person else SYSTEM, node.name if node is not None else None)
 
     seen: set[tuple] = set()
     entries: list[Entry] = []
-    for words, kind, canon in raw:
+    for words, kind, canon, plain in raw:
         if len(words) == 1:
             if words[0].lower() in common_l or len(words[0]) < 2 \
                     or not any(c.isalpha() for c in words[0]):
@@ -248,13 +266,18 @@ def build_forms(nodes: Iterable[NodeForms], *,
                 canon = None
             # заглавная нужна имени-слову («Роза» / «роза»); фамилию, которой нет в общем
             # словаре, распознавание пишет и строчными («квакин», №799 26.10)
-            capital = kind == PERSON and not _distinctive(words[0], known)
+            capital = plain or kind == PERSON and not _distinctive(words[0], known)
             ent = Entry((base,), (tail,), kind, canon, capital=capital, exact=exact)
             if kind == PERSON and not exact:
                 for alt in _fleeting(base):
-                    fe = Entry((alt,), (tail,), kind, canon, capital=capital)
-                    if (fe.words, kind, canon) not in seen:
-                        seen.add((fe.words, kind, canon))
+                    # запасная основа чужого имени — не форма этого («Олег» → «ольг» у «Ольги», n793-out2 C2)
+                    if owners.get((kind, alt), set()) - {canon or f"?{words[0]}"}:
+                        continue
+                    # без узла: «Ольга» при одном «Олеге» маскируется, но не в его группу —
+                    # иначе модель сливает двух людей, а ссылка разворачивается в чужое имя
+                    fe = Entry((alt,), (tail,), kind, None, capital=capital)
+                    if (fe.words, kind, None) not in seen:
+                        seen.add((fe.words, kind, None))
                         entries.append(fe)
             if exact and base.isalpha() and len(base) >= 3:
                 # распознавание пишет аббревиатуру словом: «Орисе», «Злком»
@@ -266,17 +289,24 @@ def build_forms(nodes: Iterable[NodeForms], *,
         else:
             bases = [_base(w) for w in words]
             ent = Entry(tuple(b.lower() for b, _t, _e in bases), tuple(t for _b, t, _e in bases),
-                        kind, canon, capital=kind == PERSON)
+                        kind, canon, capital=kind == PERSON or plain)
         key = (ent.words, ent.kind, ent.group)
         if key not in seen:
             seen.add(key)
             entries.append(ent)
-    return Forms(entries)
+    # одни слова у разных узлов, каким бы путём форма ни родилась (основа, ё/е, аббревиатура
+    # словом), — форма без узла: иначе чужое имя уходит в группу и обратно — чужим каноном
+    canons: dict[tuple, set] = {}
+    for e in entries:
+        canons.setdefault((e.words, e.kind), set()).add(e.group)
+    return Forms([dataclasses.replace(e, group=None) if len(canons[(e.words, e.kind)]) > 1 else e
+                  for e in entries])
 
 
 def _fleeting(base: str) -> list[str]:
     """Основа без беглой гласной: «павел» → «павл» («Павла»), «лев» → «льв»,
-    «заяц» → «зайц». Только у людей: форма с заглавной, лишняя основа безвредна."""
+    «заяц» → «зайц». Только у людей, с заглавной и без узла: «ольг» у «Олега» ловит и
+    гостью Ольгу — маскировать её надо, сливать с Олегом нельзя (n793-out2 C2)."""
     if len(base) < 3 or base[-1] in _VOWEL_END or base[-2] not in "еоя":
         return []
     if base[-2] == "я":
@@ -317,7 +347,7 @@ def _dictionary_spans(text: str, forms: Forms) -> list[tuple[int, int, Entry]]:
             ok = True
             for base, tail in zip(e.words[1:], e.tails[1:]):
                 j += 1
-                if j >= len(words) or text[stop:words[j][0]].strip() \
+                if j >= len(words) or not _joint(text[stop:words[j][0]], base) \
                         or not _word_fits(words[j][2], base, tail, False):
                     ok = False
                     break
@@ -325,6 +355,12 @@ def _dictionary_spans(text: str, forms: Forms) -> list[tuple[int, int, Entry]]:
             if ok:
                 found.append((start, stop, e))
     return found
+
+
+def _joint(sep: str, base: str) -> bool:
+    """Стык слов многословной формы: пробелы, а перед числом — ещё точка, дефис или
+    косая («Орбита 12.4-7», «6.29»)."""
+    return not sep.strip() or base[:1].isdigit() and re.fullmatch(r"\s*[./-]\s*", sep) is not None
 
 
 def _pick(spans: list[tuple[int, int, object]]) -> list[tuple[int, int, object]]:
@@ -354,6 +390,9 @@ def _ner_noise(text: str, start: int, stop: int, kind: str) -> bool:
         # даже если «вера» строчными есть в тексте (n793-out1 S-I5)
         if not _phrase_start(text, start):
             return False
+        # обращение («Вера, глянь») — имя гостя, даже если «вера» есть строчными (n793-out2 C3)
+        if text[stop:stop + 1] == ",":
+            return False
         low = words[0].lower()
         return re.search(rf"(?<![^\W_]){re.escape(low)}(?![^\W_])", text) is not None
     return False
@@ -378,7 +417,7 @@ def rare_word_spans(text: str, ner: Sequence[tuple[int, int, str]],
         if len(w) < 3 or not (w[:1].isupper() and w[1:].islower()) \
                 or not all("а" <= c.lower() <= "я" or c.lower() == "ё" for c in w):
             continue
-        if not _distinctive(w, known):
+        if _common_form(w, known):
             continue
         # то же слово строчными в этом тексте — термин или речь, а не имя («бакеты»)
         if re.search(rf"(?<![^\W_]){re.escape(w.lower())}(?![^\W_])", text):
@@ -429,14 +468,43 @@ def prepare(text: str) -> str:
     return _nfc(text).replace(OPEN, "[").replace(CLOSE, "]")
 
 
+def _clip(spans: Sequence[tuple], regions: Sequence[tuple[int, int]] | None) -> list[tuple]:
+    """Спаны внутри областей данных: словарный — только целиком, спан модели — обрезанный."""
+    if regions is None:
+        return list(spans)
+    out = []
+    for s, e, *rest in spans:
+        for a, b in regions:
+            if a <= s and e <= b:
+                out.append((s, e, *rest))
+                break
+            if not isinstance(rest[0], Entry) and s < b and a < e:
+                out.append((max(s, a), min(e, b), *rest))
+    return out
+
+
+def _blank_outside(text: str, regions: Sequence[tuple[int, int]] | None) -> str:
+    """Текст для постусловия: вне областей данных — пробелы (переводы строк целы)."""
+    if regions is None:
+        return text
+    keep = [False] * len(text)
+    for a, b in regions:
+        keep[a:b] = [True] * (b - a)
+    return "".join(c if k or c == "\n" else " " for c, k in zip(text, keep))
+
+
 def mask(text: str, forms: Forms, ner: Sequence[tuple[int, int, str]] = (), *,
-         level: str = "basic") -> Masked:
+         level: str = "basic", regions: Sequence[tuple[int, int]] | None = None) -> Masked:
     """Маскировать текст. `ner` — спаны (start, end, PERSON|SYSTEM) по `prepare(text)`.
 
-    Бросает `MaskRefused`, если после маски словарь всё ещё находит форму."""
+    `regions` — области данных (стенограмма, узлы) в `prepare(text)`: вне них наша
+    инструкция, её слова («промпт», «суфлёр») совпадают с узлами систем, а ПДн в ней
+    нет (замер №799 26.10: «задачи ставит только этот ⟦С~2.1⟧»). None — весь текст.
+    Бросает `MaskRefused`, если после маски словарь всё ещё находит форму в данных."""
     text = prepare(text)
-    dict_spans = _pick(_dictionary_spans(text, forms))
-    pieces = _ner_pieces(text, [x for x in ner if not _ner_noise(text, *x)], dict_spans)
+    dict_spans = _pick(_clip(_dictionary_spans(text, forms), regions))
+    pieces = _ner_pieces(text, _clip([x for x in ner if not _ner_noise(text, *x)], regions),
+                         dict_spans)
     spans = _pick([*dict_spans, *pieces])
     groups: dict[str, Group] = {}
     key_to_id: dict[tuple, str] = {}
@@ -467,7 +535,15 @@ def mask(text: str, forms: Forms, ner: Sequence[tuple[int, int, str]] = (), *,
         pos = e
     out.append(text[pos:])
     masked = Masked("".join(out), level, groups, len(spans))
-    left = postcondition_hits(masked.text, forms)
+    # постусловие — только по данным: те же спаны поверх текста с пустой инструкцией
+    check, pos = [], 0
+    blank = _blank_outside(text, regions)
+    for s, e, _what in spans:
+        check.append(blank[pos:s])
+        check.append(" ")
+        pos = e
+    check.append(blank[pos:])
+    left = postcondition_hits("".join(check), forms)
     if left:
         raise MaskRefused(f"после маски словарь видит {left} форм — отправка отменена")
     return masked
@@ -526,8 +602,11 @@ def postcondition_hits(masked_text: str, forms: Forms) -> int:
                     continue
                 break
     for e in phrases:
-        parts = [re.escape(b) + f"{_LETTERS}{{0,{t}}}" for b, t in zip(e.words, e.tails)]
-        rx = re.compile(r"(?<![^\W_])" + r"\s+".join(parts) + r"(?![^\W_])", re.IGNORECASE)
+        rx = r"(?<![^\W_])" + re.escape(e.words[0]) + f"{_LETTERS}{{0,{e.tails[0]}}}"
+        for b, t in zip(e.words[1:], e.tails[1:]):
+            # стык — как в `_joint`: перед числом ещё точка, дефис или косая
+            rx += (r"\s*[./-]?\s*" if b[:1].isdigit() else r"\s+") + re.escape(b) + f"{_LETTERS}{{0,{t}}}"
+        rx = re.compile(rx + r"(?![^\W_])", re.IGNORECASE)
         for m in rx.finditer(plain):
             if not e.capital or m.group(0)[:1].isupper():
                 hits += 1
@@ -544,8 +623,11 @@ def unmask(reply: str, masked: Masked) -> tuple[str, int]:
         nonlocal unresolved
         gid = f"{m.group(1)}{m.group(2)}{m.group(3)}"
         g = masked.groups.get(gid)
-        if g is not None and g.canon and m.string[max(0, m.start() - 2):m.start()] == "[[":
-            # цель ссылки — имя узла, а не падежная форма: «[[Беловой]]» битая (n793-out1 DS-5)
+        s, e = m.start(), m.end()
+        if g is not None and g.canon and m.string[max(0, s - 2):s] == "[[" \
+                and (m.string.startswith("]]", e) or m.string[e:e + 1] in ("|", "#")):
+            # цель ссылки целиком — имя узла, а не падежная форма: «[[Беловой]]» битая
+            # (n793-out1 DS-5); «[[Белов 1-1]]» — заметка, а не узел, токен — форма (n793-out2 C1)
             return g.canon
         if g is not None:
             if m.group(4):

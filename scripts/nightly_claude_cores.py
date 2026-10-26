@@ -363,7 +363,7 @@ def main() -> None:
     # Маска ПДн (№793): провайдер получает только masked.text, отчёт ложится в граф
     # уже с именами. Маска не прошла — не отправляем ничего (код политики).
     try:
-        masked = cloud_door.mask_prompt(cfg, prompt, graph)
+        masked = cloud_door.mask_prompt(cfg, prompt, graph, data=(blob,))
     except pii_mask.MaskRefused as e:
         print(f"маска не прошла — ревизия ядер не отправлена: {e}")
         sys.exit(EXIT_PRIVACY_REFUSED)

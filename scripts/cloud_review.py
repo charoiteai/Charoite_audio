@@ -1542,7 +1542,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # отправляем. Под маской правки нет (may_edit=False выше), снимков ещё нет —
     # выходить можно без отката.
     try:
-        masked = cloud_door.mask_prompt(cfg, prompt, graph)
+        masked = cloud_door.mask_prompt(cfg, prompt, graph, data=(context,))
     except pii_mask.MaskRefused as e:
         _log_line(log, f"{stamp}: маска не прошла — разбор не отправлен ({e})")
         _review_stage(transcript, "failed", f"маска не прошла: {e}")

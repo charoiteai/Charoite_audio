@@ -224,7 +224,8 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
                            unlabeled_rule=graph_names.UNLABELED_RULE)
     # Маска ПДн (№793): в облако — только masked.text, досье пишется с именами.
     try:
-        masked = cloud_door.mask_prompt(cfg, prompt, graph)
+        masked = cloud_door.mask_prompt(cfg, prompt, graph,
+                                          data=(theme, body, "\n".join(parts)))
     except pii_mask.MaskRefused as e:
         return None, f"сбой: маска не прошла: {e}"
     claude = cloud.claude_bin()

@@ -13,6 +13,7 @@ from __future__ import annotations
 import collections
 import pathlib
 import tempfile
+from typing import Sequence
 
 import pii_mask
 import privacy
@@ -50,7 +51,9 @@ def _forms(cfg: dict, graph: pathlib.Path,
     if not any(n.person for n in nodes):
         # граф есть, а людей в нём нет (синхронизация не доехала, не тот каталог):
         # одной модели имён мало — замер 26.10: 88 из 140 (n793-out1 S-I1)
-        raise pii_mask.MaskRefused("в графе нет узлов людей — словаря имён нет, отправка отменена")
+        raise pii_mask.MaskRefused("в графе нет узлов людей — словаря имён нет, отправка отменена; "
+                                   "выход: узел человека в папке людей графа или явное "
+                                   "sufler.cloud_mask: false (n793-out2 S-I3)")
     notes = []
     bad = sorted(p for p in snap.unreadable
                  if CHAROITE.is_person_folder(p.parent.name) or p.parent.name in SYSTEM_FOLDERS)
@@ -95,8 +98,30 @@ def empty_workdir() -> pathlib.Path:
     return d
 
 
-def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None) -> pii_mask.Masked:
+def _regions(text: str, data: Sequence[str]) -> list[tuple[int, int]] | None:
+    """Где в промпте данные: все вхождения каждого куска. Кусок не нашёлся (пути
+    машины вычищены внутри него) — маска по всему тексту: лишняя замена в инструкции
+    дешевле имени, ушедшего открытым."""
+    out = []
+    for d in data:
+        d = pii_mask.prepare(d)
+        if not d.strip():
+            continue
+        start = text.find(d)
+        if start < 0:
+            return None
+        while start >= 0:
+            out.append((start, start + len(d)))
+            start = text.find(d, start + 1)
+    return out
+
+
+def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None, *,
+                data: Sequence[str]) -> pii_mask.Masked:
     """Промпт для облака: пути машины убраны, имена людей и систем заменены ID.
+
+    `data` — куски промпта с данными (стенограмма, заметки, узлы, тема): маска идёт
+    только по ним, инструкция — наша и уходит как есть.
 
     Бросает `pii_mask.MaskRefused` — вызывающий не отправляет ничего. При
     `sufler.cloud_mask: false` — промпт как есть (только без путей машины)."""
@@ -119,7 +144,7 @@ def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None) -> pii_mask.
         text = pii_mask.prepare(text)
         ner = pii_ner.spans(text)
         ner += pii_mask.rare_word_spans(text, ner, pii_ner.is_common)
-        masked = pii_mask.mask(text, forms, ner, level=level)
+        masked = pii_mask.mask(text, forms, ner, level=level, regions=_regions(text, data))
     except pii_mask.MaskRefused:
         raise
     except Exception as e:  # noqa: BLE001 — дверь: любой сбой маски — отказ
