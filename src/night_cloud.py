@@ -21,8 +21,8 @@
   провал аттестации, а «ночь кончилась» (свой класс);
 - переход к отправке — одно место под замком вместе с проверкой срока:
   сторож срока знает, ушёл ли запрос (`sent` у исключения — для строки шага);
-- класс ошибки обмена — два: «аттестация» по правилу SDK (сертификат) или его
-  `AttestationError`, прочее — «недоступен» (`_classify`, решения главной по out4, out5);
+- класс ошибки обмена — два, правило одно — докстрока `_classify` (решения
+  главной по out4–out6): «аттестация» или «недоступен»;
 - в файле состояния свободного текста нет: перечисление исхода, HTTP-код,
   finish_reason, отпечаток и релиз — форма проверяется одним писателем
   (`conform_entry`) и при записи, и при чтении брифом; бриф пишется в граф;
@@ -40,6 +40,7 @@ import os
 import pathlib
 import re
 import ssl
+import sys
 import threading
 import time
 from typing import Callable
@@ -171,6 +172,11 @@ def _http_status(e: BaseException) -> int | None:
     return None
 
 
+#: Имя рабочего потока обмена (литерал в spawn — его читает сторож detached-потоков);
+#: тесты ждут выхода рабочего по этому имени и сверяют его с живым потоком.
+EXCHANGE_THREAD = "night-cloud-exchange"
+
+
 def _under_deadline(fn: Callable, args: tuple, deadline: Deadline, box: dict):
     """Блокирующий обмен под сроком. Один помощник на дверь (in3 K1, out1 S-I2).
 
@@ -254,6 +260,23 @@ _REPORT_ERRORS = {"tinfoil.attestation.attestation_sev": "SevAttestationError",
                   "tinfoil.attestation.attestation_tdx": "TdxAttestationError"}
 
 
+#: HTTP-ответы службы ключей, которые значат «сервис занят», а не «такого отчёта нет».
+_RETRYABLE_HTTP = (408, 429)
+
+
+def _transport_error(x: BaseException) -> bool:
+    """Ответа нет или сервис занят: ввод-вывод (OSError — сокет, таймаут,
+    requests.*, URLError, чтение кэша), кроме HTTP-ответа 4xx. Ответ 4xx службы
+    ключей (KDS, Intel PCS) — по данным отчёта, а их задаёт проверяемая сторона:
+    выдуманный chip_id даёт 404 (out7 S-I1), и это провал отчёта, а не сеть."""
+    if not isinstance(x, OSError):
+        return False
+    code = getattr(getattr(x, "response", None), "status_code", None)
+    if isinstance(code, int) and not isinstance(code, bool):
+        return code >= 500 or code in _RETRYABLE_HTTP
+    return True
+
+
 def _report_error(x: BaseException) -> bool:
     """Отчёт железа SEV-SNP/TDX не прошёл проверку SDK — по имени и модулю в MRO."""
     return any(_REPORT_ERRORS.get(k.__module__) == k.__name__ for k in type(x).__mro__)
@@ -264,15 +287,16 @@ def _classify(e: BaseException) -> type[NightCloudError]:
     расширениями по опытам out5, out6). Цепочка — `__cause__ or __context__`,
     как у SDK (`_causes`):
     - сбой сертификата по правилу SDK или его `AttestationError` — аттестация;
-    - провал отчёта железа SEV/TDX — аттестация, если в цепочке нет OSError:
-      сеть к KDS или коллатералу (requests.*, URLError, таймаут — все OSError)
-      даёт тот же класс SDK, а это недоступность (опыт e_sev_chain 26.10);
+    - провал отчёта железа SEV/TDX — аттестация, если в цепочке нет сбоя
+      транспорта (`_transport_error`): сеть к KDS или коллатералу даёт тот же
+      класс SDK, а это недоступность (опыт e_sev_chain 26.10). Ответ, который
+      пришёл, но не читается (не DER, не JSON), — аттестация: строго;
     - всё прочее — недоступен. Голый ValueError закреплённого measurement=
       (режим pin) — недоступен: pin вне этапа 1. Отказ документа решает `_verified`."""
     chain = _causes(e)
     if any(_certificate_error(x) or _attestation_error(x) for x in chain):
         return AttestationFailed
-    if any(_report_error(x) for x in chain) and not any(isinstance(x, OSError) for x in chain):
+    if any(_report_error(x) for x in chain) and not any(_transport_error(x) for x in chain):
         return AttestationFailed
     return ProviderUnavailable
 
@@ -320,6 +344,11 @@ def _verified(client) -> tuple[str, str, str]:
             raise AttestationFailed("отпечаток кода не той формы (ждём hex)")
         release = str(getattr(doc, "release_tag", "") or "")
         host = str(getattr(doc, "enclave_host", "") or "")
+        if release and _RELEASE.fullmatch(release) is None:
+            # значение не печатаем: это текст извне; бриф покажет «релиз ?» (out7 H-M2)
+            print("night_cloud: тег релиза не той формы — в состоянии и брифе «?»",
+                  file=sys.stderr, flush=True)
+            release = ""
     except AttestationFailed:
         raise
     except Exception as e:  # noqa: BLE001 — непроверяемый документ трактуем строго
@@ -342,7 +371,8 @@ FINISH_REASONS = ("stop", "length", "content_filter", "tool_calls", "function_ca
 _STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z)?")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _HEX = re.compile(r"[0-9a-f]{16,128}")
-_RELEASE = re.compile(r"v?\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.]{1,32})?")
+#: Релиз — semver, суффикс только «-rc N»: тег приходит извне, слов в нём быть не должно (out7 H-I1).
+_RELEASE = re.compile(r"v?\d{1,6}\.\d{1,6}\.\d{1,6}(?:-rc\.?\d{1,4})?")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
 
 
@@ -404,7 +434,8 @@ def _read_state(path: pathlib.Path) -> dict:
         return {}   # битый файл = первый запуск (in3 DS-I4)
     if not isinstance(data, dict):
         return {}
-    return {k: conform_entry(v) for k, v in data.items()}
+    kept = {k: conform_entry(v) for k, v in data.items()}
+    return {k: v for k, v in kept.items() if v}
 
 
 def _update_state(path: pathlib.Path, graph_key: str, change: Callable[[dict], None]) -> None:

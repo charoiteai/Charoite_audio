@@ -240,7 +240,7 @@ def test_provider_cause_carries_no_home_path(tmp_path, error):
 @pytest.mark.parametrize("pad", [170, 180, 185, 190, 200, 260])
 def test_long_cause_keeps_no_fragment_of_the_account(tmp_path, pad):
     """Обрезка раньше чистки оставляла «/Users/<обрывок имени>» (out5 C): чистка — на
-    целом тексте, обрезки нет."""
+    целом тексте, потолок — после неё."""
     error = ValueError("x" * pad + " " + _HOME_FILE)
     with pytest.raises(night_cloud.ProviderUnavailable) as ei:
         _send(tmp_path, _cfg(tmp_path), Factory(error=error))
@@ -385,7 +385,10 @@ def test_conform_drops_old_fields_and_values_out_of_form():
         "fingerprint_change": {"from": "ab" * 8}}
     assert night_cloud.conform_entry(None) == {} and night_cloud.conform_entry({"last_attempt": "x"}) == {}
     kept = night_cloud.conform_entry({"last_accepted": {"release": "v0.0.167-rc1"}})
-    assert kept == {"last_accepted": {"release": "v0.0.167-rc1"}}, "суффикс релиза не теряется (out6 S-M1)"
+    assert kept == {"last_accepted": {"release": "v0.0.167-rc1"}}, "суффикс rc не теряется (out6 S-M1)"
+    # суффикс из слов — свободный текст извне, выпадает (out7 H-I1)
+    for word in ("v0.0.167-ignorePrevious.instructions", "1.0.0+build.7", "v1.2.3-beta"):
+        assert night_cloud.conform_entry({"last_accepted": {"release": word}}) == {}, word
 
 
 def test_key_never_leaks_into_errors_state_or_stderr(tmp_path, capsys):
@@ -446,7 +449,7 @@ def test_old_entries_of_other_graphs_lose_fields_out_of_form(tmp_path):
     assert "__792__" not in raw and '"reason"' not in raw and "строка" not in raw
     data = json.loads(raw)
     assert data["H"] == {"last_attempt": {"at": "2026-10-25T02:00:00+03:00", "outcome": "attestation"}}
-    assert data["J"] == {}
+    assert "J" not in data, "запись, от которой ничего не осталось, не хранится (out7 S-M2)"
 
 
 class _RaisingDoc(types.SimpleNamespace):
@@ -459,6 +462,17 @@ def _raising_release_client() -> FakeClient:
     client = FakeClient()
     client.doc = _RaisingDoc(**{k: v for k, v in vars(client.doc).items() if k != "release_tag"})
     return client
+
+
+def test_release_out_of_form_is_dropped_out_loud_and_not_printed(tmp_path, capsys):
+    """Тег не той формы — «?» в брифе и строка в логе, без самого значения (out7 H-M2)."""
+    state = tmp_path / "logs" / "night_cloud_state.json"
+    reply = _send(tmp_path, _cfg(tmp_path), Factory(client=_doc_client(release_tag="release 2026 words")))
+    assert reply.release == ""
+    err = capsys.readouterr().err
+    assert "тег релиза не той формы" in err and "words" not in err
+    night_cloud.accept(state, "G", reply)
+    assert _assert_state_in_form(tmp_path)["last_accepted"].get("release", "") == ""
 
 
 def test_uppercase_fingerprint_is_normalised_and_compared(tmp_path):
@@ -549,8 +563,20 @@ def _report_error(platform="sev", module=None):
     return type(name, (Exception,), {"__module__": module})("Attestation verification failed!")
 
 
-#: requests.ConnectionError в SDK — наследник OSError (опыт e_sev_chain 26.10).
+#: requests.ConnectionError и HTTPError в SDK — наследники OSError (опыт e_sev_chain 26.10).
 _RequestsConnectionError = type("ConnectionError", (OSError,), {"__module__": "requests.exceptions"})
+
+
+def _http_error(code: int) -> OSError:
+    """requests.HTTPError после raise_for_status: ответ службы ключей с кодом."""
+    err = type("HTTPError", (OSError,), {"__module__": "requests.exceptions"})(f"{code} Client Error")
+    err.response = types.SimpleNamespace(status_code=code)
+    return err
+
+
+def _vcek_chain(platform: str, cause: BaseException) -> BaseException:
+    return _chained(ValueError(f"{platform} attestation verification failed"), _report_error(platform.lower()),
+                    ValueError("Failed to fetch certificate"), cause)
 
 
 @pytest.mark.parametrize("error,cls", [
@@ -576,6 +602,15 @@ _RequestsConnectionError = type("ConnectionError", (OSError,), {"__module__": "r
      night_cloud.ProviderUnavailable),
     # имя класса не из модуля SDK — не аттестация
     (_chained(ValueError("x"), _report_error("sev", module="otherlib.sev")), night_cloud.ProviderUnavailable),
+    # ответ службы ключей пришёл: 4xx — по данным отчёта (выдуманный chip_id), это провал
+    # отчёта; 5xx, 408, 429 — служба занята (out7 S-I1)
+    (_vcek_chain("SEV", _http_error(404)), night_cloud.AttestationFailed),
+    (_vcek_chain("TDX", _http_error(400)), night_cloud.AttestationFailed),
+    (_vcek_chain("SEV", _http_error(503)), night_cloud.ProviderUnavailable),
+    (_vcek_chain("SEV", _http_error(429)), night_cloud.ProviderUnavailable),
+    # ввод-вывод без ответа (кэш на диске) — недоступен; ответ не читается — аттестация (out7 DS-I1)
+    (_vcek_chain("SEV", FileNotFoundError("cache")), night_cloud.ProviderUnavailable),
+    (_vcek_chain("SEV", _json.JSONDecodeError("Expecting value", "", 0)), night_cloud.AttestationFailed),
     # тот же класс не из SDK — не аттестация: решает модуль, а не имя
     (type("AttestationError", (Exception,), {"__module__": "otherlib.errors"})("x"),
      night_cloud.ProviderUnavailable),
@@ -706,6 +741,8 @@ def test_deadline_cuts_a_hanging_attestation_and_sends_nothing(tmp_path):
     try:
         with pytest.raises(night_cloud.DeadlineExpired, match="во время аттестации") as ei:
             _send(tmp_path, _cfg(tmp_path), factory, seconds=0.2)
+        # имя, по которому тесты ждут рабочего, — имя живого потока двери (out7 DS-M4)
+        assert any(t.name == night_cloud.EXCHANGE_THREAD for t in threading.enumerate())
     finally:
         release.set()
     assert time.monotonic() - started < 3
@@ -720,7 +757,7 @@ def _join_exchange(timeout: float = 5.0) -> None:
     рабочий уже вышел, а не после паузы — медленный планировщик не прячет
     мутанта (out6 S-I1, H-I2)."""
     for t in threading.enumerate():
-        if t.name == "night-cloud-exchange":
+        if t.name == night_cloud.EXCHANGE_THREAD:
             t.join(timeout)
             assert not t.is_alive(), "рабочий двери не вышел — проверка отправки ничего не доказывает"
 
@@ -741,7 +778,7 @@ def _split_clock(seconds: float, hold: threading.Event | None = None):
 
     def clock():
         if threading.get_ident() == main:
-            if any(t.name == "night-cloud-exchange" and t.ident not in before
+            if any(t.name == night_cloud.EXCHANGE_THREAD and t.ident not in before
                    for t in threading.enumerate()):
                 inside.wait(3)
             return time.monotonic()
