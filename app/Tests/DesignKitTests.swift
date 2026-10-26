@@ -55,7 +55,9 @@ final class DesignKitTests: XCTestCase {
     /// чип выводит из якоря. Один источник — tests/fixtures/due_window.json, его
     /// читает и pytest (fact_check.due_dates). Срок в его же день — `.soon(days: 0)`.
     func testDueWindowMatchesTheSharedTable() throws {
-        struct Case: Decodable { let meeting: String; let window: [String]; let dates: [String] }
+        struct Case: Decodable {
+            let meeting: String; let date: String; let in_window: Bool; let window: [String]; let dates: [String]
+        }
         struct Table: Decodable { let grace_days: Int; let cases: [Case] }
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -68,6 +70,7 @@ final class DesignKitTests: XCTestCase {
         }
         var checked = 0
         for c in table.cases {
+            XCTAssertEqual(c.window.contains(c.date), c.in_window, "\(c.meeting): \(c.date)")
             let (my, mm, md) = ymd(c.meeting)
             for full in c.dates {
                 let (y, m, d) = ymd(full)

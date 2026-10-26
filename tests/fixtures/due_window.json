@@ -20,6 +20,13 @@
   {"meeting": "2026-10-31", "day": 1, "date": "01.10", "in_window": false, "window": ["01.11"], "dates": ["2026-11-01"]},
   {"meeting": "2026-01-30", "day": 31, "date": "31.01", "in_window": true, "window": ["31.01"], "dates": ["2026-01-31"]},
   {"meeting": "2026-02-27", "day": 31, "date": "31.03", "in_window": true, "window": ["31.03"], "dates": ["2026-03-31"]},
-  {"meeting": "2026-02-27", "day": 31, "date": "31.01", "in_window": false, "window": ["31.03"], "dates": ["2026-03-31"]}
+  {"meeting": "2026-02-27", "day": 31, "date": "31.01", "in_window": false, "window": ["31.03"], "dates": ["2026-03-31"]},
+  {"meeting": "2026-10-26", "day": 19, "date": "19.10", "in_window": true, "window": ["19.10", "19.11"], "dates": ["2026-10-19", "2026-11-19"]},
+  {"meeting": "2026-10-26", "day": 18, "date": "18.10", "in_window": false, "window": ["18.11"], "dates": ["2026-11-18"]},
+  {"meeting": "2027-01-02", "day": 30, "date": "30.12", "in_window": true, "window": ["30.01", "30.12"], "dates": ["2026-12-30", "2027-01-30"]},
+  {"meeting": "2027-01-05", "day": 28, "date": "28.12", "in_window": false, "window": ["28.01"], "dates": ["2027-01-28"]},
+  {"meeting": "2027-02-25", "day": 29, "date": "29.02", "in_window": false, "window": ["29.03"], "dates": ["2027-03-29"]},
+  {"meeting": "2027-02-25", "day": 29, "date": "29.03", "in_window": true, "window": ["29.03"], "dates": ["2027-03-29"]},
+  {"meeting": "2028-02-25", "day": 29, "date": "29.02", "in_window": true, "window": ["29.02"], "dates": ["2028-02-29"]}
  ]
 }

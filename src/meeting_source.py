@@ -127,8 +127,9 @@ def finish_minutes(doc: str, source: MeetingSource, *, owner: str,
     doc = without_note(doc, source.recording_note)
     doc = fact_check.annotate(doc, source.canon(), day=source.day)
     doc = action_items.normalize(doc)
-    # срок сверяется с речью без оговорки: строка о записи не говорит о сроках
-    doc = action_items.check_deadlines(doc, source.speech, source.day, lang=lang)
+    # срок — по тому же тексту, что и сноска: одно решение «дата подтверждена»
+    # на один вход, иначе сноска молчала о дате, которую гейт стёр (Haiku I4 out1)
+    doc = action_items.check_deadlines(doc, source.canon(), source.day, lang=lang)
     doc = action_items.finalize_assignees(doc, participants, owner, lang=lang)
     doc = with_note(doc, source.recording_note)
     doc, _n = privacy.scrub_local_paths(doc)

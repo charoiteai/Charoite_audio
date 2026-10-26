@@ -1297,7 +1297,13 @@ footnote. "A date is confirmed by speech" is one decision for the footnote and
 the gate (`fact_check._date_heard`): a day without a month ("by the 28th")
 confirms a date only inside the meeting-day window (`fact_check.due_dates`:
 the nearest such day not before "meeting − 7 days" and not before the meeting
-itself). The meeting day comes from the transcript file name
+itself), and the day must be said as a day ("by the 28th", "28 числа"; not a
+full other date, a clock time or a bare count); a named weekday or "tomorrow"
+confirms a date within two weeks of the meeting. A tail with a date is judged
+by its dates only; without one, by its numbers and time words. The gate walks
+every checkbox item of the minutes (the Tasks tab reads them all), splits on any
+dash, and judges against the same text as the footnote (speech plus note).
+The meeting day comes from the transcript file name
 (`meeting_stamp.day_of`, `MeetingSource.day`, not hashed). The grace days and
 the year of a windowed date are the app's `TaskDue` rule; both sides read the
 shared table `tests/fixtures/due_window.json`.

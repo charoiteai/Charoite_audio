@@ -544,56 +544,54 @@ def canon_owner(text: str, owner: str) -> str:
     return "\n".join(out)
 
 
-# Хвост поручения — последняя часть «**Имя** — дело — срок»; приписку кусков
-# сводки «(куски 2, 5)» срок не несёт — снимается до разбора.
-_ITEM_SEP = " — "
+# Части поручения «**Имя** — дело — срок»: разделитель — тире любого начертания
+# или дефис в пробелах, как их пишет модель («–», «-» — DS I3, Sonnet I1 out1).
+# Делится только тело после маркера и ящика: дефис маркера списка — не разделитель.
+_ITEM_HEAD = re.compile(r"^\s*(?:" + task_line.MARKER + r"\s*)?" + task_line.BOX + r"\s*")
+_ITEM_SEP = re.compile(r"(\s+[—–-]\s+)")
 _PIECES_TAIL = re.compile(r"\s*\((?:куски|кусок)[^)]*\)\s*$")
 
 
 def check_deadline_item(line: str, speech: str, day: datetime.date | None, lang: str = "ru") -> str:
-    """Один пункт поручения: срок, который речь не подтверждает, — пометкой
-    `task_line.DUE_UNHEARD_MARKS` вместо срока. Не трогает: пункт с решённым
-    статусом (`task_line.settled`) и с полями хвоста (их ставит человек), пункт
-    без хвоста-срока (`fact_check.looks_like_due`), пустой срок («срок не
-    указан»), уже помеченный пункт и срок, подтверждённый речью
+    """Один пункт с ящиком: срок, который речь не подтверждает, — пометкой
+    `task_line.DUE_UNHEARD_MARKS` вместо срока. Срок — любая часть после дела
+    («**Имя** — дело — срок — приписка»), похожая на срок
+    (`fact_check.looks_like_due`). Не трогает: пункт с решённым статусом
+    (`task_line.settled`), с полями хвоста или пометкой контроля (их ставит
+    человек и контроль), пункт меньше чем из трёх частей, пустой срок («срок не
+    указан»), уже помеченную часть и срок, подтверждённый речью
     (`fact_check.due_heard`)."""
     rec = task_line.parse(line)
     if rec is None or task_line.settled(line) or rec.fields or rec.control:
         return line
-    pieces = _PIECES_TAIL.search(line.rstrip())
-    body, suffix = (line.rstrip()[:pieces.start()], pieces.group()) if pieces else (line.rstrip(), "")
-    parts = body.split(_ITEM_SEP)
-    if len(parts) < 3:
+    head = _ITEM_HEAD.match(line)
+    if head is None:
         return line
-    tail = parts[-1].strip()
-    if task_line.DUE_UNHEARD.fullmatch(f"{_ITEM_SEP}{tail}") or not fact_check.looks_like_due(tail):
-        return line
-    if fact_check.due_heard(tail, speech, day=day):
+    body = line.rstrip()[head.end():]
+    pieces = _PIECES_TAIL.search(body)
+    body, suffix = (body[:pieces.start()], pieces.group()) if pieces else (body, "")
+    parts = _ITEM_SEP.split(body)            # [часть, разделитель, часть, …]
+    if len(parts) < 5:
         return line
     mark = task_line.DUE_UNHEARD_MARKS.get(lang, task_line.DUE_UNHEARD_MARKS["ru"])
-    return _ITEM_SEP.join(parts[:-1] + [mark]) + suffix
+    changed = False
+    for i in range(4, len(parts), 2):
+        tail = parts[i].strip()
+        if (tail in task_line.DUE_UNHEARD_MARKS.values() or not fact_check.looks_like_due(tail)
+                or fact_check.due_heard(tail, speech, day=day)):
+            continue
+        parts[i], changed = mark, True
+    return line[:head.end()] + "".join(parts) + suffix if changed else line
 
 
 def check_deadlines(text: str, speech: str, day: datetime.date | None, lang: str = "ru") -> str:
-    """Раздел поручений минуток: срок, которого нет в речи, — пометкой «срок не из
-    речи» (№805: на длинных встречах модель додумывает 4 срока из 11, а срок в
-    окне «Задачи» читается как факт). Обход раздела — как у `canon_owner`;
-    остальные разделы не трогаются. `day` — день встречи для дат без месяца
-    («к 28-му»); None — такие даты речью не подтверждены."""
+    """Срок поручения, которого нет в речи, — пометкой «срок не из речи» (№805:
+    на длинных встречах модель додумывает 4 срока из 11, а срок в окне «Задачи»
+    читается как факт). Обходит каждый пункт с ящиком во всём документе, а не
+    только раздел поручений: окно «Задачи» берёт любой «- [ ]» минуток, и срок
+    под чужим заголовком тоже рисуется чипом (Haiku I3 out1). `day` — день
+    встречи для дат без месяца («к 28-му»); None — такие даты речью не
+    подтверждены."""
     if not speech.strip():
         return text
-    out: list[str] = []
-    inside = False
-    for line in text.split("\n"):
-        if is_section_heading(line):
-            inside = True
-            out.append(line)
-            continue
-        if inside and ((_OTHER_SECTION.match(line)
-                        or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
-                       and not _BULLET.match(line)):
-            inside = False
-        if inside:
-            line = check_deadline_item(line, speech, day, lang=lang)
-        out.append(line)
-    return "\n".join(out)
+    return "\n".join(check_deadline_item(line, speech, day, lang=lang) for line in text.split("\n"))

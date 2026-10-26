@@ -263,7 +263,9 @@ def test_mcp_minutes_normalize_before_write(tmp_path, monkeypatch):
     tdir = tmp_path / "transcripts"
     tdir.mkdir()
     live = tdir / "2026-09-13_1200.md"
-    text = "# Встреча 2026-09-13_1200\n**Мира** [10:21]:\n" + "реплика\n" * 100
+    # срок звучит в речи: иначе гейт срока (№805) заменил бы его пометкой — до out1
+    # день 10 «подтверждала» метка реплики [10:21]
+    text = "# Встреча 2026-09-13_1200\n**Мира** [10:21]: соберу к 10.09\n" + "реплика\n" * 100
     live.write_text(text, encoding="utf-8")
     charoite_paths.use_data_root(tmp_path, replace=True)
 
