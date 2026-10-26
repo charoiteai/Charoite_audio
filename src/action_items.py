@@ -550,17 +550,32 @@ def canon_owner(text: str, owner: str) -> str:
 _ITEM_HEAD = re.compile(r"^\s*(?:" + task_line.MARKER + r"\s*)?" + task_line.BOX + r"\s*")
 _ITEM_SEP = re.compile(r"(\s+[—–-]\s+)")
 _PIECES_TAIL = re.compile(r"\s*\((?:куски|кусок)[^)]*\)\s*$")
+# Срок, который рисует чип «Задач», где бы он ни стоял: то же правило, что у
+# Swift `TaskDue.parse` — «до», «к», «дедлайн», «дедлайну» отдельным словом и
+# ДД.ММ. Внутри дела («сдать отчёт до 28.11») и в короткой строке гейт по
+# частям его не видел, а чип рисовал (№805 out2: Sonnet I1, Haiku I1, DS I6).
+_CHIP_DUE = re.compile(r"(?<![^\W_])(?:до|к|дедлайну?)\s(\d{1,2})\.(\d{1,2})(?!\d)(?:\s+включительно)?")
+
+
+def _cut_chip_dates(part: str, speech: str, day: datetime.date | None) -> str | None:
+    """Часть без срока чипа, которого речь не подтверждает; None — снимать нечего."""
+    cut = part
+    for m in reversed(list(_CHIP_DUE.finditer(part))):
+        if not fact_check.due_heard(m.group(), speech, day=day):
+            cut = cut[:m.start()].rstrip() + (" " if cut[m.end():].strip() else "") + cut[m.end():].lstrip()
+    return None if cut == part else cut.strip(" ,;")
 
 
 def check_deadline_item(line: str, speech: str, day: datetime.date | None, lang: str = "ru") -> str:
     """Один пункт с ящиком: срок, который речь не подтверждает, — пометкой
-    `task_line.DUE_UNHEARD_MARKS` вместо срока. Срок — любая часть после дела
-    («**Имя** — дело — срок — приписка»), похожая на срок
-    (`fact_check.looks_like_due`). Не трогает: пункт с решённым статусом
-    (`task_line.settled`), с полями хвоста или пометкой контроля (их ставит
-    человек и контроль), пункт меньше чем из трёх частей, пустой срок («срок не
-    указан»), уже помеченную часть и срок, подтверждённый речью
-    (`fact_check.due_heard`)."""
+    `task_line.DUE_UNHEARD_MARKS` вместо срока. Срок — часть после дела
+    («**Имя** — дело — срок — приписка»), которая сроком начинается
+    (`fact_check.looks_like_due`), — она меняется на пометку целиком; и дата чипа
+    в любой другой части (`_CHIP_DUE`) — она вырезается, пометка встаёт сразу
+    за этой частью. Не трогает: пункт с решённым статусом (`task_line.settled`), с полями
+    хвоста или пометкой контроля (их ставит человек и контроль), пустой срок
+    («срок не указан»), уже помеченную часть, срок, подтверждённый речью
+    (`fact_check.due_heard`), и прочий текст части."""
     rec = task_line.parse(line)
     if rec is None or task_line.settled(line) or rec.fields or rec.control:
         return line
@@ -568,20 +583,32 @@ def check_deadline_item(line: str, speech: str, day: datetime.date | None, lang:
     if head is None:
         return line
     body = line.rstrip()[head.end():]
+    trail = line[len(line.rstrip()):]
     pieces = _PIECES_TAIL.search(body)
     body, suffix = (body[:pieces.start()], pieces.group()) if pieces else (body, "")
     parts = _ITEM_SEP.split(body)            # [часть, разделитель, часть, …]
-    if len(parts) < 5:
-        return line
+    deed = 2 if rec.assignee and len(parts) > 2 and parts[0].strip() == f"**{rec.assignee}**" else 0
+    marks = set(task_line.DUE_UNHEARD_MARKS.values())
     mark = task_line.DUE_UNHEARD_MARKS.get(lang, task_line.DUE_UNHEARD_MARKS["ru"])
-    changed = False
-    for i in range(4, len(parts), 2):
-        tail = parts[i].strip()
-        if (tail in task_line.DUE_UNHEARD_MARKS.values() or not fact_check.looks_like_due(tail)
-                or fact_check.due_heard(tail, speech, day=day)):
+    changed, cut_at = False, None
+    for i in range(deed, len(parts), 2):
+        piece = parts[i].strip()
+        if piece in marks:
             continue
-        parts[i], changed = mark, True
-    return line[:head.end()] + "".join(parts) + suffix if changed else line
+        if i > deed and fact_check.looks_like_due(piece):
+            if not fact_check.due_heard(piece, speech, day=day):
+                parts[i], changed = mark, True
+            continue
+        cut = _cut_chip_dates(parts[i], speech, day)
+        if cut is not None:
+            parts[i], changed = cut or mark, True
+            if cut and cut_at is None:
+                cut_at = i
+    if not changed:
+        return line
+    if cut_at is not None and mark not in (p.strip() for p in parts[deed::2]):
+        parts[cut_at + 1:cut_at + 1] = [" — ", mark]    # пометка — сразу за частью, где был срок
+    return line[:head.end()] + "".join(parts) + suffix + trail
 
 
 def check_deadlines(text: str, speech: str, day: datetime.date | None, lang: str = "ru") -> str:

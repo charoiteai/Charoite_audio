@@ -97,6 +97,10 @@ def test_unanchored_without_day_keeps_the_old_contract():
     ("пятница", True), ("срок: завтра", True),
     ("согласовать с юристами", False), ("на английском", False), ("по итогам аудита", False), ("в Jira", False),
     ("с учётом замечаний", False), ("срок: не указан", False), ("", False),
+    # часть сроком начинается или вся — дата/время; цифра внутри дела срока не делает (out2, DS C1)
+    ("28.11", True), ("28.11 включительно", True), ("17:00", True), ("в конце года", True), ("сегодня начать", True),
+    ("комната 405", False), ("версия 2.1", False), ("за 2026 год", False), ("12 слайдов", False), ("周报", False),
+    ("по TASK 3242 до 15.11", False),
 ])
 def test_looks_like_due(tail, due):
     assert fact_check.looks_like_due(tail) is due
@@ -127,7 +131,7 @@ def test_item_keeps_the_pieces_suffix():
 
 @pytest.mark.parametrize("line", [
     "- [x] **Участник А** — сдать отчёт — до 28.11",                  # статус решён человеком
-    "- [ ] **Участник А** — сдать отчёт до 28.11",                    # хвоста-срока нет
+    "- [ ] **Участник А** — сдать отчёт по версии 2.1 — комната 405",  # цифры дела — не срок
     "- [ ] **Участник А** — сдать отчёт — до 28.11 📅 2026-11-28",   # поле ставит человек
     "- [ ] **Участник А** — сдать отчёт — до 28.11 _(снято по сроку 24.09)_",
     "**Участник А** — сдать отчёт — до 28.11",                        # не пункт задачи
@@ -246,7 +250,8 @@ def test_day_must_be_spoken_as_a_day(speech):
     assert not fact_check.due_heard("до 28.10", speech, day=DAY)
 
 
-@pytest.mark.parametrize("speech", ["к 28-му", "до 28", "28-го", "28 числа", "by the 28th", "28号之前"])
+@pytest.mark.parametrize("speech", ["к 28-му", "до 28", "28-го", "28 числа", "by the 28th", "28号之前",
+                                    "by the twenty-eighth", "к 28\u2011го", "28–го", "二十八号之前"])
 def test_day_spoken_forms(speech):
     assert fact_check.due_heard("до 28.10", speech, day=DAY)
 
@@ -300,3 +305,113 @@ def test_annotate_carries_dates_of_every_footnote():
     doc = f"тело\n\n---\n{fact_check.FOOTNOTE_MARK} 01.11\n\n---\n{fact_check.FOOTNOTE_MARK} 02.11\n"
     out = fact_check.annotate(doc, "речь", day=DAY)
     assert out == f"тело\n\n---\n{fact_check.FOOTNOTE_MARK} 01.11, 02.11\n"
+
+
+# ---- выходной круг out2 ---------------------------------------------------------
+
+@pytest.mark.parametrize("line", [
+    _item("комната 405", what="забронировать"),
+    _item("версия 2.1", what="выпустить"),
+    _item("за 2026 год", what="отчёт"),
+    _item("12 слайдов", what="собрать материал"),
+    "- [ ] **参会者甲** — 准备 — 周报",
+])
+def test_part_with_a_number_is_not_a_deadline(line):
+    """Цифра или иероглиф в части дела срока не делают: пометка стирала текст дела
+    (DS C1, Haiku C1, Sonnet I3 out2)."""
+    assert action_items.check_deadline_item(line, "[10:00] Участник А: сделай", DAY, lang="ru") == line
+
+
+@pytest.mark.parametrize("line,speech,out", [
+    ("- [ ] **Участник А** — сдать отчёт до 28.11", "сдай отчёт", f"- [ ] **Участник А** — сдать отчёт — {MARK}"),
+    ("- [ ] **Участник А** — до 28.11", "сдай отчёт", f"- [ ] **Участник А** — {MARK}"),
+    ("- [ ] сдать отчёт — до 28.11", "сдай отчёт", f"- [ ] сдать отчёт — {MARK}"),
+    ("- [ ] **Участник А** — сдать до 28.11 включительно — важно", "сдай",
+     f"- [ ] **Участник А** — сдать — {MARK} — важно"),
+    ("- [ ] **Участник А** — согласовать — по TASK 3242 до 15.11", "к 28-му",
+     f"- [ ] **Участник А** — согласовать — по TASK 3242 — {MARK}"),
+    ("- [ ] **Участник А** — сдать отчёт до 28.11", "сдай отчёт до 28.11", None),
+    ("- [ ] **Участник А** — повторить установку в понедельник 10.08", "повтори", None),   # «к» — не слово
+])
+def test_chip_date_anywhere_in_the_line(line, speech, out):
+    """Срок, который рисует чип (правило `TaskDue.parse`: «до/к/дедлайн ДД.ММ»
+    где угодно в строке), судится и внутри дела, и в короткой строке (Sonnet I1,
+    Haiku I1, DS I6 out2)."""
+    assert action_items.check_deadline_item(line, speech, DAY) == (out or line)
+
+
+@pytest.mark.parametrize("tail,speech,kept", [
+    ("до 06.11", "в пятницу релиз", False),          # пятница через неделю (Haiku I2)
+    ("до 06.11", "выкачу в следующую пятницу", True),
+    ("до 30.10", "выкачу к пятнице", True),
+    ("до 30.10", "у нас пятница короткая", False),     # без предлога
+    ("до 28.10", "в нашей среде разработки", False),  # «среда» — не день (Sonnet I2)
+    ("до 28.10", "сделаю в среду", True),
+])
+def test_weekday_with_a_preposition_and_the_nearest_date(tail, speech, kept):
+    line = _item(tail)
+    assert (action_items.check_deadline_item(line, speech, DAY) == line) is kept
+
+
+@pytest.mark.parametrize("speech,kept", [
+    ("пригласим к 28 участникам", False), ("на 28 человек хватит", False), ("сдам до 28 включительно", True),
+])
+def test_count_after_a_preposition_is_not_a_day(speech, kept):
+    """«к 28 участникам» — не 28-е (Haiku I3, DS I2 out2)."""
+    assert fact_check.due_heard("до 28.10", speech, day=DAY) is kept
+
+
+@pytest.mark.parametrize("tail,speech,kept", [
+    ("через 12 дней", "[12:05] Участник А: ок", False),
+    ("к 17:00", "[10:17] Участник А: ок", False),
+    ("к 17:00", "**Участник А** [15:16–15:17]: ок", False),     # метка-диапазон, как пишет стенограмма
+    ("к 17:00", "[10:00] Участник А: сделаю к 17:00", True),
+])
+def test_stamps_do_not_confirm_numbers(tail, speech, kept):
+    """Метка реплики — не слово речи (Haiku I4, DS I5 out2)."""
+    assert fact_check.due_heard(tail, speech, day=DAY) is kept
+
+
+@pytest.mark.parametrize("tail,speech,kept", [
+    ("к концу недели", "концепция, неделька", False), ("в конце года", "сегодня", False),
+    ("к концу недели", "к концу недели", True), ("в конце года", "в конце года", True),
+])
+def test_time_words_are_whole_words(tail, speech, kept):
+    """Слово времени — основой и словом, а не подстрокой (Sonnet M2, Haiku M1 out2)."""
+    assert fact_check.due_heard(tail, speech, day=DAY) is kept
+
+
+@pytest.mark.parametrize("sep", ["—", "–", "-"])
+def test_marked_key_is_the_same_for_any_dash(sep):
+    """Ключ снимает пометку за любым тире — мост узнаёт ту же задачу (Haiku I5, DS I1 out2)."""
+    marked = action_items.check_deadline_item(f"- [ ] **Участник А** {sep} отчёт {sep} до 28.11", "отчёт", DAY)
+    assert MARK in marked and task_line.key(marked) == task_line.key(f"- [ ] **Участник А** {sep} отчёт")
+
+
+def test_trailing_spaces_are_kept():
+    """Гейт меняет только срок (Haiku M2 out2)."""
+    assert action_items.check_deadline_item(_item("до 28.11") + "  ", "отчёт", DAY) == _item(MARK) + "  "
+
+
+def test_second_pass_keeps_the_task_number_of_the_footnote():
+    """Повторный проход по готовому документу — те же байты: номер задачи прежней
+    сноски переносится, как и дата (DS M5 out2)."""
+    src = meeting_source.live("[10:00] Участник А: согласуй к 28-му\n", None, day=DAY)
+    doc = "## Поручения\n- [ ] **Участник А** — согласовать — по TASK 3242 до 15.11\n"
+    kw = dict(owner="Участник А", participants={"Участник А"})
+    once = meeting_source.finish_minutes(doc, src, **kw)
+    assert "TASK 3242" in once.split(fact_check.FOOTNOTE_MARK)[1]
+    assert meeting_source.finish_minutes(once, src, **kw) == once
+    carried = fact_check.annotate(f"тело\n\n---\n{fact_check.FOOTNOTE_MARK} TASK 3242\n", "речь", day=DAY)
+    assert carried == f"тело\n\n---\n{fact_check.FOOTNOTE_MARK} TASK 3242\n"
+
+
+@pytest.mark.parametrize("tail,kept", [
+    ("до релиза 3.4", True), ("в течение работ по TASK 3242", True), ("к версии 2.0", True),
+    ("через 3 дня", False), ("к 16:00", False), ("до 28", False),
+])
+def test_only_time_numbers_of_a_deadline_are_judged(tail, kept):
+    """Номер версии или задачи в части-сроке не судится — пометка стирала бы дело;
+    числа времени — судятся (опыт до out3)."""
+    line = _item(tail)
+    assert (action_items.check_deadline_item(line, "[10:00] Участник А: отчёт сделай", DAY) == line) is kept

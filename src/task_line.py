@@ -66,7 +66,7 @@ CONTROL_MARK = re.compile(r"\s*_\(снято(?: по сроку|:) [^)]*\)_")
 # речи». Даты в ней нет — чип срока в «Задачах» не рисуется. Как и пометка контроля,
 # в ключ не входит: иначе мост ревизии не узнавал ту же задачу без срока.
 DUE_UNHEARD_MARKS = {"ru": "срок не из речи", "en": "deadline not heard", "zh": "期限未在讲话中提到"}
-DUE_UNHEARD = re.compile(r"\s*—\s*(?:" + "|".join(map(re.escape, DUE_UNHEARD_MARKS.values())) + r")")
+DUE_UNHEARD = re.compile(r"\s*[—–-]\s*(?:" + "|".join(map(re.escape, DUE_UNHEARD_MARKS.values())) + r")")
 
 # Префикс пункта с ящиком и тот же префикс в виде, который узнают вкладки «Задачи»
 # (`^\s*[-*] \[( |x|X)\] +` на Mac и iPhone).

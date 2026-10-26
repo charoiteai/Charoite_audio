@@ -72,6 +72,14 @@ final class DesignKitTests: XCTestCase {
         for c in table.cases {
             XCTAssertEqual(c.window.contains(c.date), c.in_window, "\(c.meeting): \(c.date)")
             let (my, mm, md) = ymd(c.meeting)
+            if !c.in_window {
+                // дата вне окна протокола и для чипа не «на днях»: ни просрочки, ни
+                // близкого срока на день встречи (DS M2 out2: таблица сверяла сама себя)
+                let due = try XCTUnwrap(TaskDue.parse("сдать до \(c.date)"))
+                XCTAssertEqual(due.status(now: date(my, mm, md), anchor: date(my, mm, md)), .later,
+                               "\(c.meeting): \(c.date) вне окна")
+                checked += 1
+            }
             for full in c.dates {
                 let (y, m, d) = ymd(full)
                 let due = try XCTUnwrap(TaskDue.parse(String(format: "сдать до %02d.%02d", d, m)))

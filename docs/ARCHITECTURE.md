@@ -1298,11 +1298,18 @@ the gate (`fact_check._date_heard`): a day without a month ("by the 28th")
 confirms a date only inside the meeting-day window (`fact_check.due_dates`:
 the nearest such day not before "meeting − 7 days" and not before the meeting
 itself), and the day must be said as a day ("by the 28th", "28 числа"; not a
-full other date, a clock time or a bare count); a named weekday or "tomorrow"
-confirms a date within two weeks of the meeting. A tail with a date is judged
-by its dates only; without one, by its numbers and time words. The gate walks
-every checkbox item of the minutes (the Tasks tab reads them all), splits on any
-dash, and judges against the same text as the footnote (speech plus note).
+full other date, a clock time, a bare count or a count after a preposition, "by
+28 people"); a weekday said with a preposition ("by Friday") confirms its nearest
+date, with "next" the one after, and "tomorrow" the next day. A part of the item
+is a deadline only if it starts as one ("by", "until", "через", "до", "today",
+a weekday) or is a whole date or time: "room 405" or "version 2.1" is the task,
+not a deadline. Such a part with a date is judged by its dates only; without
+one, by its numbers (reply stamps do not count) and time words. A date the Tasks
+chip would draw ("до/к/дедлайн DD.MM" anywhere, the `TaskDue.parse` rule) is
+judged wherever it stands and cut out of the task text, the mark following it.
+The gate walks every checkbox item of the minutes (the Tasks tab reads them all),
+splits on any dash, and judges against the same text as the footnote (speech
+plus note).
 The meeting day comes from the transcript file name
 (`meeting_stamp.day_of`, `MeetingSource.day`, not hashed). The grace days and
 the year of a windowed date are the app's `TaskDue` rule; both sides read the

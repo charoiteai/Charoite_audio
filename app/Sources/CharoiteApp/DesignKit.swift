@@ -295,6 +295,9 @@ struct TaskDue: Equatable {
                     break
                 }
             }
+            // «до 29.02» в невисокосном году: календарь молча даёт 01.03, а у
+            // протокола такой даты нет — статуса нет (№805 out2, DS M3, Haiku M3)
+            guard calendar.component(.day, from: target) == day else { return .later }
             days = daysAhead()
         } else if days < -183, let next = calendar.date(byAdding: .year, value: 1, to: target) {
             target = next

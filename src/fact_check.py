@@ -27,6 +27,7 @@ NLI — достаточно поиска по строке. Стоит милл
 сроком, а сноска называла бы тот же срок выдуманным (№805, in3 Sonnet I5).
 """
 import datetime
+import functools
 import re
 
 # Месяц — только точными словоформами (именительный, родительный, дательный,
@@ -72,6 +73,29 @@ TENS_WORDS = {
     "двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50,
     "шестьдесят": 60, "семьдесят": 70, "восемьдесят": 80, "девяносто": 90,
 }
+
+# «by the twenty-eighth» и «二十八号» — день словом в английской и китайской речи
+# (№805 out2, DS I3)
+_EN_UNITS = "first second third fourth fifth sixth seventh eighth ninth".split()
+EN_ORDINAL_DAYS = {w: i for i, w in enumerate(_EN_UNITS, 1)}
+EN_ORDINAL_DAYS.update({w: i for i, w in enumerate(
+    "tenth eleventh twelfth thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth".split(), 10)})
+EN_ORDINAL_DAYS.update({"twentieth": 20, "thirtieth": 30})
+for _tens, _base in (("twenty", 20), ("thirty", 30)):
+    for _unit, _day in zip(_EN_UNITS, range(1, 10 if _base == 20 else 2)):
+        for _sep in ("-", " "):
+            EN_ORDINAL_DAYS[_tens + _sep + _unit] = _base + _day
+_ZH_DIGITS = "一二三四五六七八九"
+
+
+def _zh_day(word: str) -> int:
+    """«二十八» → 28, «十五» → 15, «八» → 8; не число дня — 0."""
+    tens, ten, units = word.partition("十")
+    if len(tens) > 1 or len(units) > 1 or (not ten and len(word) != 1):
+        return 0
+    if not ten:
+        return _ZH_DIGITS.index(word) + 1 if word in _ZH_DIGITS else 0
+    return (_ZH_DIGITS.index(tens) + 1 if tens else 1) * 10 + (_ZH_DIGITS.index(units) + 1 if units else 0)
 
 
 def _alt(words) -> str:
@@ -189,21 +213,37 @@ def due_window(day: int, meeting: datetime.date) -> set[str]:
 
 
 # Что в речи днём не бывает: полные даты (их судит `_dates`), время «10:40» и метки
-# реплик «[10:00]». Без вычета день 28 «звучал» в «сдам 28.11», а день 10 — в
+# реплик «[10:00]», «[15:16–15:17]». Без вычета день 28 «звучал» в «сдам 28.11», а день 10 — в
 # каждой метке встречи в 10:xx (№805 out1: DS I1, Haiku I1).
 _NOT_A_DAY = re.compile(r"\[?\d{1,2}:\d{2}(?::\d{2})?\]?")
+# метка реплики «[10:17]», «[15:16–15:17]» — не слово речи: её числа не подтверждают ни день, ни
+# число срока («через 12 дней» при метке [12:05] — №805 out2, Haiku I4, DS I5)
+_STAMP = re.compile(r"\[\d{1,2}:\d{2}(?::\d{2})?(?:\s*[–-]\s*\d{1,2}:\d{2}(?::\d{2})?)?\]")
+# число после предлога — не день, если за ним единица счёта: «к 28 участникам»,
+# «на 10 минут» (№805 out2, Haiku I3, DS I2)
+_COUNT_UNIT = (r"(?!\s*(?:участник|человек|чел\b|сотрудник|минут|мин\b|час|секунд|сек\b|раз\b|раза\b|штук|шт\b"
+               r"|процент|%|слайд|страниц|дн[яейю]|день|недел|месяц|лет\b|год|рубл|тысяч|млн|people|person|minute"
+               r"|min\b|hour|day|week|month|year|percent|times|slide|page))")
+
+
+@functools.lru_cache(maxsize=4)
+def _without_dates(low: str) -> str:
+    for rx in (DATE_NUM_RE, DATE_WORD_RE, DATE_ORDINAL_RE, _NOT_A_DAY):
+        low = rx.sub(" ", low)
+    return low
 
 
 def _day_spoken(day: int, low: str) -> bool:
     """День без месяца, названный как день (речь в нижнем регистре): «к 28-му»,
     «до 28», «28-го», «28 числа», «двадцать восьмого», «by the 28th», «28号».
-    Голое число («28 человек», «12 мин») днём не считается."""
-    for rx in (DATE_NUM_RE, DATE_WORD_RE, DATE_ORDINAL_RE, _NOT_A_DAY):
-        low = rx.sub(" ", low)
+    Голое число («28 человек», «12 мин») и число единиц после предлога («к 28
+    участникам») днём не считаются."""
+    low = _without_dates(low)       # одна чистка на речь, а не на каждую дату (DS M4 out2)
     n = rf"(?<![\d.,:]){day}(?![\d.,:]\d)"
     if re.search(
             rf"\b(?:к|ко|до|по|на|с|со|дедлайн\w*|срок\w*|by|before|until|till|on|due)\s+(?:the\s+)?{n}(?!\d)"
-            rf"|{n}\s*-?\s*(?:го|ого|е|ое|ому|му|м|st|nd|rd|th)\b"
+            rf"{_COUNT_UNIT}"
+            rf"|{n}\s*[-\u2010\u2011\u2013\u2014]?\s*(?:го|ого|е|ое|ому|му|м|st|nd|rd|th)\b"
             rf"|{n}\s+(?:числа|число|числу)\b"
             rf"|{n}\s*[号日]", low):
         return True
@@ -215,23 +255,39 @@ def _day_spoken(day: int, low: str) -> bool:
             value += TENS_WORDS[tens]
         if value == day:
             return True
-    return False
+    for word in re.findall(rf"\b(?:the|by|on|until|till|before)\s+(?:the\s+)?({_alt(EN_ORDINAL_DAYS)})\b", low):
+        if EN_ORDINAL_DAYS[word] == day:
+            return True
+    return any(_zh_day(word) == day for word in re.findall(r"([一二三四五六七八九十]{1,3})\s*[号日]", low))
 
 
 # День недели и «завтра» в речи — дата модели выведена из них, а не выдумана
 # («сдай в пятницу» на встрече в понедельник 26.10 → «до 30.10»; Sonnet I3 out1).
-# Засчитываются только ближайшие две недели от встречи: дальше «пятница» уже не
-# указывает на одну дату.
-_WEEKDAYS = (
-    r"понедельник\w*|monday|周一|星期一", r"вторник\w*|tuesday|周二|星期二", r"сред[аеуы]\b|wednesday|周三|星期三",
-    r"четверг\w*|thursday|周四|星期四", r"пятниц\w*|friday|周五|星期五", r"суббот\w*|saturday|周六|星期六",
-    r"воскресень\w*|sunday|周日|周天|星期日|星期天")
+# День недели — только с предлогом («в пятницу», «к пятнице», «до пятницы», «by
+# Friday», «周五»): голое «среда» — ещё и «среда разработки». Без «следующий» он
+# указывает на ближайшую такую дату (0–6 дней), с ним — и на следующую (до 13):
+# «в пятницу» не подтверждает пятницу через неделю (№805 out2: Sonnet I2, Haiku
+# I2, DS I4).
+_Q = r"(?:(?:эт\w*|следующ\w*|ближайш\w*)\s+)?"
+_WEEKDAY_FORMS = (   # винительный (в/во), дательный (к/ко), родительный (до), en, zh
+    ("понедельник", "понедельнику", "понедельника", "monday", "一"),
+    ("вторник", "вторнику", "вторника", "tuesday", "二"),
+    ("среду", "среде", "среды", "wednesday", "三"),
+    ("четверг", "четвергу", "четверга", "thursday", "四"),
+    ("пятницу", "пятнице", "пятницы", "friday", "五"),
+    ("субботу", "субботе", "субботы", "saturday", "六"),
+    ("воскресенье", "воскресенью", "воскресенья", "sunday", "[日天]"))
+_WEEKDAYS = tuple(
+    rf"\b(?:в|во)\s+{_Q}{acc}\b|\b(?:к|ко)\s+{_Q}{dat}\b|\bдо\s+{_Q}{gen}\b"
+    rf"|\b(?:on|by|until|till|before|this|next)\s+{en}\b|(?:下个?|本|这)?(?:周|星期|礼拜){zh}"
+    for acc, dat, gen, en, zh in _WEEKDAY_FORMS)
+_NEXT = re.compile(r"следующ|next|下")
 _RELATIVE = {0: r"сегодня|today|今天", 1: r"(?<!после)завтра|tomorrow|明天", 2: r"послезавтра|后天"}
 
 
 def _relative_heard(date: str, low: str, meeting: datetime.date) -> bool:
-    """Дата ДД.ММ — названный в речи день недели или «сегодня/завтра/послезавтра»
-    от дня встречи."""
+    """Дата ДД.ММ — названный в речи день недели (с предлогом) или
+    «сегодня/завтра/послезавтра» от дня встречи."""
     d, m = (int(x) for x in date.split("."))
     for year in (meeting.year, meeting.year + 1):
         try:
@@ -242,11 +298,12 @@ def _relative_heard(date: str, low: str, meeting: datetime.date) -> bool:
         if 0 <= ahead <= 13:
             if ahead in _RELATIVE and re.search(_RELATIVE[ahead], low):
                 return True
-            return bool(re.search(_WEEKDAYS[cand.weekday()], low))
+            return any(ahead <= 6 or _NEXT.search(hit.group())
+                       for hit in re.finditer(_WEEKDAYS[cand.weekday()], low))
     return False
 
 
-def _date_heard(date: str, src_dates: set[str], low: str, meeting: datetime.date | None) -> bool:
+def _date_heard(date: str, src_dates: set[str] | frozenset[str], low: str, meeting: datetime.date | None) -> bool:
     """Дата ДД.ММ подтверждена речью: прозвучала целиком; при известном дне
     встречи — ещё прозвучал её день (как день, `_day_spoken`) и она в окне
     `due_window`, либо она — названный день недели или «завтра»
@@ -259,6 +316,11 @@ def _date_heard(date: str, src_dates: set[str], low: str, meeting: datetime.date
     return (date in due_window(day, meeting) and _day_spoken(day, low)) or _relative_heard(date, low, meeting)
 
 
+def _task_heard(name: str, num: str, src_tasks: set[str], transcript: str) -> bool:
+    # голый номер в стенограмме тоже засчитываем: STT часто теряет имя системы
+    return f"{name.lower()} {num}" in src_tasks or bool(re.search(rf"\b{num}\b", transcript))
+
+
 def unanchored(document: str, transcript: str, *, day: datetime.date | None = None) -> list[str]:
     """Факты документа, которых нет в стенограмме. Пустой список — всё сошлось.
     `day` — день встречи: с ним дата документа засчитывается и по дню без месяца
@@ -269,11 +331,7 @@ def unanchored(document: str, transcript: str, *, day: datetime.date | None = No
     src_tasks, src_dates = _tasks(transcript), _dates(transcript)
     low = transcript.lower()
     for name, num in TASK_RE.findall(document):
-        if _is_year(num):
-            continue
-        key = f"{name.lower()} {num}"
-        # голый номер в стенограмме тоже засчитываем: STT часто теряет имя системы
-        if key not in src_tasks and not re.search(rf"\b{num}\b", transcript):
+        if not _is_year(num) and not _task_heard(name, num, src_tasks, transcript):
             bad.append(f"{name} {num}")
     for date in sorted(_dates(document) - src_dates):
         if not _date_heard(date, src_dates, low, day):
@@ -282,9 +340,23 @@ def unanchored(document: str, transcript: str, *, day: datetime.date | None = No
 
 
 # ---- срок поручения (№805) -------------------------------------------------------
-# Хвост поручения — срок, только если в нём дата, число или слово времени из
-# закрытого списка. Предлог сам срока не делает: «— на английском», «— по итогам
-# аудита» — продолжение дела, и пометка стёрла бы его (№805 out1: DS I2, Sonnet I2).
+# Часть поручения — срок, только если она им начинается: маркер срока («до», «к»,
+# «через», «в течение», «by»), слово-срок («сегодня», «срочно»), день недели или
+# «конец недели», — или вся часть — дата или время. Цифра, слово времени или
+# иероглиф внутри прочей части срока не делают: «— комната 405», «— версия 2.1»,
+# «— за 2026 год», «— 周报» — продолжение дела, и пометка стирала его (№805 out2:
+# DS C1, Haiku C1, Sonnet I3). Предлог «по» срока не начинает: «по итогам аудита»,
+# «по TASK 3242 до 15.11» — дело; дату в таком куске судит `action_items` по
+# правилу чипа приложения.
+_DUE_START = re.compile(
+    r"(?:до|к|ко|не\s+позднее|не\s+позже|срок\w*|дедлайн\w*|через|в\s+течение|в\s+пределах"
+    r"|(?:в|к|до|на)?\s*(?:конц\w*|начал\w*|середин\w*)\s+(?:недел|месяц|квартал|год|дня|спринт)\w*"
+    r"|на\s+(?:этой|следующей|той)\s+неделе|сегодня|завтра|послезавтра|срочно|немедленно|сразу|оперативно"
+    r"|понедельник|вторник|среда|четверг|пятница|суббота|воскресенье"
+    r"|by|until|till|before|due|within|no\s+later\s+than|end\s+of|today|tomorrow|tonight|asap|eod|eow"
+    r"|(?:this|next)\s+(?:week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    r"|" + "|".join(f"(?:{w})" for w in _WEEKDAYS))
+# слова времени, которые судит `due_heard` основой
 _DUE_TIME = re.compile(
     r"\b(?:понедельник\w*|вторник\w*|сред[аеуы]|четверг\w*|пятниц\w*|суббот\w*|воскресень\w*|выходн\w*"
     r"|недел\w*|месяц\w*|квартал\w*|полугоди\w*|год|года|году|конц[аеу]|начал[аеу]|середин\w*"
@@ -294,10 +366,12 @@ _DUE_TIME = re.compile(
     r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|week|weeks|month|months|quarter"
     r"|year|today|tomorrow|tonight|asap|eod|eow|noon|morning|evening|deadline"
     r"|january|february|april|june|july|august|september|october|november|december)\b")
-_DUE_ZH = re.compile(r"(之前|以前|前)$|今天|明天|后天|周|星期|下个?月|月底|日")
+_DUE_ZH = re.compile(r"(之前|以前|前)$|^(?:今天|明天|后天|下个?月|本月|月底|下周|本周|这周|周[一二三四五六日天]|星期|礼拜)")
 # дата цифрами по-китайски («10月30日») — `_dates` её не разбирает, а речь
 # скажет её словами («十月三十号»): подтвердить нечем, стирать нельзя (DS M5 out1)
 _DUE_ZH_DATE = re.compile(r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]")
+# что остаётся от части-даты, кроме самой даты и времени: «28.11 включительно», «(пятница)»
+_DUE_WHOLE_REST = re.compile(r"^[\s,.;:()—–-]*(?:включительно|inclusive|г\.?|года?)?[\s,.;:()]*$")
 # «срок: не указан» и «срок не указан» — не утверждение о сроке, а его отсутствие
 _DUE_PREFIX = re.compile(r"^(?:срок|deadline|期限)\s*[:：]\s*")
 _DUE_EMPTY = ("срок не указан", "срок не назван", "срок не определ", "срок не обознач", "без срока", "в процессе",
@@ -313,6 +387,24 @@ _CARDINALS = {
     30: "тридцать тридцати thirty"}
 
 
+# числа срока — только числа времени: «16:00», «через 2 недели», «к 16», «до 28».
+# Номер версии, задачи, комнаты в части-сроке не судится: «до релиза 3.4» и «в
+# течение работ по TASK 3242» — срок с делом, и пометка стирала бы дело (№805 out3,
+# свой опыт до круга: 3 из 3 стирались)
+_DUE_NUM = re.compile(
+    r"(\d{1,2}):(\d{2})"
+    r"|(\d+)\s*(?=дн|день|недел|месяц|час|мин|сут|лет|год|рабоч|day|week|month|hour|minute|min\b|h\b)"
+    r"|^(?:до|к|ко|не\s+позднее|не\s+позже|by|until|till|before)\s+(\d{1,2})(?![\d.,:])")
+
+
+@functools.lru_cache(maxsize=4)
+def speech_index(speech: str) -> tuple[str, str, frozenset[str]]:
+    """Речь для сверки срока — один раз на документ, а не на каждый хвост (DS M4
+    out2): нижний регистр, он же без меток реплик (числа), её даты."""
+    low = speech.lower()
+    return low, _STAMP.sub(" ", low), frozenset(_dates(speech))
+
+
 def _number_heard(num: int, low: str) -> bool:
     if re.search(rf"(?<!\d){num}(?!\d)", low):
         return True
@@ -320,27 +412,36 @@ def _number_heard(num: int, low: str) -> bool:
     return bool(words) and bool(re.search(rf"\b(?:{'|'.join(words.split())})\b", low))
 
 
+def _word_heard(word: str, low: str) -> bool:
+    """Слово времени прозвучало — основой и словом: «недели» — «неделю», но не
+    «неделька»; «года» — не «сегодня»; «конца» — не «концепция» (Sonnet M2, Haiku M1 out2)."""
+    stem = word[:max(4, len(word) - 2)]
+    return bool(re.search(rf"\b{re.escape(stem)}\w{{0,3}}\b", low))
+
+
 def looks_like_due(tail: str) -> bool:
-    """Хвост поручения — утверждение о сроке: дата, число или слово времени
-    (`_DUE_TIME`), а не пустой срок и не продолжение дела."""
+    """Часть поручения — утверждение о сроке: начинается маркером срока
+    (`_DUE_START`), китайским сроком или вся — дата или время; не пустой срок."""
     low = _DUE_PREFIX.sub("", tail.lower().strip())
     if not low or low.startswith(_DUE_EMPTY):
         return False
-    if _DUE_ZH.search(low):
+    if _DUE_ZH_DATE.search(low) or _DUE_ZH.search(low) or _DUE_START.match(low):
         return True
-    return bool(_dates(tail)) or bool(re.search(r"\d", low)) or bool(_DUE_TIME.search(low))
+    rest = low
+    for rx in (DATE_NUM_RE, DATE_WORD_RE, DATE_ORDINAL_RE, _NOT_A_DAY):
+        rest = rx.sub(" ", rest)
+    return rest != low and bool(_DUE_WHOLE_REST.match(rest))
 
 
 def due_heard(tail: str, speech: str, *, day: datetime.date | None = None) -> bool:
     """Срок поручения подтверждён речью. Есть дата — решают только даты
     (`_date_heard`): подтверждённая дата не стирается из-за слова модели рядом
     («до 28.10 включительно» — DS C1 out1). Даты нет — каждое число хвоста
-    («к 16:00», «через 2 недели») прозвучало цифрой или словом, каждое слово
-    времени («к пятнице») — основой; прочие слова не судятся. Китайская фраза —
-    сама, без «前»; китайская дата цифрами — не судится. Не похожий на срок
-    хвост (`looks_like_due`) сюда не приходит."""
-    low = speech.lower()
-    src_dates = _dates(speech)
+    («к 16:00», «через 2 недели»; номер версии или задачи не судится,
+    `_DUE_NUM`) прозвучало цифрой или словом (метки реплик не в счёт), каждое слово времени («к пятнице») — основой; прочие слова не
+    судятся. Китайская фраза — сама, без «前»; китайская дата цифрами — не
+    судится. Не похожий на срок хвост (`looks_like_due`) сюда не приходит."""
+    low, said, src_dates = speech_index(speech)
     dates = _dates(tail)
     if dates:
         return all(_date_heard(d, src_dates, low, day) for d in dates)
@@ -351,13 +452,11 @@ def due_heard(tail: str, speech: str, *, day: datetime.date | None = None) -> bo
         if run and run not in speech:
             return False
     rest = _DUE_PREFIX.sub("", tail.lower())
-    for num in re.findall(r"\d+", rest):
-        if int(num) and not _number_heard(int(num), low):
-            return False
-    for word in _DUE_TIME.findall(rest):
-        if word[:max(4, len(word) - 2)] not in low:
-            return False
-    return True
+    for hit in _DUE_NUM.finditer(rest.strip()):
+        for num in filter(None, hit.groups()):
+            if int(num) and not _number_heard(int(num), said):
+                return False
+    return all(_word_heard(word, low) for word in _DUE_TIME.findall(rest))
 
 
 #: начало строки сноски; её снимает `without_footnote` и пропускает разбор
@@ -403,15 +502,21 @@ def annotate(document: str, transcript: str, *, day: datetime.date | None = None
     Прежняя сноска снимается до сверки: её факты по построению не в
     стенограмме, и второй вызов дописывал второй блок (№732, Sonnet I2).
 
-    Даты прежней сноски, которых речь по-прежнему не подтверждает, переходят в
-    новую: гейт срока (№805) заменил такую дату в строке пометкой, и в теле её
-    больше нет — без переноса повторный проход по готовому документу (пересборка
+    Факты прежней сноски (даты и номера задач), которых речь по-прежнему не
+    подтверждает, переходят в новую: гейт срока (№805) заменил такую дату в
+    строке пометкой — иногда вместе с номером задачи рядом (DS M5 out2), — и в
+    теле их больше нет — без переноса повторный проход по готовому документу (пересборка
     поверх черновика) молча терял дату модели и менял байты. Цена: дату,
     которую человек сам стёр из тела, сноска держит до новой генерации минуток;
     сегодня все четыре писателя зовут `finish_minutes` по свежему ответу модели,
     и этот перенос держит только повторный проход (DS M1 out1)."""
-    carried = [d for d in _footnote_facts(document)
-               if DATE_FULL.fullmatch(d) and not _date_heard(d, _dates(transcript), transcript.lower(), day)]
+    src_dates, src_tasks, low = _dates(transcript), _tasks(transcript), transcript.lower()
+    carried = []
+    for fact in _footnote_facts(document):
+        task = TASK_RE.fullmatch(fact)
+        if (DATE_FULL.fullmatch(fact) and not _date_heard(fact, src_dates, low, day)) or (
+                task and not _is_year(task[2]) and not _task_heard(task[1], task[2], src_tasks, transcript)):
+            carried.append(fact)
     document = without_footnote(document)
     bad = sorted(set(unanchored(document, transcript, day=day)) | set(carried), key=str.lower)
     if not bad:
