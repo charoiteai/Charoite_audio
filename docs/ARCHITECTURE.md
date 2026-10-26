@@ -1286,6 +1286,21 @@ rebuild; before it the draft and MCP skipped the fact check and the rebuild
 skipped the scrub). The app's minutes parser skips the service tail lines
 (`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
 `fact_check.FOOTNOTE_MARK`).
+The deadline gate (№805) sits between the checkboxes and the owner canon
+(`action_items.check_deadlines`): an action item's deadline the speech does not
+confirm is replaced in the line by the mark "срок не из речи"
+(`task_line.DUE_UNHEARD_MARKS`, ru/en/zh) — on long meetings the model invents
+about a third of deadlines, and a deadline in the Tasks tab reads as a fact. The
+mark has no date, so the app draws no deadline chip; `task_line.key` drops it,
+so the review bridge still sees the same task; the model's date stays in the
+footnote. "A date is confirmed by speech" is one decision for the footnote and
+the gate (`fact_check._date_heard`): a day without a month ("by the 28th")
+confirms a date only inside the meeting-day window (`fact_check.due_dates`:
+the nearest such day not before "meeting − 7 days" and not before the meeting
+itself). The meeting day comes from the transcript file name
+(`meeting_stamp.day_of`, `MeetingSource.day`, not hashed). The grace days and
+the year of a windowed date are the app's `TaskDue` rule; both sides read the
+shared table `tests/fixtures/due_window.json`.
 The built-in minutes templates and the MCP prompt do not ask the model for
 the meeting date (№738): it used to copy the most prominent date of the talk,
 and every reader takes the date from the file stamp anyway.

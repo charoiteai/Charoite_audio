@@ -11,8 +11,22 @@ NLI — достаточно поиска по строке. Стоит милл
 выдуманный номер задачи или срок уезжает в поручение и живёт своей жизнью.
 
 Найденное НЕ вычищаем: пропуск верного факта хуже пометки. Дописываем сноску,
-человек решает сам.
+человек решает сам. Одно исключение — срок поручения (№805): из четырёх сроков
+минуток на длинных встречах один-два модель додумывает («до 28 ноября» при «к
+28-му»), а срок в окне «Задачи» читается как факт и рисуется чипом. Срок, который
+речь не подтверждает, меняется в строке на пометку «срок не из речи» (её пишет
+`action_items.check_deadlines`, слова — `task_line.DUE_UNHEARD_MARKS`); дата модели
+остаётся в сноске — `annotate` стоит в цепочке раньше.
+
+Дата без месяца («к 28-му») подтверждает дату документа, только если она в окне
+дня встречи (`due_window`): ближайший такой день не раньше «встреча − неделя» или
+не раньше самой встречи. Люфт — тот же, что у срока в приложении (Swift
+`TaskDue.restatedGraceDays`); обе стороны сверяет общая таблица
+`tests/fixtures/due_window.json`. Решение «дата подтверждена речью» одно —
+`_date_heard`: по нему и сноска, и проверка срока, иначе строка оставалась бы со
+сроком, а сноска называла бы тот же срок выдуманным (№805, in3 Sonnet I5).
 """
+import datetime
 import re
 
 # Месяц — только точными словоформами (именительный, родительный, дательный,
@@ -139,12 +153,78 @@ def _tasks(text: str) -> set[str]:
             for name, num in TASK_RE.findall(text) if not _is_year(num)}
 
 
-def unanchored(document: str, transcript: str) -> list[str]:
-    """Факты документа, которых нет в стенограмме. Пустой список — всё сошлось."""
+#: люфт окна дня встречи — как Swift `TaskDue.restatedGraceDays`: срок, пропущенный
+#: на днях, приносят на встречу именно потому, что он горит («к 30-му» на встрече
+#: 02.11 — это 30.10). Сверяет общая таблица tests/fixtures/due_window.json.
+DUE_GRACE_DAYS = 7
+
+
+def due_dates(day: int, meeting: datetime.date) -> set[datetime.date]:
+    """Даты, которыми день без месяца («к 28-му») бывает на встрече `meeting`:
+    ближайший такой день не раньше «встреча − DUE_GRACE_DAYS» (просрочка) и
+    ближайший не раньше самой встречи. Считается датами, а не числами месяца:
+    через границу месяца и года; дня, которого в месяце нет (31.02), не бывает —
+    берётся следующий месяц с таким днём. Год — тот же, что выводит приложение
+    (`TaskDue.status` с якорем встречи): общая таблица это и сверяет."""
+    out: set[datetime.date] = set()
+    if not 1 <= day <= 31:
+        return out
+    for floor in (meeting - datetime.timedelta(days=DUE_GRACE_DAYS), meeting):
+        year, month = floor.year, floor.month
+        for _ in range(3):
+            try:
+                cand = datetime.date(year, month, day)
+            except ValueError:
+                cand = None
+            if cand is not None and cand >= floor:
+                out.add(cand)
+                break
+            year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return out
+
+
+def due_window(day: int, meeting: datetime.date) -> set[str]:
+    """`due_dates` в виде ДД.ММ — так даты стоят в строке поручения."""
+    return {d.strftime("%d.%m") for d in due_dates(day, meeting)}
+
+
+def _day_spoken(day: int, low: str) -> bool:
+    """День без месяца в речи (в нижнем регистре): «28-го», «к 28», «двадцать
+    восьмого». Порядковое словом — те же таблицы, что у дат с месяцем."""
+    if re.search(rf"(?<!\d){day}(?!\d)", low):
+        return True
+    for tens, word in re.findall(rf"\b(?:({_alt(TENS_WORDS)}){_SP})?({_alt(ORDINAL_DAYS)})\b", low):
+        value = ORDINAL_DAYS[word]
+        if tens:
+            if value > 9:
+                continue
+            value += TENS_WORDS[tens]
+        if value == day:
+            return True
+    return False
+
+
+def _date_heard(date: str, src_dates: set[str], low: str, meeting: datetime.date | None) -> bool:
+    """Дата ДД.ММ подтверждена речью: прозвучала целиком или, при известном дне
+    встречи, прозвучал её день и она в окне `due_window`. Без дня встречи день без
+    месяца не засчитывается — как было до №805."""
+    if date in src_dates:
+        return True
+    if meeting is None:
+        return False
+    day = int(date.split(".")[0])
+    return date in due_window(day, meeting) and _day_spoken(day, low)
+
+
+def unanchored(document: str, transcript: str, *, day: datetime.date | None = None) -> list[str]:
+    """Факты документа, которых нет в стенограмме. Пустой список — всё сошлось.
+    `day` — день встречи: с ним дата документа засчитывается и по дню без месяца
+    в окне встречи (`_date_heard`)."""
     if not document.strip() or not transcript.strip():
         return []
     bad = []
     src_tasks, src_dates = _tasks(transcript), _dates(transcript)
+    low = transcript.lower()
     for name, num in TASK_RE.findall(document):
         if _is_year(num):
             continue
@@ -153,8 +233,62 @@ def unanchored(document: str, transcript: str) -> list[str]:
         if key not in src_tasks and not re.search(rf"\b{num}\b", transcript):
             bad.append(f"{name} {num}")
     for date in sorted(_dates(document) - src_dates):
-        bad.append(date)
+        if not _date_heard(date, src_dates, low, day):
+            bad.append(date)
     return sorted(set(bad), key=str.lower)
+
+
+# ---- срок поручения (№805) -------------------------------------------------------
+# Хвост поручения «— срок» — срок, только если похож на срок: дата, число, предлог
+# срока или слово времени. Остальное («— согласовать с юристами») не трогаем.
+_DUE_LEAD = ("до ", "к ", "ко ", "в ", "во ", "на ", "по ", "через ", "после ", "с ", "не позже", "не позднее",
+             "срок", "сегодня", "завтра", "послезавтра", "сейчас", "сразу", "утром", "вечером", "днём", "ночью",
+             "by ", "before ", "until ", "till ", "on ", "next ", "today", "tomorrow", "asap", "end of ")
+_DUE_ZH = re.compile(r"(之前|以前|前)$|今天|明天|后天|周|星期|下个?月|月底|日")
+# «срок не указан» — не утверждение о сроке, а его отсутствие: не трогаем
+_DUE_EMPTY = ("срок не указан", "срок не назван", "срок не определ", "срок не обознач", "без срока", "в процессе",
+              "не указан", "no deadline", "tbd")
+# служебные слова срока — их в речи не ищем, ищем смысловые
+_DUE_STOP = frozenset({"до", "к", "ко", "в", "во", "на", "по", "через", "после", "с", "не", "позже", "позднее",
+                       "срок", "конца", "начала", "by", "before", "until", "till", "on", "the", "of", "end",
+                       "next", "и", "или", "числа", "года"})
+
+
+def looks_like_due(tail: str) -> bool:
+    """Хвост поручения — утверждение о сроке (а не пустой срок и не продолжение дела)."""
+    low = tail.lower().strip()
+    if not low or low.startswith(_DUE_EMPTY):
+        return False
+    if _DUE_ZH.search(low):
+        return True
+    return bool(_dates(tail)) or bool(re.search(r"\d", low)) or low.startswith(_DUE_LEAD)
+
+
+def due_heard(tail: str, speech: str, *, day: datetime.date | None = None) -> bool:
+    """Срок поручения подтверждён речью: каждая его дата — `_date_heard`; прочие
+    числа («к 16:00») — отдельным числом в речи; смысловые слова («к пятнице») —
+    основой, без календаря; китайская фраза — сама, без «前». Не похожий на срок
+    хвост (`looks_like_due`) сюда не приходит."""
+    low_tail, low = tail.lower(), speech.lower()
+    src_dates = _dates(speech)
+    if not all(_date_heard(d, src_dates, low, day) for d in _dates(tail)):
+        return False
+    for run in re.findall(r"[\u3400-\u9fff]+", tail):
+        run = re.sub(r"(之前|以前|前)$", "", run)
+        if run and run not in speech:
+            return False
+    rest = low_tail
+    for rx in (DATE_NUM_RE, DATE_WORD_RE, DATE_ORDINAL_RE):   # даты сверены выше — их токены не считаем
+        rest = rx.sub(" ", rest)
+    for num in re.findall(r"\d+", rest):
+        if int(num) and not re.search(rf"(?<!\d){int(num)}(?!\d)", low):
+            return False
+    for word in re.findall(r"[a-zа-яё]+", rest):
+        if word in _DUE_STOP or len(word) < 3:
+            continue
+        if word[:max(4, len(word) - 2)] not in low:
+            return False
+    return True
 
 
 #: начало строки сноски; её снимает `without_footnote` и пропускает разбор
@@ -183,14 +317,32 @@ def without_footnote(document: str) -> str:
     return "\n".join(out)
 
 
-def annotate(document: str, transcript: str) -> str:
+DATE_FULL = re.compile(r"\d{2}\.\d{2}")
+
+
+def _footnote_facts(document: str) -> list[str]:
+    """Факты сноски `annotate` в документе — как она их написала."""
+    for line in document.split("\n"):
+        if line.startswith(FOOTNOTE_MARK):
+            return [x.strip() for x in line[len(FOOTNOTE_MARK):].split(",") if x.strip()]
+    return []
+
+
+def annotate(document: str, transcript: str, *, day: datetime.date | None = None) -> str:
     """Дописывает сноску о ненайденных фактах. Тело документа не трогает;
-    прежнюю сноску снимает и пишет новую.
+    прежнюю сноску снимает и пишет новую. `day` — день встречи (`unanchored`).
 
     Прежняя сноска снимается до сверки: её факты по построению не в
-    стенограмме, и второй вызов дописывал второй блок (№732, Sonnet I2)."""
+    стенограмме, и второй вызов дописывал второй блок (№732, Sonnet I2).
+
+    Даты прежней сноски, которых речь по-прежнему не подтверждает, переходят в
+    новую: гейт срока (№805) заменил такую дату в строке пометкой, и в теле её
+    больше нет — без переноса повторный проход по готовому документу (пересборка
+    поверх черновика) молча терял дату модели и менял байты."""
+    carried = [d for d in _footnote_facts(document)
+               if DATE_FULL.fullmatch(d) and not _date_heard(d, _dates(transcript), transcript.lower(), day)]
     document = without_footnote(document)
-    bad = unanchored(document, transcript)
+    bad = sorted(set(unanchored(document, transcript, day=day)) | set(carried), key=str.lower)
     if not bad:
         return document
     return document.rstrip() + _FOOTNOTE_SEP + FOOTNOTE_MARK + " " + ", ".join(bad) + "\n"

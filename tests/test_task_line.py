@@ -554,6 +554,9 @@ def test_the_table_covers_every_form_the_module_knows():
         assert any(ln.lstrip().startswith(f"{marker} ") and task_line.status(ln) for ln in lines), marker
     assert any(re.search(r"[a-z]{3}", r["key"]) for r in TABLE), "английская строка"
     assert any(re.search(r"[一-鿿]", r["key"]) for r in TABLE), "китайская строка"
+    # пометка срока (№805) на каждом языке — строкой таблицы, ключ без неё
+    for mark in task_line.DUE_UNHEARD_MARKS.values():
+        assert any(r["line"].endswith(mark) and mark not in r["key"] for r in TABLE), mark
 
 
 ITEMS = [r for r in TABLE if r["status"] is not None]
@@ -618,7 +621,8 @@ def test_key_is_the_assignee_and_text_of_the_record(row):
     # ключ — производная разбора: свой набор срезов у key расходился с parse — резал поля
     # посреди текста и оставлял «x» порчи (DeepSeek I2 и I3 круга 1 по PR #621)
     rec = task_line.parse(row["line"])
-    words = task_line.CONTROL_MARK.sub(" ", f"{rec.assignee or ''} {rec.text}").lower()
+    words = task_line.CONTROL_MARK.sub(" ", f"{rec.assignee or ''} {rec.text}")
+    words = task_line.DUE_UNHEARD.sub(" ", words).lower()     # пометка срока — не слова дела (№805)
     assert task_line.key(row["line"]) == " ".join(re.findall(r"[^\W_]+", words))
 
 
