@@ -110,6 +110,8 @@ class Node:
     mtime: float = 0.0
     size: int = -1
     digest_lines: tuple[str, ...] = ()
+    #: aliases строками, как в шапке: маска ПДн ищет их написание, а не стемы (№793)
+    aliases: tuple[str, ...] = ()
     _: dataclasses.KW_ONLY
     #: Схема хранилища — только на время конструирования: из неё выводится
     #: `person`, а сам узел её не хранит.
@@ -216,6 +218,31 @@ def _digest(text: str, this_year: str, limit: int = 3, *, schema: GraphSchema) -
     return out[:limit + 1]
 
 
+@dataclasses.dataclass(frozen=True)
+class Stub:
+    """Заглушка слияния: не узел для подсказок, но её имя — старое написание
+    человека или системы, и оно живёт в стенограммах (маска ПДн, №793)."""
+    path: pathlib.Path
+    folder: str
+    name: str
+    target: str | None      # «Папка/Канон.md» по `redirects.stub_target`; None — развилка
+    mtime: float
+    size: int
+
+
+#: Исход `_load` для файла, который не прочитался: не узел и не заглушка, а дыра,
+#: которую маска обязана увидеть (n793-in3 S-I5).
+_UNREADABLE = object()
+
+
+@dataclasses.dataclass(frozen=True)
+class MaskSnapshot:
+    """Один снимок для маски: узлы, заглушки и нечитаемые файлы одного `refresh`."""
+    nodes: tuple[Node, ...]
+    stubs: tuple[Stub, ...]
+    unreadable: frozenset[pathlib.Path]
+
+
 class NodeIndex:
     """Индекс узлов графа: тёплый лукап in-memory, обновление по stat.
 
@@ -238,8 +265,11 @@ class NodeIndex:
         # 15.08 ×3). Обновление собирается под локом и подменяет ссылку
         # атомарно; lookup читает снапшот ссылки без лока. Узлы и карта
         # владельцев кодов — одна пара: двумя атрибутами lookup мог бы взять
-        # узлы нового снимка с картой старого.
-        self._snap: tuple[dict[pathlib.Path, Node], dict[str, int]] = ({}, {})
+        # узлы нового снимка с картой старого. Заглушки и нечитаемые файлы (маска
+        # ПДн, №793) — в той же ссылке: отдельным атрибутом маска взяла бы новые
+        # узлы со старым списком нечитаемых.
+        self._snap: tuple[dict[pathlib.Path, Node], dict[str, int],
+                          dict[pathlib.Path, Stub], frozenset[pathlib.Path]] = ({}, {}, {}, frozenset())
         self._refresh_lock = threading.Lock()
 
     @property
@@ -249,6 +279,9 @@ class NodeIndex:
     def refresh(self) -> None:
         with self._refresh_lock:
             fresh: dict[pathlib.Path, Node] = {}
+            stubs: dict[pathlib.Path, Stub] = {}
+            unreadable: set[pathlib.Path] = set()
+            old_stubs = self._snap[2]
             for folder in self.schema.node_folders:
                 d = self.graph / folder
                 if not d.is_dir():
@@ -261,37 +294,50 @@ class NodeIndex:
                     try:
                         st = p.stat()
                     except OSError:
+                        unreadable.add(p)
                         continue
-                    cached = self._nodes.get(p)
+                    cached = self._nodes.get(p) or old_stubs.get(p)
                     if cached and cached.mtime == st.st_mtime \
                             and cached.size == st.st_size:
-                        fresh[p] = cached
+                        (stubs if isinstance(cached, Stub) else fresh)[p] = cached
                         continue
                     node = self._load(p, folder, st)
-                    if node is not None:
+                    if node is _UNREADABLE:
+                        # держим прошлый снапшот файла, но помним, что этот раз он не прочитался
+                        unreadable.add(p)
+                        if p in self._nodes:
+                            fresh[p] = self._nodes[p]
+                        elif p in old_stubs:
+                            stubs[p] = old_stubs[p]
+                    elif isinstance(node, Stub):
+                        stubs[p] = node
+                    elif node is not None:
                         fresh[p] = node
-            self._snap = (fresh, _code_owners(fresh.values()))
+            self._snap = (fresh, _code_owners(fresh.values()), stubs, frozenset(unreadable))
 
-    def _load(self, p: pathlib.Path, folder: str, st) -> Node | None:
+    def _load(self, p: pathlib.Path, folder: str, st) -> Node | Stub | object | None:
         try:
             # форма Unicode — как в поиске: узлы и индекс поиска читают один граф,
             # и разная форма одного текста расходилась бы молча (DS, круг 4 по №291)
             text = unicodedata.normalize("NFC", p.read_text(encoding="utf-8"))
             st2 = p.stat()
         except (OSError, ValueError):   # ValueError — не-UTF8 (DS r2 #451)
-            return self._nodes.get(p)   # держим прошлый снапшот
+            return _UNREADABLE          # refresh держит прошлый снапшот и помечает файл
         if (st2.st_mtime, st2.st_size) != (st.st_mtime, st.st_size):
-            return self._nodes.get(p)   # файл переписывается прямо сейчас
+            return _UNREADABLE          # файл переписывается прямо сейчас
         if redirects.is_merged(text):
-            return None                 # заглушка после слияния — не узел (хвост 20.08, GLM)
+            # заглушка после слияния — не узел (хвост 20.08, GLM), но запись для маски
+            return Stub(p, folder, p.stem, redirects.stub_target(text),
+                        st2.st_mtime, st2.st_size)
         if self.schema.is_person_folder(folder) and graph_names.is_placeholder_node(p.stem):
             return None                 # «Собеседник 3» — склейка разных людей, не подсказка (GLM I6, 07.09)
         name = p.stem
         # один разбор шапки на конвейер и поиск (frontmatter.py, #451)
-        aliases = [tuple(stem(t) for t in tokens(a)) for a in frontmatter.aliases(text, p.name)]
+        alias_names = tuple(frontmatter.aliases(text, p.name))
+        aliases = [tuple(stem(t) for t in tokens(a)) for a in alias_names]
         return Node(path=p, folder=folder, name=name,
                     name_stems=tuple(stem(t) for t in tokens(name)),
-                    alias_stems=tuple(aliases),
+                    alias_stems=tuple(aliases), aliases=alias_names,
                     mtime=st2.st_mtime, size=st2.st_size,
                     digest_lines=tuple(_digest(text, self.this_year, schema=self.schema)),
                     schema=self.schema)
@@ -325,7 +371,7 @@ class NodeIndex:
         known = {norm(k) for k in (known_names or set())}
 
         found: list[tuple[int, Node, tuple[str, ...]]] = []
-        snapshot, owners = self._snap   # ссылка атомарна: refresh подменяет пару
+        snapshot, owners = self._snap[:2]   # ссылка атомарна: refresh подменяет снимок
         for node in snapshot.values():
             variants = (node.name_stems, *node.alias_stems)
             node_known = node.person and norm(node.name) in known
@@ -413,3 +459,9 @@ class NodeIndex:
     @property
     def size(self) -> int:
         return len(self._nodes)
+
+    def snapshot_for_mask(self) -> MaskSnapshot:
+        """Свежий снимок для маски ПДн: `refresh` и одна ссылка на результат."""
+        self.refresh()
+        nodes, _owners, stubs, unreadable = self._snap
+        return MaskSnapshot(tuple(nodes.values()), tuple(stubs.values()), unreadable)

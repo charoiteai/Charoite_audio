@@ -29,6 +29,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import charoite_paths  # noqa: E402 — путь к src задаётся строкой выше
 import cloud  # noqa: E402
+import cloud_door  # noqa: E402
+import pii_mask  # noqa: E402
 import privacy  # noqa: E402
 import live_gate  # noqa: E402
 import night_cloud  # noqa: E402
@@ -358,9 +360,17 @@ def main() -> None:
     if not live_gate.night_window_open(_root(), what="ревизия ядер"):
         print("время ночного прогона вышло — ревизия ядер завтра")
         sys.exit(0)
+    # Маска ПДн (№793): провайдер получает только masked.text, отчёт ложится в граф
+    # уже с именами. Маска не прошла — не отправляем ничего (код политики).
+    try:
+        masked = cloud_door.mask_prompt(cfg, prompt, graph)
+    except pii_mask.MaskRefused as e:
+        print(f"маска не прошла — ревизия ядер не отправлена: {e}")
+        sys.exit(EXIT_PRIVACY_REFUSED)
+    print(masked.summary())
     reply = None
     if provider == "tinfoil":
-        reply = _ask_tinfoil(cfg, prompt, graph)
+        reply = _ask_tinfoil(cfg, masked.text, graph)
         out, model, returncode, stderr = reply.text, reply.model, 0, ""
     elif provider == "anthropic":   # явно, не голым else: прочие отсеяны выше (in3 S-M2)
         try:
@@ -370,7 +380,7 @@ def main() -> None:
             # ревизора прочитать произвольный файл и вписать его в отчёт
             # (аудит 14.08). Единый контракт «только текст» — cloud.text_only_args.
             r = subprocess.run(
-                [claude, "-p", prompt, "--model", model,
+                [claude, "-p", masked.text, "--model", model,
                  *cloud.effort_args(cloud.effort(cfg, "cloud_night_effort")),   # №214
                  *cloud.text_only_args()],
                 capture_output=True, text=True, timeout=600, env=env,
@@ -383,6 +393,9 @@ def main() -> None:
             print(f"CLI облака не отработал: {e}")
             sys.exit(2)          # авария облака — тоже не ревизия (ревью 17.08)
         returncode, stderr = r.returncode, r.stderr or ""
+    out, unresolved = cloud_door.unmask_reply(out, masked)
+    if unresolved:
+        print(f"токенов маски не развернулось: {unresolved} (⟦?⟧ в отчёте)")
     problem = report_problem(returncode, out)
     if problem:
         # Отказ, лимит или обрыв — не ревизия: раньше любой непустой stdout

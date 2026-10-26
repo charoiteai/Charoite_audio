@@ -12,3 +12,4 @@ mcp>=1.0
 tokenizers>=0.15
 soundfile>=0.12
 sherpa-onnx>=1.10
+natasha==1.6.0

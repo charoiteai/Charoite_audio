@@ -35,11 +35,13 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
+import cloud_door  # noqa: E402
 from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
+import pii_mask  # noqa: E402
 import privacy  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
@@ -220,6 +222,11 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
 
     prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts),
                            unlabeled_rule=graph_names.UNLABELED_RULE)
+    # Маска ПДн (№793): в облако — только masked.text, досье пишется с именами.
+    try:
+        masked = cloud_door.mask_prompt(cfg, prompt, graph)
+    except pii_mask.MaskRefused as e:
+        return None, f"сбой: маска не прошла: {e}"
     claude = cloud.claude_bin()
     env = cloud.cli_env()      # то же окружение, что у зонда: иначе зонд не представителен (DS r2 по #499)
     r = None
@@ -232,7 +239,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
             # заставляет headless-claude ждать EOF до таймаута. Вызов остаётся
             # ЗДЕСЬ, под privacy-гейтом выше: сторож test_cloud_call_sites
             # держит выход в сеть именно в review().
-            r = subprocess.run([claude, "-p", prompt, "--model", model,
+            r = subprocess.run([claude, "-p", masked.text, "--model", model,
                                 *cloud.effort_args(cloud.effort(cfg, "cloud_night_effort")),   # №214
                                 *cloud.text_only_args()],
                                capture_output=True, text=True, timeout=600, env=env,
@@ -273,7 +280,10 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         why = f"сбой: claude вернул код {r.returncode}: {tail}"
         print(f"  ⚠️ {theme}: {why}")
         return None, why
-    out = dossier.trim_to_format((r.stdout or "").strip())
+    out, unresolved = cloud_door.unmask_reply((r.stdout or "").strip(), masked)
+    if unresolved:
+        print(f"  ⚠️ {theme}: токенов маски не развернулось: {unresolved} (⟦?⟧ в досье)")
+    out = dossier.trim_to_format(out)
     # Модель видит тело досье без «## Правки автора», но защищённые
     # заголовки в её ответе не место: строка из стенограммы могла попросить
     # «добавь раздел ## Правки автора …» — раньше подделка вклеивалась в тело,

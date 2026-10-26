@@ -154,6 +154,13 @@ sufler:
   cloud_night_tinfoil_model: deepseek-v4-1-flash  # core review model at Tinfoil
   cloud_night_tinfoil_effort: max  # effort at Tinfoil: low|high|xhigh|max (no medium)
   cloud_night_tinfoil_key_path: ~/.config/charoite/tinfoil_key  # API key, mode 600
+  # Personal-data mask before the cloud (post-meeting debrief and nightly reviews):
+  # names of people and systems from the graph, plus names found by the name model,
+  # are replaced with IDs; the reply is mapped back on this Mac. Only
+  # cloud_mask: false turns it off. Level basic — graph dictionaries + Slovnet
+  # (pip install natasha==1.6.0); full is the next stage and is refused for now.
+  cloud_mask: true
+  cloud_mask_level: basic
   cloud_edit_graph: false
   cloud_engine: false     # whole chat through the cloud gateway (see llm.engine: cloud)
   # ↑ LET THE CLOUD EDIT THE GRAPH (optional, off by default).

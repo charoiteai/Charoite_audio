@@ -32,6 +32,7 @@ import typing
 
 import channel_labels
 import live_sidecar
+import pii_mask
 import privacy
 import review_bridge
 from charoite_graph import safe_write
@@ -47,7 +48,8 @@ _FIX = re.compile(r"^\*\*(?P<label>[^*\n]+?)\*\*\s*(?:→|->|=>|—>|⇒)\s*\*\*
                   r"\s*(?:[—–-]\s*(?:основание|причина|reason|原因)\s*[:：]\s*(?P<why>.+?)"
                   r"|\(\s*(?:основание|причина|reason|原因)\s*[:：]\s*(?P<why2>[^)\n]+?)\s*\))?\s*$",
                   re.IGNORECASE)
-_BAD_NAME = re.compile(r"[\[\]*|#\n]")
+# ⟦⟧ — скобки ID маски ПДн (№793): не развернувшийся токен «⟦?⟧» именем не бывает
+_BAD_NAME = re.compile(r"[\[\]*|#\n⟦⟧]")
 # «�» — отдельная причина, не «разметка». Имя с этим символом отвергается
 # ВСЕГДА, каким бы целым ни был файл ревизии: автором такой символ в имени не
 # бывает, он приезжает из испорченного источника, который модель процитировала
@@ -203,9 +205,11 @@ def _target_reason(name: str, guard: NameGuard) -> str | None:
     # дописать фамилию. Полное имя владельца проверяем раньше метки канала:
     # при имени из двух слов канал и есть это полное имя, а причина у цели
     # всё равно про имя, не про железо.
-    if guard.bare and name == guard.bare and name not in guard.mic:
+    # По основе, а не строкой: «Ивану» — то же голое имя владельца, что «Иван»
+    # (ответ после маски ПДн возвращает форму вхождения как есть, n793-in2 H-I7).
+    if guard.bare and pii_mask.same_name(name, guard.bare) and name not in guard.mic:
         return REASON_BARE
-    if guard.owner and name == guard.owner:
+    if guard.owner and pii_mask.same_name(name, guard.owner):
         return REASON_OWNER
     if name in guard.mic:
         return REASON_MIC_TARGET
