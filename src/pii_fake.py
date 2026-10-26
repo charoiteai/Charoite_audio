@@ -57,6 +57,8 @@ SYSTEM_WORDS = ("Альбатрос Бриг Гиацинт Палантин И�
                 "Малахит Нефрит Опал Топаз Янтарь Гранат Берилл Циркон Корунд Родонит Кварц Турмалин "
                 "Обсидиан Хризолит Лазурит Флюорит Сапсан Беркут Ястреб Буревестник Альмандин Кальцит "
                 "Пирит Галенит Секстант Астролябия Барометр Пеленгатор Компас Флюгер Маяк").split()
+#: попыток подобрать группе подделку, не совпавшую с текстом и графом
+_TRIES = 20
 _CASES = ("nomn", "gent", "datv", "accs", "ablt", "loct", "voct", "gen2", "acc2", "loc2")
 _CASE_BASE = {"gen2": "gent", "acc2": "accs", "loc2": "loct", "voct": "nomn"}
 #: Окончания подставной фамилии на -ов/-ин: pymorphy знает не каждую.
@@ -167,9 +169,11 @@ class _Picker:
     def __init__(self, m, text: str, forms: pii_mask.Forms, rnd: random.Random) -> None:
         self.m, self.forms, self.rnd = m, forms, rnd
         self.banned: set[str] = set()
-        for w in _WORD.findall(text):
+        for w in set(_WORD.findall(text)):
             self.banned.add(_e(w))
             self.banned.add(_e(m.parse(w)[0].normal_form))
+        #: слова текста — без выбранных подделок: по ним `clashes` судит готовые формы
+        self.text = frozenset(self.banned)
 
         self._lexemes: dict[str, set[str]] = {}
 
@@ -197,6 +201,13 @@ class _Picker:
                 return x
         return None
 
+    def clashes(self, fakes: list[str]) -> bool:
+        """Готовые формы подделки — слово текста или форма графа? Проверка того, что уходит,
+        а не слова пула: отчество «Тимофеевич» строится из свободного «Тимофей» и может
+        совпасть с настоящим (n793-out5 DS-C3)."""
+        return any(len(w) > 1 and _e(w) in self.text for f in fakes for w in _WORD.findall(f)) \
+            or any(pii_mask._dictionary_spans(f, self.forms) for f in fakes)
+
     def abbr(self) -> str:
         # как настоящие: «ЗЛК», «ОРИС» — три-четыре буквы, гласная не больше одной
         while True:
@@ -204,7 +215,8 @@ class _Picker:
             if self.rnd.random() < 0.5:
                 i = self.rnd.randrange(len(x) + 1)
                 x = x[:i] + self.rnd.choice("АОУИЕ") + x[i:]
-            if not self.taken(x):
+            # не слово языка: «ПЛАН» в начале фразы ответа развернулся бы в систему (n793-out5 H-C2)
+            if not self.taken(x) and not self.m.word_is_known(x.lower()):
                 self.banned.add(_e(x))
                 return x
 
@@ -221,36 +233,43 @@ def _gender(m, forms: list[str]) -> str:
 def _person(pk: _Picker, forms: list[str]) -> list[str]:
     m = pk.m
     gender = _gender(m, forms)
-    parts: dict[str, str] = {}
+    # ключ — роль и её номер в форме: «Иванов-Петров» — две разные фамилии, иначе
+    # разворот дал бы «Иванов-Иванов» (n793-out5 DS-C4)
+    parts: dict[tuple[str, int], str | None] = {}
     out = []
     for f in forms:
         res, pos = [], 0
+        nth: collections.Counter = collections.Counter()
         for i, mt in enumerate(_WORD.finditer(f)):
             w = mt.group(0)
+            if len(w) == 1:
+                continue   # инициал остаётся как есть: одна буква не имя (n793-out5 S-I2)
             r, p = _role(m, w)
             r = r or ("Name" if i == 0 else "Surn")
             p = next((q for q in sorted(m.parse(w), key=lambda q: "Fixd" in q.tag)
                       if r in q.tag and gender in q.tag), p)
-            if r not in parts:
+            k = (r, nth[r])
+            nth[r] += 1
+            if k not in parts:
                 if r == "Patr":
                     name = pk.free(_pools["masc"], _pools["masc2"])
-                    parts[r] = _patronymic(name, gender) if name else None
+                    parts[k] = _patronymic(name, gender) if name else None
                 else:
-                    parts[r] = (pk.free(_pools[gender], _pools[gender + "2"]) if r == "Name"
+                    parts[k] = (pk.free(_pools[gender], _pools[gender + "2"]) if r == "Name"
                                 else pk.free(SURNAMES, _pools["surn2"]))
-                if parts[r] is None:
+                if parts[k] is None:
                     raise pii_mask.MaskRefused("пул подставных имён исчерпан — отправка отменена")
             case, num = _case(p)
             lem = p.normal_form
             if r == "Name" and lem[-1:] in "ая" and _e(w) in (_e(lem[:-1]), _e(lem[:-1]) + "ь"):
                 # звательная усечённая («Саш», «Дим») — так же усечь подделку на -а/-я
-                fw = parts[r][:-1] if parts[r][-1:] in "ая" else parts[r]
+                fw = parts[k][:-1] if parts[k][-1:] in "ая" else parts[k]
             elif r == "Surn":
-                fw = _surname(parts[r], case, num, gender)
+                fw = _surname(parts[k], case, num, gender)
             elif r == "Patr":
-                fw = _inflect(m, parts[r], case, num, gender, "Patr")
+                fw = _inflect(m, parts[k], case, num, gender, "Patr")
             else:
-                fw = _inflect(m, parts[r], case, num, gender, r)
+                fw = _inflect(m, parts[k], case, num, gender, r)
             res.append(f[pos:mt.start()])
             res.append(_keep_case(w, fw))
             pos = mt.end()
@@ -290,7 +309,15 @@ def dress(masked: pii_mask.Masked, prompt: str, forms: pii_mask.Forms, *,
     d = Dress()
     fakes: dict[str, list[str]] = {}
     for gid, g in masked.groups.items():
-        fakes[gid] = (_person if gid.startswith(pii_mask.PERSON) else _system)(pk, g.forms)
+        make = _person if gid.startswith(pii_mask.PERSON) else _system
+        for _try in range(_TRIES):
+            # выбранное уже занято в `pk` — следующая попытка берёт другие слова
+            fakes[gid] = make(pk, g.forms)
+            if not pk.clashes(fakes[gid]):
+                break
+        else:
+            raise pii_mask.MaskRefused("подделка совпала со словом текста или формой графа — "
+                                       "отправка отменена")
         d.pairs[gid] = list(zip(g.forms, fakes[gid]))
         d.canon[gid] = g.canon
         if gid.startswith(pii_mask.PERSON):
@@ -328,6 +355,8 @@ def _index(m, d: Dress) -> tuple[dict[str, list[_Slot]], dict[str, list[_Slot]]]
             whole = len(fw) != len(ow)
             for i, w in enumerate(fw):
                 o = orig if whole else ow[i]
+                if w == o:
+                    continue   # инициал ушёл как есть — разворачивать нечего
                 lemmas, _c = _lemmas(m, w)
                 g = d.gender.get(gid)
                 s = _Slot(gid, w, o, frozenset(_cases(m, w, g)), g)

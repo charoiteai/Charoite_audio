@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import pii_mask as pm  # noqa: E402
 
-pytest.importorskip("pymorphy3")
+import pymorphy3  # noqa: E402,F401 — зависимость продукта (n793-out5 DS-C1): без неё тест красный, не skip
 import pii_fake  # noqa: E402
 
 NODES = (pm.NodeForms("Дмитрий Орлов", ("Дима",)), pm.NodeForms("Анна Белова"),
@@ -193,3 +193,43 @@ def test_fake_left_unresolved_goes_out_marked():
     d.canon["Ч9"] = None
     back, left = pii_fake.undress(f"{fake} молчал.", d, sent=m.text)
     assert back == f"⟦?{fake}⟧ молчал." and left == 1
+
+
+def test_fake_patronymic_never_equals_the_real_one():
+    """Отчество строится из свободного имени пула и мимо `taken`: «Тимофей» свободен, а
+    «Тимофеевич» — настоящее отчество узла (n793-out5 DS-C3, на сиде 24 совпадало)."""
+    src = "Андрей Тимофеевич Орлов пришёл. Андрей Тимофеевич сказал."
+    nodes = (pm.NodeForms("Андрей Тимофеевич Орлов"),)
+    for seed in range(60):
+        _m, d, _f = _dressed(src, nodes, seed=seed)
+        fakes = " ".join(f for prs in d.pairs.values() for _o, f in prs)
+        assert "Тимофеев" not in fakes, (seed, fakes)
+
+
+def test_two_words_of_one_role_get_two_fakes():
+    """«Иванов-Петров»: две фамилии одной формы — две подделки; одна давала разворот
+    «Иванов-Иванов» (n793-out5 DS-C4)."""
+    for src, node in (("Иванов-Петров пришёл.", "Иванов-Петров"), ("Анна-Мария пришла.", "Анна-Мария")):
+        m, d, _f = _dressed(src, (pm.NodeForms(node),))
+        a, b = m.text.split()[0].split("-")
+        assert a != b, m.text
+        assert pii_fake.undress(m.text, d, sent=m.text)[0] == src
+
+
+def test_initial_stays_and_comes_back():
+    """Инициал «А» не получает полное подставное имя: модель не видит лишнего имени, а
+    разворот не путает «А» с «Анна» (n793-out5 S-I2)."""
+    src = "Белова А пришла. Анна Белова ушла."
+    m, d, _f = _dressed(src, (pm.NodeForms("Анна Белова", ("Белова А",)),))
+    assert m.text.split()[1] == "А"
+    assert pii_fake.undress(m.text, d, sent=m.text)[0] == src
+
+
+def test_abbreviation_fake_is_not_a_word(monkeypatch):
+    """Аббревиатура-подделка — не слово языка: «ПЛАН» в начале фразы ответа развернулся
+    бы в систему (n793-out5 H-C2)."""
+    pk = pii_fake._Picker(pii_fake._load(), "текст", pm.build_forms([]), __import__("random").Random(1))
+    seq = iter([4, "П", "Л", "А", "Н", 3, "З", "Л", "К"])     # длина, буквы; длина, буквы
+    monkeypatch.setattr(pk.rnd, "choice", lambda _xs: next(seq))
+    monkeypatch.setattr(pk.rnd, "random", lambda: 1.0)
+    assert pk.abbr() != "ПЛАН"

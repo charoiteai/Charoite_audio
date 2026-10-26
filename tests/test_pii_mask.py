@@ -613,6 +613,14 @@ def test_joint_is_one_rule_for_mask_and_postcondition():
     assert pm.mask("Портал20.5 и Портал 20.5", forms).replaced == 1
 
 
+def test_name_broken_by_a_line_break_is_masked():
+    """«Старый\nофис» — разрыв строки внутри имени системы из общих слов: прежний стык
+    без перевода строки пропускал и маску, и постусловие (n793-out5 DS-C2)."""
+    forms = pm.build_forms([pm.NodeForms("Старый офис", person=False)], known={"старый", "офис"}.__contains__)
+    m = pm.mask("Вчера\nСтарый\nофис\nобсудили", forms)
+    assert m.replaced == 1 and "офис" not in m.text
+
+
 def test_fleeting_stem_of_an_alias_stays_in_the_node():
     """Псевдоним «Льва» у Льва Орлова: беглая основа «льв» — уже его форма, без узла её не
     дублировать, иначе форма уходит из группы (n793-out3 DS-M2)."""

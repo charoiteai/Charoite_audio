@@ -371,6 +371,10 @@ dawg-python==0.7.2 \
     --hash=sha256:4941d5df081b8d6fcb4597e073a9f60d5c1ccc9d17cd733e8744d7ecfec94ef3 \
     --hash=sha256:4a5e3286e6261cca02f205cfd5516a7ab10190fa30c51c28d345808f595e3421
     # via pymorphy2
+dawg2-python==0.9.0 \
+    --hash=sha256:4fab6fc097bd176cd783cd8421b757348ea5a460789e53b0f6bb64831380bab5 \
+    --hash=sha256:adea0312acd1a958659e8448ce6899046c0858d0b6c8949a51eebdeb5a113e4a
+    # via pymorphy3
 docopt==0.6.2 \
     --hash=sha256:49b3a825280bd66b3aa83585ef59c4a8c82f2c8a522dbe754a8bc8d08c85c491
     # via pymorphy2
@@ -761,6 +765,14 @@ pymorphy2-dicts-ru==2.4.417127.4579844 \
     --hash=sha256:78cad03adca605021abd387a3b2eb515c851b86e94682a1ef2354a2c74fcc196 \
     --hash=sha256:9a322a6ee78fd4a5dceead0545c24b9a91687ad5df95cbac1b36f6c36cbb498a
     # via pymorphy2
+pymorphy3==2.0.6 \
+    --hash=sha256:0254317c02ce3ea17e080b7fc9d675e44662b3a5296bae68605b7a41d25b36c3 \
+    --hash=sha256:1603df3bc9e116967c990607f5b97d42fb1c572d6839b851af3501e51d7f5493
+    # via -r requirements-runtime.in
+pymorphy3-dicts-ru==2.4.417150.4580142 \
+    --hash=sha256:39ab379d4ca905bafed50f5afc3a3de6f9643605776fbcabc4d3088d4ed382b0 \
+    --hash=sha256:718bac64c73c10c16073a199402657283d9b64c04188b694f6d3e9b0d85440f4
+    # via pymorphy3
 python-multipart==0.0.32 \
     --hash=sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e \
     --hash=sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23
@@ -982,6 +994,10 @@ rpds-py==2026.6.3 \
     # via
     #   jsonschema
     #   referencing
+setuptools==84.2.1 \
+    --hash=sha256:3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc \
+    --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+    # via pymorphy3
 sherpa-onnx==1.13.5 \
     --hash=sha256:001e1c3440fe335a589c9283a68105f379ffb63f2d1d7c2878e99a5d72eaf5af \
     --hash=sha256:02c140fbdbfd03b4e1d1a6f041b4328bd5e6d1fc2fd4090aca444fe1394b326f \

@@ -13,3 +13,4 @@ tokenizers>=0.15
 soundfile>=0.12
 sherpa-onnx>=1.10
 natasha==1.6.0
+pymorphy3==2.0.6

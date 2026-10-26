@@ -23,6 +23,7 @@ CHR-AUD-003. В режиме записи модель правила граф �
 import contextlib
 import os
 import pathlib
+import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -3279,9 +3280,11 @@ def _masked_run(tmp_path, monkeypatch, graph, cfg):
 
     def fake_run(cmd, **kwargs):
         captured["cmd"], captured["cwd"] = cmd, kwargs["cwd"]
+        # модель видит подставное имя вместо «Анна Белова» и повторяет его (№793, подделки)
+        fake = re.search(r"(\S+ \S+) согласовала срок", cmd[cmd.index("-p") + 1]).group(1)
         kwargs["stdout"].write(
-            "- **Решение:** ⟦Ч1.1⟧ берёт срок\n"
-            "- **Поручение:** [[⟦Ч1.1⟧]] проверить настройку\n"
+            f"- **Решение:** {fake} берёт срок\n"
+            f"- **Поручение:** [[{fake}]] проверить настройку\n"
             "- **Риск:** нет\n")
         return Result()
 
@@ -3303,7 +3306,8 @@ def test_mask_turns_edit_config_into_text_mode_and_says_so(tmp_path, monkeypatch
                                       {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}})
     assert code == 0
     prompt = cap["cmd"][cap["cmd"].index("-p") + 1]
-    assert "Белова" not in prompt and str(graph) not in prompt and "⟦Ч1.1⟧" in prompt
+    assert "Белова" not in prompt and str(graph) not in prompt and "⟦" not in prompt
+    assert "согласовала срок" in prompt
     assert cap["cmd"][cap["cmd"].index("--tools") + 1] == ""
     assert "charoite-cloud-empty" in cap["cwd"]
     text = rev.read_text(encoding="utf-8")

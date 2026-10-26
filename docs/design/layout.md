@@ -1,6 +1,6 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 91.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 93.
 
 ## Слои и направление стрелок
 
@@ -10,7 +10,7 @@
 - **runtime** (зависит от: base; модулей 7): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
-- **cloud** (зависит от: base, runtime; модулей 4): `cloud`, `night_cloud`, `pii_mask`, `pii_ner`
+- **cloud** (зависит от: base, runtime; модулей 6): `cloud`, `night_cloud`, `pii_fake`, `pii_fake_pool`, `pii_mask`, `pii_ner`
 - **audio** (зависит от: base, runtime; модулей 13): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `speech_gate`, `stt`, `stt_runtime`, `voice_pitch`
 - **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 27): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `cloud_door`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_tail`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
 - **app** (зависит от: base, runtime, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
@@ -77,6 +77,7 @@
 
 - №322 — 3: ребро `audio` → `meeting_stamp`; ребро `channel_labels` → `speaker_names`; ребро `diarize` → `llm`
 - №364 — 10: вход `app/make_app.sh` без пробы; вход `app/stage_code.sh` без пробы; вход `scripts/build_app_icon.sh` без пробы; вход `scripts/build_embedded_python.sh` без пробы; вход `scripts/layout_map.py` без пробы; вход `scripts/make_dmg.sh` без пробы; вход `scripts/nightly.sh` без пробы; вход `scripts/notarize.sh` без пробы; вход `scripts/preflight.sh` без пробы; вход `src/mcp_server.py` без пробы
+- №793 — 1: вход `scripts/build_fake_pool.py` без пробы
 
 ## Точки входа — исполняемые файлы (кто зовёт из кода)
 
@@ -88,6 +89,7 @@
 - `scripts/bench_models.py` ← ручной запуск: бенчмарк моделей, ручной прогон; проба help
 - `scripts/build_app_icon.sh` ← ручной запуск: сборка иконки приложения руками; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/build_embedded_python.sh` ← .github/workflows/release-app.yml, app/make_app.sh; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
+- `scripts/build_fake_pool.py` ← ручной запуск: сборка пула подставных имён маски (№793) руками, вывод в src/pii_fake_pool.py; не запускается: без аргументов: печатает модуль пула в stdout; поведение держит test_every_pool_word_declines; снимет №793 (сборщик пула подставных имён)
 - `scripts/check_private_markers.py` ← .github/workflows/supply-chain.yml, .pre-commit-config.yaml, scripts/preflight.sh; проба help
 - `scripts/check_test_assertions.py` ← .github/workflows/ci.yml, .pre-commit-config.yaml; проба help
 - `scripts/cloud_review.py` ← src/graph_updater.py; проба help

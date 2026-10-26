@@ -47,6 +47,7 @@ ENTRY_AREAS = ("src/", "scripts/")
 #: маску первым делом; новая точка без классификации краснит сторож.
 UMASK_FORGIVEN = {
     "scripts/bench_models.py": "не пишет данных встреч и владельца: замер скорости моделей, вывод в stdout",
+    "scripts/build_fake_pool.py": "не пишет данных встреч и владельца: словарь pymorphy3 в stdout",
     "scripts/check_private_markers.py": "не пишет данных встреч и владельца: читает дерево репозитория",
     "scripts/check_test_assertions.py": "не пишет данных встреч и владельца: читает тесты репозитория",
     "scripts/get_models.py": "не пишет данных встреч и владельца: качает веса моделей",
