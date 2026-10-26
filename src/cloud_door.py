@@ -26,11 +26,6 @@ COMMON_FILE = "_маска_общие.md"
 #: Папки узлов-«систем» для маски: команды и системы. Ядра, блокеры, модели — темы,
 #: а не имена, их маска не трогает.
 SYSTEM_FOLDERS = ("Системы", "Systems", "Команды", "Teams")
-#: Пояснение модели перед маскированным текстом: без него она пишет «Ч3» как имя
-#: или пересказывает токен словами (n793-out1 H-I8).
-TOKENS_NOTE = ("[Имена людей и систем в тексте заменены метками вида ⟦Ч…⟧ (человек) и "
-               "⟦С…⟧ (система); одно число до точки — один человек или система. "
-               "Пиши метки в ответе как есть, не расшифровывай и не придумывай новые.]\n\n")
 
 
 def _common(graph: pathlib.Path) -> set[str]:
@@ -52,8 +47,8 @@ def _forms(cfg: dict, graph: pathlib.Path,
         # граф есть, а людей в нём нет (синхронизация не доехала, не тот каталог):
         # одной модели имён мало — замер 26.10: 88 из 140 (n793-out1 S-I1)
         raise pii_mask.MaskRefused("в графе нет узлов людей — словаря имён нет, отправка отменена; "
-                                   "выход: узел человека в папке людей графа или явное "
-                                   "sufler.cloud_mask: false (n793-out2 S-I3)")
+                                   "выход: узел человека в папке людей графа (n793-out2 S-I3; "
+                                   "выключать маску отказ не советует — n793-out3 H-M2)")
     notes = []
     bad = sorted(p for p in snap.unreadable
                  if CHAROITE.is_person_folder(p.parent.name) or p.parent.name in SYSTEM_FOLDERS)
@@ -99,12 +94,13 @@ def empty_workdir() -> pathlib.Path:
 
 
 def _regions(text: str, data: Sequence[str]) -> list[tuple[int, int]] | None:
-    """Где в промпте данные: все вхождения каждого куска. Кусок не нашёлся (пути
-    машины вычищены внутри него) — маска по всему тексту: лишняя замена в инструкции
-    дешевле имени, ушедшего открытым."""
+    """Где в промпте данные: все вхождения каждого куска, после той же чистки путей
+    машины, что прошёл промпт. None — маска по всему тексту (лишняя замена в инструкции
+    дешевле имени, ушедшего открытым): кусок не нашёлся или данных не передали вовсе —
+    пустой список означал бы «маскировать нечего» (n793-out3 S-I1, DS-I1)."""
     out = []
     for d in data:
-        d = pii_mask.prepare(d)
+        d = pii_mask.prepare(privacy.scrub_local_paths(d)[0])
         if not d.strip():
             continue
         start = text.find(d)
@@ -113,7 +109,7 @@ def _regions(text: str, data: Sequence[str]) -> list[tuple[int, int]] | None:
         while start >= 0:
             out.append((start, start + len(d)))
             start = text.find(d, start + 1)
-    return out
+    return out or None
 
 
 def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None, *,
@@ -144,15 +140,19 @@ def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None, *,
         text = pii_mask.prepare(text)
         ner = pii_ner.spans(text)
         ner += pii_mask.rare_word_spans(text, ner, pii_ner.is_common)
-        masked = pii_mask.mask(text, forms, ner, level=level, regions=_regions(text, data))
+        regions = _regions(text, data)
+        masked = pii_mask.mask(text, forms, ner, level=level, regions=regions)
+        import pii_fake   # pymorphy3 грузится только там, где маска действительно нужна
+        # метки → подставные имена: легенды нет, модель видит обычный текст (№799, плечо C)
+        pii_fake.dress(masked, text, forms)
     except pii_mask.MaskRefused:
         raise
     except Exception as e:  # noqa: BLE001 — дверь: любой сбой маски — отказ
         # маска либо `Masked`, либо отказ — третьего нет (n793-out1 DS-8)
         raise pii_mask.MaskRefused(f"маска упала ({type(e).__name__}) — отправка отменена") from None
     masked.notes.extend(notes)
-    if masked.replaced:
-        masked.text = TOKENS_NOTE + masked.text
+    if regions is None:
+        masked.notes.append("куски данных в промпте не нашлись — маска по всему промпту")
     return masked
 
 
@@ -160,4 +160,7 @@ def unmask_reply(reply: str, masked: pii_mask.Masked) -> tuple[str, int]:
     """Ответ модели обратно в имена: `(текст, сколько токенов не развернулось)`."""
     if masked.level == "off":
         return reply, 0
+    if masked.dress is not None:
+        import pii_fake
+        return pii_fake.undress(reply, masked.dress, sent=masked.text)
     return pii_mask.unmask(reply, masked)

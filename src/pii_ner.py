@@ -12,7 +12,7 @@ import threading
 import pii_mask
 
 INSTALL_RECIPE = ("поставьте пакет natasha в окружение Чароита "
-                  "(pip install natasha==1.6.0) или выключите маску явно: sufler.cloud_mask: false")
+                  "(pip install natasha==1.6.0)")
 
 #: Типы Slovnet → вид маски. Места (LOC) не маскируем: город — не персональные данные,
 #: а ревизия без географии теряет смысл.

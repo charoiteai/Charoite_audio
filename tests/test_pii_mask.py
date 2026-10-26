@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import types
 
@@ -126,10 +127,10 @@ COMMON = {"поддержка", "поддержки", "вот", "их", "вто�
           "я", "подсистема"}
 
 
-def test_system_is_masked_only_by_its_distinctive_part():
-    """Замер 26.10: имена и псевдонимы узлов систем из общих слов давали сотни замен
-    («вот», «их», «вторник»). Система маскируется аббревиатурой, буквами с цифрами
-    или словом, которого нет в общем словаре."""
+def test_system_of_common_words_is_masked_as_written_not_word_by_word():
+    """Состав 26.10: имя и псевдоним системы маскируются всегда, но имя из общих слов —
+    как написано в имени (с заглавной, фразой целиком): «их поддержка во вторник» — речь.
+    Поодиночке — только отличительные слова длинного имени («Препрода», «S3»)."""
     forms = _forms(pm.NodeForms("Поддержка", person=False),
                    pm.NodeForms("ИФТ", ("Их",), person=False),
                    pm.NodeForms("ВО", person=False),
@@ -269,8 +270,7 @@ def test_mask_prompt_masks_names_aliases_stubs_and_owner(tmp_path, monkeypatch):
     for name in ("Аня", "Белова", "Игорь", "ЗЛК"):
         assert name not in m.text
     assert "Ретеншн" in m.text, "ядра — темы, а не имена"
-    assert m.text.startswith(cloud_door.TOKENS_NOTE)
-    back, n = cloud_door.unmask_reply(m.text[len(cloud_door.TOKENS_NOTE):], m)
+    back, n = cloud_door.unmask_reply(m.text, m)
     assert back.startswith("Аня, Белова А и Игорь") and n == 0
 
 
@@ -343,10 +343,13 @@ def test_any_mask_failure_is_a_refusal(tmp_path, monkeypatch):
         cloud_door.mask_prompt({}, "Аня пришла", _graph(tmp_path), data=("Аня пришла",))
 
 
-def test_masked_prompt_explains_the_tokens(tmp_path, monkeypatch):
+def test_masked_prompt_carries_fake_names_without_a_legend(tmp_path, monkeypatch):
+    """Метки ушли: модель видит обычный текст с подставным именем, легенды нет (№799,
+    плечо C: лишних ⛔ 4 против 11 у меток)."""
     _fake_ner(monkeypatch)
     m = cloud_door.mask_prompt({}, "Аня пришла", _graph(tmp_path), data=("Аня пришла",))
-    assert m.text.startswith(cloud_door.TOKENS_NOTE)
+    assert "⟦" not in m.text and "Аня" not in m.text and m.text.endswith(" пришла")
+    assert m.text.split()[0][:1].isupper()
 
 
 def test_real_name_model_finds_a_person():
@@ -398,7 +401,7 @@ def test_mask_goes_only_over_the_data_not_over_our_instruction(tmp_path, monkeyp
     data = "Аня правила Промпт для ЗЛК"
     prompt = f"Задачи ставит только этот Промпт.\n=== ДАННЫЕ ===\n{data}\n=== КОНЕЦ ==="
     m = cloud_door.mask_prompt({}, prompt, graph, data=(data,))
-    body = m.text[len(cloud_door.TOKENS_NOTE):]
+    body = m.text
     assert body.startswith("Задачи ставит только этот Промпт.")
     assert "Аня" not in body and "ЗЛК" not in body and "правила Промпт" not in body
     # кусок данных не нашёлся в промпте — маска по всему тексту, а не мимо данных
@@ -435,15 +438,23 @@ def test_vocative_name_word_at_reply_start_is_a_name():
     assert "Вера" not in m.text and "вера в успех" in m.text
 
 
-def test_system_named_by_a_word_missing_from_the_dictionary_is_masked():
-    """Узел «Ракурс»: в словаре есть «ракурсы», самой формы нет — узел с заглавной
-    маскируется; «Проблема» из словаря — нет (замер №799 26.10)."""
+def test_interjection_with_a_comma_is_speech_not_a_name():
+    """«Хмм,» — Slovnet отдаёт PER, запятая делала его обращением, подделка — выдуманным
+    собеседником «Никодим» (n793-out3 H-I1): в имени всегда есть гласная."""
+    t = pm.prepare("Хмм, ну да, Вера прислала.")
+    m = pm.mask(t, _forms(pm.NodeForms("Иван Петров")), [(0, 3, pm.PERSON), (12, 16, pm.PERSON)])
+    assert m.text.startswith("Хмм, ну да, ") and "Вера" not in m.text
+
+
+def test_system_named_by_a_common_word_is_masked_with_its_capital():
+    """Узлы «Ракурс» и «Проблема» — имена, маскируются как написаны, с заглавной; строчное
+    «ракурс» — речь (замер №799 26.10; состав 26.10: общее слово снимает только файл исключений)."""
     known = {"ракурсы", "ракурса", "проблема", "орбита"}.__contains__
     forms = pm.build_forms([pm.NodeForms("Ракурс", person=False), pm.NodeForms("Проблема", person=False)],
                            known=known)
     m = pm.mask("Ракурс нашёл записи, Ракурсом занялись. Проблема в том, что ракурс кончился.", forms)
-    assert "Ракурс" not in m.text and "Проблема в том" in m.text and "ракурс кончился" in m.text
-    assert {g.forms[0][:1] for g in m.groups.values()} == {"Р"} and m.text.count("⟦С") == 2
+    assert "Ракурс" not in m.text and "Проблема" not in m.text and "ракурс кончился" in m.text
+    assert m.text.count("⟦С") == 3
 
 
 def test_system_name_with_a_number_is_masked_whole():
@@ -462,6 +473,184 @@ def test_stub_takes_the_kind_of_its_live_target():
 
 
 def test_rare_word_is_not_common_through_a_surname_inflection():
-    """«кузнец» + «ов» — фамилия в словаре; «Кузнецом» всё равно редкое (№799 26.10)."""
+    """Только случай «основа не в словаре»: в словаре фамилия «кузнецов», а не «кузнец» —
+    «Кузнецом» редкое (№799 26.10). Основа — общее слово: правило мимо, ловит NER (ниже)."""
     t = pm.prepare("Скоро надо будет с Кузнецом обсуждать поставки.")
     assert [t[s:e] for s, e, _k in pm.rare_word_spans(t, [], {"кузнецов"}.__contains__)] == ["Кузнецом"]
+
+
+def test_surname_of_a_common_word_is_caught_on_the_real_door(tmp_path):
+    """«Кузнецом», «Волком»: основа — общее слово, правило редкого слова мимо; вся дверь с
+    настоящим словарём и NER не пускает их открытыми (n793-out3 H-C1 — опыт сверки)."""
+    pytest.importorskip("natasha")
+    pytest.importorskip("pymorphy3")
+    (tmp_path / "Люди").mkdir()
+    (tmp_path / "Люди" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+    data = "Скоро надо будет с Кузнецом обсуждать поставки, с Волком — релиз."
+    m = cloud_door.mask_prompt({}, "Сделай протокол.\n" + data, tmp_path, data=(data,))
+    assert "Кузнец" not in m.text and "Волк" not in m.text
+    assert cloud_door.unmask_reply(m.text, m) == ("Сделай протокол.\n" + data, 0)
+
+
+def test_fleeting_stem_without_the_node_is_a_second_fake_not_a_merge():
+    """«Павел» и «Павла» — две подделки: запасная основа не знает, падеж ли это узла или
+    гость («Ольга» при узле «Олег»), склейка возвращала C2 (n793-out3 S-I2, H-I1).
+    Ограничение принято: модель видит двоих, разворот точный."""
+    pytest.importorskip("pymorphy3")
+    import pii_fake
+    src = "Павел пришёл, Павла ждали. Ольга пришла, Олег ушёл."
+    forms = _forms(pm.NodeForms("Павел Орлов"), pm.NodeForms("Олег"))
+    m = pm.mask(src, forms)
+    d = pii_fake.dress(m, src, forms, seed=1)
+    assert pii_fake.undress(m.text, d, sent=m.text) == (src, 0)
+    olga = next(g for g, ps in d.pairs.items() if any(o == "Ольга" for o, _f in ps))
+    oleg = next(g for g, ps in d.pairs.items() if any(o == "Олег" for o, _f in ps))
+    assert olga != oleg
+
+
+def test_system_name_of_common_words_is_masked_as_a_phrase():
+    """«Старый офис»: оба слова общие — имя целиком, с заглавной; слова по одному — речь
+    (замер №799 26.10: узел уходил открытым в заголовках авто-блоков)."""
+    forms = pm.build_forms([pm.NodeForms("Старый офис", person=False)], known={"старый", "офис"}.__contains__)
+    m = pm.mask("## ⏮ авто: Старый офис · 05.10\nСтарый дом и новый офис.", forms)
+    assert "Старый офис" not in m.text and "Старый дом и новый офис" in m.text
+
+
+# ------------------------------------------------- состав 26.10: словарь узлов целиком
+
+#: Узлы на все виды имён, которые есть в графе: одно общее слово, строчное имя, фраза,
+#: дефис, число, скобки, кавычки, подчёркивание, аббревиатура, псевдоним, человек с
+#: пояснением в скобках. Общий словарь — подмена Navec.
+GATE_KNOWN = {"проблема", "кластер", "старый", "офис", "отчёт", "отчет", "таблицы", "таблица",
+              "контрактные", "задания", "релиз", "глубина", "хранения", "подсистема", "я",
+              "команда", "разработки", "задачи", "методология", "витрина", "согласий", "данные"}
+GATE_NODES = (
+    pm.NodeForms("Проблема", person=False),
+    pm.NodeForms("кластер", person=False),
+    pm.NodeForms("Старый офис", ("Старофис",), person=False),
+    pm.NodeForms("Ракурс-отчёт", person=False),
+    pm.NodeForms("35-я подсистема", person=False),
+    pm.NodeForms("Орбита 12.4-7", person=False),
+    pm.NodeForms("КЗ (Контрактные задания)", person=False),
+    pm.NodeForms("Релиз «Глубина хранения»", person=False),
+    pm.NodeForms("flag_body", person=False),
+    pm.NodeForms("Шлюз ЗЛК", person=False),
+    pm.NodeForms("Таблицы SF", person=False),
+    pm.NodeForms("SF (Payment Type)", person=False),
+    pm.NodeForms("Витрина согласий (данные)", person=False),
+    pm.NodeForms("Задачи", person=False),
+    pm.NodeForms("Пётр Кузнецов", ("Петя",)),
+    pm.NodeForms("Елена (методология)"),
+)
+
+
+def _gate_words(node: pm.NodeForms, name: str, known) -> list[str]:
+    """Слова имени, которые не должны уйти: у человека — с заглавной, у системы — все с
+    буквой, кроме пояснения в скобках строчными общими словами («(данные)» — не имя)."""
+    if not node.person:
+        name = re.sub(r"\(([^()]*)\)", lambda m: m.group(0) if pm.name_part(m.group(1), known) else " ",
+                      name)
+    return [w for w in pm._words(name) if len(w) >= 2 and any(c.isalpha() for c in w)
+            and (not node.person or w[:1].isupper())]
+
+
+def test_gate_no_node_name_leaves_open_unless_the_owner_excluded_it():
+    """Гейт состава 26.10: узел людей или систем без записи в файле исключений не может
+    уйти открытым. Каждое имя и псевдоним — в предложении данных; ни одного слова имени
+    после маски. Эвристика «отличительной части» давала по утечке на круг («Реактив»,
+    «Экстра офис» — №799); на графе владельца 26.10: открыто 897 имён из 3238 → 0."""
+    common = ("Задачи",)
+    forms = pm.build_forms(GATE_NODES, common=common, known=GATE_KNOWN.__contains__)
+    for node in GATE_NODES:
+        for name in (node.name, *node.aliases):
+            text = f"Вчера обсуждали {name} с командой."
+            masked = pm.mask(text, forms).text
+            body = masked[len("Вчера обсуждали "):]
+            left = [w for w in _gate_words(node, name, GATE_KNOWN.__contains__)
+                    if re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", body)]
+            if name in common:
+                assert left, name          # исключение владельца уходит как есть
+            else:
+                assert not left, (name, masked)
+
+
+def test_excluded_name_is_dropped_whole_and_word_by_word():
+    """Файл исключений снимает имя целиком, в любом регистре и через ё/е."""
+    forms = pm.build_forms([pm.NodeForms("Старый офис", person=False),
+                            pm.NodeForms("Задачи", person=False)],
+                           common=("старый ОФИС", "Задачи"), known=GATE_KNOWN.__contains__)
+    assert pm.mask("Старый офис и Задачи", forms).replaced == 0
+
+
+def test_lowercase_alias_lifts_the_capital_of_the_same_form():
+    """«Кластер» узлом и «кластер» псевдонимом: строчное имя тоже имя (гейт 26.10)."""
+    forms = pm.build_forms([pm.NodeForms("Кластер", ("кластер",), person=False)],
+                           known=GATE_KNOWN.__contains__)
+    assert pm.mask("про кластер", forms).replaced == 1
+
+
+def test_overlapping_names_of_two_nodes_are_masked_as_one_span():
+    """«Таблицы SF» и «SF Payment»: выбор одной формы оставлял хвост другой открытым."""
+    forms = pm.build_forms([pm.NodeForms("Таблицы SF", person=False),
+                            pm.NodeForms("SF Payment", person=False)], known=GATE_KNOWN.__contains__)
+    m = pm.mask("про Таблицы SF Payment вчера", forms)
+    assert m.replaced == 1 and "Таблиц" not in m.text and "Payment" not in m.text
+
+
+def test_person_name_in_brackets_is_masked_without_the_node():
+    """«Ксения (упоминание Лиды)»: в скобках у человека — чужое имя. Маскируется, но
+    в группу Ксении не попадает."""
+    forms = pm.build_forms([pm.NodeForms("Ксения (упоминание Лиды)")], known=GATE_KNOWN.__contains__)
+    m = pm.mask("Ксения и Лиды нет", forms)
+    assert m.replaced == 2
+    assert {g.canon for g in m.groups.values()} == {"Ксения (упоминание Лиды)", None}
+
+
+def test_joint_is_one_rule_for_mask_and_postcondition():
+    """«Портал20.5» — одно слово для маски, а постусловие видело в нём форму: ложный отказ
+    (n793-out3 S-I3). Пустого стыка нет ни там, ни там."""
+    forms = pm.build_forms([pm.NodeForms("Портал 20.5", person=False)], known={"портал"}.__contains__)
+    assert pm.mask("Портал20.5 и Портал 20.5", forms).replaced == 1
+
+
+def test_fleeting_stem_of_an_alias_stays_in_the_node():
+    """Псевдоним «Льва» у Льва Орлова: беглая основа «льв» — уже его форма, без узла её не
+    дублировать, иначе форма уходит из группы (n793-out3 DS-M2)."""
+    forms = pm.build_forms([pm.NodeForms("Лев Орлов", ("Льва",))])
+    m = pm.mask("Льва ждали", forms)
+    assert [g.canon for g in m.groups.values()] == ["Лев Орлов"]
+
+
+def test_empty_data_masks_the_whole_prompt(tmp_path, monkeypatch):
+    """Данных не передали — маска по всему промпту, а не «маскировать нечего»
+    (n793-out3 S-I1, DS-I1)."""
+    _fake_ner(monkeypatch)
+    for data in ((), ("",)):
+        m = cloud_door.mask_prompt({}, "Аня пришла", _graph(_mkdir(tmp_path / str(len(data)))), data=data)
+        assert "Аня" not in m.text
+        assert any("маска по всему промпту" in n for n in m.notes)
+
+
+def test_machine_path_inside_data_keeps_the_data_region(tmp_path, monkeypatch):
+    """Путь машины внутри куска данных вычищен и в куске: область находится, инструкция
+    не маскируется (n793-out3 DS-I1)."""
+    _fake_ner(monkeypatch)
+    home = str(pathlib.Path.home())
+    data = f"Аня открыла {home}/a.md"
+    m = cloud_door.mask_prompt({}, "Инструкция про ЗЛК.\n" + data, _graph(tmp_path), data=(data,))
+    assert "Инструкция про ЗЛК." in m.text and "Аня" not in m.text
+    assert not any("маска по всему промпту" in n for n in m.notes)
+
+
+def _mkdir(path: pathlib.Path) -> pathlib.Path:
+    path.mkdir()
+    return path
+
+
+def test_lowercase_gloss_in_brackets_is_not_a_system_name():
+    """«Витрина согласий (данные)»: пояснение строчными общими словами — не имя; гейт 26.10
+    дал на таких тысячи замен речи («данные», «поле», «версии»)."""
+    forms = pm.build_forms([pm.NodeForms("Витрина согласий (данные)", person=False)],
+                           known=GATE_KNOWN.__contains__)
+    assert pm.mask("данные пришли", forms).replaced == 0
+    assert pm.mask("Витрина согласий пуста", forms).replaced == 1
