@@ -314,7 +314,8 @@ def _assert_state_in_form(tmp_path) -> dict:
     raw = (tmp_path / "logs" / "night_cloud_state.json").read_text(encoding="utf-8")
     data = json.loads(raw)
     for entry in data.values():
-        assert set(entry) <= set(night_cloud._STATE_FORM)
+        assert set(entry) <= {"last_attempt", "last_accepted", "previous_accepted", "fingerprint_change",
+                              "last_attestation_failure"}   # новый раздел — решением, не сам (out8 DS-M1)
         for leaf in _leaves(entry):
             if isinstance(leaf, str):
                 assert _LEAF.fullmatch(leaf), f"строка вне формы: {leaf!r}"
@@ -611,8 +612,7 @@ def _public_tls_failure() -> BaseException:
 
 
 @pytest.mark.parametrize("error,cls", [
-    # сбой сертификата публичного TLS в конструкторе — сеть: портал Wi-Fi, прокси,
-    # часы (opus I1); правило сертификата SDK — только на закреплённом соединении
+    # голый сбой сертификата — сеть: портал Wi-Fi, прокси, часы (opus I1, out8)
     (ssl.SSLError("CERTIFICATE_VERIFY_FAILED"), night_cloud.ProviderUnavailable),
     (ssl.SSLCertVerificationError("self-signed"), night_cloud.ProviderUnavailable),
     (_public_tls_failure(), night_cloud.ProviderUnavailable),
@@ -645,6 +645,10 @@ def _public_tls_failure() -> BaseException:
     (_vcek_chain("TDX", _http_error(400)), night_cloud.AttestationFailed),
     (_vcek_chain("SEV", _http_error(503)), night_cloud.ProviderUnavailable),
     (_vcek_chain("SEV", _http_error(429)), night_cloud.ProviderUnavailable),
+    # служба не пустила (прокси, WAF, подписка) — не ответ об отчёте: белый список 400/404 (out8 I1)
+    (_vcek_chain("SEV", _http_error(403)), night_cloud.ProviderUnavailable),
+    (_vcek_chain("TDX", _http_error(401)), night_cloud.ProviderUnavailable),
+    (_vcek_chain("SEV", _http_error(407)), night_cloud.ProviderUnavailable),
     # ввод-вывод без ответа (кэш на диске) — недоступен; ответ не читается — аттестация (out7 DS-I1)
     (_vcek_chain("SEV", FileNotFoundError("cache")), night_cloud.ProviderUnavailable),
     (_vcek_chain("SEV", _json.JSONDecodeError("Expecting value", "", 0)), night_cloud.AttestationFailed),
@@ -683,17 +687,28 @@ def test_attesting_constructor_asks_the_gate_itself(tmp_path, monkeypatch):
     assert not built
 
 
+def _ehbp_tls_failure() -> BaseException:
+    """Сбой публичного TLS на create в режиме SDK по умолчанию (ehbp) — цепочка
+    из опыта e_create_ca 26.10: APIConnectionError ← ConnectError ← ConnectError
+    ← SSLCertVerificationError."""
+    connect = type("ConnectError", (Exception,), {"__module__": "httpx"})
+    return _chained(type("APIConnectionError", (Exception,), {"__module__": "openai"})("Connection error."),
+                    connect("x"), connect("y"), ssl.SSLCertVerificationError(1, "certificate verify failed"))
+
+
 @pytest.mark.parametrize("error,cls", [
     (_tinfoil_error(), night_cloud.AttestationFailed),     # закреплённый ключ энклава не тот
-    (ssl.SSLCertVerificationError("self-signed"), night_cloud.AttestationFailed),
-    (ssl.SSLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"), night_cloud.AttestationFailed),
+    # голый сбой сертификата и на create — публичный TLS, не подмена (out8, опыт e_create_ca)
+    (ssl.SSLCertVerificationError("self-signed"), night_cloud.ProviderUnavailable),
+    (ssl.SSLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"), night_cloud.ProviderUnavailable),
+    (_ehbp_tls_failure(), night_cloud.ProviderUnavailable),
     # обрыв TLS при чтении заголовков — ввод-вывод, не подмена (правило SDK, out3 S-I1, DS-I2)
     (ssl.SSLError("bad record mac"), night_cloud.ProviderUnavailable),
     (ssl.SSLEOFError("eof"), night_cloud.ProviderUnavailable),
     (type("APIStatusError", (Exception,), {"status_code": 503})("busy"), night_cloud.ProviderUnavailable),
 ])
 def test_chat_stage_errors_are_classified(tmp_path, error, cls):
-    """Отказ на `create`: отправка уже начата — `sent` в исключении, класс — по правилу SDK."""
+    """Отказ на `create`: отправка уже начата — `sent` в исключении, класс — по тому же правилу."""
     with pytest.raises(cls) as ei:
         _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(create_error=error)))
     assert type(ei.value) is cls and ei.value.sent is True
@@ -717,35 +732,29 @@ def test_errors_while_the_reply_streams(tmp_path, error, cls, outcome):
 def test_class_follows_the_sdk_cause_chain():
     """Цепочка — как у SDK: `__cause__ or __context__`, и `from None` её не прячет
     (`_is_certificate_error` 0.15.0; решение главной по out5)."""
+    pin = _tinfoil_error
     try:
         try:
-            raise ssl.SSLCertVerificationError("старая ошибка сертификата")
-        except ssl.SSLError:
+            raise pin()
+        except ValueError:
             raise ValueError("HTTP 503") from None
     except ValueError as e:
         hidden = e
-    assert night_cloud._classify(hidden, pinned=True) is night_cloud.AttestationFailed
-    # в конструкторе тот же сбой сертификата — публичный TLS, не подмена (opus I1)
-    assert night_cloud._classify(hidden, pinned=False) is night_cloud.ProviderUnavailable
+    assert night_cloud._classify(hidden) is night_cloud.AttestationFailed
     try:
         try:
-            raise ssl.SSLCertVerificationError("рукопожатие")
-        except ssl.SSLError:
+            raise pin()
+        except ValueError:
             raise ValueError("ошибка в обработчике")   # неявный контекст — тоже цепочка SDK
     except ValueError as e:
         implicit = e
-    assert night_cloud._classify(implicit, pinned=True) is night_cloud.AttestationFailed
-    assert night_cloud._classify(ValueError("HTTP 503"), pinned=True) is night_cloud.ProviderUnavailable
-    try:
-        try:
-            raise ssl.SSLCertVerificationError("рукопожатие")
-        except ssl.SSLError as inner:
-            raise ConnectionError("httpx: connect") from inner   # явная причина — решает
-    except ConnectionError as e:
-        explicit = e
-    assert night_cloud._classify(explicit, pinned=True) is night_cloud.AttestationFailed
-    pin = _chained(ConnectionError("httpx: connect"), _tinfoil_error())
-    assert night_cloud._classify(pin, pinned=False) is night_cloud.AttestationFailed
+    assert night_cloud._classify(implicit) is night_cloud.AttestationFailed
+    assert night_cloud._classify(ValueError("HTTP 503")) is night_cloud.ProviderUnavailable
+    explicit = _chained(ConnectionError("httpx: connect"), pin())   # явная причина — решает
+    assert night_cloud._classify(explicit) is night_cloud.AttestationFailed
+    # голый сбой сертификата в цепочке — сеть на любой стадии (out8)
+    assert night_cloud._classify(_chained(ConnectionError("c"), ssl.SSLCertVerificationError("x"))) \
+        is night_cloud.ProviderUnavailable
 
 
 def test_real_constructor_path_sends_through_the_attested_client(tmp_path, monkeypatch):
@@ -994,11 +1003,28 @@ def test_unknown_effort_falls_back_to_max_out_loud(tmp_path, capsys):
     # заголовок Setext: Obsidian показывает его так же, как «##» (opus M1)
     ([_chunk(SECTIONS + "Аттестация\n---\n- прошла, отпечаток прежний\n"), _chunk(None, "stop")], "Аттестация"),
     ([_chunk(SECTIONS + "  аттестация провайдера\n=====\n"), _chunk(None, "stop")], "Аттестация"),
+    # внутри цитаты и пункта списка Obsidian рисует заголовок так же (out8 H-I2)
+    ([_chunk(SECTIONS + "> ## Аттестация прошла\n"), _chunk(None, "stop")], "Аттестация"),
+    ([_chunk(SECTIONS + "- ## Аттестация\n"), _chunk(None, "stop")], "Аттестация"),
+    ([_chunk(SECTIONS + "1. # Аттестация\n"), _chunk(None, "stop")], "Аттестация"),
+    ([_chunk(SECTIONS + "> Аттестация\n> ---\n"), _chunk(None, "stop")], "Аттестация"),
 ])
 def test_not_a_review_is_rejected(tmp_path, chunks, why):
     with pytest.raises(night_cloud.ReplyRejected, match=why):
         _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(stream=FakeStream(chunks))))
     assert _state(tmp_path)["last_attempt"]["outcome"] == "rejected"
+
+
+@pytest.mark.parametrize("tail", [
+    "#аттестация сотрудников\n",                                  # хэштег Obsidian, не заголовок
+    "Аттестация сотрудников прошла в марте.\n\n---\n",           # линия после пустой строки
+    "    ## аттестация в блоке кода\n",                           # отступ 4 — код
+])
+def test_the_word_in_ordinary_markup_is_not_a_forged_heading(tmp_path, tail):
+    """Слово «аттестация» в обычной разметке ревизию не отвергает (out8 S-M1, H-M1)."""
+    reply = _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(
+        stream=FakeStream([_chunk(SECTIONS + tail), _chunk(None, "stop")]))))
+    assert tail.strip() in reply.text
 
 
 def test_error_mid_stream_is_classified_and_recorded(tmp_path):
@@ -1253,6 +1279,24 @@ def test_wall_clock_end_of_night_stops_the_send(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAROITE_NIGHTLY_UNTIL", str(time.time() + 3600))
     _send(tmp_path, _cfg(tmp_path), Factory(client=client))
     assert len(client.creates) == 1
+
+
+def test_wall_clock_end_of_night_stops_the_stream(tmp_path, monkeypatch):
+    """Сон посреди ответа: стенной потолок проверяется и в потоке (out8 DS-M4)."""
+    monkeypatch.setenv("CHAROITE_NIGHTLY_UNTIL", str(time.time() + 3600))
+    def night_ends():
+        monkeypatch.setenv("CHAROITE_NIGHTLY_UNTIL", str(time.time() - 60))
+    stream = FakeStream([_chunk("## Противоречия\n"), _chunk(SECTIONS), _chunk(None, "stop")], between=night_ends)
+    with pytest.raises(night_cloud.DeadlineExpired) as ei:
+        _send(tmp_path, _cfg(tmp_path), Factory(client=FakeClient(stream=stream)))
+    assert ei.value.sent is True and stream.closed
+
+
+def test_report_service_status_reaches_the_state(tmp_path):
+    """Код ответа службы ключей (requests `response.status_code`) — в состоянии (out8 DS-M3)."""
+    with pytest.raises(night_cloud.AttestationFailed):
+        _send(tmp_path, _cfg(tmp_path), Factory(error=_vcek_chain("SEV", _http_error(404))))
+    assert _state(tmp_path)["last_attempt"]["http_status"] == 404
 
 
 def test_attestation_failure_outlives_the_next_attempt(tmp_path):

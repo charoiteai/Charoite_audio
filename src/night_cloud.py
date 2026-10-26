@@ -39,7 +39,6 @@ import json
 import os
 import pathlib
 import re
-import ssl
 import sys
 import threading
 import time
@@ -60,15 +59,17 @@ READ_TIMEOUT_S = 60.0
 ATTESTATION_HEADER = "## Аттестация"
 #: Тот же заголовок любого уровня и регистра: «###  аттестация» — та же подделка.
 #: Заголовок ATX («## Аттестация») и Setext («Аттестация» над строкой из = или -):
-#: Obsidian показывает оба (opus M1).
-_ATTESTATION_HEADING = re.compile(r"^\s*#+\s*аттестация\b|^\s*аттестация\b.*\n\s*(?:=+|-+)\s*$",
-                                  re.IGNORECASE | re.MULTILINE)
+#: Obsidian показывает оба (opus M1), в том числе внутри цитаты и пункта списка
+#: (out8 H-I2). По CommonMark: отступ до трёх пробелов, после «#» пробел, подчёркивание
+#: Setext — на следующей строке (out8 S-M1): хэштег и линия после пустой строки — не заголовок.
+_MD_PREFIX = r"^[ ]{0,3}(?:(?:>|[-*+]|\d{1,9}[.)])[ \t]*)*"
+_ATTESTATION_HEADING = re.compile(
+    _MD_PREFIX + r"#{1,6}[ \t]+аттестация\b"
+    + "|" + _MD_PREFIX + r"аттестация\b.*\n[ ]{0,3}(?:>[ \t]*)*(?:=+|-+)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE)
 #: Шаги документа аттестации SDK 0.15.0. Нет шага — не «всё прошло», а
 #: «проверено не всё»: SDK, переименовавший шаг, даёт громкий отказ (out1 S-I1).
 REQUIRED_STEPS = ("fetch_digest", "verify_code", "verify_enclave", "compare_measurements")
-#: Признак сбоя проверки сертификата в тексте SSLError — тот же, что у SDK 0.15.0
-#: (`tinfoil.client._CERTIFICATE_VERIFY_ERROR_MARKERS`).
-_CERTIFICATE_VERIFY_MARKERS = ("certificate_verify_failed", "certificate verify failed")
 
 
 class NightCloudError(Exception):
@@ -81,13 +82,11 @@ class NightCloudError(Exception):
 
 
 class AttestationFailed(NightCloudError):
-    """Документ аттестации не прошёл проверку двери (`_verified`), проверку
-    самого SDK (`_attestation_error`, `_report_error`) или сбой сертификата по
-    правилу SDK (`_certificate_error`).
+    """Документ аттестации не прошёл проверку двери (`_verified`) или SDK
+    сообщил свой отказ проверки — правило одно, докстрока `_classify`.
 
-    Документ проверяется до отправки — тогда ни байта не ушло. Сбой
-    сертификата SDK по своей докстроке даёт при установке соединения; ветка
-    потока классифицирует по тому же правилу, и `sent` у исключения говорит,
+    Документ проверяется до отправки — тогда ни байта не ушло. Несовпадение
+    закреплённого ключа SDK бывает и на отправке; `sent` у исключения говорит,
     начинался ли переход к отправке.
     """
 
@@ -170,10 +169,20 @@ def _http_status(e: BaseException) -> int | None:
     seen: list[BaseException] = []
     while e is not None and e not in seen and len(seen) < 16:
         seen.append(e)
-        code = getattr(e, "status_code", None)
-        if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
+        code = _status_of(e)
+        if code is not None:
             return code
         e = e.__cause__
+    return None
+
+
+def _status_of(x: BaseException) -> int | None:
+    """HTTP-код ответа в одном исключении: openai `status_code` или requests
+    `response.status_code` (out8 DS-M3). Нет ответа — None."""
+    for code in (getattr(x, "status_code", None),
+                 getattr(getattr(x, "response", None), "status_code", None)):
+        if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
+            return code
     return None
 
 
@@ -227,7 +236,7 @@ def _close_quietly(stream) -> None:
 
 def _causes(e: BaseException) -> list[BaseException]:
     """Цепочка причин так же, как её обходит SDK (`tinfoil.client._is_certificate_error`,
-    0.15.0): `__cause__ or __context__` — правило SDK целиком (решение главной по out5)."""
+    0.15.0): `__cause__ or __context__` (решение главной по out5)."""
     out: list[BaseException] = []
     while e is not None and e not in out and len(out) < 16:
         out.append(e)
@@ -236,23 +245,9 @@ def _causes(e: BaseException) -> list[BaseException]:
 
 
 def _pin_error(x: BaseException) -> bool:
-    """Закреплённый ключ энклава не тот (`_PinMismatchError` SDK) — по имени и
-    модулю: верхний уровень двери SDK не импортирует (in3 K6)."""
+    """Закреплённый ключ энклава не тот (`_PinMismatchError` SDK, режим tls) — по
+    имени и модулю: верхний уровень двери SDK не импортирует (in3 K6)."""
     return type(x).__name__ == "_PinMismatchError" and type(x).__module__.split(".")[0] == "tinfoil"
-
-
-def _certificate_error(x: BaseException) -> bool:
-    """Сбой проверки сертификата — правило самого SDK (`tinfoil.client._is_certificate_error`,
-    0.15.0): несовпадение закреплённого ключа (`_PinMismatchError`),
-    SSLCertVerificationError, SSLError с «certificate verify failed». SDK зовёт
-    его на закреплённом соединении с энклавом — там же его зовёт и дверь (`_classify`)."""
-    if _pin_error(x):
-        return True
-    if isinstance(x, ssl.SSLCertVerificationError):
-        return True
-    if isinstance(x, ssl.SSLError):
-        return any(m in str(x).lower() for m in _CERTIFICATE_VERIFY_MARKERS)
-    return False
 
 
 def _attestation_error(x: BaseException) -> bool:
@@ -270,21 +265,17 @@ _REPORT_ERRORS = {"tinfoil.attestation.attestation_sev": "SevAttestationError",
                   "tinfoil.attestation.attestation_tdx": "TdxAttestationError"}
 
 
-#: HTTP-ответы службы ключей, которые значат «сервис занят», а не «такого отчёта нет».
-_RETRYABLE_HTTP = (408, 429)
+#: Ответы службы ключей (KDS, Intel PCS) о самом отчёте: данные отчёта задаёт
+#: проверяемая сторона, выдуманный chip_id даёт 404 (out7 S-I1). Белый список: 401,
+#: 403, 407, 5xx и прочее — служба не пустила или занята, это не отчёт (out8 I1).
+_REPORT_HTTP = (400, 404)
 
 
 def _transport_error(x: BaseException) -> bool:
-    """Ответа нет или сервис занят: ввод-вывод (OSError — сокет, таймаут,
-    requests.*, URLError, чтение кэша), кроме HTTP-ответа 4xx. Ответ 4xx службы
-    ключей (KDS, Intel PCS) — по данным отчёта, а их задаёт проверяемая сторона:
-    выдуманный chip_id даёт 404 (out7 S-I1), и это провал отчёта, а не сеть."""
-    if not isinstance(x, OSError):
-        return False
-    code = getattr(getattr(x, "response", None), "status_code", None)
-    if isinstance(code, int) and not isinstance(code, bool):
-        return code >= 500 or code in _RETRYABLE_HTTP
-    return True
+    """Ввод-вывод (OSError — сокет, сертификат публичного TLS, таймаут,
+    requests.*, URLError, чтение кэша), кроме ответа службы о самом отчёте
+    (`_REPORT_HTTP`)."""
+    return isinstance(x, OSError) and _status_of(x) not in _REPORT_HTTP
 
 
 def _report_error(x: BaseException) -> bool:
@@ -292,16 +283,17 @@ def _report_error(x: BaseException) -> bool:
     return any(_REPORT_ERRORS.get(k.__module__) == k.__name__ for k in type(x).__mro__)
 
 
-def _classify(e: BaseException, *, pinned: bool) -> type[NightCloudError]:
-    """Два класса по правилам SDK (решение главной по out4, п. 2 с расширениями
-    по опытам out5, out6, opus). Цепочка — `__cause__ or __context__`, как у SDK
-    (`_causes`):
-    - `AttestationError` SDK или несовпадение закреплённого ключа — аттестация;
-    - сбой сертификата по правилу SDK — аттестация только на закреплённом
-      соединении (`pinned`: `create` и поток), где правило зовёт сам SDK. В
-      конструкторе запросы идут по публичному TLS (адреса роутера, документ,
-      KDS, Sigstore), и сбой сертификата там — сеть: портал Wi-Fi, прокси с
-      подменой TLS, уехавшие часы (opus I1, опыт с пустым набором CA 26.10);
+def _classify(e: BaseException) -> type[NightCloudError]:
+    """Два класса, одно правило на все стадии: «аттестация» — только по
+    типизированному отказу проверки SDK (решения главной по out4–out6, out8).
+    Цепочка — `__cause__ or __context__`, как у SDK (`_causes`):
+    - `AttestationError` SDK или `_PinMismatchError` (закреплённый ключ энклава не
+      тот) — аттестация;
+    - голый сбой сертификата — сеть на любой стадии: конструктор (адреса
+      роутера, документ, KDS, Sigstore) и чат в режиме SDK по умолчанию (ehbp)
+      идут по публичному TLS — портал Wi-Fi, прокси с подменой, уехавшие часы
+      (опыты 26.10: пустой набор CA в конструкторе, CA без корней в create).
+      `_is_certificate_error` SDK — сигнал перепроверки, а не вердикт (opus I1, out8);
     - провал отчёта железа SEV/TDX — аттестация, если в цепочке нет сбоя
       транспорта (`_transport_error`): сеть к KDS или коллатералу даёт тот же
       класс SDK, а это недоступность (опыт e_sev_chain 26.10). Ответ, который
@@ -309,8 +301,7 @@ def _classify(e: BaseException, *, pinned: bool) -> type[NightCloudError]:
     - всё прочее — недоступен. Голый ValueError закреплённого measurement=
       (режим pin) — недоступен: pin вне этапа 1. Отказ документа решает `_verified`."""
     chain = _causes(e)
-    certificate = _certificate_error if pinned else _pin_error
-    if any(certificate(x) or _attestation_error(x) for x in chain):
+    if any(_pin_error(x) or _attestation_error(x) for x in chain):
         return AttestationFailed
     if any(_report_error(x) for x in chain) and not any(_transport_error(x) for x in chain):
         return AttestationFailed
@@ -571,7 +562,7 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
         raise
     except Exception as e:  # noqa: BLE001 — класс решает таблица
         box["http_status"] = _http_status(e)
-        cls = _classify(e, pinned=False)
+        cls = _classify(e)
         # слово от класса, не от места броска: «аттестация» — только у аттестации (out5 DS-M2)
         raise cls(("аттестация: " if cls is AttestationFailed else "клиент провайдера: ")
                   + _reason(e, key)) from None
@@ -602,7 +593,8 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
             if cancelled:
                 raise DeadlineExpired("срок шага вышел после отправки запроса")
             for chunk in stream:
-                if box.get("cancel") or deadline.remaining() <= 0:
+                # стенной потолок ночи и в потоке: сон посреди ответа (out8 DS-M4)
+                if box.get("cancel") or deadline.remaining() <= 0 or live_gate.night_is_over():
                     raise DeadlineExpired("срок шага вышел после отправки запроса")
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
@@ -617,7 +609,7 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
         raise
     except Exception as e:  # noqa: BLE001 — openai/httpx без импорта: класс решает таблица
         box["http_status"] = _http_status(e)
-        raise _classify(e, pinned=True)("поток: " + _reason(e, key)) from None
+        raise _classify(e)("поток: " + _reason(e, key)) from None
     return "".join(chunks).strip(), finish, line
 
 
