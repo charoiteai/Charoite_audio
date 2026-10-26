@@ -43,7 +43,9 @@
     ],
     "cloud": [
       "cloud",
-      "night_cloud"
+      "night_cloud",
+      "pii_mask",
+      "pii_ner"
     ],
     "audio": [
       "audio",
@@ -74,6 +76,7 @@
       "speaker_names",
       "review_bridge",
       "name_fixes",
+      "cloud_door",
       "rebuild_transcript",
       "retro_fill",
       "lexicon",

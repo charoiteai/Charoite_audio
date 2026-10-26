@@ -22,6 +22,21 @@ MASKED_EXITS = {
     ("scripts/nightly_dossier_review.py", "review"): "dash_p",
 }
 TINFOIL = ("scripts/nightly_claude_cores.py", "_ask_tinfoil")
+#: Выходы без маски — этап C №793: живые подсказки держит выключенный ключ облака
+#: (сказано в PRIVACY). SDK-выходы Tinfoil берут уже маскированный текст из `_ask_tinfoil`.
+UNMASKED_STAGE_C = {
+    ("src/daemon.py", "cloud_loop"),
+    ("src/daemon.py", "cloud_thread_refine"),
+}
+
+
+def test_every_network_exit_is_masked_or_named_as_stage_c():
+    """Один реестр выходов — `test_cloud_call_sites.EXITS`: новый выход без маски
+    и без строки здесь краснеет (n793-out1 DS-10)."""
+    import test_cloud_call_sites as sites
+    exits = set(sites.NETWORK_EXITS)
+    assert exits == set(MASKED_EXITS) | UNMASKED_STAGE_C, exits ^ (set(MASKED_EXITS) | UNMASKED_STAGE_C)
+    assert not set(MASKED_EXITS) & UNMASKED_STAGE_C
 
 
 def _tree(rel: str) -> ast.Module:

@@ -271,7 +271,7 @@ def test_review_rejects_nonzero_exit_with_a_reason(tmp_path, monkeypatch):
         stderr = "Ошибка: rate limit"
 
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: R())
-    cfg = {"sufler": {"cloud_enrich": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False}}
     fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
     assert fixed is None and why.startswith("сбой:") and "код 1" in why and "rate limit" in why
 
@@ -299,7 +299,7 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
         return (fixed, "") if theme == "Платёжный провайдер" else (None, "ответ короче 60%")
 
     monkeypatch.setattr(ndr, "review", fake_review)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
     assert ndr.run(graph, cfg, dry=False, limit=6) == 1
     text = path.read_text(encoding="utf-8")
     assert "Пилот ⚠️ идёт" in text and "моё примечание" in text and "## Источники" in text
@@ -319,7 +319,7 @@ def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
     path.write_text(_DOSSIER, encoding="utf-8")
     called = []
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: called.append(1))
-    fixed, why = ndr.review("Ручное", path, tmp_path, {}, [], "m", {"sufler": {"cloud_enrich": True}})
+    fixed, why = ndr.review("Ручное", path, tmp_path, {}, [], "m", {"sufler": {"cloud_enrich": True, "cloud_mask": False}})
     assert fixed is None and "Источники" in why and not called, "облако вызвано зря"
 
 
@@ -337,7 +337,7 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
     body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
                         (body, "") if theme == "Одно" else (None, "сбой: claude вернул код 1:\nrate\nlimit"))
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": False}}
     assert ndr.run(graph, cfg, dry=False, limit=6) == 1
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
     assert "## Предложено, но не применено" in report and "### Одно\n#### Сейчас" in report
@@ -346,7 +346,7 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
     assert (folder / "Одно.md").read_text(encoding="utf-8").endswith("—\n")   # файл не тронут
 
 
-_EDIT_CFG = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+_EDIT_CFG = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
 
 
 def _edit_graph(tmp_path, ndr, monkeypatch, names=("Одно",)):
@@ -576,7 +576,7 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     good = ("## Противоречия\n- нет\n## Протухшее\n- нет\n## Слияния\n- нет\n"
             "## Потерянные хвосты\n- нет\n## Три риска недели\n- один\n")
 
-    cfg = {"sufler": {}}
+    cfg = {"sufler": {"cloud_mask": False}}
     events = []
     window_open = [True]    # сценарий: окно открыто / ночь кончилась
 

@@ -10,7 +10,9 @@
 """
 from __future__ import annotations
 
+import collections
 import pathlib
+import tempfile
 
 import pii_mask
 import privacy
@@ -23,6 +25,11 @@ COMMON_FILE = "_маска_общие.md"
 #: Папки узлов-«систем» для маски: команды и системы. Ядра, блокеры, модели — темы,
 #: а не имена, их маска не трогает.
 SYSTEM_FOLDERS = ("Системы", "Systems", "Команды", "Teams")
+#: Пояснение модели перед маскированным текстом: без него она пишет «Ч3» как имя
+#: или пересказывает токен словами (n793-out1 H-I8).
+TOKENS_NOTE = ("[Имена людей и систем в тексте заменены метками вида ⟦Ч…⟧ (человек) и "
+               "⟦С…⟧ (система); одно число до точки — один человек или система. "
+               "Пиши метки в ответе как есть, не расшифровывай и не придумывай новые.]\n\n")
 
 
 def _common(graph: pathlib.Path) -> set[str]:
@@ -38,19 +45,29 @@ def _common(graph: pathlib.Path) -> set[str]:
 def _forms(cfg: dict, graph: pathlib.Path,
            known=lambda _w: False) -> tuple[pii_mask.Forms, list[str]]:
     snap = graph_nodes.NodeIndex(graph, schema=CHAROITE).snapshot_for_mask()
-    people_bad = [p for p in snap.unreadable if CHAROITE.is_person_folder(p.parent.name)]
-    if people_bad:
-        # нечитаемый узел человека — дыра в словаре: его имя ушло бы как есть
-        raise pii_mask.MaskRefused(f"не прочитались узлы людей: {len(people_bad)} — "
-                                   "отправка отменена (iCloud не скачал файл?)")
-    notes = [f"не прочитались узлы систем: {len(snap.unreadable)}"] if snap.unreadable else []
     nodes = [pii_mask.NodeForms(n.name, n.aliases, n.person) for n in snap.nodes
              if n.person or n.folder in SYSTEM_FOLDERS]
-    stubs: dict[str, str | None] = {}
+    if not any(n.person for n in nodes):
+        # граф есть, а людей в нём нет (синхронизация не доехала, не тот каталог):
+        # одной модели имён мало — замер 26.10: 88 из 140 (n793-out1 S-I1)
+        raise pii_mask.MaskRefused("в графе нет узлов людей — словаря имён нет, отправка отменена")
+    notes = []
+    bad = sorted(p for p in snap.unreadable
+                 if CHAROITE.is_person_folder(p.parent.name) or p.parent.name in SYSTEM_FOLDERS)
+    if bad:
+        # нечитаемый узел: имя — из имени файла, без псевдонимов; отказывать не за что
+        # (n793-out1 DS-C2: отказ останавливал облако, система уходила как есть)
+        nodes += [pii_mask.NodeForms(p.stem, (), CHAROITE.is_person_folder(p.parent.name))
+                  for p in bad]
+        shown = ", ".join(f"{p.parent.name}/{p.name}" for p in bad[:5])
+        notes.append(f"не прочитались узлы ({len(bad)}), маска по имени файла: {shown}")
+    notes.append(f"словарь: людей {sum(n.person for n in nodes)}, "
+                 f"систем {sum(not n.person for n in nodes)}")
+    stubs: list[tuple[str, str | None, bool]] = []
     canon_by_path = {f"{n.folder}/{n.name}.md": n.name for n in snap.nodes}
     by_stub_path = {f"{s.folder}/{s.name}.md": s for s in snap.stubs}
-    names = [n.name for n in snap.nodes]
-    unique_names = {nm: nm for nm in names if names.count(nm) == 1}
+    counts = collections.Counter(n.name for n in snap.nodes)
+    unique_names = {nm for nm, k in counts.items() if k == 1}
     for s in snap.stubs:
         if not (CHAROITE.is_person_folder(s.folder) or s.folder in SYSTEM_FOLDERS):
             continue
@@ -62,11 +79,20 @@ def _forms(cfg: dict, graph: pathlib.Path,
         canon = canon_by_path.get(target) if target else None
         if canon is None and target:
             # ссылка без папки («[[Канон]]»): по голому имени, только если оно одно
-            canon = unique_names.get(pathlib.PurePosixPath(target).stem)
-        stubs[s.name] = canon
+            stem = pathlib.PurePosixPath(target).stem
+            canon = stem if stem in unique_names else None
+        stubs.append((s.name, canon, CHAROITE.is_person_folder(s.folder)))
     owner = str((cfg.get("sufler") or {}).get("user_name") or "").strip()
     return pii_mask.build_forms(nodes, stubs=stubs, owner=owner, common=_common(graph),
                                 known=known), notes
+
+
+def empty_workdir() -> pathlib.Path:
+    """Пустой рабочий каталог облачного CLI под маской: путь без имени владельца
+    (CLI кладёт cwd в системный промпт), инструментов у модели нет."""
+    d = pathlib.Path(tempfile.gettempdir()) / "charoite-cloud-empty"
+    d.mkdir(exist_ok=True)
+    return d
 
 
 def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None) -> pii_mask.Masked:
@@ -87,11 +113,21 @@ def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None) -> pii_mask.
     if graph is None or not graph.is_dir():
         # без графа нет словаря людей: одной модели имён мало (замер 26.10)
         raise pii_mask.MaskRefused("граф недоступен — словаря имён нет, отправка отменена")
-    import pii_ner        # natasha грузится только там, где маска действительно нужна
-    forms, notes = _forms(cfg, graph, known=pii_ner.is_common)
-    text = pii_mask.prepare(text)
-    masked = pii_mask.mask(text, forms, pii_ner.spans(text), level=level)
+    try:
+        import pii_ner    # natasha грузится только там, где маска действительно нужна
+        forms, notes = _forms(cfg, graph, known=pii_ner.is_common)
+        text = pii_mask.prepare(text)
+        ner = pii_ner.spans(text)
+        ner += pii_mask.rare_word_spans(text, ner, pii_ner.is_common)
+        masked = pii_mask.mask(text, forms, ner, level=level)
+    except pii_mask.MaskRefused:
+        raise
+    except Exception as e:  # noqa: BLE001 — дверь: любой сбой маски — отказ
+        # маска либо `Masked`, либо отказ — третьего нет (n793-out1 DS-8)
+        raise pii_mask.MaskRefused(f"маска упала ({type(e).__name__}) — отправка отменена") from None
     masked.notes.extend(notes)
+    if masked.replaced:
+        masked.text = TOKENS_NOTE + masked.text
     return masked
 
 

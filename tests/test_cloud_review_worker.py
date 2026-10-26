@@ -186,7 +186,7 @@ def test_missing_graph_runs_text_only_instead_of_exposing_transcripts(
         return Result()
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     code = cloud_review.run(stamp, transcript, tmp_path / "missing-graph",
                             rev, log, cfg)
 
@@ -347,7 +347,7 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     # ненулевой код CLI — повторяемый сбой (№240): второй заход тот же, код RC_CLI
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_CLI
     # №120: облако работало в копии, поэтому «откат» исчез как класс —
@@ -409,7 +409,7 @@ def test_graph_lock_serialises_workers_and_degrades_to_read_only(tmp_path, monke
     fd = lock_file.open("w")
     fcntl.flock(fd, fcntl.LOCK_EX)
     try:
-        cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+        cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
         assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
     finally:
         fd.close()
@@ -477,7 +477,7 @@ def test_published_review_reaches_the_archive_and_the_vault(tmp_path, monkeypatc
         return Result()
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "cloud_mask": False}}
     code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
 
     assert code == 0 and rev.exists()
@@ -513,7 +513,7 @@ def test_review_of_an_untitled_meeting_lands_in_its_own_folder(tmp_path, monkeyp
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     code = cloud_review.run(stamp, transcript, graph, rev, log,
-                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}})
+                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "cloud_mask": False}})
 
     assert code == 0
     assert not (graph / "Встречи-архив" / "2026-07-15 14-00 — 30").exists(), "секунды стали темой папки"
@@ -540,7 +540,7 @@ def test_symlink_reading_is_denied_in_both_modes(tmp_path):
 
     for may_edit in (False, True):
         cmd = cloud_review.graph_updater.cloud_enrich_command(
-            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": may_edit}},
+            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": may_edit, "cloud_mask": False}},
             claude_bin="claude", prompt="p", model="m", may_edit=may_edit,
             deny_paths=cloud_review.deny_paths(graph) if may_edit else (),
             symlink_paths=links.items())
@@ -573,7 +573,7 @@ def test_deny_paths_close_protected_hidden_and_symlinked_places(tmp_path):
     assert "Edit(/.obsidian/**)" in rules and "Edit(/attachments/**)" in rules
     assert "Edit(/Ядра/ссылка.md)" in rules and "Edit(/Встречи-архив/**)" in rules
     cmd = cloud_review.graph_updater.cloud_enrich_command(
-        {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}},
+        {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}},
         claude_bin="claude", prompt="p", model="m", may_edit=True,
         deny_paths=cloud_review.deny_paths(graph))
     tail = cmd[cmd.index("--disallowedTools"):cmd.index("--permission-mode")]
@@ -636,7 +636,7 @@ def test_check_runs_even_if_publishing_blows_up(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     monkeypatch.setattr(cloud_review, "publish", lambda *a, **k: 1 / 0)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     import pytest
     with pytest.raises(ZeroDivisionError):
         cloud_review.run(stamp, transcript, graph, rev, log, cfg)
@@ -675,7 +675,7 @@ def test_worker_without_lock_does_not_deliver_into_the_graph(tmp_path, monkeypat
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     with lock_file.open("w") as fd:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+        cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
         assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
     assert rev.exists()
     assert not (graph / "Документация" / "Стенограммы встреч" / rev.name).exists()
@@ -713,7 +713,7 @@ def test_text_only_run_does_not_create_an_archive_in_a_missing_graph(tmp_path, m
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     missing = tmp_path / "missing-graph"
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(stamp, transcript, missing, rev, log, cfg) == 0
     assert rev.exists() and not missing.exists()
 
@@ -761,7 +761,7 @@ def test_graph_gone_while_waiting_for_the_lock_means_text_only(tmp_path, monkeyp
         return Result()
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
     cmd = captured["cmd"]
     assert cmd[cmd.index("--tools") + 1] == "" and "--allowedTools" not in cmd
@@ -794,7 +794,7 @@ def test_check_and_rollback_survive_an_unwritable_log(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
     assert not stray.exists(), "запрещённая правка перенесена в граф, хотя лог недоступен"
     # копия стенограммы в Документации — довозная из transcripts/ (№239), не облачная
@@ -832,7 +832,7 @@ def test_name_fixes_go_before_withdraw_and_bridge_and_only_with_a_checked_graph(
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}) == 0
+    assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "cloud_mask": False}}) == 0
     text = log.read_text(encoding="utf-8")
     assert "имена меток не перештампованы: правка графа выключена" in text and "верные имена мост считает участниками" in text
     assert "**Сергей** [14:00]:" in transcript.read_text(encoding="utf-8"), "без права правки графа стенограмма не тронута"
@@ -841,7 +841,7 @@ def test_name_fixes_go_before_withdraw_and_bridge_and_only_with_a_checked_graph(
         "верное имя из раздела — участник и без перештамповки (DS r2 I2)"
     log.unlink()
     fresh()
-    assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+    assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}) == 0
     text = log.read_text(encoding="utf-8")
     assert "имена меток исправлены по ревизии: Сергей → Мария — заголовков реплик 1, участники минуток да" in text
     assert text.index("имена меток исправлены") < text.index("снято поручений") < text.index("дописано поручений")
@@ -887,7 +887,7 @@ def test_lost_race_on_the_transcript_keeps_the_corrected_names_as_participants(t
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     monkeypatch.setattr(cloud_review.name_fixes, "apply", lost)
     assert cloud_review.run(stamp, transcript, graph, rev, log,
-                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}) == 0
     text = log.read_text(encoding="utf-8")
     assert "имена меток не перештампованы: запись не состоялась: " in text and "заголовки реплик не тронуты" in text
     assert "имена меток исправлены" not in text, "ничего не применено — «исправлено» было бы ложью"
@@ -951,7 +951,7 @@ def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_
             with pytest.MonkeyPatch.context() as мост:
                 мост.setattr(cloud_review.review_bridge, who, lost)
                 assert cloud_review.run(stamp, transcript, graph, rev, log,
-                                        {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+                                        {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}) == 0
             text = log.read_text(encoding="utf-8")
             assert "мост ревизии: " in text and expected in text, (who, kind, text)
             assert forbidden not in text, (who, kind, text)
@@ -999,7 +999,7 @@ def test_failed_check_blocks_delivery_and_returns_error(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     monkeypatch.setattr(cloud_review, "quarantine",
                         lambda *a, **k: (_ for _ in ()).throw(OSError(28, "ENOSPC")))
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
     assert rev.exists(), "ревизия всё равно сохранена рядом со стенограммой"
     assert not (graph / "Встречи-архив").exists(), "доставлено после неполного переноса"
@@ -1038,7 +1038,7 @@ def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_p
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
     assert doc.read_text(encoding="utf-8") == "стенограмма\n"
     assert (graph / "Документация" / "Стенограммы встреч" / rev.name).exists(), "доставка не состоялась"
@@ -1344,7 +1344,7 @@ def test_a_vanished_sandbox_is_loud_and_does_not_look_like_mass_deletion(tmp_pat
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
     text = log.read_text(encoding="utf-8")
     assert "ПЕСОЧНИЦА ИСЧЕЗЛИ" in text
@@ -1373,7 +1373,7 @@ def test_end_to_end_an_allowed_edit_travels_from_sandbox_to_graph(tmp_path, monk
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
     assert node.read_text(encoding="utf-8") == "# Встреча\nобогатило облако\n", (
         "разрешённая правка не доехала из песочницы до графа"
@@ -1405,7 +1405,7 @@ def test_the_sandbox_survives_a_per_file_transfer_failure(tmp_path, monkeypatch)
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
     text = log.read_text(encoding="utf-8")
     # песочница не осталась в backup_root (её снёс бы следующий воркер) —
@@ -1453,7 +1453,7 @@ def test_a_failed_second_copy_cleans_its_orphans_and_spares_a_neighbour(tmp_path
     monkeypatch.setattr(cloud_review.subprocess, "run",
                         lambda cmd, **k: (k["stdout"].write(_REPORT), Result())[1])
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
 
     assert not (root / f"{stamp}-облако").exists(), "сирота песочницы не убрана"
@@ -1541,7 +1541,7 @@ def test_a_sandbox_gone_before_launch_drops_to_read_only_not_into_transcripts(tm
     neighbour = cloud_review.backup_root(graph) / "2099-01-01_0000"
     neighbour.mkdir(parents=True, exist_ok=True)
     (neighbour / "живой.md").write_text("сосед", encoding="utf-8")
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
     assert neighbour.is_dir(), "ротация pre-check снесла снимок соседа (DS r4)"
 
@@ -1698,7 +1698,7 @@ def test_a_sandbox_swapped_for_a_symlink_drops_to_read_only(tmp_path, monkeypatc
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
                         lambda g: pathlib.Path(g).is_dir())
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
 
     assert pathlib.Path(seen["cwd"]).resolve() != transcript.parent.resolve(), (
@@ -1822,7 +1822,7 @@ def test_a_sandbox_swapped_mid_run_is_not_transferred(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.subprocess, "run", swap_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
                         lambda g: pathlib.Path(g).is_dir())
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
 
     text = log.read_text(encoding="utf-8")
@@ -1874,7 +1874,7 @@ def test_a_sandbox_swapped_before_launch_leaves_no_orphans_and_frees_the_stamp(t
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
                         lambda g: pathlib.Path(g).is_dir())
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
 
     assert "Edit(/**)" not in seen["cmd"], (
@@ -1918,7 +1918,7 @@ def test_a_stamp_that_is_a_path_never_leaves_the_snapshot_root(tmp_path, monkeyp
     def never_run(cmd, **kwargs):
         raise AssertionError("CLI запущен с кривым штампом")
     monkeypatch.setattr(cloud_review.subprocess, "run", never_run)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(str(foreign), transcript, graph, rev, log, cfg) == 1
     assert cloud_review.run("../чужая", transcript, graph, rev, log, cfg) == 1
 
@@ -2081,7 +2081,7 @@ def test_retry_runs_the_real_worker_twice_and_cleans_the_partial(tmp_path, monke
         return Result()
 
     monkeypatch.setattr(cloud_review.subprocess, "run", flaky)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert len(calls) == 2 and rev.read_text(encoding="utf-8") == _REPORT
     assert not rev.with_suffix(rev.suffix + ".partial").exists(), "обрывок первой попытки убран"
@@ -2102,7 +2102,7 @@ def test_run_once_tells_cli_failure_from_timeout_and_writes_the_review_stage(tmp
     store = meeting_processing.MeetingStatusStore(tmp_path / "data")
     store.processing(transcript, "updating_graph")
     status = store.ready(transcript, note=None)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "cloud_mask": False}}
 
     def enoent(cmd, **kwargs):
         raise OSError(13, "Permission denied: claude")
@@ -2149,7 +2149,7 @@ def test_the_review_stage_carries_what_reached_the_graph(tmp_path, monkeypatch):
     store = meeting_processing.MeetingStatusStore(tmp_path / "data")
     store.processing(transcript, "updating_graph")
     status = store.ready(transcript, note=None)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
 
     class Result:
         returncode = 0
@@ -2212,7 +2212,7 @@ def test_a_partial_transfer_shows_what_did_reach_the_graph(tmp_path, monkeypatch
     store = meeting_processing.MeetingStatusStore(tmp_path / "data")
     store.processing(transcript, "updating_graph")
     status = store.ready(transcript, note=None)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
     real_write = cloud_review.safe_write.write_text
 
     def flaky(path, text, **kw):
@@ -2257,7 +2257,7 @@ def test_a_review_whose_edits_all_stayed_out_still_has_a_result(tmp_path, monkey
     store = meeting_processing.MeetingStatusStore(tmp_path / "data")
     store.processing(transcript, "updating_graph")
     status = store.ready(transcript, note=None)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
 
     class Result:
         returncode = 0
@@ -2369,7 +2369,7 @@ def test_applied_names_clear_the_pending_keys_on_a_ready_meeting(tmp_path, monke
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     assert cloud_review.run(stamp, transcript, graph, rev, log,
-                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}) == 0
     text = transcript.read_text(encoding="utf-8")
     assert tr_mod.NAMES_PENDING_PREFIX not in text and "**Анна** [14:00]:" in text
     data = json.loads(status.read_text(encoding="utf-8"))
@@ -2645,7 +2645,7 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
         return Result()
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "cloud_mask": False}}
     monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert calls == [], "второй полный прогон запущен при свежей ревизии соседа"
@@ -3054,8 +3054,8 @@ def test_refused_name_lines_land_in_the_review_once_and_only_when_the_machine_ap
     transcript, rev, log = _meeting(tmp_path)
     speech = ("# Встреча\n\n**Собеседник 1** [14:00]:\nда\n\n"
               "**Собеседник 2** [14:01]:\nнет\n\n**Я** [14:02]:\nугу\n")
-    cfg_edit = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "user_name": "Имя Фамилия"}}
-    cfg_read = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "user_name": "Имя Фамилия"}}
+    cfg_edit = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "user_name": "Имя Фамилия", "cloud_mask": False}}
+    cfg_read = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "user_name": "Имя Фамилия", "cloud_mask": False}}
     base = _REPORT + "\n## Исправления имён\n"
     bare = base + "- **Собеседник 1** → **Имя** — основание: голое\n"
     mic = base + "- **Собеседник 1** → **Я** — основание: канал\n"
@@ -3151,7 +3151,7 @@ def _edit_run(tmp_path, monkeypatch, model, speech, *, raw=None):
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "user_name": "Имя Фамилия"}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "user_name": "Имя Фамилия", "cloud_mask": False}}
     code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
     return code, transcript, rev, log
 
@@ -3254,3 +3254,99 @@ def test_name_section_noise_is_logged_and_not_counted_as_unapplied(tmp_path, mon
                    if "отброшено строк раздела исправлений имён" in ln)
     assert "отброшено строк раздела исправлений имён — 3" in dropped
     assert "проза до первого пункта" in dropped and "- нет" in dropped
+
+
+def _fake_ner(monkeypatch):
+    import types
+    mod = types.ModuleType("pii_ner")
+    mod.spans = lambda text: []
+    mod.is_common = lambda word: False
+    monkeypatch.setitem(sys.modules, "pii_ner", mod)
+
+
+def _masked_run(tmp_path, monkeypatch, graph, cfg):
+    stamp = "2026-07-15_1400"
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    transcript = transcripts / f"{stamp}.md"
+    transcript.write_text("Анна Белова согласовала срок\n", encoding="utf-8")
+    rev = transcripts / f"{stamp}_ревизия.md"
+    log = tmp_path / "cloud.log"
+    captured = {}
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"], captured["cwd"] = cmd, kwargs["cwd"]
+        kwargs["stdout"].write(
+            "- **Решение:** ⟦Ч1.1⟧ берёт срок\n"
+            "- **Поручение:** [[⟦Ч1.1⟧]] проверить настройку\n"
+            "- **Риск:** нет\n")
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    _fake_ner(monkeypatch)
+    code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    return code, captured, rev, log
+
+
+def test_mask_turns_edit_config_into_text_mode_and_says_so(tmp_path, monkeypatch):
+    """Под маской правка из конфига не действует, и это видно в логе и статусе;
+    в облако не уходят ни имена, ни путь графа, ни путь рабочего каталога (n793-out1)."""
+    graph = _graph(tmp_path)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+    stages = []
+    monkeypatch.setattr(cloud_review, "_review_stage", lambda t, st, msg="", *a, **k: stages.append((st, msg)))
+    code, cap, rev, log = _masked_run(tmp_path, monkeypatch, graph,
+                                      {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}})
+    assert code == 0
+    prompt = cap["cmd"][cap["cmd"].index("-p") + 1]
+    assert "Белова" not in prompt and str(graph) not in prompt and "⟦Ч1.1⟧" in prompt
+    assert cap["cmd"][cap["cmd"].index("--tools") + 1] == ""
+    assert "charoite-cloud-empty" in cap["cwd"]
+    text = rev.read_text(encoding="utf-8")
+    assert "Анна Белова берёт срок" in text and "[[Анна Белова]]" in text
+    assert "правка графа из конфига не действует" in log.read_text(encoding="utf-8")
+    assert stages[-1][0] == "ok" and "маска ПДн: правка графа недоступна" in stages[-1][1]
+
+
+def test_mask_refuses_without_graph(tmp_path, monkeypatch):
+    """Без графа нет словаря имён: под маской разбор не отправляется (n793-out1 DS-4)."""
+    code, cap, rev, log = _masked_run(tmp_path, monkeypatch, tmp_path / "missing-graph",
+                                      {"sufler": {"cloud_enrich": True}})
+    assert code == 1 and "cmd" not in cap and not rev.exists()
+    assert "маска не прошла" in log.read_text(encoding="utf-8")
+
+
+def test_masked_reply_not_in_utf8_is_not_published(tmp_path, monkeypatch):
+    """Битый ответ под маской не превращается в «валидный» файл с «�», и
+    маскированный текст не остаётся в .partial (n793-out1 S-M2, DS-11)."""
+    graph = _graph(tmp_path)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        out = kwargs["stdout"]
+        out.flush()
+        out.buffer.write("- **Решение:** ⟦Ч1.1⟧ ".encode() + b"\xff\xfe\n")
+        out.buffer.flush()
+        return Result()
+
+    stamp = "2026-07-15_1400"
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    transcript = transcripts / f"{stamp}.md"
+    transcript.write_text("Анна Белова согласовала срок\n", encoding="utf-8")
+    rev = transcripts / f"{stamp}_ревизия.md"
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    _fake_ner(monkeypatch)
+    cloud_review.run(stamp, transcript, graph, rev, tmp_path / "cloud.log",
+                     {"sufler": {"cloud_enrich": True}})
+    assert not rev.exists()
+    partial = rev.with_suffix(rev.suffix + ".partial")
+    assert not partial.exists() or "⟦" not in partial.read_text(encoding="utf-8", errors="replace")

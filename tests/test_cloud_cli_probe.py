@@ -80,7 +80,7 @@ def test_review_reports_cli_down_when_it_dies_mid_run(monkeypatch, tmp_path):
     monkeypatch.setattr(review.cloud, "claude_bin_checked", down)
     review.CLI_DOWN[0] = False
     try:
-        fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+        fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {"sufler": {"cloud_mask": False}}, current=DOSSIER)
         assert fixed is None and why.startswith("сбой:")
         assert review.CLI_DOWN[0] is True
     finally:
@@ -91,7 +91,7 @@ def test_dossier_review_exits_3_when_cli_is_down(monkeypatch, capsys):
     import nightly_dossier_review as review
 
     monkeypatch.setattr(sys, "argv", ["nightly_dossier_review.py", "--all-graphs"])
-    monkeypatch.setattr(review, "_cfg", lambda: {})
+    monkeypatch.setattr(review, "_cfg", lambda: {"sufler": {"cloud_mask": False}})
     monkeypatch.setattr(review.privacy, "cloud_enrich_enabled", lambda cfg: True)
 
     def down():
@@ -105,7 +105,7 @@ def test_dossier_review_exits_2_when_some_themes_failed(monkeypatch):
     import nightly_dossier_review as review
 
     monkeypatch.setattr(sys, "argv", ["nightly_dossier_review.py", "--all-graphs"])
-    monkeypatch.setattr(review, "_cfg", lambda: {})
+    monkeypatch.setattr(review, "_cfg", lambda: {"sufler": {"cloud_mask": False}})
     monkeypatch.setattr(review.privacy, "cloud_enrich_enabled", lambda cfg: True)
     monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
     monkeypatch.setattr(review.graphs, "all_graphs", lambda marker: [])
@@ -147,12 +147,12 @@ def test_review_retries_exec_failure_once(monkeypatch, tmp_path):
     review, slept = _review_call(monkeypatch, run)
     review._SLEPT_FOR_CLI = False
     monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
-    fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+    fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {"sufler": {"cloud_mask": False}}, current=DOSSIER)
     assert len(attempts) == 2 and slept == [review.cloud.RETRY_PAUSE], "одна пауза и повтор"
     assert not why.startswith("сбой:"), why
     # вторая тема в том же процессе: повтор есть, сна больше нет (GLM r1 по #499)
     attempts.clear()
-    fixed, why = review.review("Тема 2", tmp_path / "Тема 2.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+    fixed, why = review.review("Тема 2", tmp_path / "Тема 2.md", tmp_path, {}, [], "opus", {"sufler": {"cloud_mask": False}}, current=DOSSIER)
     assert len(attempts) == 2 and slept == [review.cloud.RETRY_PAUSE], "пауза — один раз на процесс"
 
 
@@ -162,7 +162,7 @@ def test_review_gives_up_after_the_second_exec_failure(monkeypatch, tmp_path):
 
     review, _ = _review_call(monkeypatch, run)
     monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
-    fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+    fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {"sufler": {"cloud_mask": False}}, current=DOSSIER)
     assert fixed is None and why.startswith("сбой:")
 
 
@@ -177,7 +177,7 @@ def test_second_exec_failure_after_a_live_probe_is_cli_down(monkeypatch, tmp_pat
     review._SLEPT_FOR_CLI = False
     review.CLI_DOWN[0] = False
     try:
-        fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+        fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {"sufler": {"cloud_mask": False}}, current=DOSSIER)
         assert fixed is None and why.startswith("сбой:")
         assert review.CLI_DOWN[0] is True
     finally:

@@ -45,10 +45,11 @@ def test_common_words_are_not_masked_and_do_not_refuse(text):
     assert m.text == text and m.replaced == 0
 
 
-def test_people_need_a_capital_letter():
-    forms = _forms(pm.NodeForms("Роза"))
+def test_people_need_a_capital_letter_only_when_the_name_is_a_word():
+    forms = _forms(pm.NodeForms("Роза Квакина"), known={"роза"}.__contains__)
     assert pm.mask("роза в саду", forms).replaced == 0
     assert pm.mask("Розе сказали", forms).replaced == 1
+    assert pm.mask("а квакиной не было", forms).replaced == 1, "фамилии нет в общем словаре"
 
 
 def test_namesakes_share_a_form_without_a_node():
@@ -110,7 +111,7 @@ def test_common_file_words_go_as_is():
 
 
 def test_stub_name_masks_to_its_canon_or_to_a_nodeless_form():
-    forms = _forms(pm.NodeForms("Анна Белова"), stubs={"Белова А.": "Анна Белова", "Сидорова": None})
+    forms = _forms(pm.NodeForms("Анна Белова"), stubs=[("Белова А.", "Анна Белова", True), ("Сидорова", None, True)])
     m = pm.mask("Белова А. и Сидорова", forms)
     canons = {g.canon for g in m.groups.values()}
     assert canons == {"Анна Белова", None}
@@ -138,7 +139,7 @@ def test_system_is_masked_only_by_its_distinctive_part():
                    known=COMMON.__contains__)
     text = "Вот их поддержка во вторник, второй раз. Препрода нет, S3 и ВО живы, 28 тоже."
     m = pm.mask(text, forms)
-    assert {g.forms[0] for g in m.groups.values()} == {"Препрода", "S3", "ВО"}
+    assert {f for g in m.groups.values() for f in g.forms} == {"Препрода", "S3", "ВО"}
 
 
 def test_short_base_does_not_swallow_ordinary_words():
@@ -227,12 +228,25 @@ def test_snapshot_for_mask_carries_stubs_and_aliases(tmp_path):
     assert not snap.unreadable
 
 
-def test_unreadable_person_node_refuses_the_mask(tmp_path):
+def test_unreadable_node_is_masked_by_its_file_name(tmp_path):
+    """Нечитаемый узел — не отказ и не утечка: имя из имени файла (n793-out1 DS-C2)."""
     root = _graph(tmp_path)
-    (root / "Люди" / "Пётр.md").write_bytes(b"\xff\xfe# \x00")
+    (root / "Люди" / "Пётр Орлов.md").write_bytes(b"\xff\xfe# \x00")
+    (root / "Системы" / "ОРИС.md").write_bytes(b"\xff\xfe# \x00")
     snap = NodeIndex(root, schema=CHAROITE).snapshot_for_mask()
-    assert root / "Люди" / "Пётр.md" in snap.unreadable
-    with pytest.raises(pm.MaskRefused):
+    assert root / "Люди" / "Пётр Орлов.md" in snap.unreadable
+    forms, notes = cloud_door._forms({}, root)
+    m = pm.mask("Орлов сказал, что ОРИС лежит", forms)
+    assert "Орлов" not in m.text and "ОРИС" not in m.text
+    assert any("Люди/Пётр Орлов.md" in n and "Системы/ОРИС.md" in n for n in notes)
+
+
+def test_graph_without_people_refuses(tmp_path):
+    """Граф есть, людей нет — словаря имён нет (n793-out1 S-I1)."""
+    root = tmp_path / "Пустой"
+    (root / "Системы").mkdir(parents=True)
+    (root / "Системы" / "ЗЛК.md").write_text("# ЗЛК\n", encoding="utf-8")
+    with pytest.raises(pm.MaskRefused, match="нет узлов людей"):
         cloud_door._forms({}, root)
 
 
@@ -245,24 +259,28 @@ def _fake_ner(monkeypatch, spans=()):
 
 def test_mask_prompt_masks_names_aliases_stubs_and_owner(tmp_path, monkeypatch):
     _fake_ner(monkeypatch)
+    # «Ретеншн» — термин из общего словаря: правило редкого слова его не трогает
+    monkeypatch.setattr(sys.modules["pii_ner"], "is_common", lambda w: w == "ретеншн")
     cfg = {"sufler": {"user_name": "Игорь"}}
     m = cloud_door.mask_prompt(cfg, "Аня, Белова А и Игорь обсудили ЗЛК; Ретеншн растёт",
                                _graph(tmp_path))
     for name in ("Аня", "Белова", "Игорь", "ЗЛК"):
         assert name not in m.text
     assert "Ретеншн" in m.text, "ядра — темы, а не имена"
-    back, n = cloud_door.unmask_reply(m.text, m)
+    assert m.text.startswith(cloud_door.TOKENS_NOTE)
+    back, n = cloud_door.unmask_reply(m.text[len(cloud_door.TOKENS_NOTE):], m)
     assert back.startswith("Аня, Белова А и Игорь") and n == 0
 
 
 def test_mask_prompt_refuses_full_level_and_missing_graph(tmp_path, monkeypatch):
     _fake_ner(monkeypatch)
+    graph = _graph(tmp_path)
     with pytest.raises(pm.MaskRefused):
-        cloud_door.mask_prompt({"sufler": {"cloud_mask_level": "full"}}, "x", _graph(tmp_path))
+        cloud_door.mask_prompt({"sufler": {"cloud_mask_level": "full"}}, "x", graph)
     with pytest.raises(pm.MaskRefused):
         cloud_door.mask_prompt({}, "x", tmp_path / "нет")
     with pytest.raises(pm.MaskRefused):
-        cloud_door.mask_prompt({"sufler": {"cloud_mask_level": "max"}}, "x", _graph(tmp_path))
+        cloud_door.mask_prompt({"sufler": {"cloud_mask_level": "max"}}, "x", graph)
 
 
 def test_mask_off_passes_text_but_still_scrubs_paths(tmp_path):
@@ -278,3 +296,92 @@ def test_missing_ner_engine_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(pii_ner, "_model", None)
     with pytest.raises(pm.MaskRefused, match="natasha"):
         pii_ner.spans("Анна")
+
+
+def test_yo_and_fleeting_vowel_do_not_let_a_known_name_through():
+    """«Петр» при узле «Пётр», «Павла» при «Павел», «Льва», «Зайцу» (n793-out1 S-C1)."""
+    forms = _forms(pm.NodeForms("Пётр Иванов"), pm.NodeForms("Павел Орлов"),
+                   pm.NodeForms("Лев Зайцев"), pm.NodeForms("Артём Козлов"), pm.NodeForms("Заяц"))
+    m = pm.mask("Петр и Павла просили Иванову передать, Льва и Артема тоже, Зайцу", forms)
+    for name in ("Петр", "Павла", "Иванову", "Льва", "Артема", "Зайцу"):
+        assert name not in m.text, name
+    assert pm.unmask(m.text, m)[0] == "Петр и Павла просили Иванову передать, Льва и Артема тоже, Зайцу"
+    assert pm.postcondition_hits("Петр и Павла", forms) == 2
+
+
+def test_name_word_in_the_middle_of_a_phrase_stays_a_name():
+    """Гость «Вера» посреди фразы — имя, хоть «вера» и есть строчными (n793-out1 S-I5)."""
+    t = pm.prepare("Пришла Вера, вера в успех. Вот так, вот.")
+    m = pm.mask(t, _forms(), [(7, 11, pm.PERSON), (27, 30, pm.PERSON)])
+    assert "Вера," not in m.text and "Вот так" in m.text
+
+
+def test_name_model_forms_of_one_name_share_a_group():
+    """«Гоша» и «Гоше» от модели — один человек (n793-out1 DS-7)."""
+    m = pm.mask("Гоша сказал, Гоше передали", _forms(), [(0, 4, pm.PERSON), (13, 17, pm.PERSON)])
+    assert len(m.groups) == 1
+
+
+def test_link_target_unmasks_to_the_node_name():
+    """`[[⟦Ч1.2⟧]]` — цель ссылки, падежная форма дала бы битую ссылку (n793-out1 DS-5)."""
+    m = pm.mask("Иванову и Иванов", _forms(pm.NodeForms("Пётр Иванов")))
+    assert pm.unmask("[[⟦Ч1.1⟧]] и ⟦Ч1.1⟧", m)[0] == "[[Пётр Иванов]] и Иванову"
+
+
+def test_unclosed_token_does_not_eat_the_text_after_it():
+    m = pm.mask("Иванову", _forms(pm.NodeForms("Пётр Иванов")))
+    assert pm.unmask("конец ⟦Ч3. и дальше текст", m) == ("конец ⟦?⟧ и дальше текст", 1)
+
+
+def test_any_mask_failure_is_a_refusal(tmp_path, monkeypatch):
+    """Маска либо `Masked`, либо `MaskRefused` (n793-out1 DS-8)."""
+    _fake_ner(monkeypatch)
+    monkeypatch.setattr(sys.modules["pii_ner"], "spans", lambda t: 1 / 0)
+    with pytest.raises(pm.MaskRefused, match="ZeroDivisionError"):
+        cloud_door.mask_prompt({}, "Аня пришла", _graph(tmp_path))
+
+
+def test_masked_prompt_explains_the_tokens(tmp_path, monkeypatch):
+    _fake_ner(monkeypatch)
+    m = cloud_door.mask_prompt({}, "Аня пришла", _graph(tmp_path))
+    assert m.text.startswith(cloud_door.TOKENS_NOTE)
+
+
+def test_real_name_model_finds_a_person():
+    """Обязательный движок поднимается в окружении продукта (n793-out1 DS-9):
+    без него все облачные выходы отказывают."""
+    pytest.importorskip("natasha")
+    import importlib
+    ner = importlib.import_module("pii_ner")
+    text = "Вчера Анна Белова пришла на встречу."
+    assert any(text[s:e] == "Анна Белова" and k == pm.PERSON for s, e, k in ner.spans(text))
+    assert ner.is_common("встреча")
+
+
+@pytest.mark.parametrize("text, leaked", [
+    ("А сколько там стоек, Гошан, третья?", "Гошан"),
+    ("Ну что, начнём? Гошан, сможешь глянуть?", "Гошан"),
+])
+def test_rare_capitalized_word_is_masked_as_a_name(text, leaked):
+    """Имя, которого нет ни в графе, ни у модели: уменьшительное посреди фразы и
+    обращение с запятой (замер №799 26.10)."""
+    t = pm.prepare(text)
+    m = pm.mask(t, _forms(), pm.rare_word_spans(t, [], COMMON.__contains__))
+    assert leaked not in m.text
+
+
+def test_rare_word_next_to_a_model_name_joins_it():
+    """«Пыжов Андрей»: фамилия в начале фразы рядом с именем от модели."""
+    t = pm.prepare("Так, дальше. Пыжов Андрей.")
+    ner = [(t.index("Андрей"), t.index("Андрей") + 6, pm.PERSON)]
+    m = pm.mask(t, _forms(), ner + pm.rare_word_spans(t, ner, COMMON.__contains__))
+    assert "Пыжов" not in m.text and "Андрей" not in m.text
+
+
+def test_rare_word_rule_leaves_terms_and_phrase_starts():
+    """Термин, который есть в тексте строчными, и слово в начале фразы без запятой —
+    не имя: правило не должно маскировать жаргон встречи."""
+    t = pm.prepare("Бакеты пустые. Мы чистим бакеты, а Бакеты растут.")
+    assert pm.rare_word_spans(t, [], COMMON.__contains__) == []
+    t = pm.prepare("Пересоздание идёт.")
+    assert pm.rare_word_spans(t, [], COMMON.__contains__) == []

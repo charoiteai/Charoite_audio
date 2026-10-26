@@ -109,6 +109,12 @@ def cloud_graph_mode(cfg: dict, env: dict | None = None) -> str:
     return "edit" if cloud_edit_graph_enabled(cfg, env) else "read"
 
 
+def mask_blocks_edit(cfg: dict, env: dict | None = None) -> bool:
+    """Владелец разрешил облаку править граф, а маска это сняла (`cloud_graph_mode`
+    даёт `text`): причина для лога и статуса встречи (n793-out1 DS-C1)."""
+    return cloud_graph_mode(cfg, env) == "text" and cloud_edit_graph_enabled(cfg, env)
+
+
 def cloud_live_enabled(cfg: dict, env: dict | None = None) -> bool:
     """Живые ответы Claude по ходу встречи (куски стенограммы уходят в API)."""
     return _allowed(cfg, "cloud_live", env)

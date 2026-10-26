@@ -49,7 +49,7 @@ def _cfg(tmp_path, **sufler) -> dict:
     if not key.exists():
         key.write_text(KEY + "\n", encoding="utf-8")
         key.chmod(0o600)
-    base = {"cloud_enrich": True, "cloud_night_provider": "tinfoil",
+    base = {"cloud_enrich": True, "cloud_mask": False, "cloud_night_provider": "tinfoil",
             "cloud_night_tinfoil_key_path": str(key)}
     base.update(sufler)
     return {"sufler": base}
@@ -1255,7 +1255,7 @@ def _load_dossier():
 @pytest.mark.parametrize("provider,code", [("tinfoil", 16), ("Tinfoil", EXIT_PRIVACY_REFUSED)])
 def test_dossier_main_does_not_send_under_tinfoil_or_typo(tmp_path, monkeypatch, provider, code):
     ndr = _load_dossier()
-    monkeypatch.setattr(ndr, "_cfg", lambda: {"sufler": {"cloud_enrich": True, "cloud_night_provider": provider}})
+    monkeypatch.setattr(ndr, "_cfg", lambda: {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_night_provider": provider}})
     monkeypatch.setattr(ndr.cloud, "claude_bin_checked", lambda *a, **k: pytest.fail("зонд до развилки"))
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: pytest.fail("досье ушли в облако"))
     monkeypatch.setattr(sys, "argv", ["nightly_dossier_review.py", "--all-graphs"])
@@ -1269,7 +1269,7 @@ def test_dossier_review_exit_refuses_non_anthropic_provider(tmp_path, monkeypatc
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: pytest.fail("досье ушли в облако"))
     path = tmp_path / "Тема.md"
     path.write_text("# Тема\n\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_night_provider": provider}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_night_provider": provider}}
     fixed, why = ndr.review("Тема", path, tmp_path, {}, [], "m", cfg)
     assert fixed is None and why.startswith("сбой:")
 
