@@ -26,8 +26,11 @@ def safe_name(name: str) -> str:
     return s or "без имени"
 
 
+#: Слова меток диаризации — одни на метку-имя узла и метку-деятеля в тексте:
+#: два набора разъехались бы на первой правке (n611-s1-out1 DS I3).
+_SPEAKER_WORDS = ("собеседник", "участник", "спикер", "speaker", "participant", "发言人", "参会者")
 _PLACEHOLDER_RE = re.compile(
-    r"^(?:собеседник|участник|спикер|speaker|participant|发言人|参会者)(?: ?[\d一二三四五六七八九十]+)?$")
+    r"^(?:" + "|".join(_SPEAKER_WORDS) + r")(?: ?[\d一二三四五六七八九十]+)?$")
 _LABEL_TAIL_RE = re.compile(r"\s*[(（]([^()（）]*)[)）]\s*$")
 
 
@@ -75,51 +78,77 @@ def is_placeholder_node(stem: str) -> bool:
     return bool(m) and is_speaker_placeholder(m.group(1))   # один набор меток, что и для целого имени (luna I5)
 
 
-#: Метка диаризации деятелем в тексте: «Собеседник 3 предложил…», «[[Собеседник 3]]».
-#: В скобке после имени («Вера (Собеседник 4)») — пометка, а не деятель.
-_SPEAKER_IN_TEXT_RE = re.compile(r"(?<![(（\w])(?:собеседник|спикер|speaker)\s*№?\s*\d+", re.IGNORECASE)
+#: Метка диаризации деятелем в тексте: «Собеседник 3 предложил…», «слова Собеседника 3»,
+#: «[[Собеседник 3]]», «Спикер-3». Число — до трёх цифр: «спикер 2024 года» — не метка.
+_SPEAKER_IN_TEXT_RE = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё])(?:" + "|".join(_SPEAKER_WORDS) + r")(?:а|у|ом|е)?"
+    r"[\s\-_№#]*(?:\d{1,3}(?!\d)|[一二三四五六七八九十]+)", re.IGNORECASE)
 
 
 def has_speaker_actor(text: str) -> bool:
-    """Есть ли в тексте (досье, ядро) метка диаризации деятелем: за меткой нет
-    человека, и факты разных людей разных встреч сходятся на «Собеседнике 3»
-    (№611, замер 26.10: 169 досье из 1013)."""
-    return _SPEAKER_IN_TEXT_RE.search(text or "") is not None
+    """Есть ли в тексте досье метка диаризации деятелем: за меткой нет человека,
+    и факты разных людей разных встреч сходятся на «Собеседнике 3» (№611, замер
+    27.10: 169 досье). Метка в скобках («Вера (Собеседник 4)», «(муж, Собеседник 4)»)
+    — пометка при имени, а не деятель."""
+    text = text or ""
+    for m in _SPEAKER_IN_TEXT_RE.finditer(text):
+        opened = max(text.rfind("(", 0, m.start()), text.rfind("（", 0, m.start()))
+        closed = max(text.rfind(")", 0, m.start()), text.rfind("）", 0, m.start()))
+        if opened <= closed:
+            return True
+    return False
 
 
-def bare_name(name: str) -> str:
-    """Имя без хвостовой скобки: «Саша (из минуток)» → «Саша». Скобка — пометка
-    модели или ревизии, а не часть имени: тёзок ищут по имени без неё."""
-    return re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", name).strip() or name
+def name_words(name: str) -> list[str]:
+    """Слова имени человека для тёзок: «Саша (из минуток)» → [«саша»], «Дмитрий
+    (Фамилия)» → [«дмитрий», «фамилия»], «Жан-Пьер» → [«жан-пьер»].
+
+    Хвостовая скобка — пометка, если в ней метка диаризации или строчное слово
+    («(аналитик)»); слово с заглавной — часть имени, как у `name_key` («Иван
+    (Иванов)» — полное имя; n611-s1-out1 DS I1: три таких узла в графе). Дефис
+    имя не режет — «Жан-Пьер» один человек (Haiku I1); «ё» = «е»; число — не слово:
+    копия «Саша 2» не полный тёзка (Sonnet I3)."""
+    m = _LABEL_TAIL_RE.search(name or "")
+    if m and (is_speaker_placeholder(m.group(1)) or m.group(1)[:1].islower()):
+        name = name[:m.start()]
+    words = []
+    for w in re.sub(r"[()（）]", " ", name or "").split():
+        w = re.sub(r"^[\W_]+|[\W_]+$", "", w).casefold().replace("ё", "е")
+        if w and not w.isdigit():
+            words.append(w)
+    return words
 
 
 def namesake_index(names) -> dict[str, list[str]]:
-    """Слово имени (ключом `name_key`) → многословные имена с этим словом.
+    """Слово имени (`name_words`) → многословные имена с этим словом.
 
     Порядок слов не важен: «Саша Образцов» и «Образцов Саша» оба лягут под «саша».
     Метки диаризации в индекс не идут — за ними нет человека."""
     index: dict[str, list[str]] = {}
     for name in names:
-        words = name_key(bare_name(name)).split()
-        if len(words) < 2 or is_speaker_placeholder(bare_name(name)):
+        words = name_words(name)
+        if len(words) < 2 or is_placeholder_node(name):
             continue
         for w in dict.fromkeys(words):
             index.setdefault(w, []).append(name)
     return index
 
 
-def bare_namesakes(name: str, index: dict[str, list[str]]) -> list[str]:
+def bare_namesakes(name: str, index: dict[str, list[str]], owner: str = "") -> list[str]:
     """Голое имя с тёзками: однословное имя («Саша»), у которого среди живых узлов
     есть многословные с тем же словом («Саша Образцов», «Саша Сидоров») — их список,
-    иначе пусто.
+    иначе пусто. `owner` — полное имя владельца: его узел тёзкой не считается
+    (владелец в своём графе один), но голый «Саша» при владельце «Саша Образцов» и
+    живом «Саша Сидоров» — сборный: под ним владелец и другой человек (n611-s1-out1).
 
     Под голым именем граф копит факты разных людей: каждый «Саша» встречи садится
-    в один узел (№611, замер 26.10: 36 таких узлов, 1553 ссылки). Один предикат на
-    всех — доктор считает по нему, затвор на входе (№611 этап 2) решает по нему же."""
-    words = name_key(bare_name(name)).split()
-    if len(words) != 1 or is_speaker_placeholder(bare_name(name)):
+    в один узел (№611, замер 26.10: 45 таких узлов). Один предикат на всех —
+    доктор считает по нему, затвор на входе (№611 этап 2) решает по нему же."""
+    words = name_words(name)
+    if len(words) != 1 or is_placeholder_node(name):
         return []
-    return sorted(index.get(words[0], []))
+    own = sorted(name_words(owner))
+    return sorted(n for n in index.get(words[0], []) if not own or sorted(name_words(n)) != own)
 
 
 def strip_speaker_label(name: str) -> str:

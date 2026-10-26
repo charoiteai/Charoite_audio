@@ -377,10 +377,10 @@ topics; what is left is picked up the next night, while the brief and the
 status are always written. The graph doctor (`scripts/graph_doctor.py`) is a
 deterministic lint without a model — broken links, diarization labels among
 People, orphans, duplicates and near-duplicates, `_MOC.md` coverage, collective
-nodes (a bare first name while full namesakes live — facts of different people
+nodes (a one-word name while full namesakes live — facts of different people
 under one node), people filed as Systems and dossiers with a diarization label as
 an actor; its `logs/graph_doctor.json` feeds warnings into the brief (collective
-nodes warn on growth only), the full lists go to `logs/graph_feed.json`, and the second pass
+nodes and people in Systems warn only on nodes new since the last feed), the full lists go to `logs/graph_feed.json`, and the second pass
 measures the graph after the night's merges. Memory vectors
 (`scripts/graph_search_index.py`) embed changed graph blocks with bge-m3 for
 the daemon's in-process memory (see "Graph memory lives in the daemon") —
