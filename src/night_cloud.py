@@ -47,6 +47,7 @@ from typing import Callable
 
 import cloud
 import file_locks
+import live_gate
 import privacy
 import threads
 
@@ -58,7 +59,10 @@ READ_TIMEOUT_S = 60.0
 #: Заголовок, который в ответе модели означает подделку сигнала аттестации.
 ATTESTATION_HEADER = "## Аттестация"
 #: Тот же заголовок любого уровня и регистра: «###  аттестация» — та же подделка.
-_ATTESTATION_HEADING = re.compile(r"^\s*#+\s*аттестация\b", re.IGNORECASE | re.MULTILINE)
+#: Заголовок ATX («## Аттестация») и Setext («Аттестация» над строкой из = или -):
+#: Obsidian показывает оба (opus M1).
+_ATTESTATION_HEADING = re.compile(r"^\s*#+\s*аттестация\b|^\s*аттестация\b.*\n\s*(?:=+|-+)\s*$",
+                                  re.IGNORECASE | re.MULTILINE)
 #: Шаги документа аттестации SDK 0.15.0. Нет шага — не «всё прошло», а
 #: «проверено не всё»: SDK, переименовавший шаг, даёт громкий отказ (out1 S-I1).
 REQUIRED_STEPS = ("fetch_digest", "verify_code", "verify_enclave", "compare_measurements")
@@ -103,7 +107,8 @@ class DeadlineExpired(NightCloudError):
 
 @dataclasses.dataclass(frozen=True)
 class Deadline:
-    """Монотонный срок шага. Сон машины его не тратит (как step_left)."""
+    """Монотонный срок шага. Сон машины его не тратит; стенной потолок ночи
+    (`CHAROITE_NIGHTLY_UNTIL`) дверь проверяет отдельно перед отправкой (opus M3)."""
     at: float
     clock: Callable[[], float] = time.monotonic
 
@@ -230,13 +235,18 @@ def _causes(e: BaseException) -> list[BaseException]:
     return out
 
 
+def _pin_error(x: BaseException) -> bool:
+    """Закреплённый ключ энклава не тот (`_PinMismatchError` SDK) — по имени и
+    модулю: верхний уровень двери SDK не импортирует (in3 K6)."""
+    return type(x).__name__ == "_PinMismatchError" and type(x).__module__.split(".")[0] == "tinfoil"
+
+
 def _certificate_error(x: BaseException) -> bool:
     """Сбой проверки сертификата — правило самого SDK (`tinfoil.client._is_certificate_error`,
     0.15.0): несовпадение закреплённого ключа (`_PinMismatchError`),
-    SSLCertVerificationError, SSLError с «certificate verify failed». По
-    докстроке SDK такие случаются при установке соединения, до байтов запроса."""
-    # класс SDK по имени и модулю: верхний уровень двери SDK не импортирует (in3 K6)
-    if type(x).__name__ == "_PinMismatchError" and type(x).__module__.split(".")[0] == "tinfoil":
+    SSLCertVerificationError, SSLError с «certificate verify failed». SDK зовёт
+    его на закреплённом соединении с энклавом — там же его зовёт и дверь (`_classify`)."""
+    if _pin_error(x):
         return True
     if isinstance(x, ssl.SSLCertVerificationError):
         return True
@@ -282,11 +292,16 @@ def _report_error(x: BaseException) -> bool:
     return any(_REPORT_ERRORS.get(k.__module__) == k.__name__ for k in type(x).__mro__)
 
 
-def _classify(e: BaseException) -> type[NightCloudError]:
-    """Два класса, без своих эвристик по стадиям (решение главной по out4, п. 2 с
-    расширениями по опытам out5, out6). Цепочка — `__cause__ or __context__`,
-    как у SDK (`_causes`):
-    - сбой сертификата по правилу SDK или его `AttestationError` — аттестация;
+def _classify(e: BaseException, *, pinned: bool) -> type[NightCloudError]:
+    """Два класса по правилам SDK (решение главной по out4, п. 2 с расширениями
+    по опытам out5, out6, opus). Цепочка — `__cause__ or __context__`, как у SDK
+    (`_causes`):
+    - `AttestationError` SDK или несовпадение закреплённого ключа — аттестация;
+    - сбой сертификата по правилу SDK — аттестация только на закреплённом
+      соединении (`pinned`: `create` и поток), где правило зовёт сам SDK. В
+      конструкторе запросы идут по публичному TLS (адреса роутера, документ,
+      KDS, Sigstore), и сбой сертификата там — сеть: портал Wi-Fi, прокси с
+      подменой TLS, уехавшие часы (opus I1, опыт с пустым набором CA 26.10);
     - провал отчёта железа SEV/TDX — аттестация, если в цепочке нет сбоя
       транспорта (`_transport_error`): сеть к KDS или коллатералу даёт тот же
       класс SDK, а это недоступность (опыт e_sev_chain 26.10). Ответ, который
@@ -294,7 +309,8 @@ def _classify(e: BaseException) -> type[NightCloudError]:
     - всё прочее — недоступен. Голый ValueError закреплённого measurement=
       (режим pin) — недоступен: pin вне этапа 1. Отказ документа решает `_verified`."""
     chain = _causes(e)
-    if any(_certificate_error(x) or _attestation_error(x) for x in chain):
+    certificate = _certificate_error if pinned else _pin_error
+    if any(certificate(x) or _attestation_error(x) for x in chain):
         return AttestationFailed
     if any(_report_error(x) for x in chain) and not any(_transport_error(x) for x in chain):
         return AttestationFailed
@@ -343,7 +359,11 @@ def _verified(client) -> tuple[str, str, str]:
             # отпечаток, который форма состояния не сохранит, гасил бы сигнал смены (out6 DS-I1)
             raise AttestationFailed("отпечаток кода не той формы (ждём hex)")
         release = str(getattr(doc, "release_tag", "") or "")
-        host = str(getattr(doc, "enclave_host", "") or "")
+        host = str(getattr(doc, "enclave_host", "") or "").strip().lower()
+        if host and _HOST.fullmatch(host) is None:
+            # имя роутера уходит в отчёт графа: текст извне не печатаем (opus M2)
+            print("night_cloud: имя роутера не той формы — в отчёте «?»", file=sys.stderr, flush=True)
+            host = ""
         if release and _RELEASE.fullmatch(release) is None:
             # значение не печатаем: это текст извне; бриф покажет «релиз ?» (out7 H-M2)
             print("night_cloud: тег релиза не той формы — в состоянии и брифе «?»",
@@ -358,7 +378,7 @@ def _verified(client) -> tuple[str, str, str]:
         sdk = version("tinfoil")
     except Exception:  # noqa: BLE001 — версия для строки отчёта, не для решения
         sdk = "?"
-    line = (f"роутер {host}, релиз {release or '?'}, отпечаток {fingerprint[:16] or '?'}, "
+    line = (f"роутер {host or '?'}, релиз {release or '?'}, отпечаток {fingerprint[:16] or '?'}, "
             f"SDK tinfoil {sdk}, сверка с подписанным релизом (Sigstore)")
     return line, fingerprint, release
 
@@ -373,6 +393,8 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _HEX = re.compile(r"[0-9a-f]{16,128}")
 #: Релиз — semver, суффикс только «-rc N»: тег приходит извне, слов в нём быть не должно (out7 H-I1).
 _RELEASE = re.compile(r"v?\d{1,6}\.\d{1,6}\.\d{1,6}(?:-rc\.?\d{1,4})?")
+#: Имя хоста роутера (с портом): латиница, цифры, точка и дефис.
+_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
 
 
@@ -399,6 +421,8 @@ _STATE_FORM = {
                      "accepted": lambda v: isinstance(v, bool)},
     "last_accepted": _RECORD,
     "previous_accepted": _RECORD,
+    "last_attestation_failure": {"at": _form(_STAMP), "date": _form(_DATE), "fingerprint": _empty_or(_HEX),
+                                 "release": _empty_or(_RELEASE), "http_status": _http},
     "fingerprint_change": {"at": _form(_STAMP), "from": _empty_or(_HEX), "to": _empty_or(_HEX),
                            "from_release": _empty_or(_RELEASE), "to_release": _empty_or(_RELEASE)},
 }
@@ -479,6 +503,18 @@ def _quietly(what: str, fn: Callable[[], None]) -> None:
         print(f"night_cloud: {what} не записан: {type(e).__name__}", flush=True)
 
 
+def _record(attempt: dict) -> Callable[[dict], None]:
+    """Запись исхода попытки. Провал аттестации пишется ещё и отдельным
+    разделом: следующая попытка затирает `last_attempt`, а сигнал о подмене
+    должен дожить до брифа, как смена отпечатка (opus I2)."""
+    def change(entry: dict) -> None:
+        entry["last_attempt"] = attempt
+        if attempt.get("outcome") == "attestation":
+            entry["last_attestation_failure"] = {
+                k: attempt.get(k) for k in ("at", "date", "fingerprint", "release", "http_status")}
+    return change
+
+
 def accept(state_path: pathlib.Path, graph_key: str, reply: Reply) -> None:
     """Ответ прошёл проверку содержания у вызывающего — запомнить отпечаток.
 
@@ -535,7 +571,7 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
         raise
     except Exception as e:  # noqa: BLE001 — класс решает таблица
         box["http_status"] = _http_status(e)
-        cls = _classify(e)
+        cls = _classify(e, pinned=False)
         # слово от класса, не от места броска: «аттестация» — только у аттестации (out5 DS-M2)
         raise cls(("аттестация: " if cls is AttestationFailed else "клиент провайдера: ")
                   + _reason(e, key)) from None
@@ -551,7 +587,8 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
         with box["lock"]:
             # единственный переход к отправке: сторож, поставивший cancel под тем
             # же замком, либо видит sent, либо знает, что create не начнётся (out2 C1)
-            if box.get("cancel") or deadline.remaining() <= 0:
+            # и стенной потолок ночи: монотонные часы во сне стоят, ночь — нет (opus M3)
+            if box.get("cancel") or deadline.remaining() <= 0 or live_gate.night_is_over():
                 raise DeadlineExpired("срок шага вышел до отправки")
             box["sent"] = True
         stream = api.chat.completions.create(
@@ -580,7 +617,7 @@ def _exchange(cfg: dict, key: str, prompt: str, model: str, effort: str,
         raise
     except Exception as e:  # noqa: BLE001 — openai/httpx без импорта: класс решает таблица
         box["http_status"] = _http_status(e)
-        raise _classify(e)("поток: " + _reason(e, key)) from None
+        raise _classify(e, pinned=True)("поток: " + _reason(e, key)) from None
     return "".join(chunks).strip(), finish, line
 
 
@@ -654,5 +691,4 @@ def send(cfg: dict, prompt: str, *, deadline: Deadline, state_path: pathlib.Path
         if attempt["http_status"] is None:
             attempt["http_status"] = box.get("http_status")
         # исход пишется всегда (in3 S-I4), но сбой записи не подменяет исход попытки
-        _quietly("исход попытки",
-                 lambda: _update_state(state_path, graph_key, lambda entry: entry.update(last_attempt=attempt)))
+        _quietly("исход попытки", lambda: _update_state(state_path, graph_key, _record(attempt)))

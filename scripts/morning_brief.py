@@ -112,8 +112,9 @@ def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
     (in3 S-I5, №792); файл состояния пишет сама дверь. Строка — только когда
     есть что сказать: свежая попытка не принята или отпечаток роутера сменился.
     Свежесть — по метке времени, не по календарной дате: ночь через полночь
-    и бриф наутро видят ту же попытку (out1 S-I5, DS-I4). Смена отпечатка живёт
-    `change_age_h` — пропущенный бриф одного утра её не теряет (out1 H-M2).
+    и бриф наутро видят ту же попытку (out1 S-I5, DS-I4). Смена отпечатка и
+    провал аттестации живут `change_age_h` — пропущенный бриф одного утра и
+    следующая попытка их не стирают (out1 H-M2, opus I2).
     """
     # запись уже в форме двери: свободного текста в ней нет (решение главной по out5)
     entry = night_cloud.read_entry(resolve_root(__file__) / "logs" / "night_cloud_state.json",
@@ -123,7 +124,8 @@ def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
     attempt = entry.get("last_attempt", {})
     age = _age_h(attempt.get("at"), now)
     # давность меньше нуля — часы ушли назад, а не «старая попытка»: показываем (out2 DS-M5)
-    if _fresh(age, max_age_h) and not attempt.get("accepted"):
+    shown = _fresh(age, max_age_h) and not attempt.get("accepted")
+    if shown:
         # ушёл ли запрос и почему, бриф не говорит: факт и текст — в строке ночного шага
         what = _NIGHT_OUTCOMES.get(attempt.get("outcome"), "исход не записан")
         detail = [f"HTTP {attempt['http_status']}"] if attempt.get("http_status") else []
@@ -131,6 +133,13 @@ def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
             detail.append(f"finish_reason={attempt['finish_reason']}")
         out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) не отработала: "
                    f"{what}" + (f" ({', '.join(detail)})" if detail else ""))
+    failure = entry.get("last_attestation_failure", {})
+    # та же попытка уже сказана строкой выше — второй раз не повторяем
+    same = shown and attempt.get("outcome") == "attestation" and attempt.get("at") == failure.get("at")
+    if _fresh(_age_h(failure.get("at"), now), change_age_h) and not same:
+        out.append(f"- ⚠️ аттестация ночного провайдера не прошла {failure.get('date') or '?'} "
+                   f"(релиз {failure.get('release') or '?'}, отпечаток {failure.get('fingerprint', '')[:16] or '?'})"
+                   " — возможна подмена; подробности в логе ночи за эту дату")
     change = entry.get("fingerprint_change", {})
     age = _age_h(change.get("at"), now)
     if _fresh(age, change_age_h):

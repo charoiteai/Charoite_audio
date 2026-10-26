@@ -376,16 +376,19 @@ FAILED="${FAILED# }"
 SLEPT_S=$(slept_seconds)   # заранее: ветка «slept» ниже решает по нему
 # отвалились ли ТОЛЬКО шаги «(поздно)» — без grep по выводу (shellcheck SC2143)
 ONLY_LATE=1
+# пропуск до следующего этапа (код 16) — плановый, не поломка: одни такие метки
+# статус не краснят, иначе под tinfoil красна каждая ночь и 14 в ней не видна (opus)
+ONLY_PENDING=1
 # Только непустой список: launchd зовёт /bin/bash 3.2, а под ним раскрытие
 # пустого массива при set -u — «unbound variable». Массив пуст ровно в чистую
 # ночь, и она две ночи подряд писалась как failed (23.09, №359).
 if [ -n "$FAILED" ]; then
   read -r -a _failed_steps <<< "$FAILED"
   for _step in "${_failed_steps[@]}"; do
-    case "$_step" in (*"(поздно)") ;; (*) ONLY_LATE=0 ;; esac
+    case "$_step" in (*"(поздно)") ONLY_PENDING=0 ;; (*"(этап2)") ;; (*) ONLY_LATE=0; ONLY_PENDING=0 ;; esac
   done
 fi
-if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then
+if [ "$rc" -eq 0 ] && { [ -z "$FAILED" ] || [ "$ONLY_PENDING" = 1 ]; }; then
   write_status ok
 elif [ "$SLEPT_S" -ge "${CHAROITE_NIGHTLY_SLEEP_S:-600}" ] && [ "$rc" -eq 0 ] && [ "$ONLY_LATE" = 1 ]; then
   # только «(поздно)» и проспано ≥10 мин: не поломка, а сон — ночь не состоялась

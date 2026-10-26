@@ -175,6 +175,25 @@ def test_night_provider_outcomes_have_their_own_labels(tmp_path, script, code, l
     assert "(cli)" not in failed, failed
 
 
+def test_stage_pending_alone_does_not_turn_the_night_red(tmp_path):
+    """Пропуск этапа 2 (код 16) — плановый: одна такая метка оставляет ночь ok,
+    иначе под tinfoil красна каждая ночь и 14 в ней не видна (opus, критика 1).
+    С настоящим сбоем рядом — failed, как прежде."""
+    r = _run(tmp_path, _stub_exit("nightly_dossier_review.py", 16))
+    assert r.returncode == 0, r.stdout + r.stderr
+    status = _status(tmp_path)
+    assert status["state"] == "ok" and "ревизия-досье(этап2)" in status["failed"], status
+    stub = ("#!/bin/sh\n"
+            'case "$1" in\n'
+            "  *nightly_dossier_review*) exit 16 ;;\n"
+            "  *nightly_claude_cores*) exit 14 ;;\n"
+            "  *) exit 0 ;;\n"
+            "esac\n")
+    _run(tmp_path, stub)
+    status = _status(tmp_path)
+    assert status["state"] == "failed" and "claude-cores(аттестация)" in status["failed"], status
+
+
 def test_partially_failed_review_is_visible_but_not_fatal(tmp_path):
     """Часть тем не проверена — предупреждение в FAILED, ночь не авария."""
     r = _run(tmp_path, DOSSIER_REVIEW_PARTIAL)

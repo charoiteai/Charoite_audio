@@ -229,7 +229,8 @@ def _no_home(text: str) -> None:
 
 @pytest.mark.parametrize("error", [
     ValueError(f"no such file: {_HOME_FILE}"),                       # недоступен
-    ssl.SSLCertVerificationError(f"cafile {_HOME_FILE}"),            # аттестация
+    ssl.SSLCertVerificationError(f"cafile {_HOME_FILE}"),            # недоступен: публичный TLS
+    type("_PinMismatchError", (ValueError,), {"__module__": "tinfoil.client"})(f"pin {_HOME_FILE}"),  # аттестация
 ])
 def test_provider_cause_carries_no_home_path(tmp_path, error):
     with pytest.raises(night_cloud.NightCloudError) as ei:
@@ -313,7 +314,7 @@ def _assert_state_in_form(tmp_path) -> dict:
     raw = (tmp_path / "logs" / "night_cloud_state.json").read_text(encoding="utf-8")
     data = json.loads(raw)
     for entry in data.values():
-        assert set(entry) <= {"last_attempt", "last_accepted", "previous_accepted", "fingerprint_change"}
+        assert set(entry) <= set(night_cloud._STATE_FORM)
         for leaf in _leaves(entry):
             if isinstance(leaf, str):
                 assert _LEAF.fullmatch(leaf), f"строка вне формы: {leaf!r}"
@@ -331,7 +332,9 @@ def _api_status(code, text):
     ({"cloud_enrich": False}, lambda: Factory(), "refused"),
     ({"cloud_night_tinfoil_key_path": _HOME_FILE}, lambda: Factory(), "unavailable"),
     ({}, lambda: Factory(error=ValueError(f"SNP measurement mismatch {_HOME_FILE}")), "unavailable"),
-    ({}, lambda: Factory(error=ssl.SSLCertVerificationError(f"pin {_HOME_FILE}")), "attestation"),
+    ({}, lambda: Factory(error=ssl.SSLCertVerificationError(f"cafile {_HOME_FILE}")), "unavailable"),
+    ({}, lambda: Factory(error=type("_PinMismatchError", (ValueError,), {"__module__": "tinfoil.client"})(
+        f"pin {_HOME_FILE}")), "attestation"),
     ({}, lambda: Factory(client=FakeClient(verified=False)), "attestation"),
     ({}, lambda: Factory(client=FakeClient(create_error=_api_status(503, f"busy {_HOME_FILE}"))), "unavailable"),
     ({}, lambda: Factory(client=FakeClient(stream=FakeStream([_chunk("## Противоречия\n"),
@@ -475,6 +478,17 @@ def test_release_out_of_form_is_dropped_out_loud_and_not_printed(tmp_path, capsy
     assert _assert_state_in_form(tmp_path)["last_accepted"].get("release", "") == ""
 
 
+def test_host_out_of_form_is_dropped_out_loud_and_not_printed(tmp_path, capsys):
+    """Имя роутера уходит в отчёт графа: не той формы — «?» и строка в логе (opus M2)."""
+    reply = _send(tmp_path, _cfg(tmp_path),
+                  Factory(client=_doc_client(enclave_host="x [[Люди/Иван]] ## Аттестация прошла")))
+    assert reply.attestation.startswith("роутер ?,") and "Иван" not in reply.attestation
+    err = capsys.readouterr().err
+    assert "имя роутера не той формы" in err and "Иван" not in err
+    reply = _send(tmp_path, _cfg(tmp_path), Factory(client=_doc_client(enclave_host="Router.Example:443")))
+    assert reply.attestation.startswith("роутер router.example:443,")
+
+
 def test_uppercase_fingerprint_is_normalised_and_compared(tmp_path):
     """Отпечаток в другом регистре — тот же отпечаток: сохраняется в форме, и
     смена назавтра видна (out6 DS-I1, H-I1)."""
@@ -579,10 +593,33 @@ def _vcek_chain(platform: str, cause: BaseException) -> BaseException:
                     ValueError("Failed to fetch certificate"), cause)
 
 
+def _public_tls_failure() -> BaseException:
+    """Сбой сертификата на публичном запросе конструктора — цепочка как в опыте
+    с пустым набором CA (26.10): ValueError ← URLError ← SSLCertVerificationError,
+    звенья — неявным контекстом, как у urllib и SDK."""
+    import urllib.error
+    try:
+        try:
+            try:
+                raise ssl.SSLCertVerificationError(1, "certificate verify failed: Hostname mismatch")
+            except OSError as err:
+                raise urllib.error.URLError(err)
+        except urllib.error.URLError as u:
+            raise ValueError(f"Failed to fetch router addresses: {u}")
+    except ValueError as e:
+        return e
+
+
 @pytest.mark.parametrize("error,cls", [
-    # сбой сертификата по правилу SDK — аттестация (out1 S-I3, H-I2)
-    (ssl.SSLError("CERTIFICATE_VERIFY_FAILED"), night_cloud.AttestationFailed),
-    (ssl.SSLCertVerificationError("self-signed"), night_cloud.AttestationFailed),
+    # сбой сертификата публичного TLS в конструкторе — сеть: портал Wi-Fi, прокси,
+    # часы (opus I1); правило сертификата SDK — только на закреплённом соединении
+    (ssl.SSLError("CERTIFICATE_VERIFY_FAILED"), night_cloud.ProviderUnavailable),
+    (ssl.SSLCertVerificationError("self-signed"), night_cloud.ProviderUnavailable),
+    (_public_tls_failure(), night_cloud.ProviderUnavailable),
+    (_chained(ValueError("SEV attestation verification failed"), _report_error("sev"),
+              ValueError("Failed to fetch VCEK certificate"), ssl.SSLCertVerificationError("KDS")),
+     night_cloud.ProviderUnavailable),
+    # закреплённый ключ энклава не тот — аттестация на любой стадии (out1 S-I3, H-I2)
     (_tinfoil_error(), night_cloud.AttestationFailed),
     # отказ проверки SDK: релиз не тот в режиме Sigstore (опыт wrong_repo, out5)
     (_SdkMeasurementMismatch("measurement mismatch"), night_cloud.AttestationFailed),
@@ -626,7 +663,7 @@ def _vcek_chain(platform: str, cause: BaseException) -> BaseException:
     (ModuleNotFoundError("No module named 'sigstore'"), night_cloud.ProviderUnavailable),
 ])
 def test_constructor_errors_are_classified(tmp_path, monkeypatch, error, cls):
-    """Два класса по правилу SDK; что бы ни случилось в конструкторе — `create` нет."""
+    """Два класса по правилам SDK; что бы ни случилось в конструкторе — `create` нет."""
     _fake_tinfoil(monkeypatch, error=error)
     with pytest.raises(cls) as ei:
         _send(tmp_path, _cfg(tmp_path), None)
@@ -687,7 +724,9 @@ def test_class_follows_the_sdk_cause_chain():
             raise ValueError("HTTP 503") from None
     except ValueError as e:
         hidden = e
-    assert night_cloud._classify(hidden) is night_cloud.AttestationFailed
+    assert night_cloud._classify(hidden, pinned=True) is night_cloud.AttestationFailed
+    # в конструкторе тот же сбой сертификата — публичный TLS, не подмена (opus I1)
+    assert night_cloud._classify(hidden, pinned=False) is night_cloud.ProviderUnavailable
     try:
         try:
             raise ssl.SSLCertVerificationError("рукопожатие")
@@ -695,8 +734,8 @@ def test_class_follows_the_sdk_cause_chain():
             raise ValueError("ошибка в обработчике")   # неявный контекст — тоже цепочка SDK
     except ValueError as e:
         implicit = e
-    assert night_cloud._classify(implicit) is night_cloud.AttestationFailed
-    assert night_cloud._classify(ValueError("HTTP 503")) is night_cloud.ProviderUnavailable
+    assert night_cloud._classify(implicit, pinned=True) is night_cloud.AttestationFailed
+    assert night_cloud._classify(ValueError("HTTP 503"), pinned=True) is night_cloud.ProviderUnavailable
     try:
         try:
             raise ssl.SSLCertVerificationError("рукопожатие")
@@ -704,7 +743,9 @@ def test_class_follows_the_sdk_cause_chain():
             raise ConnectionError("httpx: connect") from inner   # явная причина — решает
     except ConnectionError as e:
         explicit = e
-    assert night_cloud._classify(explicit) is night_cloud.AttestationFailed
+    assert night_cloud._classify(explicit, pinned=True) is night_cloud.AttestationFailed
+    pin = _chained(ConnectionError("httpx: connect"), _tinfoil_error())
+    assert night_cloud._classify(pin, pinned=False) is night_cloud.AttestationFailed
 
 
 def test_real_constructor_path_sends_through_the_attested_client(tmp_path, monkeypatch):
@@ -950,6 +991,9 @@ def test_unknown_effort_falls_back_to_max_out_loud(tmp_path, capsys):
     ([_chunk("   "), _chunk(None, "stop")], "пустой"),
     ([_chunk(SECTIONS + "## Аттестация\n- отпечаток не менялся\n"), _chunk(None, "stop")], "Аттестация"),
     ([_chunk(SECTIONS + "###  аттестация ночного провайдера\n- ок\n"), _chunk(None, "stop")], "Аттестация"),
+    # заголовок Setext: Obsidian показывает его так же, как «##» (opus M1)
+    ([_chunk(SECTIONS + "Аттестация\n---\n- прошла, отпечаток прежний\n"), _chunk(None, "stop")], "Аттестация"),
+    ([_chunk(SECTIONS + "  аттестация провайдера\n=====\n"), _chunk(None, "stop")], "Аттестация"),
 ])
 def test_not_a_review_is_rejected(tmp_path, chunks, why):
     with pytest.raises(night_cloud.ReplyRejected, match=why):
@@ -1198,6 +1242,39 @@ def test_dossier_review_exit_refuses_non_anthropic_provider(tmp_path, monkeypatc
     assert fixed is None and why.startswith("сбой:")
 
 
+def test_wall_clock_end_of_night_stops_the_send(tmp_path, monkeypatch):
+    """Монотонный срок во сне стоит: проснулись после конца ночи — не отправляем (opus M3)."""
+    monkeypatch.setenv("CHAROITE_NIGHTLY_UNTIL", str(time.time() - 60))
+    client = FakeClient()
+    with pytest.raises(night_cloud.DeadlineExpired) as ei:
+        _send(tmp_path, _cfg(tmp_path), Factory(client=client))
+    assert ei.value.sent is False and client.creates == []
+    assert _state(tmp_path)["last_attempt"]["outcome"] == "deadline"
+    monkeypatch.setenv("CHAROITE_NIGHTLY_UNTIL", str(time.time() + 3600))
+    _send(tmp_path, _cfg(tmp_path), Factory(client=client))
+    assert len(client.creates) == 1
+
+
+def test_attestation_failure_outlives_the_next_attempt(tmp_path):
+    """Провал аттестации — отдельный раздел: следующая попытка его не стирает (opus I2)."""
+    with pytest.raises(night_cloud.AttestationFailed):
+        _send(tmp_path, _cfg(tmp_path), Factory(error=_SdkMeasurementMismatch("x")))
+    first = _assert_state_in_form(tmp_path)["last_attestation_failure"]
+    assert first["at"] == _state(tmp_path)["last_attempt"]["at"]
+    state = tmp_path / "logs" / "night_cloud_state.json"
+    night_cloud.accept(state, "G", _send(tmp_path, _cfg(tmp_path), Factory()))
+    with pytest.raises(night_cloud.ProviderUnavailable):
+        _send(tmp_path, _cfg(tmp_path), Factory(error=ConnectionError("refused")))
+    entry = _assert_state_in_form(tmp_path)
+    assert entry["last_attestation_failure"] == first
+    assert entry["last_attempt"]["outcome"] == "unavailable"
+    # другой исход раздела не заводит вовсе
+    with pytest.raises(night_cloud.ProviderUnavailable):
+        _send(tmp_path, _cfg(tmp_path), Factory(error=ConnectionError("refused")), graph_key="H")
+    data = json.loads((tmp_path / "logs" / "night_cloud_state.json").read_text(encoding="utf-8"))
+    assert "last_attestation_failure" not in data["H"]
+
+
 # ── утренний бриф: аттестация только из состояния ──
 
 def _load_brief():
@@ -1254,6 +1331,39 @@ def test_brief_reports_failed_attempt_and_changed_fingerprint_from_state(tmp_pat
     _write_state(root, graph, {"last_attempt": {"at": _at(9), "outcome": "accepted", "accepted": True},
                                "fingerprint_change": change})
     assert mb._night_cloud(graph, NOW) == [], "без свежей смены и сбоя — молчим"
+
+
+def test_brief_keeps_an_attestation_failure_for_the_change_window(tmp_path):
+    """Сигнал подмены живёт 72 ч, как смена отпечатка, и не дублирует строку попытки (opus I2)."""
+    root = tmp_path / "root"
+    charoite_paths.use_data_root(root, replace=True)
+    mb = _load_brief()
+    graph = tmp_path / "g"
+    graph.mkdir()
+    failure = {"at": _at(30), "date": "2026-10-25", "fingerprint": "ab" * 32, "release": "v0.0.167",
+               "http_status": None, "reason": f"text {_HOME_FILE}"}
+    _write_state(root, graph, {"last_attempt": {"at": _at(6), "outcome": "accepted", "accepted": True},
+                               "last_attestation_failure": failure})
+    (line,) = mb._night_cloud(graph, NOW)
+    assert "аттестация ночного провайдера не прошла 2026-10-25" in line and "v0.0.167" in line
+    assert "abababababababab" in line and "__792__" not in line
+    # та же попытка свежая и не принята — одна строка, не две
+    _write_state(root, graph, {"last_attempt": {"at": _at(30), "outcome": "attestation", "accepted": False},
+                               "last_attestation_failure": failure})
+    (line,) = mb._night_cloud(graph, NOW)
+    assert "аттестация провайдера НЕ прошла" in line
+    # свежая попытка — другой провал: прежний остаётся своей строкой
+    _write_state(root, graph, {"last_attempt": {"at": _at(6), "outcome": "attestation", "accepted": False},
+                               "last_attestation_failure": failure})
+    assert len(mb._night_cloud(graph, NOW)) == 2
+    failure["at"] = _at(50)       # окно 72 ч, а не 36 ч попытки
+    _write_state(root, graph, {"last_attempt": {"at": _at(6), "outcome": "accepted", "accepted": True},
+                               "last_attestation_failure": failure})
+    assert len(mb._night_cloud(graph, NOW)) == 1
+    failure["at"] = _at(73)
+    _write_state(root, graph, {"last_attempt": {"at": _at(6), "outcome": "accepted", "accepted": True},
+                               "last_attestation_failure": failure})
+    assert mb._night_cloud(graph, NOW) == [], "старше 72 ч — молчим"
 
 
 def test_every_outcome_word_has_a_brief_phrase():
