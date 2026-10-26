@@ -59,6 +59,7 @@ SYSTEM_WORDS = ("Альбатрос Бриг Гиацинт Палантин И�
                 "Пирит Галенит Секстант Астролябия Барометр Пеленгатор Компас Флюгер Маяк").split()
 #: попыток подобрать группе подделку, не совпавшую с текстом и графом
 _TRIES = 20
+_TRIES_WHOLE = 5  # пересборка всех подделок, если итоговая строка сложила форму графа
 _CASES = ("nomn", "gent", "datv", "accs", "ablt", "loct", "voct", "gen2", "acc2", "loc2")
 _CASE_BASE = {"gen2": "gent", "acc2": "accs", "loc2": "loct", "voct": "nomn"}
 #: Окончания подставной фамилии на -ов/-ин: pymorphy знает не каждую.
@@ -230,25 +231,41 @@ def _gender(m, forms: list[str]) -> str:
     return "masc"
 
 
+def _words(m, f: str, gender: str):
+    """Слова формы человека: (совпадение, роль, разбор в роде группы); инициал — тоже слово
+    своей роли (в фамилии с инициалами первая буква — имя)."""
+    for i, mt in enumerate(_WORD.finditer(f)):
+        w = mt.group(0)
+        r, p = _role(m, w)
+        r = r or ("Name" if i == 0 else "Surn")
+        p = next((q for q in sorted(m.parse(w), key=lambda q: "Fixd" in q.tag)
+                  if r in q.tag and gender in q.tag), p)
+        yield mt, r, p
+
+
 def _person(pk: _Picker, forms: list[str]) -> list[str]:
     m = pk.m
     gender = _gender(m, forms)
-    # ключ — роль и её номер в форме: «Иванов-Петров» — две разные фамилии, иначе
-    # разворот дал бы «Иванов-Иванов» (n793-out5 DS-C4)
+    # ключ — роль и её номер: «Иванов-Петров» — две фамилии, иначе разворот «Иванов-Иванов»
+    # (n793-out5 DS-C4). Номер слова, которое в группе встречается рядом с другим той же
+    # роли, — по его лемме: одиночное «Петров» — вторая фамилия «Иванов-Петров», а не первая
+    # (n793-out6 H-C1). Прочие — по порядку в форме: «Дима» и «Дмитрий» — одна подделка.
+    order: dict[str, list[str]] = collections.defaultdict(list)
+    for f in forms:
+        ws = list(_words(m, f, gender))
+        ws = [x for x in ws if len(x[0].group(0)) > 1]
+        for _mt, r, p in ws:
+            if sum(1 for x in ws if x[1] == r) > 1 and _e(p.normal_form) not in order[r]:
+                order[r].append(_e(p.normal_form))
     parts: dict[tuple[str, int], str | None] = {}
     out = []
     for f in forms:
         res, pos = [], 0
         nth: collections.Counter = collections.Counter()
-        for i, mt in enumerate(_WORD.finditer(f)):
+        for mt, r, p in _words(m, f, gender):
             w = mt.group(0)
-            if len(w) == 1:
-                continue   # инициал остаётся как есть: одна буква не имя (n793-out5 S-I2)
-            r, p = _role(m, w)
-            r = r or ("Name" if i == 0 else "Surn")
-            p = next((q for q in sorted(m.parse(w), key=lambda q: "Fixd" in q.tag)
-                      if r in q.tag and gender in q.tag), p)
-            k = (r, nth[r])
+            lem_e = _e(p.normal_form)
+            k = (r, order[r].index(lem_e) if lem_e in order[r] else nth[r])
             nth[r] += 1
             if k not in parts:
                 if r == "Patr":
@@ -261,7 +278,11 @@ def _person(pk: _Picker, forms: list[str]) -> list[str]:
                     raise pii_mask.MaskRefused("пул подставных имён исчерпан — отправка отменена")
             case, num = _case(p)
             lem = p.normal_form
-            if r == "Name" and lem[-1:] in "ая" and _e(w) in (_e(lem[:-1]), _e(lem[:-1]) + "ь"):
+            if len(w) == 1:
+                # инициал — первая буква подделки той же роли: настоящая буква не уходит
+                # (n793-out6 S-I3 = H-I2); обратно — только целой формой (`undress`)
+                fw = parts[k][:1]
+            elif r == "Name" and lem[-1:] in "ая" and _e(w) in (_e(lem[:-1]), _e(lem[:-1]) + "ь"):
                 # звательная усечённая («Саш», «Дим») — так же усечь подделку на -а/-я
                 fw = parts[k][:-1] if parts[k][-1:] in "ая" else parts[k]
             elif r == "Surn":
@@ -297,15 +318,7 @@ def _system(pk: _Picker, forms: list[str]) -> list[str]:
     return out
 
 
-def dress(masked: pii_mask.Masked, prompt: str, forms: pii_mask.Forms, *,
-          seed: int | None = None) -> Dress:
-    """Заменить метки в `masked.text` подделками; вернуть таблицу для `undress`.
-
-    `prompt` — весь отправляемый текст до маски (инструкция тоже): подделка не должна
-    в нём встречаться. `seed` — для тестов; без него подделки свои на каждый запрос.
-    Бросает `MaskRefused`, если подделку не подобрать или метка осталась."""
-    m = _load()
-    pk = _Picker(m, prompt, forms, random.Random(seed if seed is not None else secrets.randbits(64)))
+def _dress_once(m, masked: pii_mask.Masked, pk: _Picker) -> tuple[Dress, str]:
     d = Dress()
     fakes: dict[str, list[str]] = {}
     for gid, g in masked.groups.items():
@@ -327,9 +340,37 @@ def dress(masked: pii_mask.Masked, prompt: str, forms: pii_mask.Forms, *,
         gid = f"{mt.group(1)}{mt.group(2)}{mt.group(3)}"
         return fakes[gid][int(mt.group(4) or 1) - 1]
 
-    masked.text = pii_mask._TOKEN.sub(put, masked.text)
-    if pii_mask._STRAY.search(masked.text):
+    text = pii_mask._TOKEN.sub(put, masked.text)
+    if pii_mask._STRAY.search(text):
         raise pii_mask.MaskRefused("после подстановки осталась метка — отправка отменена")
+    return d, text
+
+
+def dress(masked: pii_mask.Masked, prompt: str, forms: pii_mask.Forms, *,
+          seed: int | None = None) -> Dress:
+    """Заменить метки в `masked.text` подделками; вернуть таблицу для `undress`.
+
+    `prompt` — весь отправляемый текст до маски (инструкция тоже): подделка не должна
+    в нём встречаться. `seed` — для тестов; без него подделки свои на каждый запрос.
+    Бросает `MaskRefused`, если подделку не подобрать или метка осталась."""
+    m = _load()
+    rnd = random.Random(seed if seed is not None else secrets.randbits(64))
+    # гейт на строке, которая уходит: подделка рядом с соседним словом не должна сложить
+    # форму графа («Северный» + подделка «Маяк» = узел «Северный Маяк», n793-out6 DS-C1);
+    # вне областей данных формы могут быть и до подстановки — счёт не должен вырасти;
+    # один `pk` на все попытки: отвергнутые подделки остаются занятыми
+    pk = _Picker(m, prompt, forms, rnd)
+    for _whole in range(_TRIES_WHOLE):
+        d, text = _dress_once(m, masked, pk)
+        # формы, не задевающие подделку, до и после одни и те же — считаем только задевающие
+        near = pii_mask.forms_touching(forms, (w for prs in d.pairs.values() for _o, f in prs
+                                               for w in re.findall(r"[^\W_]+", f)))
+        if pii_mask.postcondition_hits(text, near) <= pii_mask.postcondition_hits(masked.text, near):
+            break
+    else:
+        raise pii_mask.MaskRefused("подделка сложилась с соседним словом в форму графа — "
+                                   "отправка отменена")
+    masked.text = text
     masked.dress = d
     return d
 
@@ -355,8 +396,8 @@ def _index(m, d: Dress) -> tuple[dict[str, list[_Slot]], dict[str, list[_Slot]]]
             whole = len(fw) != len(ow)
             for i, w in enumerate(fw):
                 o = orig if whole else ow[i]
-                if w == o:
-                    continue   # инициал ушёл как есть — разворачивать нечего
+                if len(w) == 1:
+                    continue   # инициал по одной букве не разворачивается: «В» в начале фразы
                 lemmas, _c = _lemmas(m, w)
                 g = d.gender.get(gid)
                 s = _Slot(gid, w, o, frozenset(_cases(m, w, g)), g)
@@ -465,6 +506,16 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
             return "[[" + d.canon[next(iter(gids))]
         return "[[" + _WORD.sub(one, target)
 
+    # форма с инициалами (фамилия и две буквы) — обратно целиком, раньше слов: буква отдельно
+    # не индексируется. Только многословная и по границам слов: одиночная буква-подделка
+    # («А» от мусорного спана NER) внутри «ДАП» — не имя (n793-out6, опыт false_undress)
+    for gid, pairs in d.pairs.items():
+        for orig, fake in sorted(pairs, key=lambda x: -len(x[1])):
+            ws = _WORD.findall(fake)
+            if len(ws) > 1 and any(len(w) == 1 for w in ws):
+                reply, n = re.subn(rf"(?<![^\W_]){re.escape(fake)}(?![^\W_])",
+                                   lambda _mt, o=orig: o, reply)
+                d.back["exact"] += n
     text = re.sub(r"\[\[([^\]|#\n]+)", link, reply)
     parts = re.split(r"(\[\[[^\]|#\n]+)", text)
     text = "".join(p if p.startswith("[[") else _WORD.sub(one, p) for p in parts)

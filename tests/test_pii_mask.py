@@ -621,6 +621,14 @@ def test_name_broken_by_a_line_break_is_masked():
     assert m.replaced == 1 and "офис" not in m.text
 
 
+def test_line_break_before_a_timestamp_is_not_a_joint():
+    """«Релиз\n[10:41]» — конец реплики и таймкод следующей, не форма «Релиз 10»: стык с
+    переводом строки — только в пробелах (n793-out6 H-I1 = S-I2)."""
+    forms = pm.build_forms([pm.NodeForms("Релиз 10", person=False)], known={"релиз"}.__contains__)
+    m = pm.mask("Говорили про Релиз\n[10:41] Анна: ок", forms)
+    assert "\n[10:41] Анна: ок" in m.text
+
+
 def test_fleeting_stem_of_an_alias_stays_in_the_node():
     """Псевдоним «Льва» у Льва Орлова: беглая основа «льв» — уже его форма, без узла её не
     дублировать, иначе форма уходит из группы (n793-out3 DS-M2)."""

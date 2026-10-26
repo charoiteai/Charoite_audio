@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pathlib
+import random
 import sys
 
 import pytest
@@ -216,19 +217,60 @@ def test_two_words_of_one_role_get_two_fakes():
         assert pii_fake.undress(m.text, d, sent=m.text)[0] == src
 
 
-def test_initial_stays_and_comes_back():
-    """Инициал «А» не получает полное подставное имя: модель не видит лишнего имени, а
-    разворот не путает «А» с «Анна» (n793-out5 S-I2)."""
-    src = "Белова А пришла. Анна Белова ушла."
-    m, d, _f = _dressed(src, (pm.NodeForms("Анна Белова", ("Белова А",)),))
-    assert m.text.split()[1] == "А"
-    assert pii_fake.undress(m.text, d, sent=m.text)[0] == src
+def test_single_second_word_keeps_its_own_fake():
+    """«Анна-Мария» и отдельно «Мария»: одиночное слово — вторая подделка пары, а не первая;
+    иначе «Мария ушла» развернулось бы в «Анна ушла» (n793-out6 H-C1 = S-I1)."""
+    for src, node, alone in (("Анна-Мария пришла. Мария ушла.", "Анна-Мария", "Мария ушла."),
+                             ("Иванов-Петров пришёл. Петров ушёл.", "Иванов-Петров", "Петров ушёл.")):
+        for seed in range(3):
+            m, d, _f = _dressed(src, (pm.NodeForms(node),), seed=seed)
+            reply = m.text.split(". ")[1]
+            assert pii_fake.undress(reply, d, sent=m.text)[0] == alone, (seed, m.text)
+
+
+def test_initials_are_fake_letters_and_come_back_with_the_form():
+    """Инициалы в спане NER (фамилия и две буквы) — буквы подделки, настоящие не уходят; обратно —
+    целой формой (n793-out6 S-I3 = H-I2)."""
+    src = "Орлов И.П. пришёл. Иван Орлов ушёл."  # приватный-образец: синтетические инициалы
+    forms = pm.build_forms((pm.NodeForms("Иван Орлов"),))
+    seen = set()
+    for seed in range(8):
+        m = pm.mask(src, forms, [(0, 10, pm.PERSON)])
+        d = pii_fake.dress(m, src, forms, seed=seed)
+        seen.add(m.text.split()[1])
+        assert pii_fake.undress(m.text, d, sent=m.text)[0] == src
+    assert seen - {"И.П."}, "буквы подделки, а не исходные"
+
+
+@pytest.mark.parametrize("node, src", [("Северный Маяк", "Северный Портал закрыли"),
+                                       ("Маяк 12", "Портал 12 закрыли")])
+def test_fake_never_joins_a_neighbour_into_a_graph_name(monkeypatch, node, src):
+    """Подделка «Маяк» рядом с «Северный» складывает узел «Северный Маяк», которого в тексте
+    не было: гейт смотрит итоговую строку, а не подделку в отрыве (n793-out6 DS-C1)."""
+    forms = pm.build_forms([pm.NodeForms(node, person=False), pm.NodeForms("Портал", person=False)],
+                           known={"северный", "маяк", "портал"}.__contains__)
+    pii_fake._load()
+    for pool in (["Маяк"], ["Маяк", "Кальцит"]):
+        monkeypatch.setitem(pii_fake._pools, "system", pool)
+        for seed in range(20):
+            m = pm.mask(src, forms)
+            pii_fake.dress(m, src, forms, seed=seed)
+            assert "Маяк" not in m.text and pm.postcondition_hits(m.text, forms) == 0, (pool, seed, m.text)
+
+
+def test_single_letter_fake_is_not_replaced_inside_words():
+    """Мусорный спан NER «А» с подделкой «П»: ответ без имён не меняется — «ДАП» и
+    «сканирование» остаются (n793-out6, опыт на ответах без маски: 299 ложных замен)."""
+    d = pii_fake.Dress()
+    d.pairs = {"Ч~1": [("А", "П")], "Ч~2": [("с", "а")], "Ч1": [("Орлов И.П.", "Белов К.Л.")]}  # приватный-образец: синтетические инициалы
+    reply = "ДАП сканирование П с. Белов К.Л. пришёл"  # приватный-образец: синтетические инициалы
+    assert pii_fake.undress(reply, d, sent=reply)[0] == "ДАП сканирование П с. Орлов И.П. пришёл"  # приватный-образец: синтетические инициалы
 
 
 def test_abbreviation_fake_is_not_a_word(monkeypatch):
     """Аббревиатура-подделка — не слово языка: «ПЛАН» в начале фразы ответа развернулся
     бы в систему (n793-out5 H-C2)."""
-    pk = pii_fake._Picker(pii_fake._load(), "текст", pm.build_forms([]), __import__("random").Random(1))
+    pk = pii_fake._Picker(pii_fake._load(), "текст", pm.build_forms([]), random.Random(1))
     seq = iter([4, "П", "Л", "А", "Н", 3, "З", "Л", "К"])     # длина, буквы; длина, буквы
     monkeypatch.setattr(pk.rnd, "choice", lambda _xs: next(seq))
     monkeypatch.setattr(pk.rnd, "random", lambda: 1.0)
