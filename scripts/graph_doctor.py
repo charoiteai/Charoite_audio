@@ -15,10 +15,13 @@
 сироты (узел без входящих), одноимённые узлы в разных папках (пары
 Досье/Ядра и заглушки-редиректы tier3 — по замыслу, считаются отдельно),
 почти-дубли по ключу имени (graph_names.name_key) и без порядка слов
-(«Иван Петров» / «Петров Иван» — bag_key), покрытие _MOC.md, свежесть.
+(«Иван Петров» / «Петров Иван» — bag_key), покрытие _MOC.md, свежесть;
+сборные узлы (голое имя при живых тёзках — graph_names.bare_namesakes, №611),
+люди узлами в Системах, досье с меткой диаризации деятелем.
 
-Ничего не меняет. Отчёт — JSON для утреннего брифа (logs/graph_doctor.json
-в корне данных) и сводка в stdout. Пороги предупреждений: битых > 2 %
+Граф не меняет. Отчёт — JSON для утреннего брифа (logs/graph_doctor.json
+в корне данных) и сводка в stdout; полные списки сборных и чужих людей —
+лента logs/graph_feed.json рядом с отчётом. Пороги предупреждений: битых > 2 %
 активных ссылок, метки > 0, сироты > 5 % узлов, настоящие дубли > 0,
 почти-дубли > 0. Аудит графа 28.08: 626 битых из 68 514 ссылок, 17
 узлов-меток, 5 дублей, 7 почти-дублей — цифры, которых до этого скрипта
@@ -41,6 +44,7 @@ import graph_updater  # noqa: E402
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 LINK = graph_links.LINK
@@ -59,14 +63,19 @@ def _is_stub(text: str) -> bool:
     return redirects.is_merged(text)
 
 
-def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = None) -> dict:
-    """Метрики одного графа. `examples` > 0 — добавить примеры путей."""
+def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = None,
+            prev: dict | None = None, owner: str = "") -> dict:
+    """Метрики одного графа. `examples` > 0 — добавить примеры путей. `prev` — прошлый
+    отчёт этого графа: база для сигнала о росте сборных узлов (№611). `owner` — имя
+    владельца из конфига: его узел по имени — не сборный, владелец в своём графе один.
+    `feed` в ответе — полные списки для ленты, в отчёт доктора не идут."""
     notes = graph_links.read_notes(root)
     rel = {p: p.relative_to(root).as_posix() for p in notes}
     resolver = graph_links.LinkResolver(root, notes)
     by_stem = resolver.by_stem
 
     inbound: collections.Counter = collections.Counter()
+    linkers: dict[pathlib.Path, set[pathlib.Path]] = collections.defaultdict(set)   # кто ссылается, без повторов
     outbound: dict[pathlib.Path, int] = {}
     broken: list[tuple[str, str]] = []
     wrapped = 0
@@ -83,6 +92,7 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
                 broken.append((rel[p], " ".join(m.group(1).split()).rstrip("\\")))   # `Цель\|Текст` — без слэша (GLM r2 M3)
             elif tgt != p and not p.name.startswith("_"):
                 inbound[tgt] += 1                    # ссылка из указателя — не связь
+                linkers[tgt].add(p)
         outbound[p] = n
         if not archived:
             links_active += n
@@ -188,6 +198,26 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         live = {graph_names.name_key(a) for a in frontmatter.aliases(text)}
         alias_vetoes += [f"{rel[p]} ← «{a}»" for k, a in traced if k not in live]
 
+    # Сборные узлы (№611): голое имя при живых тёзках — каждый «Саша» встречи садится
+    # в узел «Саша», и под ним лежат факты разных людей (замер 26.10: 36 узлов, 1553
+    # ссылки). Предикат один с затвором на входе — `graph_names.bare_namesakes`.
+    # Рядом — то же «чужой человек не там»: человек узлом в Системах и досье, где
+    # действует метка диаризации. Только счёт и список: решает владелец.
+    placeholder_set = set(placeholders)
+    people = [p for p in nodes if rel[p].startswith("Люди/") and p not in placeholder_set
+              and not _is_stub(notes[p])]
+    index = graph_names.namesake_index(p.stem for p in people)
+    own = set(graph_names.name_key(owner).split())
+    collective = [(p, graph_names.bare_namesakes(p.stem, index)) for p in people
+                  if graph_names.name_key(graph_names.bare_name(p.stem)) not in own]
+    collective = sorted(((p, n) for p, n in collective if n), key=lambda x: (-len(linkers[x[0]]), x[0].stem))
+    person_keys = {graph_names.name_key(graph_names.bare_name(p.stem)) for p in people}
+    people_in_systems = [p for p in nodes if rel[p].startswith("Системы/") and not _is_stub(notes[p])
+                         and (graph_names.name_key(graph_names.bare_name(p.stem)) in person_keys
+                              or graph_names.name_key(graph_names.bare_name(p.stem)) in index)]
+    dossier_labels = [p for p in nodes if rel[p].startswith("Досье/") and not _is_stub(notes[p])
+                      and graph_names.has_speaker_actor(notes[p])]
+
     links_total = sum(outbound.values())
     rep = {
         "graph": root.name, "root": str(root), "notes": len(notes), "nodes": len(nodes), "links": links_total,
@@ -200,6 +230,8 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         "orphans_by_dir": dict(collections.Counter(rel[p].split("/", 1)[0] for p in orphans)),
         "not_utf8": len(not_utf8), "not_utf8_archive": len(not_utf8_archive),
         "alias_vetoes": len(alias_vetoes),
+        "collective": len(collective), "collective_links": sum(len(linkers[p]) for p, _ in collective),
+        "people_in_systems": len(people_in_systems), "dossier_labels": len(dossier_labels),
     }
     # Конфликтные копии «Имя N» документов встреч (№361): по имени, без чтения —
     # доктор сигналит, убирает `dedup_graph.py` вторым правилом. Сигнал — на РОСТ
@@ -228,7 +260,25 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         warnings.append(f"файлов не в UTF-8: {len(not_utf8)} — правь в редакторе, "
                         "облако их не тронет"
                         + (f" (в архиве ещё {len(not_utf8_archive)})" if not_utf8_archive else ""))
+    # Сигнал — на рост, как у копий: 36 узлов, известных владельцу, горели бы каждую
+    # ночь и перестали бы читаться; список целиком — в ленте (logs/graph_feed.json).
+    prev = prev or {}
+    for key, text in (("collective", "сборных узлов в Люди (голое имя при живых тёзках): {n}{was}, ссылок на "
+                       "них заметок {links} — под одним узлом факты разных людей"),
+                      ("people_in_systems", "людей узлами в Системах: {n}{was}"),
+                      ("dossier_labels", "досье с меткой диаризации в тексте: {n}{was}")):
+        n, before = rep[key], prev.get(key)
+        if n and (not isinstance(before, int) or n > before):
+            was = f" (было {before})" if isinstance(before, int) else ""
+            warnings.append(text.format(n=n, was=was, links=rep["collective_links"])
+                            + "; список — logs/graph_feed.json")
     rep["warnings"] = warnings
+    rep["feed"] = {
+        "collective": [{"node": rel[p], "linked_from": len(linkers[p]), "namesakes": n} for p, n in collective],
+        "people_in_systems": [rel[p] for p in people_in_systems],
+        "dossier_labels": [rel[p] for p in dossier_labels],
+        "placeholders": [rel[p] for p in placeholders],
+    }
     if examples:
         rep["examples"] = {
             "broken": [f"{s} -> [[{t}]]" for s, t in broken if not graph_links.is_archive(s)][:examples],
@@ -241,6 +291,10 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
             "not_utf8_archive": [f"{s} — {why}" for s, why in not_utf8_archive[:examples]],
             "alias_vetoes": alias_vetoes[:examples],
             "conflict_copies": [str(c.copy.relative_to(root)) for c in copies[:examples]],
+            "collective": [f"{rel[p]} ← из {len(linkers[p])} заметок; тёзки: {', '.join(n)}"
+                           for p, n in collective[:examples]],
+            "people_in_systems": [rel[p] for p in people_in_systems[:examples]],
+            "dossier_labels": [rel[p] for p in dossier_labels[:examples]],
         }
     return rep
 
@@ -253,6 +307,8 @@ def summary(rep: dict) -> str:
              f"дублей {rep['dup_real']} (+{rep['dup_stubs']} заглушек); почти-дублей {rep['near_dups']}; "
              f"вне MOC {rep['moc_missing']}; не в UTF-8 {rep.get('not_utf8', 0)}"
              f" (архив {rep.get('not_utf8_archive', 0)}); вето склеек {rep.get('alias_vetoes', 0)}; "
+             f"сборных {rep.get('collective', 0)} (ссылаются заметок {rep.get('collective_links', 0)}); "
+             f"людей в Системах {rep.get('people_in_systems', 0)}; досье с меткой {rep.get('dossier_labels', 0)}; "
              f"изменено за 7 дн. {rep['fresh_7d']}"]
     lines += [f"  ⚠️ {w}" for w in rep["warnings"]]
     for kind, items in (rep.get("examples") or {}).items():
@@ -264,6 +320,11 @@ def summary(rep: dict) -> str:
 
 def report_path() -> pathlib.Path:
     return resolve_root(__file__) / "logs" / "graph_doctor.json"
+
+
+def feed_path(report: pathlib.Path) -> pathlib.Path:
+    """Лента сборных узлов и чужих людей — рядом с отчётом доктора."""
+    return report.with_name("graph_feed.json")
 
 
 def main() -> int:
@@ -281,26 +342,40 @@ def main() -> int:
     if not found:
         print("графов не найдено — нечего проверять")
         return 0
+    try:                               # владелец — не сборный узел (№611); нет конфига — без исключения
+        owner = (graph_updater.load_cfg().get("sufler") or {}).get("user_name") or ""
+    except Exception:  # noqa: BLE001 — справка, не гейт: доктор без конфига считает всех
+        owner = ""
     out = a.json or report_path()
     try:                               # прошлый отчёт — база для сигнала о росте копий
         prev = json.loads(out.read_text(encoding="utf-8")).get("graphs") or {}
     except (OSError, ValueError, AttributeError):
         prev = {}
 
+    def prev_rep(g: pathlib.Path) -> dict:
+        value = prev.get(str(g)) if isinstance(prev, dict) else None
+        return value if isinstance(value, dict) else {}
+
     def prev_copies(g: pathlib.Path) -> int | None:
-        value = (prev.get(str(g)) or {}).get("conflict_copies") if isinstance(prev, dict) else None
+        value = prev_rep(g).get("conflict_copies")
         return value if isinstance(value, int) else None
 
-    reps = {str(g): inspect(g, a.examples, prev_copies(g))   # ключ — путь: две «Работа» не затрут друг друга (GLM M11)
+    reps = {str(g): inspect(g, a.examples, prev_copies(g), prev_rep(g), owner)   # ключ — путь: две «Работа» не затрут друг друга (GLM M11)
             for g in found}
+    feeds = {g: rep.pop("feed") for g, rep in reps.items()}
     for rep in reps.values():
         print(summary(rep))
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps({"generated": dt.datetime.now().isoformat(timespec="seconds"),
-                                   "graphs": reps}, ensure_ascii=False, indent=1), encoding="utf-8")
-    except OSError as e:
-        print(f"отчёт не записан ({e})")
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    # Лента — отдельным файлом рядом с отчётом: ночь при сбое доктора стирает отчёт
+    # (nightly.sh), а полные списки отчёту не нужны — бриф читает только счёт (№611).
+    # Обе записи атомарные: читатель посреди записи не увидит обрезанный JSON.
+    for path, body in ((out, {"generated": now, "graphs": reps}),
+                       (feed_path(out), {"generated": now, "graphs": feeds})):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            safe_write.write_text(path, json.dumps(body, ensure_ascii=False, indent=1))
+        except OSError as e:
+            print(f"{path.name} не записан ({e})")
     return 1 if a.strict and any(r["warnings"] for r in reps.values()) else 0
 
 

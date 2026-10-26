@@ -75,6 +75,53 @@ def is_placeholder_node(stem: str) -> bool:
     return bool(m) and is_speaker_placeholder(m.group(1))   # один набор меток, что и для целого имени (luna I5)
 
 
+#: Метка диаризации деятелем в тексте: «Собеседник 3 предложил…», «[[Собеседник 3]]».
+#: В скобке после имени («Вера (Собеседник 4)») — пометка, а не деятель.
+_SPEAKER_IN_TEXT_RE = re.compile(r"(?<![(（\w])(?:собеседник|спикер|speaker)\s*№?\s*\d+", re.IGNORECASE)
+
+
+def has_speaker_actor(text: str) -> bool:
+    """Есть ли в тексте (досье, ядро) метка диаризации деятелем: за меткой нет
+    человека, и факты разных людей разных встреч сходятся на «Собеседнике 3»
+    (№611, замер 26.10: 169 досье из 1013)."""
+    return _SPEAKER_IN_TEXT_RE.search(text or "") is not None
+
+
+def bare_name(name: str) -> str:
+    """Имя без хвостовой скобки: «Саша (из минуток)» → «Саша». Скобка — пометка
+    модели или ревизии, а не часть имени: тёзок ищут по имени без неё."""
+    return re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", name).strip() or name
+
+
+def namesake_index(names) -> dict[str, list[str]]:
+    """Слово имени (ключом `name_key`) → многословные имена с этим словом.
+
+    Порядок слов не важен: «Саша Образцов» и «Образцов Саша» оба лягут под «саша».
+    Метки диаризации в индекс не идут — за ними нет человека."""
+    index: dict[str, list[str]] = {}
+    for name in names:
+        words = name_key(bare_name(name)).split()
+        if len(words) < 2 or is_speaker_placeholder(bare_name(name)):
+            continue
+        for w in dict.fromkeys(words):
+            index.setdefault(w, []).append(name)
+    return index
+
+
+def bare_namesakes(name: str, index: dict[str, list[str]]) -> list[str]:
+    """Голое имя с тёзками: однословное имя («Саша»), у которого среди живых узлов
+    есть многословные с тем же словом («Саша Образцов», «Саша Сидоров») — их список,
+    иначе пусто.
+
+    Под голым именем граф копит факты разных людей: каждый «Саша» встречи садится
+    в один узел (№611, замер 26.10: 36 таких узлов, 1553 ссылки). Один предикат на
+    всех — доктор считает по нему, затвор на входе (№611 этап 2) решает по нему же."""
+    words = name_key(bare_name(name)).split()
+    if len(words) != 1 or is_speaker_placeholder(bare_name(name)):
+        return []
+    return sorted(index.get(words[0], []))
+
+
 def strip_speaker_label(name: str) -> str:
     """«Саша (Спикер 1)» → «Саша»: метка диаризации в скобках у настоящего
     имени — пометка модели, не часть имени.
