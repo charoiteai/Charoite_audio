@@ -63,6 +63,9 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("main.py", "console-warmup"),
     ("main.py", "console-hold"),
     ("main.py", "console-stt"),
+    # обмен ночной двери под сроком (№792): поток аттестации и ответа брошен по
+    # сроку, его результат не читается, шаг ядер выходит сам — ждать его некому
+    ("night_cloud.py", "night-cloud-exchange"),
 )
 
 

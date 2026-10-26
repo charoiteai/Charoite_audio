@@ -42,6 +42,13 @@ dependencies = [
     "mlx-whisper>=0.4 ; sys_platform == 'darwin'",   # китайский/мультиязычный пресет
 ]
 
+[project.optional-dependencies]
+# Ночная ревизия ядер у Tinfoil (sufler.cloud_night_provider: tinfoil, №792).
+# Версии закреплены точно: аттестацию проверяет код SDK, и его смена — решение,
+# а не обновление по ходу. Модуль импортируется лениво, только за гейтом двери
+# src/night_cloud.py; без пакета дверь отвечает «провайдер недоступен».
+tinfoil = ["tinfoil==0.15.0", "sigstore==4.5.1", "tinfoil-ehbp==0.4.1"]
+
 [tool.setuptools]
 # Пустой список — pip install . не копирует исходные модули в site-packages;
 # там остаются только стандартные метаданные дистрибуции. Репозиторий остаётся

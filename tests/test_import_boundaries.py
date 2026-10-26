@@ -508,8 +508,9 @@ def test_layer_table_is_complete_and_the_arrows_point_down(world):
     assert rt is not None and rt not in bottom
     for m, layer in lay.items():
         if layer in bottom | {rt, "cloud"}:
-            # нижнему слою и cloud — ничего снаружи; слою окружения — только его allowed
-            ok = set(layout["allowed"][layer]) if layer == rt else set()
+            # нижнему слою — ничего снаружи; слою окружения и cloud — только их allowed:
+            # ночной двери cloud нужен гейт privacy (runtime) в той же функции, что отправка (№792)
+            ok = set(layout["allowed"][layer]) if layer in {rt, "cloud"} else set()
             outside = {d for d in graph[m] if lay[d] != layer and lay[d] not in ok}
             assert not outside, f"{m} ({layer}) импортирует {sorted(outside)}"
         if layer == "graph":

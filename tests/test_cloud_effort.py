@@ -134,6 +134,8 @@ _MODEL_KEYS_BY_FILE = {
     "scripts/nightly_dossier_review.py": ["cloud_model"],
     # порядок вхождения в файле: подсказки (строка ~2011), затем живой ответ
     "src/daemon.py": ["cloud_hints_model", "cloud_live_model"],
+    # дверь ночной ревизии у Tinfoil: своя модель, не cloud_model Anthropic (№792, in3 K5)
+    "src/night_cloud.py": ["cloud_night_tinfoil_model"],
 }
 
 
@@ -301,3 +303,75 @@ def test_old_config_with_only_cloud_model_gets_a_switch_notice(tmp_path, monkeyp
 def test_both_model_keys_set_means_no_switch_notice(tmp_path, monkeypatch):
     _, text = _debrief_run(tmp_path, monkeypatch, _labels_cfg(), _ok_run)
     assert "теперь только для ночных ревизий" not in text, text
+
+
+# ── ночь у Tinfoil: усилие, путь ключа, чтение секрета (мутанты CI #857) ──
+
+class _Log:
+    """Поток лога: строка видна читателю только после flush. Настоящий stderr
+    построчный (CPython ≥ 3.9) — заглушка держит контракт «строка видна при
+    любом потоке» (n792-mut DS-I1)."""
+
+    def __init__(self):
+        self.pending, self.seen = "", ""
+
+    def write(self, s):
+        self.pending += s
+        return len(s)
+
+    def flush(self):
+        self.seen, self.pending = self.seen + self.pending, ""
+
+
+@pytest.mark.parametrize("cfg,want", [
+    ({}, "max"),
+    ({"sufler": None}, "max"),
+    ({"sufler": {"cloud_night_tinfoil_effort": None}}, "max"),
+    ({"sufler": {"cloud_night_tinfoil_effort": "  "}}, "max"),
+    ({"sufler": {"cloud_night_tinfoil_effort": " HIGH "}}, "high"),
+    ({"sufler": {"cloud_night_tinfoil_effort": "xhigh"}}, "xhigh"),
+    ({"sufler": {"cloud_night_tinfoil_effort": "low"}}, "low"),
+])
+def test_tinfoil_effort_takes_the_config_word_and_defaults_silently(capsys, cfg, want):
+    assert cloud.tinfoil_effort(cfg) == want
+    assert capsys.readouterr().err == "", "пустое или своё слово — без предупреждения"
+
+
+@pytest.mark.parametrize("word", ["medium", "auto", "MAXX"])
+def test_tinfoil_effort_foreign_word_is_the_default_out_loud(capsys, word):
+    assert cloud.tinfoil_effort({"sufler": {"cloud_night_tinfoil_effort": word}}) == cloud.TINFOIL_EFFORT_DEFAULT
+    err = capsys.readouterr().err
+    assert "cloud_night_tinfoil_effort" in err and word.lower() in err
+
+
+def test_tinfoil_key_path_config_wins_and_empty_means_default(tmp_path):
+    default = pathlib.Path(cloud.TINFOIL_KEY_DEFAULT).expanduser()
+    assert cloud.tinfoil_key_path({}) == default
+    assert cloud.tinfoil_key_path({"sufler": None}) == default
+    for empty in (None, "", "   "):
+        assert cloud.tinfoil_key_path({"sufler": {"cloud_night_tinfoil_key_path": empty}}) == default
+    own = tmp_path / "ключ"
+    assert cloud.tinfoil_key_path({"sufler": {"cloud_night_tinfoil_key_path": f" {own} "}}) == own
+    home = cloud.tinfoil_key_path({"sufler": {"cloud_night_tinfoil_key_path": "~/k"}})
+    assert home == pathlib.Path.home() / "k"
+
+
+def test_read_secret_missing_or_undecodable_is_an_empty_string(tmp_path):
+    assert cloud.read_secret(tmp_path / "нет") == ""
+    bad = tmp_path / "bad"
+    bad.write_bytes(b"\xff\xfe\x00")
+    assert cloud.read_secret(bad) == ""
+
+
+@pytest.mark.parametrize("loose", [0o640, 0o604, 0o602])
+def test_read_secret_warns_about_loose_mode_and_the_line_reaches_the_log(tmp_path, monkeypatch, loose):
+    key = tmp_path / "key"
+    key.write_text("  tf-1234  \n", encoding="utf-8")
+    key.chmod(0o600)
+    log = _Log()
+    monkeypatch.setattr(sys, "stderr", log)
+    assert cloud.read_secret(key) == "tf-1234"
+    assert log.seen == log.pending == "", "права 600 — без предупреждения"
+    key.chmod(loose)
+    assert cloud.read_secret(key) == "tf-1234"
+    assert "доступен не только владельцу" in log.seen and "tf-1234" not in log.seen + log.pending

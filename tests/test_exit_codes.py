@@ -26,12 +26,17 @@ READERS = {
     "src/foreign_python.py": {"EXIT_ENGINE_UNAVAILABLE"},
     # установщик движка: занято и отменено — честные исходы, не слитые в 1 (№622 B2)
     "scripts/install_engine.py": {"EXIT_INSTALL_BUSY", "EXIT_INSTALL_CANCELLED"},
+    # ночная облачная ревизия: политика, аттестация и провайдер — разные метки ночи (№792)
+    "scripts/nightly_claude_cores.py": {"EXIT_PRIVACY_REFUSED", "EXIT_ATTESTATION_FAILED",
+                                        "EXIT_PROVIDER_UNAVAILABLE"},
+    "scripts/nightly_dossier_review.py": {"EXIT_PRIVACY_REFUSED", "EXIT_STAGE_PENDING"},
 }
 #: Значения — снимок: их читают процессы вне этого репозитория (launchd, CI,
 #: приёмка), и молчаливая перенумерация ломает их без единого красного теста.
 VALUES = {"EXIT_NO_SPEECH": 3, "EXIT_NO_GRAPH": 4, "EXIT_ROOT_UNNAMED": 5, "EXIT_NOTHING_TO_CHECK": 6,
           "EXIT_PARTIAL": 7, "EXIT_UNMUTABLE": 8, "EXIT_UNJUDGED": 9, "EXIT_ENGINE_UNAVAILABLE": 10,
-          "EXIT_PRIVACY_REFUSED": 11, "EXIT_INSTALL_BUSY": 12, "EXIT_INSTALL_CANCELLED": 13}
+          "EXIT_PRIVACY_REFUSED": 11, "EXIT_INSTALL_BUSY": 12, "EXIT_INSTALL_CANCELLED": 13,
+          "EXIT_ATTESTATION_FAILED": 14, "EXIT_PROVIDER_UNAVAILABLE": 15, "EXIT_STAGE_PENDING": 16}
 #: Имена — не рукописный список, а всё, что объявил модуль: пятая константа
 #: без снимка значения иначе прошла бы мимо гейта (круг 3 по №339, DS I3).
 NAMES = {n for n in dir(exit_codes) if n.startswith("EXIT_")}
@@ -51,7 +56,7 @@ def test_exit_codes_module_has_no_imports():
     assert {v: exit_codes.outcome(v) for v in (0, 1, *VALUES.values())} == {
         0: "ok", 1: "fail", 3: "fail", 4: "fail", 5: "fail",
         6: "nothing", 7: "partial", 8: "unmutable", 9: "unjudged", 10: "fail",
-        11: "fail", 12: "fail", 13: "fail"}
+        11: "fail", 12: "fail", 13: "fail", 14: "fail", 15: "fail", 16: "fail"}
 
 
 def _imports_from_exit_codes(tree: ast.AST) -> set[str]:

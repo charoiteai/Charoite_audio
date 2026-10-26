@@ -102,3 +102,14 @@ def test_no_model_literals_left_in_call_sites():
     assert not offenders, (
         "имя модели зашито в точке вызова, дефолты снова разъедутся:\n  "
         + "\n  ".join(offenders))
+
+
+def test_tinfoil_defaults_match_every_example_config():
+    """Усилие и путь ключа Tinfoil — свои словари, не EFFORT_DEFAULTS: шлюз
+    принимает только low|high|xhigh|max (№792). Дефолт тот же, что в примерах."""
+    for path in EXAMPLES:
+        sufler = yaml.safe_load(path.read_text(encoding="utf-8"))["sufler"]
+        assert sufler.get("cloud_night_tinfoil_effort") == cloud.TINFOIL_EFFORT_DEFAULT, path.name
+        assert sufler.get("cloud_night_tinfoil_key_path") == cloud.TINFOIL_KEY_DEFAULT, path.name
+    assert cloud.TINFOIL_EFFORT_DEFAULT in cloud.TINFOIL_EFFORT_LEVELS
+    assert "medium" not in cloud.TINFOIL_EFFORT_LEVELS and "auto" not in cloud.TINFOIL_EFFORT_LEVELS

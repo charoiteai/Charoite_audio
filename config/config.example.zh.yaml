@@ -120,6 +120,14 @@ sufler:
                           # 30 分钟上限之内，high/max 最多慢一倍
   cloud_live_effort: low  # 会中调用（对话线、问题回答）的推理强度
   cloud_night_effort: high  # 每夜档案与核心修订：600 秒上限，深度优先
+  # 每夜核心修订的提供方：anthropic（默认，claude -p）或 tinfoil —— 模型运行在
+  # 经证明的安全飞地中，客户端用已签名的发布版本核对 AMD 签名与路由器代码
+  # （pip install 'charoite[tinfoil]'，见 PRIVACY.md）。tinfoil 下暂时跳过档案。
+  # 其他任何值都会被拒绝，不发送任何内容。
+  # cloud_night_provider: tinfoil
+  cloud_night_tinfoil_model: deepseek-v4-1-flash  # Tinfoil 上的核心修订模型
+  cloud_night_tinfoil_effort: max  # Tinfoil 推理强度：low|high|xhigh|max（无 medium）
+  cloud_night_tinfoil_key_path: ~/.config/charoite/tinfoil_key  # API 密钥，权限 600
   cloud_edit_graph: false
   cloud_engine: false     # 整个对话经由云端网关（见 llm.engine: cloud）
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).

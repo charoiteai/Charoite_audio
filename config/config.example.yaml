@@ -226,6 +226,14 @@ sufler:
                           # укладывается в потолок 30 мин, high/max — до 2× дольше
   cloud_live_effort: low  # усилие вызовов в темпе встречи (нить, ответ на вопрос)
   cloud_night_effort: high  # ночные ревизии досье и ядер: потолок 600 с, глубина важнее
+  # Провайдер ночной ревизии ядер: anthropic (по умолчанию, claude -p) или tinfoil —
+  # модель в аттестованном энклаве, клиент сверяет подпись AMD и код роутера с
+  # подписанным релизом (pip install 'charoite[tinfoil]', см. PRIVACY.md). Досье
+  # при tinfoil пока пропускаются. Любое другое значение — отказ, ничего не уходит.
+  # cloud_night_provider: tinfoil
+  cloud_night_tinfoil_model: deepseek-v4-1-flash  # модель ревизии ядер у Tinfoil
+  cloud_night_tinfoil_effort: max  # усилие у Tinfoil: low|high|xhigh|max (medium нет)
+  cloud_night_tinfoil_key_path: ~/.config/charoite/tinfoil_key  # ключ API, права 600
   cloud_edit_graph: false
   cloud_engine: false     # весь чат через облачный шлюз (см. llm.engine: cloud)
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).

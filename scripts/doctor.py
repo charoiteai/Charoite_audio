@@ -453,6 +453,64 @@ def check_deps() -> None:
         line(OK, "python-зависимости")
 
 
+#: Пакеты ночного провайдера Tinfoil и их версии — те, что закреплены в
+#: pyproject (extra `tinfoil`): аттестацию проверяет код SDK (№792).
+TINFOIL_PINS = {"tinfoil": "0.15.0", "sigstore": "4.5.1", "tinfoil-ehbp": "0.4.1"}
+
+
+def check_night_provider(cfg: dict) -> None:
+    """Провайдер ночной ревизии: значение принято, пакеты и ключ на месте.
+
+    Версии — через метаданные, без импорта: SDK импортирует только дверь
+    src/night_cloud.py за гейтом. Файл ключа есть, а провайдер не выбран —
+    скорее всего опечатка в имени ключа конфига, и ночь молча идёт в Anthropic.
+    """
+    from importlib import metadata
+    sys.path.insert(0, str(CODE / "src"))
+    try:
+        import cloud
+        import privacy
+    except Exception as e:  # noqa: BLE001 — модули продукта, диагноз назван
+        line(WARN, f"провайдер ночи не проверен ({type(e).__name__})")
+        return
+    sufler = (cfg or {}).get("sufler") or {}
+    known = set(cloud.DEFAULTS) | {"cloud_night_provider", "cloud_night_effort",
+                                   "cloud_night_tinfoil_effort", "cloud_night_tinfoil_key_path"}
+    stray = sorted(k for k in sufler if str(k).startswith("cloud_night") and k not in known)
+    stray += sorted(f"{k} (вне sufler)" for k in (cfg or {}) if str(k).startswith("cloud_night"))
+    if stray:
+        # опечатка в имени ключа = ключа нет = ночь идёт в Anthropic молча (out1 H-I3)
+        line(WARN, "незнакомые ключи ночного провайдера: " + ", ".join(stray),
+             "проверьте имя: sufler.cloud_night_provider, cloud_night_tinfoil_*")
+    try:
+        provider = privacy.night_provider(cfg or {})
+    except privacy.PrivacyRefused as e:
+        line(FAIL, f"провайдер ночи не принят: {e}",
+             "sufler.cloud_night_provider: anthropic или tinfoil — или уберите ключ")
+        return
+    key = cloud.tinfoil_key_path(cfg or {})
+    if provider != "tinfoil":
+        if key.exists():
+            line(WARN, f"есть ключ Tinfoil ({key}), а ночной провайдер — {provider}",
+                 "нужен Tinfoil — sufler.cloud_night_provider: tinfoil (проверьте имя ключа)")
+        return
+    wrong = []
+    for pkg, want in TINFOIL_PINS.items():
+        try:
+            have = metadata.version(pkg)
+        except metadata.PackageNotFoundError:
+            have = "нет"
+        if have != want:
+            wrong.append(f"{pkg} {have} (нужно {want})")
+    if wrong:
+        line(FAIL, "ночной провайдер tinfoil: " + ", ".join(wrong),
+             ".venv/bin/pip install '.[tinfoil]'")
+    elif not cloud.read_secret(key):
+        line(FAIL, f"ночной провайдер tinfoil: нет ключа в {key}", "положите ключ API, chmod 600")
+    else:
+        line(OK, "ночной провайдер tinfoil: пакеты и ключ на месте")
+
+
 def check_llm_alive(cfg: dict) -> bool | str | None:
     """Отвечает ли модель на самом деле.
 
@@ -700,6 +758,7 @@ def main() -> None:
     check_models()
     check_nli()
     check_engine(cfg)
+    check_night_provider(cfg)
     print("\nРабочее состояние")
     alive = check_llm_alive(cfg)
     check_strict_json(cfg, alive)

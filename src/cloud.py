@@ -37,6 +37,9 @@ DEFAULTS = {
     "cloud_live_model": "claude-haiku-4-5",
     # уточнение подсказок: то же, но чаще — дешёвая и быстрая
     "cloud_hints_model": "claude-haiku-4-5",
+    # ночная ревизия ядер у провайдера Tinfoil (sufler.cloud_night_provider):
+    # замер 25.10 на трёх записях — по фактам на уровне Opus (№791)
+    "cloud_night_tinfoil_model": "deepseek-v4-1-flash",
 }
 # Усилие (effort) облачного разбора встречи. Не модель — отдельный словарь,
 # чтобы сторож примеров конфига (test_cloud_model_defaults) не требовал от
@@ -260,3 +263,51 @@ def add_proxy(env: dict, settings: pathlib.Path | None = None) -> None:
         if k.upper() not in present:
             env[k] = v
             present.add(k.upper())
+
+
+# Ночная ревизия у Tinfoil: свои уровни усилия — шлюз принимает только эти
+# (замер 25.10: medium и auto — HTTP 400), поэтому словарь Anthropic выше не
+# годится. Умолчание max: на трёх записях max ≈ xhigh ≈ Opus по фактам (№791).
+TINFOIL_EFFORT_LEVELS = ("low", "high", "xhigh", "max")
+TINFOIL_EFFORT_DEFAULT = "max"
+TINFOIL_KEY_DEFAULT = "~/.config/charoite/tinfoil_key"
+
+
+def tinfoil_effort(cfg: dict) -> str:
+    """Усилие ночной ревизии у Tinfoil; чужое слово — умолчание вслух (stderr)."""
+    raw = (cfg.get("sufler") or {}).get("cloud_night_tinfoil_effort")
+    value = str(raw or "").strip().lower()
+    if not value:
+        return TINFOIL_EFFORT_DEFAULT
+    if value not in TINFOIL_EFFORT_LEVELS:
+        print(f"cloud: cloud_night_tinfoil_effort: «{value}» не из {TINFOIL_EFFORT_LEVELS} — "
+              f"беру {TINFOIL_EFFORT_DEFAULT}", file=sys.stderr)
+        return TINFOIL_EFFORT_DEFAULT
+    return value
+
+
+def tinfoil_key_path(cfg: dict) -> pathlib.Path:
+    """Файл ключа Tinfoil: из конфига или умолчание рядом с прочими ключами."""
+    raw = (cfg.get("sufler") or {}).get("cloud_night_tinfoil_key_path")
+    return pathlib.Path(str(raw or "").strip() or TINFOIL_KEY_DEFAULT).expanduser()
+
+
+def read_secret(path: pathlib.Path) -> str:
+    """Секрет из файла владельца. Пусто — значит его нет.
+
+    Контракт тот же, что у llm.cloud_key: содержимое НИКОГДА не попадает ни в
+    лог, ни в текст ошибки — путь назвать можно, ключ нельзя. Права шире 600 —
+    не отказ (ключ уже на диске), но строка в stderr: доки обещают 600.
+    """
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    try:
+        mode = path.stat().st_mode & 0o077
+    except OSError:
+        mode = 0
+    if mode:
+        print(f"cloud: {path} доступен не только владельцу (chmod 600 рекомендуется)",
+              file=sys.stderr, flush=True)
+    return key

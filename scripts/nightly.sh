@@ -308,6 +308,8 @@ else
   $PY scripts/nightly_dossier_review.py --all-graphs || {
     case $? in
       3) echo "❌ ревизия досье: CLI облака не отвечает"; FAILED="$FAILED ревизия-досье(cli)" ;;
+      11) echo "❌ ревизия досье: провайдер ночи не принят (sufler.cloud_night_provider)"; FAILED="$FAILED ревизия-досье(провайдер)" ;;
+      16) echo "⏭️ ревизия досье пропущена: провайдер ночи tinfoil, досье — этап 2"; FAILED="$FAILED ревизия-досье(этап2)" ;;
       2) echo "⚠️ ревизия досье: часть тем не проверена (сбой шага)"; FAILED="$FAILED ревизия-досье(сбои)" ;;
       *) echo "⚠️ ревизия досье не отработала"; FAILED="$FAILED ревизия-досье" ;;
     esac
@@ -316,6 +318,8 @@ fi
 step "claude cores review"
 # облачный взгляд на ядра (Opus): отчёт-рекомендации, ничего не правит.
 # Выключено sufler.cloud_enrich/SUFLER_NO_CLOUD — шаг молчит.
+# Коды 11/14/15 — отказ политики, провал аттестации, провайдер недоступен
+# (src/exit_codes.py, №792): четыре разных утра, поэтому четыре метки.
 # Код 2 — «ответ облака не принят» (отказ, лимит, нет секций): раньше любой
 # ненулевой код гасился эхом, и ночь писала «ok» без файла ревизии, а бриф
 # молча терял разделы (аудит 17.08). rc не трогаем: шаг необязательный.
@@ -325,6 +329,10 @@ else
   $PY scripts/nightly_claude_cores.py || {
     case $? in
       3) echo "❌ облачная ревизия ядер: CLI облака не отвечает"; FAILED="$FAILED claude-cores(cli)" ;;
+      11) echo "❌ облачная ревизия ядер: провайдер ночи не принят (sufler.cloud_night_provider)"; FAILED="$FAILED claude-cores(провайдер)" ;;
+      # ушёл ли запрос, знает только дверь: строка шага выше (out3 DS-C1)
+      14) echo "❌ облачная ревизия ядер: аттестация провайдера не прошла (ушёл ли запрос — строка шага выше)"; FAILED="$FAILED claude-cores(аттестация)" ;;
+      15) echo "❌ облачная ревизия ядер: провайдер ночи недоступен"; FAILED="$FAILED claude-cores(недоступен)" ;;
       2) echo "⚠️ облачная ревизия ядер не принята"; FAILED="$FAILED claude-cores(не-принята)" ;;
       *) echo "⚠️ облачная ревизия не отработала"; FAILED="$FAILED claude-cores" ;;
     esac
@@ -368,16 +376,19 @@ FAILED="${FAILED# }"
 SLEPT_S=$(slept_seconds)   # заранее: ветка «slept» ниже решает по нему
 # отвалились ли ТОЛЬКО шаги «(поздно)» — без grep по выводу (shellcheck SC2143)
 ONLY_LATE=1
+# пропуск до следующего этапа (код 16) — плановый, не поломка: одни такие метки
+# статус не краснят, иначе под tinfoil красна каждая ночь и 14 в ней не видна (opus)
+ONLY_PENDING=1
 # Только непустой список: launchd зовёт /bin/bash 3.2, а под ним раскрытие
 # пустого массива при set -u — «unbound variable». Массив пуст ровно в чистую
 # ночь, и она две ночи подряд писалась как failed (23.09, №359).
 if [ -n "$FAILED" ]; then
   read -r -a _failed_steps <<< "$FAILED"
   for _step in "${_failed_steps[@]}"; do
-    case "$_step" in (*"(поздно)") ;; (*) ONLY_LATE=0 ;; esac
+    case "$_step" in (*"(поздно)") ONLY_PENDING=0 ;; (*"(этап2)") ;; (*) ONLY_LATE=0; ONLY_PENDING=0 ;; esac
   done
 fi
-if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then
+if [ "$rc" -eq 0 ] && { [ -z "$FAILED" ] || [ "$ONLY_PENDING" = 1 ]; }; then
   write_status ok
 elif [ "$SLEPT_S" -ge "${CHAROITE_NIGHTLY_SLEEP_S:-600}" ] && [ "$rc" -eq 0 ] && [ "$ONLY_LATE" = 1 ]; then
   # только «(поздно)» и проспано ≥10 мин: не поломка, а сон — ночь не состоялась

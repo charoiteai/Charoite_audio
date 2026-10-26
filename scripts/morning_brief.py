@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
+import night_cloud  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 from charoite_paths import harden_umask, log_path, resolve_root  # noqa: E402
@@ -71,6 +72,80 @@ def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
            f"меток диаризации среди Люди {rep.get('placeholders', 0)}, "
            f"дублей {rep.get('dup_real', 0)}, вне MOC {rep.get('moc_missing', 0)}"]
     out += [f"- ⚠️ {w}" for w in rep.get("warnings", [])]
+    return out
+
+
+#: Исход попытки двери night_cloud → слова для брифа.
+_NIGHT_OUTCOMES = {
+    "attestation": "аттестация провайдера НЕ прошла",
+    "unavailable": "провайдер недоступен",
+    "rejected": "ответ не принят",
+    "deadline": "ночь кончилась раньше ответа",
+    "refused": "провайдер не принят политикой",
+    "delivered": "ответ получен, но отчёт не подтверждён",
+}
+#: Метка впереди часов больше чем на сутки — не «часы ушли назад», а сбой:
+#: такая запись не стареет никогда и показывалась бы каждое утро (out3 S-M2).
+_FUTURE_H = 24
+
+
+def _fresh(age: float | None, window_h: float) -> bool:
+    return age is not None and -_FUTURE_H <= age <= window_h
+
+
+def _age_h(stamp, now: dt.datetime) -> float | None:
+    """Давность метки двери в часах; нет метки или битая — None (не показываем)."""
+    try:
+        at = dt.datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.astimezone()
+    return (now - at).total_seconds() / 3600
+
+
+def _night_cloud(graph: pathlib.Path, now: dt.datetime | None = None,
+                 max_age_h: int = 36, change_age_h: int = 72) -> list[str]:
+    """Строки об аттестации ночного провайдера — только из файла состояния двери.
+
+    Текст отчёта пишет модель, и заголовок «Аттестация» в нём подделывается
+    (in3 S-I5, №792); файл состояния пишет сама дверь. Строка — только когда
+    есть что сказать: свежая попытка не принята или отпечаток роутера сменился.
+    Свежесть — по метке времени, не по календарной дате: ночь через полночь
+    и бриф наутро видят ту же попытку (out1 S-I5, DS-I4). Смена отпечатка и
+    провал аттестации живут `change_age_h` — пропущенный бриф одного утра и
+    следующая попытка их не стирают (out1 H-M2, opus I2).
+    """
+    # запись уже в форме двери: свободного текста в ней нет (решение главной по out5)
+    entry = night_cloud.read_entry(resolve_root(__file__) / "logs" / "night_cloud_state.json",
+                                   str(graph.expanduser().resolve()))
+    now = now or dt.datetime.now().astimezone()
+    out = []
+    attempt = entry.get("last_attempt", {})
+    age = _age_h(attempt.get("at"), now)
+    # давность меньше нуля — часы ушли назад, а не «старая попытка»: показываем (out2 DS-M5)
+    shown = _fresh(age, max_age_h) and not attempt.get("accepted")
+    if shown:
+        # ушёл ли запрос и почему, бриф не говорит: факт и текст — в строке ночного шага
+        what = _NIGHT_OUTCOMES.get(attempt.get("outcome"), "исход не записан")
+        detail = [f"HTTP {attempt['http_status']}"] if attempt.get("http_status") else []
+        if attempt.get("finish_reason") not in (None, "stop"):
+            detail.append(f"finish_reason={attempt['finish_reason']}")
+        out.append(f"- ⚠️ ночная ревизия ядер ({attempt.get('provider', '?')}) не отработала: "
+                   f"{what}" + (f" ({', '.join(detail)})" if detail else ""))
+    failure = entry.get("last_attestation_failure", {})
+    # та же попытка уже сказана строкой выше — второй раз не повторяем
+    same = shown and attempt.get("outcome") == "attestation" and attempt.get("at") == failure.get("at")
+    if _fresh(_age_h(failure.get("at"), now), change_age_h) and not same:
+        out.append(f"- ⚠️ аттестация ночного провайдера не прошла {failure.get('date') or '?'} "
+                   f"(релиз {failure.get('release') or '?'}, отпечаток {failure.get('fingerprint', '')[:16] or '?'})"
+                   " — возможна подмена; подробности в логе ночи за эту дату")
+    change = entry.get("fingerprint_change", {})
+    age = _age_h(change.get("at"), now)
+    if _fresh(age, change_age_h):
+        out.append(f"- отпечаток роутера Tinfoil сменился: релиз {change.get('from_release') or '?'} "
+                   f"({change.get('from') or '?'}) → {change.get('to_release') or '?'} "
+                   f"({change.get('to') or '?'})")
     return out
 
 
@@ -211,6 +286,9 @@ def build_brief(graph: pathlib.Path) -> str | None:
     health = _graph_health(graph) + _bench_alert(graph)
     if health:
         lines += ["## Здоровье графа (ночной doctor)"] + health + [""]
+    attest = _night_cloud(graph)
+    if attest:
+        lines += ["## Аттестация ночного провайдера"] + attest + [""]
 
     # ночная ревизия Opus: три риска — в самый верх брифа, хвосты — в конец.
     # Берём свежий отчёт (сегодня либо вчера), старый молча пропускаем.
@@ -225,7 +303,9 @@ def build_brief(graph: pathlib.Path) -> str | None:
                 return [ln for ln in m.group(1).strip().splitlines() if ln.strip()] if m else []
             risks = night_sect("Три (?:главных )?риска")
             tails = night_sect("Потерянные хвосты")
-            link = f"[[{rev.stem}|полный отчёт]]"
+            # вчерашний отчёт подписан датой: сегодняшней ревизии нет, и брифу
+            # не годится выдавать прошлую ночь за эту (№792)
+            link = f"[[{rev.stem}|полный отчёт{' за ' + day if shift else ''}]]"
             if risks:
                 # вставляем сразу после «# Сегодня …» и пустой строки
                 pos = lines.index("", lines.index("# Сегодня — контекст дня (по встречам " + last_day + ")"))
