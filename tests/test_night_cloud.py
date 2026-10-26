@@ -9,6 +9,7 @@ CI без сети и без SDK: клиент подменяет фабрика
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import importlib
 import importlib.util
@@ -17,6 +18,8 @@ import json as _json
 import pathlib
 import re
 import ssl
+import stat
+import subprocess
 import sys
 import threading
 import time
@@ -32,6 +35,9 @@ import night_cloud  # noqa: E402
 import privacy  # noqa: E402
 from exit_codes import (EXIT_ATTESTATION_FAILED, EXIT_PRIVACY_REFUSED,  # noqa: E402
                         EXIT_PROVIDER_UNAVAILABLE)
+
+#: настоящий запуск: фикстура шага ядер подменяет subprocess.run заглушкой
+_REAL_RUN = subprocess.run
 
 KEY = "tf-SECRET-key-0123456789"
 SECTIONS = ("## Противоречия\n- нет\n## Протухшее\n- нет\n## Слияния\n- нет\n"
@@ -1499,3 +1505,276 @@ def test_doctor_warns_about_a_key_without_the_provider(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "есть ключ Tinfoil" in out and "незнакомые" not in out
 
+
+# ── мутанты CI #857: границы, запись состояния, ветка anthropic шага ядер ──
+
+class _Log:
+    """Поток лога ночи: строка видна читателю только после flush — как у
+    stdout/stderr, перенаправленных в файл лога."""
+
+    def __init__(self):
+        self.pending, self.seen = "", ""
+
+    def write(self, s):
+        self.pending += s
+        return len(s)
+
+    def flush(self):
+        self.seen, self.pending = self.seen + self.pending, ""
+
+
+def _chain(n: int, last: BaseException) -> BaseException:
+    """Цепочка `__cause__` из n исключений; `last` — n-е звено."""
+    errs = [ValueError(f"звено {i}") for i in range(n - 1)] + [last]
+    for a, b in zip(errs, errs[1:]):
+        a.__cause__ = b
+    return errs[0]
+
+
+def _fixed(remaining: float) -> night_cloud.Deadline:
+    """Срок, у которого остаток не меняется: часы стоят."""
+    return night_cloud.Deadline(at=100.0 + remaining, clock=lambda: 100.0)
+
+
+def test_door_error_raised_outside_send_claims_nothing_sent():
+    for cls in (night_cloud.AttestationFailed, night_cloud.ProviderUnavailable,
+                night_cloud.ReplyRejected, night_cloud.DeadlineExpired):
+        assert cls("x").sent is False
+
+
+def test_deadline_and_reply_cannot_be_changed_after_creation():
+    deadline = night_cloud.Deadline.after(5)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        deadline.at = 0.0
+    reply = night_cloud.Reply(text="t", provider="tinfoil", model="m", attestation="a")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        reply.text = "другой"
+
+
+def test_cause_is_cut_only_past_the_limit_and_counts_the_cut():
+    limit = night_cloud._CAUSE_LIMIT
+    exact = "я" * limit
+    assert night_cloud._cause(exact) == exact
+    assert night_cloud._cause("я" * (limit + 7)) == "я" * limit + "… (обрезано 7 зн.)"
+
+
+def test_status_and_cause_walks_stop_at_sixteen_links():
+    class Coded(Exception):
+        status_code = 503
+
+    assert night_cloud._http_status(_chain(16, Coded())) == 503
+    assert night_cloud._http_status(_chain(17, Coded())) is None
+    assert night_cloud._classify(_chain(16, _tinfoil_error())) is night_cloud.AttestationFailed
+    assert night_cloud._classify(_chain(17, _tinfoil_error())) is night_cloud.ProviderUnavailable
+
+
+@pytest.mark.parametrize("code,want", [(100, 100), (599, 599), (99, None), (600, None), (True, None)])
+def test_http_code_counts_only_inside_the_http_range(code, want):
+    err = Exception("ответ")
+    err.status_code = code
+    assert night_cloud._status_of(err) == want
+    kept = night_cloud.conform_entry({"last_attempt": {"http_status": code}})
+    assert kept.get("last_attempt", {}).get("http_status") == want
+
+
+def test_document_without_security_verified_is_not_attested():
+    client = FakeClient()
+    del client.doc.security_verified
+    with pytest.raises(night_cloud.AttestationFailed, match="security_verified"):
+        night_cloud._verified(client)
+
+
+def test_attestation_reason_names_the_missing_and_the_failed_step():
+    client = FakeClient()
+    del client.doc.steps["verify_code"]
+    with pytest.raises(night_cloud.AttestationFailed, match="verify_code"):
+        night_cloud._verified(client)
+    with pytest.raises(night_cloud.AttestationFailed, match="compare_measurements"):
+        night_cloud._verified(FakeClient(steps_ok=False))
+
+
+def test_attestation_line_names_router_release_and_fingerprint_head():
+    line, fingerprint, release = night_cloud._verified(FakeClient())
+    assert line.startswith(f"роутер router.example, релиз v0.0.167, отпечаток {'ab' * 8}, "), line
+    assert (fingerprint, release) == ("ab" * 32, "v0.0.167")
+    line, _, _ = night_cloud._verified(_doc_client(enclave_host="", release_tag=""))
+    assert line.startswith(f"роутер ?, релиз ?, отпечаток {'ab' * 8}, "), line
+
+
+@pytest.mark.parametrize("change,said", [
+    ({"enclave_host": "Router Bad!"}, "имя роутера не той формы"),
+    ({"release_tag": "v1 beta"}, "тег релиза не той формы"),
+])
+def test_out_of_form_router_or_release_line_reaches_the_log(monkeypatch, change, said):
+    """По одному полю на случай: flush соседней строки не выносит в лог чужую."""
+    log = _Log()
+    monkeypatch.setattr(sys, "stderr", log)
+    night_cloud._verified(_doc_client(**change))
+    assert said in log.seen and log.pending == ""
+
+
+def test_state_file_of_another_shape_reads_as_empty(tmp_path):
+    state = tmp_path / "logs" / "night_cloud_state.json"
+    state.parent.mkdir()
+    state.write_text("[1, 2]", encoding="utf-8")
+    assert night_cloud.read_entry(state, "G") == {}
+    _send(tmp_path, _cfg(tmp_path), Factory())
+    assert _state(tmp_path)["last_attempt"]["outcome"] == "delivered"
+
+
+def test_state_is_written_where_no_folder_exists_yet_without_noise(tmp_path, capsys):
+    state = tmp_path / "новый корень" / "logs" / "night_cloud_state.json"
+    real = night_cloud._attest
+    night_cloud._attest = Factory()
+    try:
+        reply = night_cloud.send(_cfg(tmp_path), "ядра графа", deadline=night_cloud.Deadline.after(30),
+                                 state_path=state, graph_key="G")
+    finally:
+        night_cloud._attest = real
+    night_cloud.accept(state, "G", reply)
+    entry = night_cloud.read_entry(state, "G")
+    assert entry["last_accepted"]["fingerprint"] == "ab" * 32 and entry["last_attempt"]["accepted"] is True
+    assert "не записан" not in capsys.readouterr().out
+
+
+def test_state_file_is_private_from_its_first_byte(tmp_path, monkeypatch):
+    seen = []
+    real = night_cloud.os.fchmod
+
+    def fchmod(fd, mode):
+        seen.append(stat.S_IMODE(night_cloud.os.fstat(fd).st_mode))
+        real(fd, mode)
+
+    monkeypatch.setattr(night_cloud.os, "fchmod", fchmod)
+    _send(tmp_path, _cfg(tmp_path), Factory())
+    assert seen and all(m & 0o077 == 0 and m & 0o600 == 0o600 for m in seen), [oct(m) for m in seen]
+
+
+def test_state_file_keeps_graph_names_readable(tmp_path):
+    _send(tmp_path, _cfg(tmp_path), Factory(), graph_key="Граф встреч")
+    raw = (tmp_path / "logs" / "night_cloud_state.json").read_text(encoding="utf-8")
+    assert '\n "Граф встреч": {\n  "last_attempt"' in raw, raw[:200]
+
+
+def test_busy_state_lock_says_so_in_the_log(tmp_path, monkeypatch):
+    log = _Log()
+    monkeypatch.setattr(night_cloud.file_locks, "acquire_exclusive", lambda *a, **k: False)
+    monkeypatch.setattr(sys, "stdout", log)
+    night_cloud.reject(tmp_path / "logs" / "night_cloud_state.json", "G")
+    assert "занят — исход не записан" in log.seen
+
+
+def test_failed_state_write_says_so_in_the_log(tmp_path, monkeypatch):
+    def broken(*a, **k):
+        raise OSError("диск")
+
+    log = _Log()
+    monkeypatch.setattr(night_cloud, "_update_state", broken)
+    monkeypatch.setattr(sys, "stdout", log)
+    night_cloud.reject(tmp_path / "logs" / "night_cloud_state.json", "G")
+    assert "не записан: OSError" in log.seen
+
+
+def test_rejected_reply_is_recorded_as_not_accepted(tmp_path):
+    _send(tmp_path, _cfg(tmp_path), Factory())
+    night_cloud.reject(tmp_path / "logs" / "night_cloud_state.json", "G")
+    attempt = _state(tmp_path)["last_attempt"]
+    assert attempt["outcome"] == "rejected" and attempt["accepted"] is False
+
+
+def test_attempt_date_is_the_day_of_its_stamp(tmp_path):
+    _send(tmp_path, _cfg(tmp_path), Factory())
+    attempt = _state(tmp_path)["last_attempt"]
+    assert attempt["date"] == attempt["at"][:10] and len(attempt["date"]) == 10
+
+
+def test_read_timeout_has_a_floor_when_the_step_is_almost_over(tmp_path, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(night_cloud, "_attest", Factory(client=client))
+    box = {"lock": threading.Lock()}
+    night_cloud._exchange(_cfg(tmp_path), KEY, "p", "m", "max", _fixed(1e-6), box)
+    assert client.options[0]["timeout"] == 0.001 and client.options[0]["max_retries"] == 0
+
+
+def test_exchange_with_no_time_left_stops_before_the_request(tmp_path, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(night_cloud, "_attest", Factory(client=client))
+    box = {"lock": threading.Lock()}
+    with pytest.raises(night_cloud.DeadlineExpired):
+        night_cloud._exchange(_cfg(tmp_path), KEY, "p", "m", "max", _fixed(0.0), box)
+    assert not client.creates and not box.get("sent")
+
+
+def test_send_with_no_time_left_does_not_attest(tmp_path):
+    factory = Factory()
+    with pytest.raises(night_cloud.DeadlineExpired):
+        _send(tmp_path, _cfg(tmp_path), factory, deadline=_fixed(0.0))
+    _join_exchange()
+    assert factory.calls == 0
+    assert _state(tmp_path)["last_attempt"]["outcome"] == "deadline"
+
+
+@pytest.mark.parametrize("left,want", [(7.0, 7.0), (None, None)])
+def test_cores_step_deadline_is_what_is_left_of_the_night(cores_step, monkeypatch, left, want):
+    ncc = cores_step.ncc
+    sends = []
+
+    def fake_send(*a, **k):
+        sends.append(k["deadline"].remaining())
+        raise night_cloud.DeadlineExpired("стоп")
+
+    monkeypatch.setattr(ncc.live_gate, "step_left", lambda *a, **k: left)
+    monkeypatch.setattr(ncc.night_cloud, "send", fake_send)
+    assert _exit_code(ncc.main) == 0
+    want = ncc.STEP_BUDGET_S if want is None else want
+    assert want - 1 < sends[0] <= want
+
+
+def _anthropic_step(cores_step, monkeypatch, tmp_path, script: str):
+    """Шаг ядер на ветке anthropic с настоящим подпроцессом: CLI — скрипт."""
+    cli = tmp_path / "claude"
+    cli.write_text("#!/bin/sh\n" + script, encoding="utf-8")
+    cli.chmod(0o755)
+    cores_step.cfg["sufler"]["cloud_night_provider"] = "anthropic"
+    ncc = cores_step.ncc
+    monkeypatch.setattr(ncc.cloud, "claude_bin_checked", lambda *a, **k: None)
+    monkeypatch.setattr(ncc.cloud, "claude_bin", lambda *a, **k: str(cli))
+    monkeypatch.setattr(ncc.subprocess, "run", _REAL_RUN)
+    return ncc
+
+
+def test_cores_step_anthropic_writes_the_cli_report_without_the_api_key(cores_step, monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-не-для-ночи")
+    ncc = _anthropic_step(cores_step, monkeypatch, tmp_path,
+                          '[ -n "$ANTHROPIC_API_KEY" ] && { echo "ключ API в окружении" >&2; exit 1; }\n'
+                          f"cat <<'R'\n{SECTIONS}R\n")
+    assert _exit_code(ncc.main) == 0
+    (rep,) = cores_step.graph.glob("Служебное_ночная_ревизия_*.md")
+    assert SECTIONS.strip() in rep.read_text(encoding="utf-8")
+
+
+def test_cores_step_anthropic_failure_names_the_cli_reason(cores_step, monkeypatch, tmp_path, capsys):
+    ncc = _anthropic_step(cores_step, monkeypatch, tmp_path, 'echo "лимит исчерпан" >&2\nexit 1\n')
+    assert _exit_code(ncc.main) == 2
+    out = capsys.readouterr().out
+    assert "ревизия не принята" in out and "лимит исчерпан" in out
+    assert not list(cores_step.graph.glob("Служебное_ночная_ревизия_*.md"))
+
+
+def test_cores_step_anthropic_infrastructure_codes(cores_step, monkeypatch, tmp_path):
+    ncc = _anthropic_step(cores_step, monkeypatch, tmp_path, "exit 0\n")
+
+    def no_cli(*a, **k):
+        raise ncc.cloud.CloudCLIUnavailable("нет ответа на --version")
+
+    monkeypatch.setattr(ncc.cloud, "claude_bin_checked", no_cli)
+    assert _exit_code(ncc.main) == 3, "CLI не отвечает — код 3"
+    monkeypatch.setattr(ncc.cloud, "claude_bin_checked", lambda *a, **k: None)
+    monkeypatch.setattr(ncc.cloud, "claude_bin", lambda *a, **k: str(tmp_path / "нет_такого"))
+    assert _exit_code(ncc.main) == 3, "бинарник не запустился — код 3"
+
+    def crash(*a, **k):
+        raise RuntimeError("авария")
+
+    monkeypatch.setattr(ncc.subprocess, "run", crash)
+    assert _exit_code(ncc.main) == 2, "авария облака — код 2"
