@@ -23,17 +23,17 @@ import graph_updater  # noqa: E402
 def test_bare_name_with_namesakes_in_any_word_order():
     idx = graph_names.namesake_index(["Саша Образцов", "Сидоров Саша", "Саша", "Иван Петров",
                                       "Собеседник 3 (Саша)"])
-    assert graph_names.bare_namesakes("Саша", idx) == ["Саша Образцов", "Сидоров Саша"]
-    assert graph_names.bare_namesakes("Саша (из минуток)", idx) == ["Саша Образцов", "Сидоров Саша"], \
+    assert graph_names.bare_namesakes("Саша", idx, owner="") == ["Саша Образцов", "Сидоров Саша"]
+    assert graph_names.bare_namesakes("Саша (из минуток)", idx, owner="") == ["Саша Образцов", "Сидоров Саша"], \
         "скобка — пометка, не часть имени"
-    assert graph_names.bare_namesakes("САША", idx), "регистр имени не различает"
+    assert graph_names.bare_namesakes("САША", idx, owner=""), "регистр имени не различает"
 
 
 def test_full_name_label_or_lonely_name_is_not_collective():
     idx = graph_names.namesake_index(["Саша Образцов", "Собеседник 3 (Саша)"])
-    assert graph_names.bare_namesakes("Саша Образцов", idx) == [], "полное имя — не голое"
-    assert graph_names.bare_namesakes("Собеседник 3", idx) == [], "метка — не имя"
-    assert graph_names.bare_namesakes("Гоша", idx) == [], "без тёзок — обычный узел"
+    assert graph_names.bare_namesakes("Саша Образцов", idx, owner="") == [], "полное имя — не голое"
+    assert graph_names.bare_namesakes("Собеседник 3", idx, owner="") == [], "метка — не имя"
+    assert graph_names.bare_namesakes("Гоша", idx, owner="") == [], "без тёзок — обычный узел"
     assert "собеседник" not in idx and "3" not in idx, "метка в индекс тёзок не идёт"
 
 
@@ -46,10 +46,29 @@ def test_name_words_follow_the_name_not_the_punctuation():
     assert graph_names.name_words("Жан-Пьер") == ["жан-пьер"]
     assert graph_names.name_words("Саша 2") == ["саша"]
     idx = graph_names.namesake_index(["Иван (Петров)", "Жан-Пьер", "Саша 2", "Пётр Лесков"])
-    assert graph_names.bare_namesakes("Иван", idx) == ["Иван (Петров)"], "тёзка в скобочной форме"
-    assert graph_names.bare_namesakes("Иван (Иванов)", idx) == [], "скобка с фамилией — полное имя"
-    assert graph_names.bare_namesakes("Жан", idx) == [] and graph_names.bare_namesakes("Саша", idx) == []
-    assert graph_names.bare_namesakes("Петр", idx) == ["Пётр Лесков"]
+    assert graph_names.bare_namesakes("Иван", idx, owner="") == ["Иван (Петров)"], "тёзка в скобочной форме"
+    assert graph_names.bare_namesakes("Иван (Иванов)", idx, owner="") == [], "скобка с фамилией — полное имя"
+    assert graph_names.bare_namesakes("Жан", idx, owner="") == [] and graph_names.bare_namesakes("Саша", idx, owner="") == []
+    assert graph_names.bare_namesakes("Петр", idx, owner="") == ["Пётр Лесков"]
+    assert graph_names.bare_namesakes("Саша 2", {"саша": ["Саша Образцов"]}, owner="") == [], \
+        "имя с числом — копия, не голое (n611-s1-out2 DS M3)"
+
+
+def test_bracket_tag_is_not_part_of_the_name():
+    """Скобка-пометка снимается: метка с запятой, аббревиатура, перечень, имя узла
+    Систем; узел с местом в скобке тёзок различает сам и не голый (n611-s1-out2:
+    Sonnet I3, DS I1, Haiku M4)."""
+    tags = frozenset({"витрина"})
+    assert graph_names.name_words("Иван (Витрина)", tags) == ["иван"]
+    assert graph_names.name_words("Иван (Витрина)") == ["иван", "витрина"], "без индекса Систем — как имя"
+    assert graph_names.name_words("Пётр Лесков (ОТДЕЛ)") == ["петр", "лесков"]
+    assert graph_names.name_words("Саша (Собеседник 1, муж)") == ["саша"]
+    assert graph_names.name_words("Костя (Андрей, Олег и др.)") == ["костя"]
+    assert graph_names.is_placeholder_node("Саша (Собеседник 1, муж)")
+    idx = graph_names.namesake_index(["Илья Петров", "Илья (ОТДЕЛ)", "Иван (Витрина)"], tags)
+    assert "отдел" not in idx and "витрина" not in idx and "иван" not in idx
+    assert graph_names.bare_namesakes("Илья (ОТДЕЛ)", idx, owner="") == [], "место в скобке различает тёзок"
+    assert graph_names.bare_namesakes("Илья", idx, owner="") == ["Илья Петров"]
 
 
 def test_owner_full_name_is_not_a_namesake_but_owner_namesake_counts():
@@ -58,6 +77,18 @@ def test_owner_full_name_is_not_a_namesake_but_owner_namesake_counts():
     idx = graph_names.namesake_index(["Саша Образцов", "Саша Сидоров", "Пётр Лесков"])
     assert graph_names.bare_namesakes("Саша", idx, owner="Саша Образцов") == ["Саша Сидоров"]
     assert graph_names.bare_namesakes("Пётр", idx, owner="Лесков Пётр") == [], "единственный тёзка — сам владелец"
+    assert graph_names.bare_namesakes("Пётр", idx, owner="Пётр Иванович Лесков") == [], \
+        "узел владельца без отчества — тоже владелец (Sonnet 7)"
+    idx = graph_names.namesake_index(["Пётр Лесков (ОТДЕЛ)"])
+    assert graph_names.bare_namesakes("Пётр", idx, owner="Пётр Лесков") == [], "пометка у узла владельца (DS I1)"
+
+
+def test_one_word_owner_node_is_the_owner_not_collective():
+    """Однословный владелец: голый узел с его именем — его собственный, конвейер
+    пишет владельца ровно так; другой голый узел с тёзками — сборный (DS I2)."""
+    idx = graph_names.namesake_index(["Игорь Ветров", "Саша Образцов"])
+    assert graph_names.bare_namesakes("Игорь", idx, owner="Игорь") == []
+    assert graph_names.bare_namesakes("Саша", idx, owner="Игорь") == ["Саша Образцов"]
 
 
 def test_speaker_label_as_actor_in_text():
@@ -72,6 +103,11 @@ def test_speaker_label_as_actor_in_text():
     assert not graph_names.has_speaker_actor("Вера (муж, Собеседник 4) за"), "внутри скобки — пометка"
     assert not graph_names.has_speaker_actor("(Спикер 31 и Спикер 32)")
     assert not graph_names.has_speaker_actor("спикер 2024 года"), "год — не номер метки"
+    for text in ("спикер 3D выступил", "участник 14.09 решил", "участник 2-й линии", "Speaker 10x"):
+        assert not graph_names.has_speaker_actor(text), text   # число — целым словом (out2 Sonnet I4)
+    for text in ("Итог :(\n\nСобеседник 3 решил", "(см. прошлую\n[[Люди/Спикер 41]] решил", "Собеседник 3."):
+        assert graph_names.has_speaker_actor(text), text   # незакрытая скобка метку не прячет (DS I3)
+    assert not graph_names.has_speaker_actor("((Собеседник 3))")
     assert not graph_names.has_speaker_actor("собеседники согласились")
     assert not graph_names.has_speaker_actor("")
 
@@ -88,7 +124,8 @@ def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
     (graph / "Системы" / "Настя.md").write_text("# Настя\n", encoding="utf-8")
     (graph / "Системы" / "Витрина.md").write_text("# Витрина\n", encoding="utf-8")
     (graph / "Люди" / "Вера (ОТДЕЛ).md").write_text("# Вера (ОТДЕЛ)\n", encoding="utf-8")
-    (graph / "Системы" / "ОТДЕЛ.md").write_text("# ОТДЕЛ\n", encoding="utf-8")   # аббревиатура — система
+    (graph / "Системы" / "ОТДЕЛ.md").write_text("# ОТДЕЛ\n", encoding="utf-8")   # пометка у человека — не тёзка
+    (graph / "Люди" / "Гоша (Витрина).md").write_text("# Гоша (Витрина)\n", encoding="utf-8")
     (graph / "Досье" / "Релиз.md").write_text("# Релиз\nСобеседник 2 решил ждать.\n", encoding="utf-8")
     (graph / "Досье" / "Бюджет.md").write_text("# Бюджет\nВера (Собеседник 4) за.\n", encoding="utf-8")
     (graph / "Встречи" / "2026-10-01_1000.md").write_text(
@@ -123,7 +160,7 @@ def test_owner_name_counts_without_config(tmp_path):
 
 
 def test_collective_warning_fires_on_new_nodes_only(tmp_path):
-    """База — прошлая лента, не число: известное не горит каждую ночь, «один слит,
+    """База — лента прошлой ночи, не число: известное не горит каждую ночь, «один слит,
     другой появился» — горит (Sonnet M3). Досье — без предупреждения: пересобираются
     каждую ночь (критика Sonnet 2)."""
     graph = _graph(tmp_path)
@@ -140,7 +177,7 @@ def test_collective_warning_fires_on_new_nodes_only(tmp_path):
     (graph / "Люди" / "Гоша Лесков.md").write_text("# Гоша Лесков\n", encoding="utf-8")
     swapped = graph_doctor.inspect(graph, owner="Пётр Лесков", prev_feed=first["feed"])
     assert swapped["collective"] == 1
-    assert any("сборных узлов в Люди (голое имя при живых тёзках): 1" in w and "новых с прошлого прогона 1" in w
+    assert any("сборных узлов в Люди (голое имя при живых тёзках): 1" in w and "новых с прошлой ночи 1" in w
                for w in swapped["warnings"]), swapped["warnings"]
 
 
@@ -153,23 +190,86 @@ def test_note_linking_two_collective_nodes_counts_once(tmp_path):
     assert rep["collective"] == 2 and rep["collective_links"] == 3, rep   # В1, В2, В3 — три заметки
 
 
+def _run(monkeypatch, report, *args, user_name="Пётр Лесков"):
+    monkeypatch.setattr(graph_doctor, "report_path", lambda: report)
+    monkeypatch.setattr(graph_updater, "load_cfg", lambda: {"sufler": {"user_name": user_name}})
+    monkeypatch.setattr(sys, "argv", ["graph_doctor.py", *map(str, args)])
+    return graph_doctor.main()
+
+
+def _warned(report, graph) -> bool:
+    rep = json.loads(report.read_text(encoding="utf-8"))["graphs"][str(graph)]
+    return any("сборных узлов" in w for w in rep["warnings"])
+
+
 def test_main_writes_feed_beside_report_and_keeps_report_lean(tmp_path, monkeypatch):
     graph = _graph(tmp_path)
     report = tmp_path / "logs" / "graph_doctor.json"
-    monkeypatch.setattr(graph_doctor, "report_path", lambda: report)
-    monkeypatch.setattr(graph_updater, "load_cfg", lambda: {"sufler": {"user_name": "Пётр Лесков"}})
-    monkeypatch.setattr(sys, "argv", ["graph_doctor.py", "--graph", str(graph)])
-    graph_doctor.main()
+    assert _run(monkeypatch, report, "--graph", graph) == 0
 
     rep = json.loads(report.read_text(encoding="utf-8"))["graphs"][str(graph)]
     feed = json.loads((report.parent / "graph_feed.json").read_text(encoding="utf-8"))["graphs"][str(graph)]
     assert "feed" not in rep and rep["collective"] == 1
     assert [c["node"] for c in feed["collective"]] == ["Люди/Саша.md"], "владелец из конфига — не сборный"
+    assert not (report.parent / "graph_feed_base.json").exists(), "базу двигает только --advance-base"
 
-    report.unlink()       # ночь при сбое доктора стирает отчёт — база в ленте остаётся (DS I2)
-    graph_doctor.main()
-    again = json.loads(report.read_text(encoding="utf-8"))["graphs"][str(graph)]
-    assert not [w for w in again["warnings"] if "graph_feed" in w], again["warnings"]
+
+def test_both_night_passes_warn_and_the_final_one_moves_the_base(tmp_path, monkeypatch):
+    """Ночь зовёт доктора дважды: ранний проход и итоговый сравнивают с базой прошлой
+    ночи, и новое горит в позднем брифе; базу двигает итоговый, следующая ночь молчит
+    (n611-s1-out2 C1). Ручной прогон днём базу не трогает."""
+    graph = _graph(tmp_path)
+    report = tmp_path / "logs" / "graph_doctor.json"
+    _run(monkeypatch, report, "--graph", graph)
+    assert _warned(report, graph), "ранний проход"
+    _run(monkeypatch, report, "--graph", graph, "--advance-base")
+    assert _warned(report, graph), "итоговый проход той же ночи — предупреждение доживает до брифа"
+    _run(monkeypatch, report, "--graph", graph)
+    assert not _warned(report, graph), "следующая ночь — известное не горит"
+    (graph / "Люди" / "Гоша Лесков.md").write_text("# Гоша Лесков\n", encoding="utf-8")
+    _run(monkeypatch, report, "--graph", graph)
+    _run(monkeypatch, report, "--graph", graph)
+    assert _warned(report, graph), "ручной прогон днём базу не сдвинул"
+
+
+def test_base_keeps_graphs_outside_this_run(tmp_path, monkeypatch):
+    """`--graph` и граф, не прочитанный этой ночью, не стирают чужую запись базы
+    (Sonnet 6, Haiku I5)."""
+    one, two = _graph(tmp_path / "a"), _graph(tmp_path / "b")
+    report = tmp_path / "logs" / "graph_doctor.json"
+    _run(monkeypatch, report, "--graph", one, "--advance-base")
+    _run(monkeypatch, report, "--graph", two, "--advance-base")
+    base = json.loads((report.parent / "graph_feed_base.json").read_text(encoding="utf-8"))["graphs"]
+    assert set(base) == {str(one), str(two)}
+    _run(monkeypatch, report, "--graph", one)
+    assert not _warned(report, one)
+
+
+def test_unwritten_report_fails_and_leaves_the_base(tmp_path, monkeypatch):
+    """Отчёт не записан — код 1, база стоит: новое не уходит в базу мимо брифа
+    (Sonnet I2, DS I4, Haiku I1)."""
+    graph = _graph(tmp_path)
+    report = tmp_path / "logs" / "graph_doctor.json"
+    real = graph_doctor.safe_write.write_text
+
+    def flaky(path, text, **kw):
+        if path.name == "graph_doctor.json":
+            raise OSError("диск полон")
+        return real(path, text, **kw)
+
+    monkeypatch.setattr(graph_doctor.safe_write, "write_text", flaky)
+    assert _run(monkeypatch, report, "--graph", graph, "--advance-base") == 1
+    assert not (report.parent / "graph_feed_base.json").exists()
+
+
+def test_hand_edited_report_or_odd_owner_does_not_crash(tmp_path, monkeypatch):
+    """Запись графа в отчёте не словарь, имя владельца не строка — доктор работает
+    (DS M1, Sonnet 7)."""
+    graph = _graph(tmp_path)
+    report = tmp_path / "logs" / "graph_doctor.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({"graphs": {str(graph): 1}}), encoding="utf-8")
+    assert _run(monkeypatch, report, "--graph", graph, user_name=2026) == 0
 
 
 def test_doctor_writes_through_the_atomic_door(tmp_path, monkeypatch):
@@ -186,3 +286,6 @@ def test_doctor_writes_through_the_atomic_door(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["graph_doctor.py", "--graph", str(graph)])
     graph_doctor.main()
     assert written == ["graph_doctor.json", "graph_feed.json"]
+    monkeypatch.setattr(sys, "argv", ["graph_doctor.py", "--graph", str(graph), "--advance-base"])
+    graph_doctor.main()
+    assert written[2:] == ["graph_doctor.json", "graph_feed.json", "graph_feed_base.json"]

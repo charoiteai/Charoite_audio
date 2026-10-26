@@ -21,7 +21,9 @@
 
 Граф не меняет. Отчёт — JSON для утреннего брифа (logs/graph_doctor.json
 в корне данных) и сводка в stdout; полные списки сборных и чужих людей —
-лента logs/graph_feed.json рядом с отчётом. Пороги предупреждений: битых > 2 %
+лента logs/graph_feed.json рядом с отчётом; новые сборные считаются от
+базы logs/graph_feed_base.json — ленты итога прошлой ночи, которую сдвигает
+только `--advance-base` (итоговый проход nightly.sh). Пороги предупреждений: битых > 2 %
 активных ссылок, метки > 0, сироты > 5 % узлов, настоящие дубли > 0,
 почти-дубли > 0. Аудит графа 28.08: 626 битых из 68 514 ссылок, 17
 узлов-меток, 5 дублей, 7 почти-дублей — цифры, которых до этого скрипта
@@ -66,8 +68,8 @@ def _is_stub(text: str) -> bool:
 def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = None,
             prev_feed: dict | None = None, owner: str = "") -> dict:
     """Метрики одного графа. `examples` > 0 — добавить примеры путей. `prev_feed` —
-    прошлая лента этого графа (None — ленты не было): база сигнала о новых сборных
-    узлах (№611). `owner` — полное имя владельца из конфига: его узел тёзкой не
+    запись этого графа в базе — ленте итога прошлой ночи (None — базы нет): от неё
+    считаются новые сборные узлы (№611). `owner` — полное имя владельца из конфига: его узел тёзкой не
     считается. `feed` в ответе — полные списки для ленты, в отчёт доктора не идут."""
     notes = graph_links.read_notes(root)
     rel = {p: p.relative_to(root).as_posix() for p in notes}
@@ -201,29 +203,30 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
 
     # Сборные узлы (№611): голое имя при живых тёзках — каждый «Саша» встречи садится
     # в узел «Саша», и под ним лежат факты разных людей (замер 26.10: 45 узлов).
-    # Предикат один с затвором на входе — `graph_names.bare_namesakes`. Рядом — то же
-    # «чужой человек не там»: человек узлом в Системах и досье, где действует метка
-    # диаризации. Только счёт и список: решает владелец.
+    # Предикат — `graph_names.bare_namesakes`, по нему же будет решать затвор на входе
+    # (этап 2). Рядом — то же «чужой человек не там»: человек узлом в Системах и
+    # досье, где действует метка диаризации. Только счёт и список: решает владелец.
+    # Скобка с именем системы или команды при человеке — пометка, не фамилия:
+    # «Илья (ОТДЕЛ)» не тёзка «отдел» и не делает Системы/ОТДЕЛ человеком.
     placeholder_set = set(placeholders)
     people = [p for p in nodes if rel[p].startswith("Люди/") and p not in placeholder_set
               and not _is_stub(notes[p])]
-    index = graph_names.namesake_index(p.stem for p in people)
-    collective = [(p, graph_names.bare_namesakes(p.stem, index, owner)) for p in people]
+    tags = frozenset(p.stem.casefold().replace("ё", "е") for p in nodes
+                     if rel[p].startswith(("Системы/", "Команды/")))
+    index = graph_names.namesake_index((p.stem for p in people), tags)
+    collective = [(p, graph_names.bare_namesakes(p.stem, index, owner=owner, tags=tags)) for p in people]
     collective = sorted(((p, n) for p, n in collective if n), key=lambda x: (-len(linkers[x[0]]), x[0].stem))
     # Человек в Системах — по полному ключу, порядку слов (DS M1) и слову имени: на
     # рабочем графе 26.10 все 4 находки — по слову («Настя», фамилия) или полному имени.
-    # Аббревиатура заглавными — система, даже если стоит в скобке у человека
-    # («Илья (ОТДЕЛ)» и Системы/ОТДЕЛ — замер 27.10: единственная ложная из 6).
     person_keys = set()
     for p in people:
-        words = graph_names.name_words(p.stem)
+        words = graph_names.name_words(p.stem, tags)
         person_keys |= {" ".join(words), " ".join(sorted(words))}
     people_in_systems = []
     for p in nodes:
         if rel[p].startswith("Системы/") and not _is_stub(notes[p]):
             words = graph_names.name_words(p.stem)
-            if " ".join(sorted(words)) in person_keys or (len(words) == 1 and words[0] in index
-                                                           and not p.stem.isupper()):
+            if " ".join(sorted(words)) in person_keys or (len(words) == 1 and words[0] in index):
                 people_in_systems.append(p)
     dossier_labels = [p for p in nodes if rel[p].startswith("Досье/") and not _is_stub(notes[p])
                       and graph_names.has_speaker_actor(notes[p])]
@@ -271,11 +274,12 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         warnings.append(f"файлов не в UTF-8: {len(not_utf8)} — правь в редакторе, "
                         "облако их не тронет"
                         + (f" (в архиве ещё {len(not_utf8_archive)})" if not_utf8_archive else ""))
-    # Сигнал — на НОВЫЕ узлы против прошлой ленты, не на число: 45 узлов, известных
-    # владельцу, горели бы каждую ночь, а «один слит, другой появился» число не меняет
-    # (Sonnet M3). База — лента: ночь при сбое доктора стирает отчёт, ленту — нет, и
-    # после сбоя известное не горит снова (DS I2). Досье пересобираются каждую ночь —
-    # их счёт только в сводке и ленте, без предупреждения (критика Sonnet 2).
+    # Сигнал — на НОВЫЕ узлы против базы, не на число: 41 узел, известный владельцу,
+    # горели бы каждую ночь, а «один слит, другой появился» число не меняет (Sonnet M3).
+    # База — лента итога прошлой ночи (`base_path`): ранний и итоговый проходы ночи и
+    # ручной запуск днём сравнивают с одной базой, и новое горит в каждом брифе до
+    # следующей ночи (n611-s1-out2 C1). Досье пересобираются каждую ночь — их счёт
+    # только в сводке и ленте, без предупреждения (критика Sonnet 2).
     collective_paths = [rel[p] for p, _ in collective]
     for key, now, text in (
             ("collective", collective_paths,
@@ -289,7 +293,7 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
             was = {x.get("node") if isinstance(x, dict) else x for x in (prev_feed.get(key) or [])}
             fresh = [x for x in now if x not in was]
         if fresh:
-            tail = "" if prev_feed is None else f", новых с прошлого прогона {len(fresh)}"
+            tail = "" if prev_feed is None else f", новых с прошлой ночи {len(fresh)}"
             warnings.append(text.format(n=len(now)) + tail + "; список — logs/graph_feed.json")
     rep["warnings"] = warnings
     rep["feed"] = {
@@ -348,6 +352,12 @@ def feed_path(report: pathlib.Path) -> pathlib.Path:
     return report.with_name("graph_feed.json")
 
 
+def base_path(report: pathlib.Path) -> pathlib.Path:
+    """База сигнала о новых — лента на конец прошлой ночи, рядом с отчётом.
+    Двигает её только итоговый проход ночи (`--advance-base`)."""
+    return report.with_name("graph_feed_base.json")
+
+
 def main() -> int:
     harden_umask()   # отчёт здоровья графа с примерами узлов — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -356,6 +366,8 @@ def main() -> int:
     ap.add_argument("--examples", type=int, default=0, help="сколько примеров путей печатать")
     ap.add_argument("--json", type=pathlib.Path, default=None, help="куда класть отчёт (лента graph_feed.json — рядом)")
     ap.add_argument("--strict", action="store_true", help="код 1 при предупреждениях")
+    ap.add_argument("--advance-base", action="store_true",
+                    help="сдвинуть базу сигнала о новых на эту ленту (итоговый проход ночи)")
     a = ap.parse_args()
     found = ([a.graph] if a.graph else graphs.all_graphs("Ядра") if a.all_graphs
              else [graphs.graph_dir(graph_updater.load_cfg()) or pathlib.Path.cwd()])
@@ -364,30 +376,32 @@ def main() -> int:
         print("графов не найдено — нечего проверять")
         return 0
     try:                               # узел владельца — не тёзка (№611); нет конфига — без исключения
-        owner = (graph_updater.load_cfg().get("sufler") or {}).get("user_name") or ""
+        owner = str((graph_updater.load_cfg().get("sufler") or {}).get("user_name") or "")
     except Exception as e:  # noqa: BLE001 — справка, не гейт: доктор без конфига считает всех
         print(f"владелец не определён ({type(e).__name__}) — его узел посчитан наравне")
         owner = ""
     out = a.json or report_path()
-    try:                               # прошлый отчёт — база для сигнала о росте копий
-        prev = json.loads(out.read_text(encoding="utf-8")).get("graphs") or {}
-    except (OSError, ValueError, AttributeError):
-        prev = {}
 
-    try:                               # прошлая лента — база для сигнала о новых сборных
-        prev_feeds = json.loads(feed_path(out).read_text(encoding="utf-8")).get("graphs")
-    except (OSError, ValueError, AttributeError):
-        prev_feeds = None
+    def load_graphs(path: pathlib.Path) -> dict:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")).get("graphs")
+        except (OSError, ValueError, AttributeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def entry(store: dict, g: pathlib.Path) -> dict | None:
+        value = store.get(str(g))
+        return value if isinstance(value, dict) else None   # правленая руками запись — как нет записи (DS M1)
+
+    prev = load_graphs(out)            # прошлый отчёт — база для сигнала о росте копий
+    base_file = base_path(out)
+    base = load_graphs(base_file)      # база для сигнала о новых сборных — итог прошлой ночи
 
     def prev_copies(g: pathlib.Path) -> int | None:
-        value = (prev.get(str(g)) or {}).get("conflict_copies") if isinstance(prev, dict) else None
+        value = (entry(prev, g) or {}).get("conflict_copies")
         return value if isinstance(value, int) else None
 
-    def prev_feed(g: pathlib.Path) -> dict | None:
-        value = prev_feeds.get(str(g)) if isinstance(prev_feeds, dict) else None
-        return value if isinstance(value, dict) else None
-
-    reps = {str(g): inspect(g, a.examples, prev_copies(g), prev_feed(g), owner)   # ключ — путь: две «Работа» не затрут друг друга (GLM M11)
+    reps = {str(g): inspect(g, a.examples, prev_copies(g), entry(base, g), owner)   # ключ — путь: две «Работа» не затрут друг друга (GLM M11)
             for g in found}
     feeds = {g: rep.pop("feed") for g, rep in reps.items()}
     for rep in reps.values():
@@ -395,16 +409,23 @@ def main() -> int:
     now = dt.datetime.now().isoformat(timespec="seconds")
     # Лента — отдельным файлом рядом с отчётом: ночь при сбое доктора стирает отчёт
     # (nightly.sh), а полные списки отчёту не нужны — бриф читает только счёт (№611).
-    # Обе записи атомарные: читатель посреди записи не увидит обрезанный JSON.
-    for path, body in ((out, {"generated": now, "graphs": reps}),
-                       (feed_path(out), {"generated": now, "graphs": feeds})):
+    # Все записи атомарные: читатель посреди записи не увидит обрезанный JSON.
+    # Порядок: отчёт → лента → база. Отчёт не записан — код 1 и база стоит: сигнал
+    # о новых не уходит в базу, не дойдя до брифа (n611-s1-out2 Sonnet I2). База
+    # обновляется только по графам этого прогона: граф, не прочитанный этой ночью
+    # (iCloud, `--graph`), сохраняет свою запись (Haiku I5).
+    writes = [(out, {"generated": now, "graphs": reps}), (feed_path(out), {"generated": now, "graphs": feeds})]
+    if a.advance_base:
+        writes.append((base_file, {"generated": now, "graphs": {**base, **feeds}}))
+    for path, body in writes:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             safe_write.write_text(path, json.dumps(body, ensure_ascii=False, indent=1))
         except OSError as e:
             print(f"{path.name} не записан ({e})")
+            if path == out:
+                return 1
     return 1 if a.strict and any(r["warnings"] for r in reps.values()) else 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
