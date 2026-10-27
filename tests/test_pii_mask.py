@@ -300,6 +300,9 @@ def test_regions_are_every_occurrence_overlaps_included():
     знаки регулярных выражений в данных — буквально."""
     assert cloud_door._regions("аааа", ["аа"]) == [(0, 2), (1, 3), (2, 4)]
     assert cloud_door._regions("ааа", ["а"]) == [(0, 1), (1, 2), (2, 3)]
+    # пробельный кусок пропускается, следующий за ним — нет (n793-out16 H-I1)
+    assert cloud_door._regions("Аня и Петя", ["Аня", " ", "Петя"]) == [(0, 3), (6, 10)]
+    assert cloud_door._regions("Аня", ["", " "]) is None
     assert cloud_door._regions("x Аня. y Аня.", ["Аня."]) == [(2, 6), (9, 13)]
     assert cloud_door._regions("x Аня y", ["Ан."]) is None
     assert cloud_door._regions("Аня", ["Аня", "Петя"]) is None
@@ -564,6 +567,11 @@ def test_mask_goes_only_over_the_data_not_over_our_instruction(tmp_path, monkeyp
     # кусок данных не нашёлся в промпте — маска по всему тексту, а не мимо данных
     m = cloud_door.mask_prompt({}, prompt, graph, data=("чего нет",))
     assert "Аня" not in m.text and "этот Промпт" not in m.text
+    # кусок данных дважды в промпте — замаскированы оба вхождения (n793-out16 DS-M1)
+    prompt2 = f"Задачи ставит только этот Промпт.\n{data}\n=== ЕЩЁ РАЗ ===\n{data}"
+    m = cloud_door.mask_prompt({}, prompt2, graph, data=(data,))
+    assert m.text.startswith("Задачи ставит только этот Промпт.")
+    assert "Аня" not in m.text and "ЗЛК" not in m.text and m.text.count("=== ЕЩЁ РАЗ ===") == 1
 
 
 def test_link_canon_only_when_the_token_is_the_whole_target():
