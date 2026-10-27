@@ -377,3 +377,58 @@ def test_held_participant_still_reaches_memory(tmp_path, monkeypatch):
     sent = []
     _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Саша"), _person("Гоша")]}, sent=sent)
     assert sent == ["Саша", "Гоша"]
+
+
+# --- круг n611-out3 --------------------------------------------------------------
+
+
+def test_held_participant_survives_the_resend_after_review(tmp_path, monkeypatch):
+    """Переотправка шапки после ревизии и оплата долга берут участников из заметки:
+    строка удержанного участника — тоже участник (n611-out3 DS I1)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    _node(graph, "Люди/Саша")
+    note = _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Саша"), _person("Гоша")]})
+    _, people, _ = g._note_head(note)
+    assert [p["имя"] for p in people] == ["Саша", "Гоша"]
+    assert g._note_head("## Участники\n- Собеседник 3 — ⚠️ не установлен\n")[1] == []
+
+
+def test_stub_with_a_broken_byte_leads_the_writer_to_its_canon(tmp_path, monkeypatch):
+    """Заглушка с битым байтом — заглушка и для писателя: поиск идёт за ней в канон,
+    а не отдаёт её саму, после чего запись молча пропускалась (n611-out3 Haiku I1)."""
+    graph = _graph(tmp_path, "Люди/Пётр Петров")
+    (graph / "Люди" / "Владимир Старый.md").write_bytes(
+        "# Владимир Старый → [[Люди/Пётр Петров]]\n".encode() + b"\xff\n")
+    assert g.find_canonical(graph, "Владимир", folder="Люди") == graph / "Люди" / "Пётр Петров.md"
+
+
+def test_directory_named_like_a_node_is_not_a_namesake(tmp_path):
+    """Каталог «Саша Сидоров.md» — не тёзка: доктор его не видит, затвор не держит
+    им имя (n611-out3 Sonnet M2 / Haiku M2)."""
+    graph = _graph(tmp_path, "Люди/Саша")
+    (graph / "Люди" / "Саша Сидоров.md").mkdir()
+    assert _held(graph, ["Саша"]) == {}
+
+
+def test_via_only_for_another_spelling(tmp_path):
+    """«саша» и «Саша» — одно написание по ключу: узел поиска не называется; «Сашка»
+    по псевдониму — называется (n611-out3 Sonnet M3 / DS M3)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    _node(graph, "Люди/Саша", 'aliases: ["Сашка"]\n')
+    got = g.collective_held(graph, [("саша", "Люди"), ("Сашка", "Люди")], owner="")
+    assert got[("саша", "Люди")][2] == "" and got[("сашка", "Люди")][2] == "Люди/Саша"
+
+
+def test_held_entity_line_names_the_node_it_was_led_to(tmp_path):
+    """Строка удержанной сущности называет узел поиска тем же началом причины, что
+    строка участника (n611-out3 DS M2 / Haiku M3). Через main() у сущности поиск в
+    своей папке другим написанием в голый узел людей сейчас не приводит — рендер
+    держится прямым вызовом."""
+    graph = _graph(tmp_path)
+    e = {"имя": "Вова", "тип": "система", "суть": "бот"}
+    held = {("Системы", "Вова"): ("collective", ["Люди/Владимир Иванов"], "Люди/Владимир")}
+    assert g.entity_line(graph, e, held) == (
+        "- Вова (система) — бот _(узел не создан: поиск ведёт в Владимир — голое имя при живых тёзках: "
+        "[[Люди/Владимир Иванов|Владимир Иванов]])_")
+    held[("Системы", "Вова")] = ("collective", ["Люди/Владимир Иванов"], "")
+    assert "узел не создан: голое имя" in g.entity_line(graph, e, held)

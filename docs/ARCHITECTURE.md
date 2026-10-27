@@ -802,7 +802,7 @@ broken links (separately for active folders and for `Встречи-архив`,
 the pipeline never re-reads), labels among People, orphans, duplicates,
 near-duplicates by the name key and across word order, `_MOC.md` coverage,
 collective nodes by the one predicate `graph_names.is_collective` (the meeting gate
-decides by it too) — into `logs/graph_doctor.json`, full lists into
+decides by it too; the doctor reads people from `Люди/` only, the gate from every people folder of the schema) — into `logs/graph_doctor.json`, full lists into
 `logs/graph_feed.json`, both written atomically through `safe_write`; "new" collective
 nodes are counted against `logs/graph_feed_base.json`, the feed at the end of the previous night,
 which only `--advance-base` (the night's final pass) moves, and never before the report and the feed are written,
@@ -823,8 +823,10 @@ file name: a node read with replacement characters (as the doctor reads) is a st
 so, and only a node that cannot be opened at all keeps the gate shut. A held
 name gets no `upsert_entity`, no link in the note and no `apply_entities` verdict: the note
 line keeps the role, the contribution and links to the namesakes, and `_Кандидаты.md` gets
-one line per name. When the lookup led a fuller name into a bare node, the note names that
-node.
+one line per name. When the lookup led another spelling (another name key) into a bare node, the
+note names that node — on the participant line and the entity line alike, and the meeting head
+re-sent after a review reads the held participant line too. A stub with a broken byte is
+a stub for the writer as well: the lookup follows it to its canon.
 
 One resolver, `src/graph_links.py`, decides whether a `[[link]]` is alive
 for the doctor, the cloud review and clean-ups alike: full path, note

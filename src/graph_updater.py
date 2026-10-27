@@ -713,6 +713,9 @@ _DECISIONS_HEAD = re.compile(r"^(?P<hashes>#{2,4})\s*Решения\s*$", re.M)
 _SECTION_HEAD = re.compile(r"^#{2,4}\s+(?P<name>.+?)\s*$")
 _NOTE_TITLE = re.compile(r"^# Встреча \S+(?: — (?P<title>.+))?\s*$", re.M)
 _PERSON_LINK = re.compile(r"\[\[Люди/[^\]|]+\|(?P<name>[^\]]+)\]\]")
+# хвост строки участника со сборным именем (held_note): узла нет, ссылки в начале
+# строки нет, а участник есть — его читает и переотправка шапки (n611-out3 DS I1)
+_HELD_PERSON = " _(узел не выбран: "
 
 
 def note_decisions(text: str) -> list[str]:
@@ -734,7 +737,8 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
     из разбора модели, только по факту, а не по гипотезе. Участник — строка
     «## Участники», начинающаяся ссылкой на человека (после «✅»); строки
     «упомянуты, отсутствуют» и «не участники» ссылки несут, но участниками
-    не начинаются."""
+    не начинаются. Участник со сборным именем (№611) ссылки не несёт — его
+    строку узнаём по хвосту `held_note`."""
     m = _NOTE_TITLE.search(text)
     title = (m.group("title") or "").strip() if m else ""
     people: list[dict] = []
@@ -750,6 +754,8 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
             pm = _PERSON_LINK.match(head)
             if pm:
                 people.append({"имя": pm.group("name").strip()})
+            elif _HELD_PERSON in head:
+                people.append({"имя": head.split(" — ", 1)[0].strip()})
         elif section == "Темы" and ln.startswith("- "):
             topics.append(ln[2:].strip())
     return title, people, topics
@@ -1461,21 +1467,27 @@ def held_note(cands: list[str], via: str = "") -> str:
     «Владимир»): без него причина «голое имя» не читается у полного имени
     (n611-out2 DS M3). Причина в журнале не меняется — она ключ пары (№236)."""
     tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
-    lead = f"поиск ведёт в {via.split('/', 1)[-1]} — " if via else ""
-    return f" _(узел не выбран: {lead}{_HELD_WHY['collective']}{tail})_"
+    return f"{_HELD_PERSON}{_held_lead(via)}{_HELD_WHY['collective']}{tail})_"
 
 
-def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple[str, list[str]]]) -> str:
+def _held_lead(via: str) -> str:
+    """Начало причины удержания у имени, которое поиск привёл в сборный узел другим
+    написанием, — одно для участника и сущности (n611-out3 DS M2)."""
+    return f"поиск ведёт в {via.split('/', 1)[-1]} — " if via else ""
+
+
+def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]) -> str:
     """Строка сущности в заметке встречи: ссылка на узел, а если узла не
     завели (№193) — текст с пометкой и ссылками на кандидатов, чтобы Obsidian
     связал встречу с ними, а не с фантомом. Ключ `held` — папка и имя: одно
-    имя в двух типах — две разные записи (DS M5 / GLM M4 r1 по #544)."""
+    имя в двух типах — две разные записи (DS M5 / GLM M4 r1 по #544). У
+    сборного имени третье поле — узел поиска (`collective_held`)."""
     folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
     name = e["имя"]
     head = f"({e.get('тип', '')}) — {e.get('суть', '')}"
     if (folder, name) not in held:
         return f"- {canon_link(graph, name, folder)} {head}"
-    verdict, cands = held[(folder, name)]
+    verdict, cands, *via = held[(folder, name)]
     if verdict in ("aliased", "by_alias"):
         # встреча легла в узел другой папки, чем сказал тип: ссылка на него с
         # именем из разбора (canon_link с папкой типа его не увидит). Пометка —
@@ -1484,7 +1496,8 @@ def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple[
         mark = f" _({_HELD_WHY[verdict]})_" if verdict == "aliased" else ""
         return f"- [[{cands[0]}|{safe_name(name)}]] {head}{mark}"
     tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
-    return f"- {safe_name(name)} {head} _(узел не создан: {_HELD_WHY[verdict]}{tail})_"
+    lead = _held_lead(via[0]) if via else ""
+    return f"- {safe_name(name)} {head} _(узел не создан: {lead}{_HELD_WHY[verdict]}{tail})_"
 
 
 def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> dict[tuple[str, str], tuple[str, list[str]]]:
@@ -1623,9 +1636,9 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
         if p in visited:                     # кольцо — по пути в написании схемы
             return None
         visited.add(p)
-        try:
-            text = p.read_text(encoding="utf-8")
-        except (OSError, ValueError):
+        try:        # только чтение: битый байт не делает заглушку узлом (n611-out3 Haiku I1)
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             return p
         if not redirects.is_merged(text):
             return p
@@ -1835,7 +1848,7 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
     live: dict[str, str] = {}
     for place in _PEOPLE_FOLDERS:
         for f in sorted((graph / place).glob("*.md")) if (graph / place).is_dir() else ():
-            if f.name.startswith("_") or is_placeholder_node(f.stem):
+            if f.name.startswith("_") or is_placeholder_node(f.stem) or not f.is_file():
                 continue
             try:
                 merged = redirects.is_merged(f.read_text(encoding="utf-8", errors="replace"))
@@ -1862,7 +1875,7 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
         judged = target.stem if target is not None else clean
         if is_collective(judged, index, owner=owner, tags=tags):
             held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)),
-                                   f"{target.parent.name}/{target.stem}" if judged != clean else "")
+                                   f"{target.parent.name}/{target.stem}" if name_key(judged) != key else "")
     return held
 
 
@@ -3126,11 +3139,11 @@ def main():
     # сущность со сборным именем — текстом с кандидатами тем же entity_line (журнал — выше)
     for e in ents_all:
         if (_ckey(e["имя"]), _efolder(e)) in collective:
-            held[(_efolder(e), e["имя"])] = ("collective", collective[(_ckey(e["имя"]), _efolder(e))][1])
+            held[(_efolder(e), e["имя"])] = ("collective", *collective[(_ckey(e["имя"]), _efolder(e))][1:])
 
     touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
     # встреча по псевдониму легла в узел ДРУГОЙ папки — её указатель тоже тронут (DS M4 / GLM M5)
-    touched |= {c[0].split("/", 1)[0] for (v, c) in held.values() if v in ("aliased", "by_alias") and c}
+    touched |= {c[0].split("/", 1)[0] for (v, c, *_) in held.values() if v in ("aliased", "by_alias") and c}
     for folder in sorted(touched & set(FOLDER_INDEX)):
         try:
             rebuild_folder_index(graph, folder)      # только тронутые папки (DS I3)
