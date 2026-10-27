@@ -1305,7 +1305,7 @@ its dates within two weeks of the meeting, and "tomorrow" the next day. A part
 of the item from the third on ("**Name** — task — deadline") is a deadline only
 if it starts as one ("by", "until", "через", "до", "today",
 a weekday with a preposition or "next", "on Friday", "next Monday"; "— dev environment Wednesday" is the
-task) or is a whole date or time: "room 405" or "version 2.1" is the task,
+task; in Chinese a bare "周五" is a deadline too) or is a whole date or time: "room 405" or "version 2.1" is the task,
 not a deadline. Such a part with a date is judged by its dates only; without
 one, by its anchor only: a weekday or "today/tomorrow" said in any form ("周五"
 for "星期五" too); numbers without a date ("by 16:00", "by the 28th", "by 5 pm")
