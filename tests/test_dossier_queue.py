@@ -758,7 +758,7 @@ _CLEAN = "---\nотпечаток: fp\n---\n# Т\n## Сейчас\nучастн�
     ("ok", _LABELED, "fp", False, "LABELED"),
     ("ok", _LABELED, "fp", True, "LABELED"),        # --full: метка — своя причина, не «без изменений»
     ("damaged", _LABELED.replace("обещал", "обещал �"), "fp", False, "LABELED"),   # доктор его считает
-    ("unreadable", None, "fp", False, None),
+    ("unreadable", None, "fp", False, "CHANGED"),   # как на базе: отказ даёт _manual_for_rebuild, не очередь
     ("ok", _CLEAN, "fp", False, None),
     ("ok", _CLEAN, "fp", True, "SAME"),
 ])

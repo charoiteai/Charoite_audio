@@ -151,7 +151,7 @@ def test_unlabel_speakers_contract(text):
     out = graph_names.unlabel_speakers(text)
     assert not graph_names.has_speaker_actor(out), out
     assert graph_names.unlabel_speakers(out) == out
-    targets = lambda t: set(re.findall(r"\[\[([^\[\]|]*)", t))   # цель с переносом строки — тоже цель
+    targets = lambda t: set(re.findall(r"\[\[([^\[\]|]*)(?:\|[^\[\]]*)?\]\]", t))   # закрытые; перенос строки в цели — тоже цель
     assert targets(out) <= targets(text), out
     assert (out != text) == graph_names.has_speaker_actor(text), out
 
