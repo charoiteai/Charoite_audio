@@ -38,6 +38,9 @@ def test_round_trip_restores_every_surface_form():
     assert "Бел" not in m.text and "Сидор" not in m.text and "ЗЛК" not in m.text
     back, unresolved = pm.unmask(m.text, m)
     assert back == src and unresolved == 0
+    # без подделок (`dress is None`) дверь разворачивает метки сама (CI #860: мутант
+    # `return X` → `return None` в `unmask_reply` выживал)
+    assert cloud_door.unmask_reply(m.text, m) == (src, 0)
 
 
 @pytest.mark.parametrize("text", [

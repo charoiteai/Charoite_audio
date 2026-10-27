@@ -308,6 +308,16 @@ def test_context_truncation_is_visible(tmp_path):
     assert "усечено" in context.lower() or "…" in context
 
 
+def test_prompt_names_the_graph_unless_text_only():
+    """Без `text_only` модель видит граф; под маской путь графа не уходит (№793,
+    CI #860: мутант умолчания `text_only=True` выживал)."""
+    kw = dict(transcript_name="t.md", folder=pathlib.Path("/tmp/t"),
+              graph=pathlib.Path("/tmp/g"), rev_name="rev.md", stamp="s",
+              arch_folder=None, may_edit=False)
+    assert "Obsidian-граф проекта: /tmp/g" in graph_updater.cloud_enrich_prompt(**kw)
+    assert "/tmp/g" not in graph_updater.cloud_enrich_prompt(**kw, text_only=True)
+
+
 def test_prompt_does_not_send_the_model_to_read_meeting_files(tmp_path):
     """Файлы встречи уже в промпте — просить их читать значит открывать диск."""
     prompt = graph_updater.cloud_enrich_prompt(
