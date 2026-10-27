@@ -757,3 +757,18 @@ def test_правило_участника_встречи_одно_на_оба_�
     files, backlinks = dossier.scan(g, schema=CHAROITE)
     members = dossier.clusters(files, backlinks, schema=CHAROITE)["Релиз"]
     assert graph_names.UNLABELED_RULE in dossier.build_prompt("Релиз", members, files, schema=CHAROITE)
+
+
+def test_split_dossier_sections_end_on_the_next_header():
+    """Раздел кончается на следующем заголовке в любом порядке, тело — до первого
+    (мутанты CI №815: split_dossier переехал из ревизии в dossier)."""
+    assert dossier.split_dossier("просто текст") == ("просто текст", "", None, None)
+    assert dossier.split_dossier(None) == ("", "", None, None)
+    # пустая строка перед «## Сейчас» остаётся в шапке, тело — с самого заголовка
+    assert dossier.split_dossier("# Т\n\n## Сейчас\nа\n\n## Источники\n- [[x]]\n") == (
+        "# Т\n\n", "## Сейчас\nа", "- [[x]]", None)
+    assert dossier.split_dossier("# Т\n## Сейчас\nа\n\n## Правки автора\nмоё\n") == (
+        "# Т\n", "## Сейчас\nа", None, "моё")
+    for tail in ("## Источники\n- [[x]]\n\n## Правки автора\nмоё", "## Правки автора\nмоё\n\n## Источники\n- [[x]]"):
+        assert dossier.split_dossier(f"# Т\n## Сейчас\nа\n\n{tail}\n") == ("# Т\n", "## Сейчас\nа", "- [[x]]", "моё"), tail
+

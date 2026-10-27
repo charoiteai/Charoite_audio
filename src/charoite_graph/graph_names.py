@@ -103,7 +103,7 @@ _PAREN_RE = re.compile(r"[(（][^()（）\n]*[)）]")
 _MASK = "\0"
 #: Вики-ссылка: цель до «|», подпись до «]]»; перенос строки внутри допустим, «[»
 #: — нет: незакрытая «[[» не съедает соседнюю ссылку (n815-out1 DS M3).
-_WIKI_LINK_RE = re.compile(r"\[\[([^\[\]|]*)(?:\|([^\[\]]*))?\]\]")
+_WIKI_LINK_RE = re.compile(r"\[\[(?P<target>[^\[\]|]*)(?:\|([^\[\]]*))?\]\]")
 
 
 def has_speaker_actor(text: str) -> bool:
@@ -131,10 +131,11 @@ def _speaker_spans(text: str) -> list[tuple[int, int]]:
     spans = []
 
     def link(m: re.Match) -> str:
-        if is_placeholder_node(_link_target_stem(text[m.start(1):m.end(1)])):
+        t0, t1 = m.span("target")      # цель — из исходного текста: в маске скобки уже «\0»
+        if is_placeholder_node(_link_target_stem(text[t0:t1])):
             spans.append(m.span())
             return _MASK * len(m.group(0))
-        return _MASK * (m.end(1) - m.start()) + masked[m.end(1):m.end()]
+        return _MASK * (t1 - m.start()) + masked[t1:m.end()]
 
     masked = _WIKI_LINK_RE.sub(link, masked)
     spans += [m.span() for m in _SPEAKER_IN_TEXT_RE.finditer(masked)]

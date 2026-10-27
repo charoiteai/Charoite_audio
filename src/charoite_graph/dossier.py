@@ -546,18 +546,17 @@ def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
     head, rest = text[:start], text[start:]
     ms = _SOURCES_RE.search(rest)
     mm = _MANUAL_RE.search(rest)
-    body_end = min(x.start() for x in (ms, mm) if x) if (ms or mm) else len(rest)
-    body = rest[:body_end].rstrip()
+    # раздел кончается на следующем найденном заголовке или в конце текста;
+    # «Правки автора» раньше «Источников» — правки кончаются на соседнем
+    # заголовке, иначе список источников уезжал внутрь авторского раздела
+    # и дублировался при записи (круг-2 по PR #382, DS + Codex)
+    cuts = sorted(x.start() for x in (ms, mm) if x) + [len(rest)]
+    body = rest[:cuts[0]].rstrip()
     sources = manual = None
     if ms:
-        s_end = mm.start() if mm and mm.start() > ms.start() else len(rest)
-        sources = rest[ms.end():s_end].strip("\n").rstrip()
+        sources = rest[ms.end():cuts[cuts.index(ms.start()) + 1]].strip("\n").rstrip()
     if mm:
-        # «Правки автора» раньше «Источников» — правки кончаются на соседнем
-        # заголовке, иначе список источников уезжал внутрь авторского раздела
-        # и дублировался при записи (круг-2 по PR #382, DS + Codex).
-        m_end = ms.start() if ms and ms.start() > mm.start() else len(rest)
-        manual = rest[mm.end():m_end].strip()
+        manual = rest[mm.end():cuts[cuts.index(mm.start()) + 1]].strip()
     return head, body, sources, manual
 
 
