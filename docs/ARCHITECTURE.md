@@ -1303,11 +1303,14 @@ full other date, a clock time, a bare count or a count after a preposition, "by
 its dates within two weeks of the meeting, and "tomorrow" the next day. A part
 of the item from the third on ("**Name** — task — deadline") is a deadline only
 if it starts as one ("by", "until", "через", "до", "today",
-a weekday) or is a whole date or time: "room 405" or "version 2.1" is the task,
+a weekday with a preposition, "on Friday"; "— dev environment Wednesday" is the
+task) or is a whole date or time: "room 405" or "version 2.1" is the task,
 not a deadline. Such a part with a date is judged by its dates only; without
-one, by its anchor only: a weekday or "today/tomorrow" said in any form, a clock
-time by its numbers (reply stamps do not count), "by the 28th" as a day; other
-words and numbers ("in 3 days", "urgent", "by release 3.4") are not judged. The
+one, by its anchor only: a weekday or "today/tomorrow" said in any form ("周五"
+for "星期五" too); numbers without a date ("by 16:00", "by the 28th", "by 5 pm")
+and other words ("in 3 days", "urgent", "by release 3.4") are not judged: speech
+says numbers differently ("at four", "28 November"), and a rule about them erased
+correct deadlines. The
 name and the task text are not read: a date inside the task ("сдать отчёт до
 28.11") is not judged (one deadline parser shared with the app chip is №607).
 The gate walks every checkbox item of the minutes (the Tasks tab reads them all),
