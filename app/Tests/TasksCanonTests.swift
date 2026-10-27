@@ -41,6 +41,38 @@ final class TasksCanonTests: XCTestCase {
         XCTAssertEqual(items.first?.file.lastPathComponent, "Минутки.md")
     }
 
+    func testReviewCopiesOfAMarkedMinutesItemAreHidden() throws {
+        // Гейт срока дописывает в минутки «— срок не из речи», копия ревизии её не несёт
+        // (n805-final-opus I1): ключ обязан пометку не видеть, как `task_line.key`.
+        try write("Встречи-архив/2026-09-21 10-34 — Тема/Минутки.md",
+                  "## Поручения\n- [ ] **Коля** — переформировать отчёт — до 22.09 — срок не из речи\n")
+        try write("Встречи-архив/2026-09-21 10-34 — Тема/Ревизия.md",
+                  "- [ ] **Коля** — переформировать отчёт — до 22.09\n")
+        try write("Документация/Стенограммы встреч/2026-09-21_1034_Тема_ревизия.md",
+                  "- [ ] **Коля** — переформировать отчёт — до 22.09\n")
+
+        let items = TasksService.scanSync(graph: dir)
+
+        XCTAssertEqual(items.map(\.file.lastPathComponent), ["Минутки.md"])
+    }
+
+    /// Ключ строки с пометкой срока — тот же, что у `task_line.key`: одна таблица
+    /// tests/fixtures/task_lines.json на все клиенты (докстринг `task_line`).
+    func testDueMarkKeyMatchesTheSharedTable() throws {
+        struct Row: Decodable { let line: String; let key: String }
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let rows = try JSONDecoder().decode(
+            [Row].self, from: Data(contentsOf: root.appendingPathComponent("tests/fixtures/task_lines.json")))
+        let marks = ["срок не из речи", "deadline not heard", "期限未在讲话中提到"]
+        let marked = rows.filter { r in marks.contains { r.line.contains($0) } }
+        XCTAssertGreaterThanOrEqual(marked.count, 3, "в таблице нет строк с пометкой — тест ничего не проверил")
+        for r in marked {
+            let text = r.line.replacingOccurrences(of: #"^\s*[-*] \[.\] "#, with: "", options: .regularExpression)
+            XCTAssertEqual(TasksService.sameTaskKey(text), r.key, r.line)
+        }
+    }
+
     func testItemAbsentFromMinutesStaysVisible() throws {
         // Поручение, дописанное руками в заметку встречи, в минутках не значится —
         // прятать его нечем (DS и Sonnet, круг 1 по №367).

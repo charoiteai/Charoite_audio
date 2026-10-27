@@ -222,6 +222,11 @@ final class TasksService: ObservableObject {
     // swiftlint:disable:next force_try
     private nonisolated static let withdrawnMarkRx = try! NSRegularExpression(
         pattern: #"_\((?:снято|withdrawn by the review|已由审阅撤回)[^)]*\)_"#)
+    /// Пометка гейта срока (`task_line.DUE_UNHEARD_MARKS`, №805): копия из ревизии её не несёт,
+    /// без среза пункт минуток с пометкой стоит во вкладке вторым (n805-final-opus I1).
+    // swiftlint:disable:next force_try
+    private nonisolated static let dueUnheardRx = try! NSRegularExpression(
+        pattern: #"\s*[—–-]\s*(?:срок не из речи|deadline not heard|期限未在讲话中提到)"#)
     // swiftlint:disable:next force_try
     private nonisolated static let wordRx = try! NSRegularExpression(pattern: #"[\p{L}\p{N}]+"#)
     /// Пометки моста ревизии (`review_bridge.MARKS`) на трёх языках.
@@ -229,12 +234,12 @@ final class TasksService: ObservableObject {
 
     /// «Тот же пункт» — ключ по образцу `_key` моста (`src/review_bridge.py`) и
     /// шире его на отметки снятия: без «⚠ не участник (Имя):», пометки моста,
-    /// `_(снято …)_`/`_(снято ревизией: …)_` (три языка), жирного, зачёркивания и
+    /// `_(снято …)_`/`_(снято ревизией: …)_`, пометки «срок не из речи» (три языка), жирного, зачёркивания и
     /// пунктуации, в нижнем регистре; слова через пробел. Нечёткое сравнение
     /// моста (`_same_item`) не повторяется: оно — дело писателя (№369).
     nonisolated static func sameTaskKey(_ text: String) -> String {
         var s = text
-        for rx in [outsiderRx, withdrawnMarkRx] {
+        for rx in [outsiderRx, withdrawnMarkRx, dueUnheardRx] {
             s = rx.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: " ")
         }
         for mark in bridgeMarks { s = s.replacingOccurrences(of: mark, with: " ") }
