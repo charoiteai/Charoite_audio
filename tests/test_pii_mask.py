@@ -296,9 +296,10 @@ def test_data_at_the_start_of_the_prompt_keeps_its_region():
 
 
 def test_regions_are_every_occurrence_overlaps_included():
-    """Все вхождения куска, перекрытия тоже — как прежний цикл `find(d, start + 1)`;
+    """Все вхождения куска, перекрытия тоже, до последнего — потолок шагов цикла их не режет;
     знаки регулярных выражений в данных — буквально."""
     assert cloud_door._regions("аааа", ["аа"]) == [(0, 2), (1, 3), (2, 4)]
+    assert cloud_door._regions("ааа", ["а"]) == [(0, 1), (1, 2), (2, 3)]
     assert cloud_door._regions("x Аня. y Аня.", ["Аня."]) == [(2, 6), (9, 13)]
     assert cloud_door._regions("x Аня y", ["Ан."]) is None
     assert cloud_door._regions("Аня", ["Аня", "Петя"]) is None

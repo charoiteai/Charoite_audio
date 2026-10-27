@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import collections
 import pathlib
-import re
 import tempfile
 from typing import Sequence
 
@@ -109,12 +108,17 @@ def _regions(text: str, data: Sequence[str]) -> list[tuple[int, int]] | None:
         d = pii_mask.prepare(privacy.scrub_local_paths(d)[0])
         if not d.strip():
             continue
-        # все вхождения, перекрытия тоже; без цикла по сдвигу: мутант `start + 1` → `+ 0`
-        # растил список без конца и снимал раннер CI раньше таймаута теста (PR #860)
-        starts = [m.start() for m in re.finditer(f"(?={re.escape(d)})", text)]
-        if not starts:
+        start = text.find(d)
+        if start < 0:
             return None
-        out.extend((s, s + len(d)) for s in starts)
+        # все вхождения, перекрытия тоже. Шагов не больше длины текста — вхождений непустого
+        # куска больше не бывает: без потолка мутант `start + 1` → `+ 0` растил список без конца
+        # и снимал раннер CI раньше таймаута теста (PR #860, n793-out15)
+        for _ in range(len(text)):
+            if start < 0:
+                break
+            out.append((start, start + len(d)))
+            start = text.find(d, start + 1)
     return out or None
 
 
