@@ -772,3 +772,14 @@ def test_split_dossier_sections_end_on_the_next_header():
     for tail in ("## Источники\n- [[x]]\n\n## Правки автора\nмоё", "## Правки автора\nмоё\n\n## Источники\n- [[x]]"):
         assert dossier.split_dossier(f"# Т\n## Сейчас\nа\n\n{tail}\n") == ("# Т\n", "## Сейчас\nа", "- [[x]]", "моё"), tail
 
+
+
+def test_complete_body_wants_all_five_sections_as_level_two_headings():
+    """Своё тело ночь оставляет без модели только целым (n815-out3 DS I3,
+    Sonnet M1): четыре из пяти, подзаголовок или слово в строке — не раздел."""
+    body = "## Сейчас\nт\n## Как пришли\nт\n## Решено\nт\n## Открыто\nт\n## Кто в теме  \nт\n"
+    assert dossier.complete_body(body)
+    assert not dossier.complete_body(body.replace("## Кто в теме  \n", "### Кто в теме\n"))
+    assert not dossier.complete_body(body.replace("## Кто в теме  \n", "Кто в теме ## Кто в теме\n"))
+    assert not dossier.complete_body(body.replace("## Решено\n", ""))
+    assert not dossier.complete_body(None)

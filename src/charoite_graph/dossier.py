@@ -374,6 +374,18 @@ def looks_valid(body: str) -> bool:
     return have >= 4
 
 
+_BODY_HEADS = ("Сейчас", "Как пришли", "Решено", "Открыто", "Кто в теме")
+
+
+def complete_body(body: str) -> bool:
+    """Тело, которое ночь оставляет без модели: все пять разделов строкой-
+    заголовком. `looks_valid` судит ответ модели (четыре из пяти, подстрокой) и
+    пропустил бы тело, урезанное `split_dossier` по «### Источники» внутри
+    раздела, — недостающий раздел застыл бы до смены источников (n815-out3)."""
+    heads = {m.group(1) for m in re.finditer(r"(?m)^##[ \t]*(.+?)[ \t]*$", body or "")}
+    return all(h in heads for h in _BODY_HEADS)
+
+
 def trim_to_format(body: str) -> str:
     """Отрезает всё до первого «## Сейчас» — модель любит предисловия."""
     m = VALID_RE.search(body or "")

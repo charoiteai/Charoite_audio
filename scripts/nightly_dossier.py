@@ -226,6 +226,7 @@ class _GraphRun:
         # изменений» (круг-2 по PR #438, DS Minor 9).
         self.unchanged = self.over_limit = self.locked = self.late = 0
         self.changed = self.broken_manual = 0
+        self.full = False         # --full прогона: перечитанное досье классифицируется им же
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе."""
@@ -278,6 +279,7 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
     files, backlinks = dossier.scan(graph, schema=CHAROITE)
     cl = dossier.clusters(files, backlinks, schema=CHAROITE) if files else {}
     g = _GraphRun(graph, files, cl, today, stamp)
+    g.full = full
     found = []
     for theme, members in cl.items():
         path = g.folder / f"{theme}.md"
@@ -326,15 +328,18 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     сколько ждать замок, считается в момент записи, после генерации."""
     g, theme, members, fp = cand.g, cand.theme, cand.members, cand.fp
     path = g.folder / f"{theme}.md"
-    loaded = cand.loaded
+    loaded, cls = cand.loaded, cand.cls
     if safe_write.stat_snapshot(path) != cand.mtime:
         # Досье правили после скана (автор в Obsidian): снимок устарел, иначе
         # сверка после генерации выбросит её как «изменилось за время
         # генерации» (вход in3 №621, DS M2).
         loaded = g.reads.reload(path)
         g.keep(theme, members, loaded, fp)
-        if cand.cls == LABELED and not dossier.labeled_body(loaded.text):
-            # метку из тела убрал автор: причины пересборки больше нет (финальный Opus n815 M5)
+        # Перечитанное — тот же `_classify`, что на скане: автор убрал метку —
+        # причины нет (финальный Opus n815 M5); файл пропал — NEW, не читается
+        # или отпечаток другой — CHANGED, как на базе (n815-out3 DS C1, I2)
+        cls = _classify(loaded, fp, g.full)
+        if cls is None:
             g.skipped += 1
             g.unchanged += 1
             return None
@@ -349,13 +354,13 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return None
     g0 = clock()
     body = ""
-    if cand.cls == LABELED and loaded.state == "ok":
+    if cls == LABELED and loaded.state == "ok":
         # Источники те же — тело своё, без меток, мимо модели: тело могла править
         # облачная ревизия (шапку она не трогает), и пересказ модели стёр бы её
         # правки, которые база не тронула бы (финальный Opus n815 I1). Запись —
         # тем же путём ниже: замок, сверка, копия, гейт `expect`.
         body = graph_names.unlabel_speakers(dossier.split_dossier(loaded.text)[1])
-        if not dossier.looks_valid(body):
+        if not dossier.complete_body(body):
             body = ""
     own = bool(body)   # тело без модели — не цена темы для `need` и не попытка
     for temperature in (0.2, 0.05) if not own else ():   # вторая попытка чуть холоднее
@@ -408,8 +413,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
         fresh = dossier.load_dossier(path)
         if fresh.state != loaded.state or fresh.text != loaded.text:
-            print(f"  ⏸ {theme}: досье изменилось за время генерации — "
-                  "тема уйдёт на следующую ночь")
+            when = "перед записью" if own else "за время генерации"
+            print(f"  ⏸ {theme}: досье изменилось {when} — тема уйдёт на следующую ночь")
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
