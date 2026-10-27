@@ -374,18 +374,6 @@ def looks_valid(body: str) -> bool:
     return have >= 4
 
 
-_BODY_HEADS = ("Сейчас", "Как пришли", "Решено", "Открыто", "Кто в теме")
-
-
-def complete_body(body: str) -> bool:
-    """Тело, которое ночь оставляет без модели: все пять разделов строкой-
-    заголовком. `looks_valid` судит ответ модели (четыре из пяти, подстрокой) и
-    пропустил бы тело, урезанное `split_dossier` по «### Источники» внутри
-    раздела, — недостающий раздел застыл бы до смены источников (n815-out3)."""
-    heads = {m.group(1) for m in re.finditer(r"(?m)^##[^\S\n]*(.+?)[^\S\n]*$", body or "")}
-    return all(h in heads for h in _BODY_HEADS)
-
-
 def trim_to_format(body: str) -> str:
     """Отрезает всё до первого «## Сейчас» — модель любит предисловия."""
     m = VALID_RE.search(body or "")
@@ -577,28 +565,6 @@ def labeled_body(text: str) -> bool:
     метка диаризации? Один предикат на доктора графа и ночную очередь — иначе
     лента считала бы одно, а ночь чинила другое (n815-in3 DS C2)."""
     return graph_names.has_speaker_actor(split_dossier(text or "")[1])
-
-
-# Раздел автора, как его пишет `render` и находит `KEEP_RE`: всё после него — слово автора
-_RENDER_MANUAL_RE = re.compile(r"(?m)^## Правки автора$")
-
-
-def kept_body(text: str | None) -> str:
-    """Тело досье без меток — для записи без модели — или "", тогда модель.
-
-    `split_dossier` режет тело по первому защищённому заголовку любого уровня
-    и с любым пробелом (`_PROTECTED_RE`), а `render` пишет ровно одну строку
-    «## Источники» до «## Правки автора». Своё тело — только когда до раздела
-    автора защищённые заголовки те же, что пишет `render`: иначе срез отрезал
-    бы хвост последнего раздела молча (n815-out4 I1; n815-out5 Haiku C1, C2,
-    DS I1). Что автор пишет под «## Правки автора», срез не двигает и тему
-    к модели не уводит (n815-out5 Sonnet I1). И тело целое: все пять разделов."""
-    text = text or ""
-    m = _RENDER_MANUAL_RE.search(text)
-    if [h.group(0) for h in _PROTECTED_RE.finditer(text[:m.start()] if m else text)] != ["## Источники"]:
-        return ""
-    body = graph_names.unlabel_speakers(split_dossier(text)[1])
-    return body if complete_body(body) else ""
 
 
 @dataclass(frozen=True)

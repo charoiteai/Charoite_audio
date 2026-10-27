@@ -705,7 +705,6 @@ def test_night_running_out_during_the_meeting_wait_stops_before_the_theme(nd, tm
     assert "до конца ночи — только время шагов после досье, пока ждали конца встречи" in out
     assert "без изменений — в следующую полную пересборку" in out
 
-
 def _labeled_graph(nd, tmp_path, body="Собеседник 4 обещал письмо ⚠️ срок 1.08 прошёл [[Встречи/тема_1]]"):
     """Тема собрана, потом в её тело попала метка (досье до №815) и правки ревизии."""
     graph = _graph(tmp_path, "Г", {"тема": None})
@@ -718,171 +717,37 @@ def _labeled_graph(nd, tmp_path, body="Собеседник 4 обещал пи�
     return graph, path
 
 
-def test_label_in_the_body_rebuilds_without_full_and_then_rests(nd, tmp_path, capsys):
-    """№815: отпечаток не знает промпта — досье, собранное до чистки меток, при
-    тех же источниках не пересобралось бы никогда (n815-in1 C1)."""
+def test_label_in_the_body_waits_for_its_own_card(nd, tmp_path, capsys):
+    """n815-out6, решение координатора: тему с меткой в теле при тех же
+    источниках ночь не трогает вовсе — ни моделью (стёрла бы правки ревизии),
+    ни своим телом (четыре круга подряд теряло хвост на разборе). Видна
+    счётчиком в отчёте и строкой лога; пересборка — отдельной карточкой."""
     graph, path = _labeled_graph(nd, tmp_path)
-    sources = {p: p.read_bytes() for p in graph.rglob("*.md") if CHAROITE.dossier_dir not in p.parts}
-
-    nd.run_all([graph], {}, full=False, dry=True)
-    assert "(метка в теле)" in capsys.readouterr().out and nd.calls == []
-
-    r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert r["собрано"] == 1, r
-    assert not dossier.labeled_body(path.read_text(encoding="utf-8"))
-    assert {p: p.read_bytes() for p in sources} == sources, "файлы графа не трогаем"
-
-    r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == [] and r["собрано"] == 0, "чистое тело гасит причину"
-
-
-def test_label_rebuild_keeps_the_body_and_skips_the_model(nd, tmp_path):
-    """Финальный Opus n815 I1: источники те же — тело своё без меток. Пересказ
-    модели стёр бы правки облачной ревизии (⚠️, ссылки), которые база не тронула бы."""
-    graph, path = _labeled_graph(nd, tmp_path)
-    r = nd.run_all([graph], {}, full=False, dry=False)
-    text = path.read_text(encoding="utf-8")
-    assert nd.calls == [], "модель не звали"
-    assert r.attempts == 0, "тело без модели — не попытка модели"
-    assert r.graphs[0].built == 1
-    assert "Участник встречи обещал письмо ⚠️ срок 1.08 прошёл [[Встречи/тема_1]]" in text
-    assert "## Правки автора\n\nСобеседник 4 — это Вера\n" in text, "слово автора байт в байт"
-    # тело — только середина досье: шапка, «Источники» и «Правки автора» собираются заново, по разу
-    assert [text.count(h) for h in ("тема: тема\n", "## Источники", "## Правки автора")] == [1, 1, 1], text
-    backup = next((graph / CHAROITE.dossier_dir / ".backup").iterdir()) / "тема.md"
-    assert "Собеседник 4 обещал письмо" in backup.read_text(encoding="utf-8"), "копия до записи"
-
-
-def test_heading_in_the_author_section_keeps_the_own_body(nd, tmp_path):
-    """n815-out5 Sonnet I1, DS: подзаголовок в «Правках автора» срез тела не
-    двигает — модель тело не переписывает, слово автора остаётся байт в байт."""
-    graph, path = _labeled_graph(nd, tmp_path)
-    path.write_text(path.read_text(encoding="utf-8").replace(
-        "Собеседник 4 — это Вера\n", "Собеседник 4 — это Вера\n### Источники\n- моя заметка\n"), encoding="utf-8")
-    r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    text = path.read_text(encoding="utf-8")
-    assert nd.calls == [] and r["собрано"] == 1, r
-    assert "Участник встречи обещал письмо ⚠️" in text
-    assert "## Правки автора\n\nСобеседник 4 — это Вера\n### Источники\n- моя заметка\n" in text
-
-
-def test_own_label_rebuild_costs_nothing_in_need(nd, tmp_path):
-    """Тело без модели возвращает None: ноль в `spent` занизил бы `need`, и
-    следующая тема с моделью стартовала бы в остаток, куда не влезает."""
-    graph, path = _labeled_graph(nd, tmp_path)
-    g, cands = nd._scan(graph, False, "2026-07-21", "2026-07-21_000000")
-    assert [c.cls for c in cands] == [nd.LABELED]
-    assert nd._build(cands[0], {}, False) is None and g.built == 1
-
-
-@pytest.mark.parametrize("how", ["damaged", "three", "four", "subheading", "tail"])
-def test_label_rebuild_without_a_usable_body_goes_to_the_model(nd, tmp_path, how):
-    """Тело своё только у читаемого досье со всеми пятью разделами: битое
-    (доктор его считает) и неполное — пересказ модели, как раньше. Четыре из
-    пяти `looks_valid` пропустил бы, и раздел застыл бы (n815-out3 DS I3);
-    «### Источники» внутри раздела режет тело в `split_dossier` (Sonnet M1)."""
-    graph, path = _labeled_graph(nd, tmp_path, "Собеседник 4 обещал")
-    text = path.read_text(encoding="utf-8")
-    if how == "damaged":   # байт не UTF-8 — load_dossier даёт «damaged»
-        path.write_bytes(path.read_bytes().replace("обещал".encode(), "обещал".encode() + b" \xff"))
-    elif how == "three":
-        path.write_text(text.replace("## Как пришли\nт\n", "").replace("## Открыто\nт\n", ""),
-                        encoding="utf-8")
-    elif how == "four":
-        path.write_text(text.replace("## Кто в теме\nт\n", ""), encoding="utf-8")
-    elif how == "subheading":
-        path.write_text(text.replace("## Кто в теме\n", "### Источники\n- x\n## Кто в теме\n"),
-                        encoding="utf-8")
-    else:   # подзаголовок внутри последнего раздела: пять заголовков целы, хвост ушёл бы (n815-out4 Sonnet I1)
-        path.write_text(text.replace("## Кто в теме\nт\n", "## Кто в теме\nИван\n### Источники\n- x\n"
-                                     "Пётр — владелец\n"), encoding="utf-8")
-    r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == ["тема"] and r["собрано"] == 1, r
-    assert not dossier.labeled_body(path.read_text(encoding="utf-8"))
-
-
-def _edit_before_build(nd, monkeypatch, edit):
-    real = nd._build
-
-    def build(cand, *a, **k):
-        edit()
-        return real(cand, *a, **k)
-
-    monkeypatch.setattr(nd, "_build", build)
-
-
-def test_author_who_removed_the_label_after_scan_stops_the_rebuild(nd, tmp_path, monkeypatch):
-    """Финальный Opus n815 M5: после перечтения чистое тело — причины LABELED нет."""
-    graph, path = _labeled_graph(nd, tmp_path)
-    _edit_before_build(nd, monkeypatch, lambda: path.write_text(path.read_text(encoding="utf-8").replace(
-        "Собеседник 4 обещал", "Вера обещала"), encoding="utf-8"))
     before = path.read_bytes()
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == [] and r["собрано"] == 0 and r["без_изменений"] == 1 and r["пропущено"] == 1, r
-    assert path.read_bytes() != before and "Вера обещала" in path.read_text(encoding="utf-8")
-    assert not (graph / CHAROITE.dossier_dir / ".backup").exists(), "записи не было"
+    out = capsys.readouterr().out
+    assert nd.calls == [] and r["собрано"] == 0, r
+    assert r["метка_в_теле"] == 1 and r["пропущено"] == 1 and r["без_изменений"] == 0, r
+    assert "· тема: метка в теле — пересборка отдельно" in out and "метка в теле 1" in out
+    assert path.read_bytes() == before, "досье владельца не тронуто"
+    assert not (graph / CHAROITE.dossier_dir / ".backup").exists()
 
 
-def test_full_rebuilds_a_theme_the_author_cleaned_after_scan(nd, tmp_path, monkeypatch):
-    """`--full` пересобирает и чистую тему: пропуск M5 его не отменяет (n815-out3 DS I2)."""
-    graph, path = _labeled_graph(nd, tmp_path)
-    _edit_before_build(nd, monkeypatch, lambda: path.write_text(path.read_text(encoding="utf-8").replace(
-        "Собеседник 4 обещал", "Вера обещала"), encoding="utf-8"))
-    r = nd.run(graph, {}, full=True, dry=False, limit=None)
-    assert nd.calls == ["тема"] and r["собрано"] == 1, r
-
-
-@pytest.mark.parametrize("how, calls, key", [
-    ("missing", ["тема"], "собрано"),        # пропало после скана — NEW, как на базе
-    ("unreadable", [], "отказы"),            # не читается — отказ «не трогаю», а не «без изменений»
-    ("old_fp", ["тема"], "собрано"),         # другой отпечаток при метке — CHANGED, модель
-])
-def test_reread_after_scan_is_classified_again(nd, tmp_path, monkeypatch, how, calls, key):
-    """n815-out3 DS C1, Sonnet I1, Haiku I-1: перечитанное досье — тот же
-    `_classify`; своё тело под текущий отпечаток не штампуется."""
-    graph, path = _labeled_graph(nd, tmp_path)
-    old_fp = path.read_text(encoding="utf-8").replace("отпечаток: ", "отпечаток: прежний-")
-
-    def edit():
-        if how == "missing":
-            path.unlink()
-        elif how == "old_fp":
-            path.write_text(old_fp, encoding="utf-8")
-        else:
-            path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")   # снимок другой
-
-    if how == "unreadable":
-        monkeypatch.setattr(nd._DossierReads, "reload",
-                            lambda self, p: dossier.DossierLoad("unreadable", None))
-    _edit_before_build(nd, monkeypatch, edit)
+def test_clean_theme_without_changes_is_not_counted_as_labeled(nd, tmp_path):
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    nd.run(graph, {}, full=False, dry=False, limit=None)
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == calls and r[key] == 1, r
-    assert r["без_изменений"] == 0, r
-    if how == "old_fp":
-        assert "новое тело" in path.read_text(encoding="utf-8"), "тело модели, не своё"
+    assert r["метка_в_теле"] == 0 and r["без_изменений"] == 1, r
 
 
-@pytest.mark.parametrize("path_", ["backup", "changed"])
-def test_own_body_failures_skip_the_write(nd, tmp_path, monkeypatch, capsys, path_):
-    """Путь без модели: отказ копии — отказ темы и попытка, как нечитаемое
-    досье (соглашение `_drive`; раздельный счёт — долг №637), сверка под
-    замком — своими словами, не «за время генерации» (n815-out3 DS M4, M5)."""
+def test_full_rebuilds_a_labeled_theme_through_the_model_clean(nd, tmp_path):
+    """`--full` — как на базе: модель, ответ без меток, слово автора на месте."""
     graph, path = _labeled_graph(nd, tmp_path)
-    if path_ == "backup":
-        monkeypatch.setattr(nd.dossier, "backup", _raise)
-    else:
-        real = nd.dossier.load_dossier   # сверочное чтение под замком — после скана
-        _edit_before_build(nd, monkeypatch, lambda: monkeypatch.setattr(
-            nd.dossier, "load_dossier", lambda p: dossier.DossierLoad("ok", real(p).text + "правка\n")))
-    capsys.readouterr()
-    r = nd.run_all([graph], {}, full=False, dry=False)
-    g = r.graphs[0]
-    assert nd.calls == [] and g.built == 0
-    if path_ == "backup":
-        assert g.отказы == 1 and r.attempts == 1
-    else:
-        assert g.changed == 1 and r.attempts == 0
-        assert "досье изменилось при сверке под замком" in capsys.readouterr().out
+    r = nd.run(graph, {}, full=True, dry=False, limit=None)
+    text = path.read_text(encoding="utf-8")
+    assert nd.calls == ["тема"] and r["собрано"] == 1 and r["метка_в_теле"] == 0, r
+    assert not dossier.labeled_body(text)
+    assert "## Правки автора\n\nСобеседник 4 — это Вера\n" in text
 
 
 def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkeypatch):
@@ -904,40 +769,3 @@ def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkey
 
 
 _LABELED = "---\nотпечаток: fp\n---\n# Т\n## Сейчас\nСобеседник 4 обещал\n"
-_CLEAN = "---\nотпечаток: fp\n---\n# Т\n## Сейчас\nучастник встречи обещал\n"
-
-
-@pytest.mark.parametrize("state, text, fp, full, expected", [
-    ("missing", None, "fp", False, "NEW"),
-    ("ok", _LABELED, "другой", False, "CHANGED"),
-    ("ok", _LABELED, "fp", False, "LABELED"),
-    ("ok", _LABELED, "fp", True, "LABELED"),        # --full: метка — своя причина, не «без изменений»
-    ("damaged", _LABELED.replace("обещал", "обещал �"), "fp", False, "LABELED"),   # доктор его считает
-    ("unreadable", None, "fp", False, "CHANGED"),   # как на базе: отказ даёт _manual_for_rebuild, не очередь
-    ("ok", _CLEAN, "fp", False, None),
-    ("ok", _CLEAN, "fp", True, "SAME"),
-])
-def test_classify_table(nd, state, text, fp, full, expected):
-    """Причина работы ночи — таблицей (n815-out1 Sonnet M5, DS M1)."""
-    got = nd._classify(dossier.DossierLoad(state, text), fp, full)
-    assert got == (getattr(nd, expected) if expected else None)
-
-
-def test_labeled_waits_behind_changed_inside_a_graph(nd):
-    """Порядок внутри графа: свежие факты (CHANGED) раньше косметики старого текста (LABELED)."""
-    g = object()
-    order = sorted([_cand(nd, g, "метка", nd.LABELED, "2026-07-01"), _cand(nd, g, "факты", nd.CHANGED, "2026-07-20")],
-                   key=nd._graph_key)
-    assert [c.theme for c in order] == ["факты", "метка"]
-
-
-def test_reread_that_is_still_labeled_writes_the_author_edit(nd, tmp_path, monkeypatch):
-    """Перечитали, метка на месте — своё тело берётся из перечитанного, а не из
-    снимка скана: правка автора не откатывается. Сторож источника тела против
-    мутанта `cand.loaded`, не регресс-тест правки out4 (n815-out5 DS M3)."""
-    graph, path = _labeled_graph(nd, tmp_path)
-    _edit_before_build(nd, monkeypatch, lambda: path.write_text(path.read_text(encoding="utf-8").replace(
-        "обещал письмо", "обещал письмо и смету"), encoding="utf-8"))
-    r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == [] and r["собрано"] == 1, r
-    assert "Участник встречи обещал письмо и смету" in path.read_text(encoding="utf-8")

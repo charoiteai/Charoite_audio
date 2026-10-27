@@ -1005,9 +1005,11 @@ its front matter — the source list and their modification times. Unchanged fin
 topic did not move, so the model is not called. On a typical night a handful
 of topics out of dozens get rebuilt. A weekly full pass (`--full`) is still
 useful: incremental updates gradually blur cluster boundaries. The fingerprint
-does not know the prompt, so a third reason exists besides "new" and "changed":
-a body that still names a diarization label as an actor
-(`dossier.labeled_body`, the same predicate the graph doctor counts). Labels are
+does not know the prompt, so a body that still names a diarization label as an
+actor (`dossier.labeled_body`, the same predicate the graph doctor counts) is not
+rebuilt by the night when the fingerprint matches: a model retelling would erase
+the cloud review's edits. It is skipped, logged and counted (`метка_в_теле` in the
+report); `--full` rebuilds it through the model. Labels are
 replaced in memory by `graph_names.unlabel_speakers` — one detector shared with
 `has_speaker_actor` — on the model's input (`dossier.source_text`) and on its
 answer before the format check; graph files are never rewritten.

@@ -181,27 +181,9 @@ NEED_START_S = 40.0
 clock = time.monotonic
 wall_clock = time.time   # потолок ночи — unix-время; тесты подменяют его отдельно от clock
 
-# Классы кандидата: досье нет / отпечаток разошёлся / отпечаток тот же, но в теле
-# метка диаризации деятелем / без изменений (только --full)
-NEW, CHANGED, LABELED, SAME = 1, 2, 3, 4
-_CLASS_WORD = {NEW: "новое", CHANGED: "изменилось", LABELED: "метка в теле", SAME: "без изменений"}
-
-
-def _classify(loaded: dossier.DossierLoad, fp: str, full: bool) -> int | None:
-    """Почему тема — работа ночи, или None — пропустить. Отпечаток не знает
-    промпта: досье, собранные до чистки меток, при тех же источниках не
-    пересобрались бы никогда (n815-in1 C1). Метка в теле — своя причина,
-    после изменившихся тем: свежие факты важнее старого текста; пересборка
-    кладёт чистое тело, и причина гаснет сама (n815-in2 DS C1). Повреждённое
-    досье — тоже: доктор его считает, а «Правки автора» бережёт
-    `_manual_for_rebuild`, как при CHANGED (n815-out1 DS M1)."""
-    if loaded.state == "missing":
-        return NEW
-    if dossier.read_fingerprint(loaded) != fp:
-        return CHANGED
-    if dossier.labeled_body(loaded.text):
-        return LABELED
-    return SAME if full else None
+# Классы кандидата: досье нет / отпечаток разошёлся / без изменений (только --full)
+NEW, CHANGED, SAME = 1, 2, 3
+_CLASS_WORD = {NEW: "новое", CHANGED: "изменилось", SAME: "без изменений"}
 
 
 class _GraphRun:
@@ -226,6 +208,7 @@ class _GraphRun:
         # изменений» (круг-2 по PR #438, DS Minor 9).
         self.unchanged = self.over_limit = self.locked = self.late = 0
         self.changed = self.broken_manual = 0
+        self.labeled = 0          # метка в теле при тех же источниках — эту ночь не трогаем
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе."""
@@ -254,14 +237,15 @@ class _GraphRun:
                 "пропущено": self.skipped, "отказы": self.отказы, "битые": len(self.reads.damaged),
                 "без_изменений": self.unchanged, "сверх_лимита": self.over_limit,
                 "занят": self.locked, "не_успели": self.late,
-                "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed}
+                "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed,
+                "метка_в_теле": self.labeled}
 
     def report(self) -> None:
         if self.skipped:
             print(f"  {self.graph.name}: пропущено {self.skipped}: без изменений {self.unchanged}, "
                   f"сверх лимита {self.over_limit}, граф занят {self.locked}, "
                   f"не успели за ночь {self.late}, правки автора повреждены {self.broken_manual}, "
-                  f"досье изменилось {self.changed}")
+                  f"досье изменилось {self.changed}, метка в теле {self.labeled}")
 
 
 class Candidate:
@@ -284,11 +268,21 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         fp = dossier.fingerprint(members, files)
         loaded = g.reads.load(path)
         g.keep(theme, members, loaded, fp)
-        cls = _classify(loaded, fp, full)
-        if cls is None:
+        same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
+        if same and not full:
             g.skipped += 1
-            g.unchanged += 1
+            if dossier.labeled_body(loaded.text):
+                # Метка диаризации в теле при тех же источниках: пересказ модели
+                # стёр бы правки облачной ревизии (⚠️, ссылки), а своё тело без
+                # модели четыре круга подряд теряло хвост на разборе (n815-out6,
+                # решение координатора) — эту ночь не трогаем, счётчик в отчёт;
+                # пересборка таких тем — отдельной карточкой
+                g.labeled += 1
+                print(f"  ⏭ {graph.name} · {theme}: метка в теле — пересборка отдельно")
+            else:
+                g.unchanged += 1
             continue
+        cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
@@ -319,29 +313,20 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
-def _build(cand: Candidate, c: dict, full: bool, lock_wait=lambda: LOCK_WAIT) -> float | None:
+def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | None:
     """Собрать одну тему. Возвращает секунды генерации — цену темы для
     `need`, без ожидания замка; None — модель не звали. Собрана ли тема —
     счётчик `g.built` (флаг рядом с ним мутанты #819 не видели); `lock_wait` —
-    сколько ждать замок, считается в момент записи, после генерации; `full` —
-    `--full` прогона: перечитанное досье классифицируется им же (n815-out4 DS M1)."""
+    сколько ждать замок, считается в момент записи, после генерации."""
     g, theme, members, fp = cand.g, cand.theme, cand.members, cand.fp
     path = g.folder / f"{theme}.md"
-    loaded, cls = cand.loaded, cand.cls
+    loaded = cand.loaded
     if safe_write.stat_snapshot(path) != cand.mtime:
         # Досье правили после скана (автор в Obsidian): снимок устарел, иначе
         # сверка после генерации выбросит её как «изменилось за время
         # генерации» (вход in3 №621, DS M2).
         loaded = g.reads.reload(path)
         g.keep(theme, members, loaded, fp)
-        # Перечитанное — тот же `_classify`, что на скане: автор убрал метку —
-        # причины нет (финальный Opus n815 M5); файл пропал — NEW, не читается
-        # или отпечаток другой — CHANGED, как на базе (n815-out3 DS C1, I2)
-        cls = _classify(loaded, fp, full)
-        if cls is None:
-            g.skipped += 1
-            g.unchanged += 1
-            return None
     allowed, manual, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
         g.отказы += failures
@@ -353,14 +338,7 @@ def _build(cand: Candidate, c: dict, full: bool, lock_wait=lambda: LOCK_WAIT) ->
         return None
     g0 = clock()
     body = ""
-    if cls == LABELED and loaded.state == "ok":
-        # Источники те же — тело своё, без меток, мимо модели: тело могла править
-        # облачная ревизия (шапку она не трогает), и пересказ модели стёр бы её
-        # правки, которые база не тронула бы (финальный Opus n815 I1). Запись —
-        # тем же путём ниже: замок, сверка, копия, гейт `expect`.
-        body = dossier.kept_body(loaded.text)
-    own = bool(body)   # тело без модели — не цена темы для `need` и не попытка
-    for temperature in (0.2, 0.05) if not own else ():   # вторая попытка чуть холоднее
+    for temperature in (0.2, 0.05):          # вторая попытка чуть холоднее
         try:
             # метка деятелем — тем же словом, что во входе: отказом она красила
             # бы ночь и держала тему в голове очереди (n815-in1 C2); «Правки
@@ -382,7 +360,7 @@ def _build(cand: Candidate, c: dict, full: bool, lock_wait=lambda: LOCK_WAIT) ->
         # статусом «ok» (аудит 17.08). Прежнее досье в индексе остаётся.
         g.отказы += 1
         return clock() - g0
-    gen_s = None if own else clock() - g0
+    gen_s = clock() - g0
 
     text = dossier.render(theme, body, members, g.files, fp, g.today)
     if manual:
@@ -410,8 +388,8 @@ def _build(cand: Candidate, c: dict, full: bool, lock_wait=lambda: LOCK_WAIT) ->
         # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
         fresh = dossier.load_dossier(path)
         if fresh.state != loaded.state or fresh.text != loaded.text:
-            when = "при сверке под замком" if own else "за время генерации"
-            print(f"  ⏸ {theme}: досье изменилось {when} — тема уйдёт на следующую ночь")
+            print(f"  ⏸ {theme}: досье изменилось за время генерации — "
+                  "тема уйдёт на следующую ночь")
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
@@ -444,8 +422,7 @@ def _build(cand: Candidate, c: dict, full: bool, lock_wait=lambda: LOCK_WAIT) ->
     g.built += 1
     if copy is not None:
         print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{g.stamp}/")
-    took = "тело прежнее без меток" if gen_s is None else f"{gen_s:.0f}с"
-    print(f"  ✓ {g.graph.name} · {theme}: {len(members)} источников, {len(body)} зн., {took}")
+    print(f"  ✓ {g.graph.name} · {theme}: {len(members)} источников, {len(body)} зн., {gen_s:.0f}с")
     g.entries[theme] = {
         "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
         "источников": len(members), "собрано": g.today, "отпечаток": fp,
@@ -536,7 +513,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             return live_gate.night_wait_cap(
                 LOCK_WAIT if rest is None else min(LOCK_WAIT, rest), now=wall_clock)
         refused, before = g.отказы, g.built
-        gen_s = _build(cand, c, full, lock_wait)
+        gen_s = _build(cand, c, lock_wait)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
         if called:                 # цена темы — генерация, без ожидания замка (Haiku I1)
             spent.append(gen_s)
