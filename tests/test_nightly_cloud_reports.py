@@ -276,6 +276,39 @@ def test_review_rejects_nonzero_exit_with_a_reason(tmp_path, monkeypatch):
     assert fixed is None and why.startswith("сбой:") and "код 1" in why and "rate limit" in why
 
 
+def test_review_under_mask_runs_in_the_empty_dir_and_names_the_refusal(tmp_path, monkeypatch):
+    """Под маской cwd CLI — пустой каталог: путь демона с именем владельца CLI кладёт в
+    системный промпт. Отказ маски — причиной в строке сбоя, облако не зовётся (CI #860:
+    мутанты `== "off"` → `!=`, `return X` → `None`, `or` → `and` выживали)."""
+    ndr = _load("nightly_dossier_review")
+    path = tmp_path / "Платёжный провайдер.md"
+    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
+    seen = []
+
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "Ошибка: rate limit"
+
+    monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: seen.append(k.get("cwd")) or R())
+    empty = tmp_path / "charoite-cloud-empty"
+    monkeypatch.setattr(ndr.cloud_door, "mask_prompt",
+                        lambda c, prompt, g, data: ndr.pii_mask.Masked(prompt, "basic"))
+    monkeypatch.setattr(ndr.cloud_door, "empty_workdir", lambda: empty)
+    cfg = {"sufler": {"cloud_enrich": True}}
+    fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
+    assert seen == [empty]
+    assert fixed is None and "rate limit" in why, "причина из stderr при пустом stdout потерялась"
+
+    def refuse(*a, **k):
+        raise ndr.pii_mask.MaskRefused("в графе нет узлов людей")
+
+    monkeypatch.setattr(ndr.cloud_door, "mask_prompt", refuse)
+    seen.clear()
+    fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
+    assert (fixed, why, seen) == (None, "сбой: маска не прошла: в графе нет узлов людей", [])
+
+
 def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypatch):
     """С включённой правкой владелец узнавал о переписанном досье только из
     строки лога; бэкап с датой без времени терялся при втором прогоне за день."""
