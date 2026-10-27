@@ -708,3 +708,10 @@ def test_empty_workdir_failure_is_a_mask_refusal(tmp_path, monkeypatch):
     (tmp_path / "charoite-cloud-empty").write_text("файл на месте каталога")
     with pytest.raises(pm.MaskRefused):
         cloud_door.empty_workdir()
+
+
+def test_abbreviation_said_as_a_word_keeps_the_person_canon():
+    """«Злком» при узле человека «ЗЛК» — падеж узла: у словаря нет лексемы аббревиатуры,
+    решает перечень хвостов (n793-out12 DS-M5)."""
+    m = pm.mask("Злком сказали. ЗЛК ушёл.", _forms(pm.NodeForms("ЗЛК", person=True)))
+    assert [(g.canon, g.forms) for g in m.groups.values()] == [("ЗЛК", ["Злком", "ЗЛК"])]

@@ -363,7 +363,9 @@ def _case_of(surface: str, entry: Entry, lexeme: Callable[[str, str], bool] | No
     raw = _WORD.findall(_yo(surface))
     if len(raw) != len(entry.words):
         return False
-    if lexeme is not None and len(entry.source) == len(raw):
+    # аббревиатура словом («Злком» при «ЗЛК») — у словаря нет её лексемы: падеж по перечню
+    # хвостов, иначе человек-аббревиатура терял канон (n793-out12 DS-M5)
+    if lexeme is not None and not entry.exact and len(entry.source) == len(raw):
         return all(lexeme(w, src) for w, src in zip(raw, entry.source))
     return all(w.lower().startswith(b.lower()) and w.lower()[len(b):] in _CASE_TAILS
                for w, b in zip(raw, entry.words))

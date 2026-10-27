@@ -374,3 +374,16 @@ def test_group_with_a_node_takes_the_node_gender(node, src, gender):
         m, d, _ = _dressed(src, (pm.NodeForms(node),), seed=seed)
         assert set(d.gender.values()) == {gender}, (seed, m.text)
         assert pii_fake.undress(m.text, d, sent=m.text) == (src, 0), m.text
+
+
+@pytest.mark.parametrize("node, src, tail, has", [
+    ("Дмитрий Орлов", "Орловой передали. Дмитрий Орлов ушёл.", "ой", True),
+    ("Ольга Орлова", "Орлов пришёл. Ольга Орлова ушла.", "а", False),   # «Брусницын», не «Брусницына»
+])
+def test_surname_ending_follows_the_form_gender(node, src, tail, has):
+    """Род группы — по узлу, окончание фамилии — по роду самой формы, если в роде группы её не
+    разобрать: иначе «Орловой» уходила облаку «Зимогорове» (n793-out12 H-I2 = DS-I2)."""
+    for seed in range(5):
+        m, d, _ = _dressed(src, (pm.NodeForms(node),), seed=seed)
+        assert m.text.split()[0].endswith(tail) is has, (seed, m.text)
+        assert pii_fake.undress(m.text, d, sent=m.text) == (src, 0), m.text

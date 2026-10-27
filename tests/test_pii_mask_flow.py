@@ -159,6 +159,12 @@ def test_cli_exit_under_mask_runs_in_the_empty_workdir(where):
                        and any(x is c for x in ast.walk(t))]
             assert not any(x is mine[0] for t in cli_try for x in ast.walk(t)), \
                 f"{where}: {cwd.id} вычислен в try вызова CLI"
+            # и под обработчиком отказа маски: `empty_workdir` бросает `MaskRefused` (n793-out12 DS-I3)
+            refused = [t for t in ast.walk(fn) if isinstance(t, ast.Try)
+                       and any(h.type is not None and ast.unparse(h.type) == "pii_mask.MaskRefused"
+                               for h in t.handlers)
+                       and any(x is mine[0] for b in t.body for x in ast.walk(b))]
+            assert refused, f"{where}: {cwd.id} вычислен вне try с except pii_mask.MaskRefused"
             cwd = mine[0].value
         # ровно «None без маски, иначе вызов empty_workdir()» (n793-out10 S-M3, DS-M6)
         ok = (isinstance(cwd, ast.IfExp) and ast.unparse(cwd.test) == "masked.level == 'off'"

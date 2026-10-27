@@ -1567,12 +1567,18 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     tmp = rev.with_suffix(rev.suffix + ".part")
     # write-режим: cwd — ТОЛЬКО песочница, реальным путём из проверки выше,
     # без фолбэка в папку стенограмм (luna, круг-4); фолбэк остаётся чтению.
-    work_dir = (cloud_pen if may_edit and cloud_pen is not None
-                else graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
-                if masked.level == "off" or tools_graph
-                # под маской cwd без инструментов не нужен, а его путь CLI кладёт в
-                # системный промпт облака (n793-out1 S-M6)
-                else cloud_door.empty_workdir())
+    try:
+        work_dir = (cloud_pen if may_edit and cloud_pen is not None
+                    else graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
+                    if masked.level == "off" or tools_graph
+                    # под маской cwd без инструментов не нужен, а его путь CLI кладёт в
+                    # системный промпт облака (n793-out1 S-M6)
+                    else cloud_door.empty_workdir())
+    except pii_mask.MaskRefused as e:
+        # каталог не создан — отказ маски тем же путём, не traceback (n793-out12 I1 трёх голов)
+        _log_line(log, f"{stamp}: маска не прошла — разбор не отправлен ({e})")
+        _review_stage(transcript, "failed", f"маска не прошла: {e}")
+        return RC_ERROR
     mode = ("правка графа" if may_edit else
             "только чтение графа" if tools_graph else
             "только текст (маска ПДн; правка графа из конфига не действует)" if edit_masked else

@@ -330,7 +330,11 @@ def _person(pk: _Picker, forms: list[str], canon: str | None = None) -> list[str
                 # звательная усечённая («Саш», «Дим») — так же усечь подделку на -а/-я
                 fw = parts[k][:-1] if parts[k][-1:] in "ая" else parts[k]
             elif r == "Surn":
-                fw = _surname(parts[k], case, num, gender)
+                # окончание — по роду самой формы, если в роде группы её не разобрать: «Орловой»
+                # при узле «Дмитрий Орлов» — «Зимогоровой», не «Зимогорове» (n793-out12 H-I2 = DS-I2)
+                own = gender if gender in p.tag else next(
+                    (g for g in ("femn", "masc") if g in p.tag), gender)
+                fw = _surname(parts[k], case, num, own)
             elif r == "Patr":
                 fw = _inflect(m, parts[k], case, num, gender, "Patr")
             else:
