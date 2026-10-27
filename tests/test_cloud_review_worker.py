@@ -3312,7 +3312,10 @@ def test_mask_turns_edit_config_into_text_mode_and_says_so(tmp_path, monkeypatch
     assert "charoite-cloud-empty" in cap["cwd"]
     text = rev.read_text(encoding="utf-8")
     assert "Анна Белова берёт срок" in text and "[[Анна Белова]]" in text
-    assert "правка графа из конфига не действует" in log.read_text(encoding="utf-8")
+    logged = log.read_text(encoding="utf-8")
+    assert "правка графа из конфига не действует" in logged
+    # итог маски в логе — счёт, без имён (n793-out20 DS-M2)
+    assert "маска basic: замен" in logged and "белова" not in logged.casefold()
     assert stages[-1][0] == "ok" and "маска ПДн: правка графа недоступна" in stages[-1][1]
 
 

@@ -584,7 +584,7 @@ def test_report_problem_wants_headings_on_their_own_lines():
     assert "Слияния" in ncc.report_problem(0, inline)
 
 
-def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch):
+def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch, capsys):
     """Единственный ночной шаг без живого гейта внутри (аудит 13.09, DS M5); отчёт
     через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Окно пинится
     ПОВЕДЕНИЕМ — прогоном main() с заглушками, по образцу тестов ревизии досье
@@ -672,8 +672,10 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
                         lambda c, prompt, g, data: ncc.pii_mask.Masked(prompt, "basic"))
     monkeypatch.setattr(ncc.cloud_door, "empty_workdir", lambda: empty)
     os.utime(cores / "Ядро.md", (time.time() + 3, time.time() + 3))   # ядро изменилось — новая ночь
+    capsys.readouterr()
     ncc.main()
     assert next(e for e in events if e[0] == "облако")[1] == empty
+    assert "маска basic: замен" in capsys.readouterr().out   # итог маски в логе (n793-out20 DS-M2)
 
     # --- окно закрыто (ночь вышла): в облако идти нельзя, выход с кодом 0
     events.clear()

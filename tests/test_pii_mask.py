@@ -253,7 +253,10 @@ def test_unreadable_node_is_masked_by_its_file_name(tmp_path):
     assert "не прочитались узлы (2), маска по имени файла" in notes
     # notes уходят в строку лога `summary()` — имён там нет (n793-out19 S-C1 = DS-C1)
     m.notes.extend(notes)
-    assert "Орлов" not in m.summary() and "ОРИС" not in m.summary()
+    line = m.summary().casefold()
+    assert "не прочитались узлы (2)" in line
+    for word in ("орлов", "орис", "люди/", ".md"):
+        assert word not in line, word
 
 
 def test_graph_without_people_refuses(tmp_path):
@@ -492,6 +495,7 @@ def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkey
     ndr = _night_dossier(monkeypatch)
     (tmp_path / "g").mkdir()
     graph = _graph(tmp_path / "g")
+    (graph / "Люди" / "Пётр Орлов.md").write_bytes(b"\xff\xfe# \x00")   # нечитаемый узел
     path = tmp_path / "ЗЛК.md"
     path.write_text(_NIGHT_DOSSIER, encoding="utf-8")
     files = {"2026-07-15_1400": {"kind": "встреча", "text": "Аня обещала срок\n"}}
@@ -517,9 +521,12 @@ def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkey
     for name in ("ЗЛК", "Белова", "Аня"):
         assert name not in sent[0], f"{name} ушло в облако открытым"
     # тема — имя файла досье, её печатает каждая строка ночи; людей в логе нет
-    assert "Белова" not in log and "Аня" not in log
-    # итог маски виден в логе, все куски нашлись (n793-out18 DS-I1; out19 S-I1 = DS-I2, S-M1)
-    assert "маска basic: замен" in log and "по всему промпту" not in log
+    for word in ("белова", "аня", "орлов", "люди/"):
+        assert word not in log.casefold(), word
+    # итог маски виден в логе, заметки двери доехали, все куски нашлись
+    # (n793-out18 DS-I1; out19 S-I1 = DS-I2, S-M1; out20 DS-I1)
+    assert "маска basic: замен" in log and "не прочитались узлы (1)" in log
+    assert "по всему промпту" not in log
     assert "- Анна Белова" in fixed
 
     # подделка не развернулась — ревизия отклонена, досье не тронуто (n793-out18 H-C1 = S-I1)
