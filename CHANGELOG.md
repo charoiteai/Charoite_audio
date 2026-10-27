@@ -5,6 +5,31 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.100.0](https://github.com/charoiteai/Charoite_audio/compare/v0.99.0...v0.100.0) (2026-10-27)
+
+
+### Features
+
+* **daemon:** name macOS Low Power Mode while hints slow down ([#856](https://github.com/charoiteai/Charoite_audio/issues/856)) ([b311d53](https://github.com/charoiteai/Charoite_audio/commit/b311d5304b0e5b14adba0915c8a1367a26e2ea44))
+* **graph:** bare name with living namesakes is not written into a node by a meeting ([#864](https://github.com/charoiteai/Charoite_audio/issues/864)) ([15cd746](https://github.com/charoiteai/Charoite_audio/commit/15cd746ffae5fc4d0f9543ac8b14c1f9c3378b0a))
+* **graph:** доктор считает сборные узлы людей, лента graph_feed.json (№611 этап 1) ([#858](https://github.com/charoiteai/Charoite_audio/issues/858)) ([effd1b2](https://github.com/charoiteai/Charoite_audio/commit/effd1b2ff6c2dcd74ceb6f755c320ac25feb04dc))
+* **meeting:** keep the after-call tail out of the published meeting ([#852](https://github.com/charoiteai/Charoite_audio/issues/852)) ([030cf29](https://github.com/charoiteai/Charoite_audio/commit/030cf29a8a965f84521e8b6d7053181bf6e33ce8))
+* **minutes:** deadline gate marks an action item's deadline the speech does not confirm ([#859](https://github.com/charoiteai/Charoite_audio/issues/859)) ([ed705d8](https://github.com/charoiteai/Charoite_audio/commit/ed705d8809a1d3509194d4ba7d128609bf4e4c9b))
+* **night:** ночная ревизия ядер через Tinfoil с аттестацией (этап 1, №792) ([#857](https://github.com/charoiteai/Charoite_audio/issues/857)) ([2e9abd0](https://github.com/charoiteai/Charoite_audio/commit/2e9abd0421211193856a4f2534d88817b3b6b7ca))
+* **privacy:** fake names instead of real ones in cloud prompts ([#793](https://github.com/charoiteai/Charoite_audio/issues/793)) ([#860](https://github.com/charoiteai/Charoite_audio/issues/860)) ([8f2e2d7](https://github.com/charoiteai/Charoite_audio/commit/8f2e2d7e48f67e9accb9fed1ed3a34fc3c14d7bc))
+
+
+### Bug Fixes
+
+* **chat:** search only locally, drop the companion server read path ([#854](https://github.com/charoiteai/Charoite_audio/issues/854)) ([e8d5f4d](https://github.com/charoiteai/Charoite_audio/commit/e8d5f4d8f10bf2140dfef8c27ec881ef9a3e80cc))
+* **dossier:** diarization label is never an actor of a dossier ([#865](https://github.com/charoiteai/Charoite_audio/issues/865)) ([ec7ca0a](https://github.com/charoiteai/Charoite_audio/commit/ec7ca0afbf8cd081fb7677f41c6d6b2904baaab8))
+* **graph:** recognise every merged-stub form, never write meetings into stubs ([#851](https://github.com/charoiteai/Charoite_audio/issues/851)) ([7a12de0](https://github.com/charoiteai/Charoite_audio/commit/7a12de0e1ccc57a74b22f5f533bdf06c9aabc99d))
+* **live:** auto ⏮ matches speech only, letter+digit code counts once; remove deja-vu loop ([#850](https://github.com/charoiteai/Charoite_audio/issues/850)) ([8689731](https://github.com/charoiteai/Charoite_audio/commit/8689731eb85b9c0c2592448edeb4f28309edbac1))
+* **meetings:** card reads the cloud review result from the meeting status ([#855](https://github.com/charoiteai/Charoite_audio/issues/855)) ([5a2989a](https://github.com/charoiteai/Charoite_audio/commit/5a2989ab50d30847956235d87edfcd3b4119a750))
+* **search:** one coverage rule for the block winner, judged on the shown window ([#849](https://github.com/charoiteai/Charoite_audio/issues/849)) ([2ded71f](https://github.com/charoiteai/Charoite_audio/commit/2ded71f97747533f7fb13cc0213ee4005b2cbb12))
+* **search:** semantic index owns its background refresh; tests and probes use own instances ([#847](https://github.com/charoiteai/Charoite_audio/issues/847)) ([da0b945](https://github.com/charoiteai/Charoite_audio/commit/da0b94535c4c30add3cc48cf3204046d6f683692))
+* **search:** semantic index prune keeps unread files and applies while indexing runs ([#853](https://github.com/charoiteai/Charoite_audio/issues/853)) ([86c673b](https://github.com/charoiteai/Charoite_audio/commit/86c673b350a2e70cd755edd1bfa38716b0e62b2a))
+
 ## [0.99.0](https://github.com/charoiteai/Charoite_audio/compare/v0.98.1...v0.99.0) (2026-10-22)
 
 
