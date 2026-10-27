@@ -263,7 +263,7 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     # прохода, иначе человек увидел бы «3/3», а за ним снова «1/6».
     second = []
     if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2:
-        if _language(cfg) == "ru":
+        if _language(cfg) not in ("en", "zh"):          # то же правило, что выбирает промпт
             second = _split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2, short_tail=False)
         else:
             # Порог склейки 0,7/3 мерен только на русских встречах: в китайском
@@ -291,8 +291,9 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
 
 
 def _language(cfg: dict) -> str:
-    """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`."""
-    return str(cfg.get("sufler", {}).get("language", "ru")).lower()
+    """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`.
+    Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3)."""
+    return str((cfg.get("sufler") or {}).get("language") or "ru").strip().lower()
 
 
 def _split(transcript: str, size: int, overlap: int, short_tail: bool = True) -> list[str]:
@@ -324,24 +325,40 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
 
     Второй проход — добавка, а не условие: его сбой оставляет разбор первого,
     а не роняет всю встречу в «модель недоступна» (Sonnet I2, DeepSeek I2).
-    Сбой одного куска теряет только этот кусок: решения, найденные до него,
-    остаются (выход n821-out1, Sonnet M1).
+    Сбой разбора одного куска теряет только этот кусок; сетевой сбой и живая
+    встреча обрывают проход, найденное до них остаётся (выходы n821-out1 и out2).
     """
-    if _live_now():
-        # Первый проход готов и ждёт записи: ждать конца живой встречи ради
-        # добавки значило бы держать готовый граф часами (выход n821-out1, Sonnet I3).
-        print("граф: второй проход пропущен: живая встреча — остаётся разбор первого")
-        return data
     total = done + len(parts)
+    first = data.get("решения")
+    if isinstance(first, str):
+        # Строка вместо списка: потребители итерировали бы её по буквам (выход n821-out2, DS I1).
+        first = [first] if first.strip() else []
+        data["решения"] = first
+    elif first is None:
+        first = []
+    elif not isinstance(first, list):
+        # Словарь или число — форма, которой здесь не понять; добавка её не затирает
+        # (выход n821-out2, Sonnet M1).
+        print(f"граф: второй проход пропущен: решения первого — {type(first).__name__}, а не список")
+        _report(total, total)
+        return data
     print(f"граф: второй проход — {len(parts)} частями по {CHUNK_CHARS_2} знаков")
     found: list[str] = []
     for n, part in enumerate(parts, done + 1):
+        # Первый проход готов и ждёт записи: ждать конца живой встречи ради
+        # добавки значило бы держать готовый граф часами — проверка без ожидания,
+        # перед каждым куском (выходы n821-out1 и out2, Sonnet I3 и I1).
+        if _live_now():
+            print("граф: второй проход прерван: живая встреча — остаётся найденное")
+            break
         _report(n, total)
         try:
-            # Встреча могла начаться посреди второго прохода — уступаем, как и
-            # между кусками первого.
-            _yield_to_live()
             got = _extract(cfg, part, project_rule)
+        except requests.RequestException as e:
+            # Модель не отвечает — следующий кусок ждал бы те же пять минут таймаута
+            # (выход n821-out2, Sonnet I2).
+            print(f"граф: второй проход прерван ({type(e).__name__}: {e}) — остаётся найденное")
+            break
         except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
             print(f"граф: часть {n}/{total} второго прохода упала ({type(e).__name__}: {e}) — продолжаю")
             continue
@@ -352,10 +369,8 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
         # Строка вместо списка дописала бы решения по букве (выход n821-out1, DS I, Sonnet I1).
         if isinstance(got_decisions, list):
             found.extend(d for d in got_decisions if isinstance(d, str) and d.strip())
-    first = data.get("решения")
-    if not isinstance(first, list):
-        # Тот же сбой формы у первого прохода: строка не сравнивается и не дописывается по букве.
-        first = [first] if isinstance(first, str) and first.strip() else []
+    # Счётчик в статусе — до конца, как бы проход ни кончился (выход n821-out2, DS M6).
+    _report(total, total)
     added = _second_pass_decisions(first, _dedup(found))
     if added:
         data["решения"] = first + added

@@ -36,8 +36,12 @@ def model(monkeypatch):
     monkeypatch.setattr(g.llm_health, "ensure_alive", lambda cfg, log: True)
     monkeypatch.setattr(g, "_yield_to_live", lambda: m.events.append("yield"))
     monkeypatch.setattr(g, "_report", lambda n, total: m.reports.append((n, total)))
-    # Живая встреча — из теста, а не из лока на машине, где идут тесты.
-    monkeypatch.setattr(g, "_live_now", lambda: m.live)
+    # Живая встреча — из теста, а не из лока на машине, где идут тесты. Подменяем
+    # источник в live_gate, а не `_live_now`: иначе сама проверка не исполнялась бы.
+    def alive(root):
+        m.events.append("live?")
+        return m.live() if callable(m.live) else m.live
+    monkeypatch.setattr(g.live_gate, "daemon_alive", alive)
     return m
 
 
@@ -61,7 +65,7 @@ def test_flag_off_is_the_old_extract(model):
 
 
 def test_default_is_off(model):
-    """Умолчание — выключено: восьмигигабайтной машине вторая минута модели на встречу не по карману."""
+    """Умолчание — выключено: +2–2,5 минуты модели на каждую встречу решает владелец, а не установка."""
     model.answers[1] = lambda n: _first()
     g.extract({}, LONG)
     assert len(model.calls) == 3
@@ -159,21 +163,24 @@ def test_medium_meeting_gets_second_pass(model):
     data = g.extract(ON, text)
     assert len(model.calls) == 1 + len(g._split(text, g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2)) == 3
     assert data["решения"][-1] == "Новое решение по бюджету"
-    assert model.reports == [(1, 3), (2, 3), (3, 3)]
+    assert model.reports == [(1, 3), (2, 3), (3, 3), (3, 3)]
 
 
-def test_one_progress_counter_and_yield_before_every_later_chunk(model):
-    """Счёт частей в статусе — общий на оба прохода; живой встрече уступаем перед каждым куском после первого."""
+def test_one_progress_counter_and_live_check_before_every_later_chunk(model):
+    """Счёт частей в статусе — общий на оба прохода и доходит до конца. Первый проход
+    уступает живой встрече, второй — проверяет её без ожидания перед каждым куском."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": []}
     g.extract(ON, LONG)
     n1 = len(g._split(LONG, g.CHUNK_CHARS, g.CHUNK_OVERLAP))
-    n2 = len(g._split(LONG, g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2))
-    assert model.reports == [(n, n1 + n2) for n in range(1, n1 + n2 + 1)]
-    # Перед разбором — одна уступка, дальше — перед каждым куском, кроме самого первого.
-    assert model.events.count("yield") == n1 + n2
-    first_extract = model.events.index("extract")
-    assert all(model.events[i - 1] == "yield" for i, e in enumerate(model.events) if e == "extract" and i > first_extract)
+    n2 = len(g._split(LONG, g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2, short_tail=False))
+    total = n1 + n2
+    assert model.reports == [(n, total) for n in range(1, total + 1)] + [(total, total)]
+    # Перед разбором — одна уступка, дальше — перед каждым куском первого прохода, кроме самого первого.
+    assert model.events.count("yield") == n1
+    extracts = [i for i, e in enumerate(model.events) if e == "extract"]
+    assert all(model.events[i - 1] == "yield" for i in extracts[1:n1])
+    assert all(model.events[i - 1] == "live?" for i in extracts[n1:])
 
 
 def test_chunk_numbers_are_pinned():
@@ -236,6 +243,14 @@ def test_second_pass_string_instead_of_list_adds_nothing(model):
     assert g.extract(ON, LONG) == _first()
 
 
+def test_junk_with_the_same_text_does_not_eat_the_decision(model):
+    """Словарь с текстом решения перед самим решением: без фильтра не-строк `_dedup` счёл бы
+    решение повтором словаря и выбросил (выход n821-out2, DS M2)."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": [{"текст": "Новое решение по бюджету"}, "Новое решение по бюджету"]}
+    assert g.extract(ON, LONG)["решения"][2:] == ["Новое решение по бюджету"]
+
+
 def test_second_pass_skips_junk_items_but_keeps_strings(model):
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": [None, {"текст": "x"}, "  ", 5, "Новое решение по бюджету"]}
@@ -259,22 +274,38 @@ def test_live_meeting_before_second_pass_keeps_first_without_waiting(model):
     assert len(model.calls) == 3
     assert data == _first()
     assert model.events.count("yield") == 3          # уступки только первого прохода
+    assert model.reports[-1] == (8, 8)
+
+
+def test_live_meeting_mid_second_pass_keeps_what_was_found(model):
+    """Встреча началась перед третьим куском второго прохода — проход обрывается без ожидания,
+    решения первых двух кусков остаются (выход n821-out2, Sonnet I1)."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": [f"Отдельное дело номер {n} по закупке"]}
+    model.live = lambda: len(model.calls) >= 3 + 2
+    data = g.extract(ON, LONG)
+    assert len(model.calls) == 3 + 2
+    assert data["решения"][2:] == [f"Отдельное дело номер {n} по закупке" for n in (4, 5)]
+    assert "yield" not in model.events[model.events.index("live?"):]
+    assert model.reports[-1] == (8, 8)
 
 
 def test_failure_of_a_late_chunk_keeps_what_earlier_chunks_found(model):
-    """Сбой одного куска второго прохода теряет только этот кусок."""
+    """Сбой разбора куска теряет только этот кусок; сетевой сбой обрывает проход — следующий
+    кусок ждал бы тот же таймаут. Найденное до сбоя остаётся (выходы n821-out1 и out2)."""
     model.answers[1] = lambda n: _first()
 
     def second(n):
-        if n == 3 + 5:
+        if n == 3 + 4:
             raise requests.ReadTimeout("кусок не успел")
         if n == 3 + 2:
             raise ValueError("ответ не разобрался")
         return {"решения": [f"Отдельное дело номер {n} по закупке"]}
     model.answers[2] = second
     data = g.extract(ON, LONG)
-    assert len(model.calls) == 3 + 5
-    assert data["решения"][2:] == [f"Отдельное дело номер {n} по закупке" for n in (4, 6, 7)]
+    assert len(model.calls) == 3 + 4                  # пятого куска после сетевого сбоя нет
+    assert data["решения"][2:] == [f"Отдельное дело номер {n} по закупке" for n in (4, 6)]
+    assert model.reports[-1] == (8, 8)
 
 
 @pytest.mark.parametrize("a, b, same", [
@@ -286,3 +317,50 @@ def test_failure_of_a_late_chunk_keeps_what_earlier_chunks_found(model):
 ])
 def test_merge_threshold_edges(a, b, same):
     assert g._same_decision(a, b) is same
+
+
+def test_first_pass_string_is_written_as_list_even_without_additions(model):
+    """Нормализованная форма пишется всегда: строка дальше итерировалась бы по буквам (выход n821-out2, DS I1)."""
+    model.answers[1] = lambda n: _first(решения="Перенести релиз сервиса отчётов на пятницу")
+    model.answers[2] = lambda n: {"решения": []}
+    assert g.extract(ON, LONG)["решения"] == ["Перенести релиз сервиса отчётов на пятницу"]
+
+
+@pytest.mark.parametrize("odd", [{"текст": "решение"}, 5])
+def test_first_pass_odd_shape_is_left_alone(model, odd):
+    """Словарь или число вместо списка — добавка их не затирает и модель зря не зовёт."""
+    model.answers[1] = lambda n: _first(решения=odd)
+    model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
+    data = g.extract(ON, LONG)
+    assert data["решения"] == odd
+    assert len(model.calls) == 3
+    assert model.reports[-1] == (8, 8)
+
+
+@pytest.mark.parametrize("cfg, lang", [
+    ({}, "ru"), ({"sufler": None}, "ru"), ({"sufler": {}}, "ru"), ({"sufler": {"language": None}}, "ru"),
+    ({"sufler": {"language": " ru "}}, "ru"), ({"sufler": {"language": " EN "}}, "en"),
+    ({"sufler": {"language": "zh"}}, "zh"),
+])
+def test_language_is_read_like_the_prompt(cfg, lang):
+    assert g._language(cfg) == lang
+
+
+@pytest.mark.parametrize("lang", [" ru ", None, ""])
+def test_russian_by_default_keeps_second_pass(model, lang):
+    """Пустой или неаккуратный ключ языка — промпт русский, значит и второй проход есть."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
+    data = g.extract({"sufler": {"graph_second_pass": True, "language": lang}}, LONG)
+    assert len(model.calls) == 3 + 5
+    assert data["решения"][-1] == "Новое решение по бюджету"
+
+
+def test_first_pass_split_unchanged_with_flag_on(model):
+    """Сквозь `extract`: короткий хвост первого прохода (≤ 1000) по-прежнему идёт своим куском —
+    флаг меняет только второй проход."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": []}
+    g.extract(ON, "x" * 22_500)
+    assert model.calls[:3] == [12_000, 11_500, 500]
+    assert len(model.calls) == 3 + 4                  # второй: 0, 5500, 11000, 16500; хвост 500 — в нахлёсте
