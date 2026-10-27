@@ -68,11 +68,13 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import charoite_paths  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 import cloud  # noqa: E402
+import cloud_door  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
 import install_profile  # noqa: E402
 import graph_links  # noqa: E402
 import name_fixes  # noqa: E402
+import pii_mask  # noqa: E402
 import review_bridge  # noqa: E402
 import privacy  # noqa: E402
 import live_gate  # noqa: E402
@@ -1346,7 +1348,8 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # Право править имеет смысл только вместе с узкой cwd=graph. При
     # отсутствующем/слишком широком графе команда уйдёт в text-only режим:
     # папка стенограмм не должна случайно получить файловые инструменты.
-    may_edit = privacy.cloud_edit_graph_enabled(cfg) and graph_available
+    # Потолок — у privacy: под маской ПДн правки нет вовсе (№793), иначе — ключ правки.
+    may_edit = privacy.cloud_graph_mode(cfg) == "edit" and graph_available
     # Право правки живо только вместе со страховкой: нет каталога графа
     # (несмонтированный iCloud-том) или не получился бэкап — режим чтения.
     # Раньше бэкап тихо пропускался, а Edit/Write всё равно выдавались —
@@ -1529,17 +1532,35 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             _drop_own_snapshots(graph, stamp)
             backup = cloud_pen = None
             unlock()
+    # Песочница есть только у правящего прогона: каждое понижение выше гасит её вместе
+    # с may_edit. Ниже cwd CLI выбирается по одной cloud_pen — инвариант держит код,
+    # а не комментарий (n793-out14, критика Sonnet и DS).
+    if cloud_pen is not None and not may_edit:
+        raise RuntimeError("песочница облака без права правки — понижение не погасило её")
     prompt = graph_updater.cloud_enrich_prompt(
         transcript_name=transcript.name, folder=transcript.parent,
         graph=cloud_pen if may_edit and cloud_pen is not None else graph,
         rev_name=rev.name, stamp=stamp, arch_folder=None, may_edit=may_edit,
-        context=context)
+        context=context,
+        text_only=not (graph_available and privacy.cloud_graph_mode(cfg) != "text"))
+    # Маска ПДн (№793): в CLI уходит только masked.text. Отказ маски — ничего не
+    # отправляем. Под маской правки нет (may_edit=False выше), снимков ещё нет —
+    # выходить можно без отката.
+    try:
+        masked = cloud_door.mask_prompt(cfg, prompt, graph, data=(context,))
+    except pii_mask.MaskRefused as e:
+        _log_line(log, f"{stamp}: маска не прошла — разбор не отправлен ({e})")
+        _review_stage(transcript, "failed", f"маска не прошла: {e}")
+        return RC_ERROR
+    # под маской — без инструментов графа: Read открыл бы файлы мимо маски
+    tools_graph = graph_available and privacy.cloud_graph_mode(cfg) != "text"
+    edit_masked = privacy.mask_blocks_edit(cfg)
     effort = cloud.effort(cfg)          # один раз: и в команду, и в строку лога
     model = cloud.model(cfg, "cloud_debrief_model")  # то же: один объект на команду и лог
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=cloud.claude_bin(),
-        prompt=prompt, model=model, may_edit=may_edit,
-        graph_available=graph_available, deny_paths=denied,
+        prompt=masked.text, model=model, may_edit=may_edit,
+        graph_available=tools_graph, deny_paths=denied,
         symlink_paths=links, effort=effort)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
@@ -1551,17 +1572,30 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     tmp = rev.with_suffix(rev.suffix + ".part")
     # write-режим: cwd — ТОЛЬКО песочница, реальным путём из проверки выше,
     # без фолбэка в папку стенограмм (luna, круг-4); фолбэк остаётся чтению.
-    work_dir = (cloud_pen if may_edit and cloud_pen is not None
-                else graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent))
+    try:
+        # песочница есть только у правящего прогона (проверка инварианта выше)
+        work_dir = (cloud_pen if cloud_pen is not None
+                    else graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
+                    if masked.level == "off" or tools_graph
+                    # под маской cwd без инструментов не нужен, а его путь CLI кладёт в
+                    # системный промпт облака (n793-out1 S-M6)
+                    else cloud_door.empty_workdir())
+    except pii_mask.MaskRefused as e:
+        # каталог не создан — отказ маски тем же путём, не traceback (n793-out12 I1 трёх голов)
+        _log_line(log, f"{stamp}: маска не прошла — разбор не отправлен ({e})")
+        _review_stage(transcript, "failed", f"маска не прошла: {e}")
+        return RC_ERROR
     mode = ("правка графа" if may_edit else
-            "только чтение графа" if graph_available else
+            "только чтение графа" if tools_graph else
+            "только текст (маска ПДн; правка графа из конфига не действует)" if edit_masked else
+            "только текст (маска ПДн)" if graph_available else
             "только текст (граф недоступен)")
     bad_effort = cloud.effort_warning(cfg)
     head = (f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
             f"({', '.join(sent)}), {len(context)} знаков, режим {mode}, модель {model}, "
             f"усилие {effort}"
             + (f", закрыто для записи путей: {len(denied)}" if may_edit else "")
-            + (f"; {bad_effort}" if bad_effort else "") + "\n")
+            + (f"; {bad_effort}" if bad_effort else "") + f"; {masked.summary()}\n")
     # Старый конфиг: cloud_model задан, cloud_debrief_model нет — разбор ушёл на
     # Sonnet по умолчанию (№687); пользователь, выбравший Opus, видит смену в логе
     scfg = cfg.get("sufler") or {}
@@ -1614,9 +1648,33 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # Битый stdout (не UTF-8, исчезнувший файл) — это невалидный ответ,
         # а не исключение поверх сверки: сверка идёт в finally всегда.
         try:
-            text = tmp.read_text(encoding="utf-8", errors="replace") if tmp.exists() else ""
+            raw = tmp.read_bytes() if tmp.exists() else b""
         except OSError:
-            text = ""
+            raw = b""
+        if masked.level == "off":
+            text = raw.decode("utf-8", errors="replace")
+        else:
+            # под маской файл перезаписывается развёрнутым текстом: «�» стёрла бы
+            # признак порчи для проверки в deliver_review (n793-out1 S-M2)
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                lines.append("[cloud-review] ответ не в UTF-8 — не разворачиваю и не публикую\n")
+                text = ""
+                tmp.unlink(missing_ok=True)
+        # ID обратно в имена ДО публикации: в граф и в .partial ID не попадают;
+        # не развернувшийся токен остаётся меткой ⟦?⟧ (№793)
+        text, unresolved = cloud_door.unmask_reply(text, masked)
+        if masked.level != "off" and text:
+            try:
+                tmp.write_text(text, encoding="utf-8")
+            except OSError as e:
+                lines.append(f"[cloud-review] ответ не развернуть в имена ({e}) — не публикую\n")
+                text = ""
+                # .partial с ID вместо имён человеку не нужен (n793-out1 DS-11)
+                tmp.unlink(missing_ok=True)
+        if unresolved:
+            lines.append(f"[cloud-review] токенов маски не развернулось: {unresolved} (⟦?⟧ в тексте)\n")
         ok = code == 0 and looks_like_report(text)
         published = publish(tmp, rev, ok)
         took = (f"за {(time.monotonic() - t_start) / 60:.1f} мин, "
@@ -1806,7 +1864,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                         lines.append(f"[cloud-review] имена меток: раздел не разобран ({e})\n")
                     if name_fixes.section_present(rev_text):
                         lines.append("[cloud-review] имена меток не перештампованы: "
-                                     + ("правка графа выключена — узел Люди править нельзя" if not may_edit
+                                     + ("правку графа сняла маска ПДн — узел Люди править нельзя"
+                                        if edit_masked else
+                                        "правка графа выключена — узел Люди править нельзя" if not may_edit
                                         else "перенос правок графа не сверен")
                                      + "; раздел «Исправления имён» в ревизии — для правки руками"
                                      # обмен меток по очереди сливает обе дорожки (№560)
@@ -1934,7 +1994,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                       else "перенос правок не сверен", _review_result(verdict, delivered=False))
         return RC_TIMEOUT if timed_out else RC_ERROR   # ревизия, может, и есть, но граф не сверен
     if published:
-        _review_stage(transcript, "ok", next((ln.strip() for ln in lines if "правок облака" in ln), lines[0].strip() if lines else ""),
+        _review_stage(transcript, "ok", next((ln.strip() for ln in lines if "правок облака" in ln), lines[0].strip() if lines else "")
+                      + ("; маска ПДн: правка графа недоступна" if edit_masked else ""),
                       _review_result(verdict, delivered=True))
         return RC_OK
     _review_stage(transcript, "failed", lines[0].strip() if lines else "ревизия не сохранена")

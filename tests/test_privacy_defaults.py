@@ -53,7 +53,7 @@ _DIRECT = re.compile(
 # scripts/ — тоже: ночная ревизия досье живёт там.
 DECIDERS = ("src/daemon.py", "src/graph_updater.py",
             "scripts/nightly_dossier_review.py", "scripts/nightly_claude_cores.py",
-            "src/night_cloud.py")
+            "src/night_cloud.py", "src/cloud_door.py")
 
 # Документы, которые обещают пользователю приватность. Все языки, а не только
 # английский: обещание не имеет права отличаться от перевода к переводу.
@@ -153,10 +153,12 @@ def test_nobody_decides_about_the_cloud_on_their_own():
 
 
 def _toggles_in_example() -> set[str]:
-    """Тумблеры облака из примера конфига: булевы ключи cloud_*, не модели."""
+    """Тумблеры облака из примера конфига: булевы ключи cloud_*, не модели.
+    Ключи маски ПДн — не разрешения (молчание там — «маска есть»), их сверяет
+    отдельный тест ниже."""
     sufler = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))["sufler"]
     return {k for k, v in sufler.items()
-            if k.startswith("cloud_") and isinstance(v, bool)}
+            if k.startswith("cloud_") and isinstance(v, bool) and k not in privacy.MASK_KEYS}
 
 
 def test_privacy_knows_every_toggle_the_config_offers():
@@ -280,3 +282,18 @@ def test_privacy_docs_name_the_provider_and_its_values():
         for value in privacy.NIGHT_PROVIDERS:
             assert f"`{value}`" in text, f"{doc} не называет значение {value}"
         assert "user_cache_secret" in text, f"{doc} молчит о файле SDK ~/.tinfoil/user_cache_secret"
+
+
+def test_examples_and_docs_carry_the_mask_keys():
+    """Маска ПДн (№793): пример включает её явно, документы называют ключи и
+    то, что маской не закрыто (живые подсказки, облачный чат)."""
+    for path in sorted((REPO / "config").glob("config.example*.yaml")):
+        sufler = yaml.safe_load(path.read_text(encoding="utf-8"))["sufler"]
+        assert sufler.get("cloud_mask") is True, f"{path.name}: cloud_mask не true"
+        assert sufler.get("cloud_mask_level") == "basic", f"{path.name}: cloud_mask_level не basic"
+        assert privacy.mask_required({"sufler": sufler}), path.name
+    for doc in PRIVACY_DOCS:
+        text = (REPO / doc).read_text(encoding="utf-8")
+        for key in privacy.MASK_KEYS:
+            assert key in text, f"{doc} не называет {key}"
+        assert "cloud_hints" in text and "llm.engine" in text, f"{doc}: не сказано, что маска не закрывает"

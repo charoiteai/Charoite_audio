@@ -234,6 +234,12 @@ sufler:
   cloud_night_tinfoil_model: deepseek-v4-1-flash  # модель ревизии ядер у Tinfoil
   cloud_night_tinfoil_effort: max  # усилие у Tinfoil: low|high|xhigh|max (medium нет)
   cloud_night_tinfoil_key_path: ~/.config/charoite/tinfoil_key  # ключ API, права 600
+  # Маска ПДн перед облаком (разбор после встречи и ночные ревизии): имена людей и
+  # систем из графа и найденные моделью имён заменяются ID, ответ разворачивается
+  # обратно на машине. Снимает только cloud_mask: false. Уровень basic — словари
+  # графа + Slovnet (pip install natasha==1.6.0); full — следующий этап, сейчас отказ.
+  cloud_mask: true
+  cloud_mask_level: basic
   cloud_edit_graph: false
   cloud_engine: false     # весь чат через облачный шлюз (см. llm.engine: cloud)
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).

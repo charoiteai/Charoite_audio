@@ -271,9 +271,42 @@ def test_review_rejects_nonzero_exit_with_a_reason(tmp_path, monkeypatch):
         stderr = "Ошибка: rate limit"
 
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: R())
-    cfg = {"sufler": {"cloud_enrich": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False}}
     fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
     assert fixed is None and why.startswith("сбой:") and "код 1" in why and "rate limit" in why
+
+
+def test_review_under_mask_runs_in_the_empty_dir_and_names_the_refusal(tmp_path, monkeypatch):
+    """Под маской cwd CLI — пустой каталог: путь демона с именем владельца CLI кладёт в
+    системный промпт. Отказ маски — причиной в строке сбоя, облако не зовётся (CI #860:
+    мутанты `== "off"` → `!=`, `return X` → `None`, `or` → `and` выживали)."""
+    ndr = _load("nightly_dossier_review")
+    path = tmp_path / "Платёжный провайдер.md"
+    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
+    seen = []
+
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "Ошибка: rate limit"
+
+    monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: seen.append(k.get("cwd")) or R())
+    empty = tmp_path / "charoite-cloud-empty"
+    monkeypatch.setattr(ndr.cloud_door, "mask_prompt",
+                        lambda c, prompt, g, data: ndr.pii_mask.Masked(prompt, "basic"))
+    monkeypatch.setattr(ndr.cloud_door, "empty_workdir", lambda: empty)
+    cfg = {"sufler": {"cloud_enrich": True}}
+    fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
+    assert seen == [empty]
+    assert fixed is None and "rate limit" in why, "причина из stderr при пустом stdout потерялась"
+
+    def refuse(*a, **k):
+        raise ndr.pii_mask.MaskRefused("в графе нет узлов людей")
+
+    monkeypatch.setattr(ndr.cloud_door, "mask_prompt", refuse)
+    seen.clear()
+    fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
+    assert (fixed, why, seen) == (None, "сбой: маска не прошла: в графе нет узлов людей", [])
 
 
 def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypatch):
@@ -299,7 +332,7 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
         return (fixed, "") if theme == "Платёжный провайдер" else (None, "ответ короче 60%")
 
     monkeypatch.setattr(ndr, "review", fake_review)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
     assert ndr.run(graph, cfg, dry=False, limit=6) == 1
     text = path.read_text(encoding="utf-8")
     assert "Пилот ⚠️ идёт" in text and "моё примечание" in text and "## Источники" in text
@@ -319,7 +352,7 @@ def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
     path.write_text(_DOSSIER, encoding="utf-8")
     called = []
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: called.append(1))
-    fixed, why = ndr.review("Ручное", path, tmp_path, {}, [], "m", {"sufler": {"cloud_enrich": True}})
+    fixed, why = ndr.review("Ручное", path, tmp_path, {}, [], "m", {"sufler": {"cloud_enrich": True, "cloud_mask": False}})
     assert fixed is None and "Источники" in why and not called, "облако вызвано зря"
 
 
@@ -337,7 +370,7 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
     body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
                         (body, "") if theme == "Одно" else (None, "сбой: claude вернул код 1:\nrate\nlimit"))
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": False}}
     assert ndr.run(graph, cfg, dry=False, limit=6) == 1
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
     assert "## Предложено, но не применено" in report and "### Одно\n#### Сейчас" in report
@@ -346,7 +379,7 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
     assert (folder / "Одно.md").read_text(encoding="utf-8").endswith("—\n")   # файл не тронут
 
 
-_EDIT_CFG = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+_EDIT_CFG = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
 
 
 def _edit_graph(tmp_path, ndr, monkeypatch, names=("Одно",)):
@@ -551,7 +584,7 @@ def test_report_problem_wants_headings_on_their_own_lines():
     assert "Слияния" in ncc.report_problem(0, inline)
 
 
-def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch):
+def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch, capsys):
     """Единственный ночной шаг без живого гейта внутри (аудит 13.09, DS M5); отчёт
     через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Окно пинится
     ПОВЕДЕНИЕМ — прогоном main() с заглушками, по образцу тестов ревизии досье
@@ -576,7 +609,7 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     good = ("## Противоречия\n- нет\n## Протухшее\n- нет\n## Слияния\n- нет\n"
             "## Потерянные хвосты\n- нет\n## Три риска недели\n- один\n")
 
-    cfg = {"sufler": {}}
+    cfg = {"sufler": {"cloud_mask": False}}
     events = []
     window_open = [True]    # сценарий: окно открыто / ночь кончилась
 
@@ -602,7 +635,7 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     monkeypatch.setattr(ncc.live_gate, "night_window_open", fake_window)
 
     def fake_run(cmd, **kw):
-        events.append(("облако",))
+        events.append(("облако", kw.get("cwd")))
 
         class R:
             returncode = 0
@@ -629,6 +662,20 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
         f"вызывающий передал свой потолок ({window_event[3]!r}) — потолок целиком у live_gate"
     report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
     assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
+    # без маски cwd CLI не трогаем; под маской — пустой каталог, а не каталог демона
+    # с именем владельца в пути (мутант PR #860: `masked.level == "off"` → `!=`)
+    assert next(e for e in events if e[0] == "облако")[1] is None
+
+    events.clear()
+    empty = tmp_path / "charoite-cloud-empty"
+    monkeypatch.setattr(ncc.cloud_door, "mask_prompt",
+                        lambda c, prompt, g, data: ncc.pii_mask.Masked(prompt, "basic"))
+    monkeypatch.setattr(ncc.cloud_door, "empty_workdir", lambda: empty)
+    os.utime(cores / "Ядро.md", (time.time() + 3, time.time() + 3))   # ядро изменилось — новая ночь
+    capsys.readouterr()
+    ncc.main()
+    assert next(e for e in events if e[0] == "облако")[1] == empty
+    assert "маска basic: замен" in capsys.readouterr().out   # итог маски в логе (n793-out20 DS-M2)
 
     # --- окно закрыто (ночь вышла): в облако идти нельзя, выход с кодом 0
     events.clear()
@@ -674,7 +721,8 @@ def test_review_sees_and_writes_no_speaker_label(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ndr.subprocess, "run", run)
     monkeypatch.setattr(ndr.privacy, "night_provider", lambda cfg: "anthropic")
-    cfg = {"sufler": {"cloud_enrich": True}}
+    # маска ПДн (№793) — своими тестами; здесь метки, графа с людьми у теста нет
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False}}
     fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, files,
                             ["2026-07-15_1400"], "m", cfg)
     assert why == "" and fixed, why

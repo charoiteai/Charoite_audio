@@ -61,6 +61,13 @@ KILL_SWITCH = KILL_SWITCHES[1]  # исторический алиас для с�
 KEYS = ("cloud_live", "cloud_enrich", "cloud_hints", "cloud_edit_graph",
         "cloud_engine")
 
+#: Ключи маски персональных данных (№793). Не разрешения: у них молчание конфига —
+#: «маска есть», поэтому в KEYS (где молчание — «нет») их нет.
+MASK_KEYS = ("cloud_mask", "cloud_mask_level")
+#: basic — словари узлов графа + распознавание имён Slovnet; full — плюс второй
+#: детектор (этап B №793, пока не поставляется).
+MASK_LEVELS = ("basic", "full")
+
 
 def _allowed(cfg: dict, key: str, env: dict | None) -> bool:
     env = os.environ if env is None else env
@@ -69,6 +76,43 @@ def _allowed(cfg: dict, key: str, env: dict | None) -> bool:
     sufler = cfg.get("sufler") or {}
     # именно `is True`: «false», "", 0 и None разрешением не считаются
     return sufler.get(key) is True
+
+
+def mask_required(cfg: dict) -> bool:
+    """Маскировать ли имена перед разбором после встречи и ночными ревизиями.
+
+    Снимает маску только явное булево `sufler.cloud_mask: false`: строка «false»,
+    пустое значение и отсутствие ключа маску оставляют (как `_allowed`, только
+    наоборот — умолчание здесь безопасное «да»)."""
+    return (cfg.get("sufler") or {}).get("cloud_mask") is not False
+
+
+def mask_level(cfg: dict) -> str:
+    """Уровень маски: `basic` по умолчанию; незнакомое значение — отказ, а не догадка."""
+    raw = (cfg.get("sufler") or {}).get("cloud_mask_level")
+    if raw is None:
+        return "basic"
+    if raw not in MASK_LEVELS:
+        raise PrivacyRefused(f"sufler.cloud_mask_level={raw!r}: допустимо {', '.join(MASK_LEVELS)}")
+    return raw
+
+
+def cloud_graph_mode(cfg: dict, env: dict | None = None) -> str:
+    """Потолок доступа облачного разбора к графу: off / text / read / edit.
+
+    Под маской — только текст: с инструментами чтения модель открыла бы файлы графа
+    мимо маски, а правка писала бы ID вместо имён (n793-in2 DS-C7)."""
+    if not cloud_enrich_enabled(cfg, env):
+        return "off"
+    if mask_required(cfg):
+        return "text"
+    return "edit" if cloud_edit_graph_enabled(cfg, env) else "read"
+
+
+def mask_blocks_edit(cfg: dict, env: dict | None = None) -> bool:
+    """Владелец разрешил облаку править граф, а маска это сняла (`cloud_graph_mode`
+    даёт `text`): причина для лога и статуса встречи (n793-out1 DS-C1)."""
+    return cloud_graph_mode(cfg, env) == "text" and cloud_edit_graph_enabled(cfg, env)
 
 
 def cloud_live_enabled(cfg: dict, env: dict | None = None) -> bool:

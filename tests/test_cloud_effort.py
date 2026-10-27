@@ -53,7 +53,7 @@ def test_unknown_key_is_a_caller_error():
 
 
 def test_both_command_branches_carry_the_effort_settings():
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
     with_graph = graph_updater.cloud_enrich_command(
         cfg, claude_bin="claude", prompt="p", model="m", env={})
     text_only = graph_updater.cloud_enrich_command(
@@ -192,7 +192,7 @@ def _debrief_run(tmp_path, monkeypatch, cfg_sufler, fake_run):
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: False)
     monkeypatch.setattr(cloud_review.cloud, "claude_bin", lambda: "/x/claude")
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    cfg = {"sufler": {"cloud_enrich": True, **cfg_sufler}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, **cfg_sufler}}
     code = cloud_review._run_once(_STAMP, transcript, graph, rev, log, cfg)
     return code, log.read_text(encoding="utf-8")
 

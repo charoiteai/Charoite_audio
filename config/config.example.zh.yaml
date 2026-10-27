@@ -128,6 +128,11 @@ sufler:
   cloud_night_tinfoil_model: deepseek-v4-1-flash  # Tinfoil 上的核心修订模型
   cloud_night_tinfoil_effort: max  # Tinfoil 推理强度：low|high|xhigh|max（无 medium）
   cloud_night_tinfoil_key_path: ~/.config/charoite/tinfoil_key  # API 密钥，权限 600
+  # 上云前的个人数据遮蔽（会后复盘与夜间复核）：图谱中的人名与系统名，以及姓名模型
+  # 识别出的名字，均替换为 ID；回答在本机还原。只有 cloud_mask: false 才能关闭。
+  # 级别 basic —— 图谱词典 + Slovnet（pip install natasha==1.6.0）；full 属于下一阶段，暂时拒绝。
+  cloud_mask: true
+  cloud_mask_level: basic
   cloud_edit_graph: false
   cloud_engine: false     # 整个对话经由云端网关（见 llm.engine: cloud）
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).
