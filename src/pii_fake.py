@@ -461,6 +461,19 @@ def _lemmas(m, word: str) -> tuple[set[str], set[tuple[str, str]]]:
     return lemmas, cases
 
 
+def same_lexeme(word: str, node_word: str) -> bool:
+    """Слово текста — форма слова узла: «Петра» — «Пётр», «Петров» — нет (n793-out10 C1).
+    Для `pii_mask.build_forms(lexeme=…)`: канон узла — только его падежам. Разборы — только
+    единственного числа: «Петров» у словаря ещё и род. мн. от «Пётр», а людей во
+    множественном речь не называет."""
+    m = _load()
+
+    def one(w: str) -> set[str]:
+        ps = m.parse(w)
+        return {_e(p.normal_form) for p in ([p for p in ps if "plur" not in p.tag] or ps)}
+    return bool(one(word) & one(node_word))
+
+
 def _cases(m, word: str, gender: str | None) -> set[tuple[str, str]]:
     """(падеж, число) слова — по разборам рода человека, если такие есть: «Ракитина» —
     жен. им., а не муж. род. («Ракитиной» иначе развернулось бы в именительный)."""

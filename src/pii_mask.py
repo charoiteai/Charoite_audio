@@ -66,6 +66,7 @@ class Entry:
     group: str | None           # канон узла; None — форма у нескольких узлов
     capital: bool = False       # первое слово с заглавной: имя-слово («Роза», «Ракурс»), не «роза»
     exact: bool = False         # аббревиатура: регистр основы точный («ЗЛК», не «злк»)
+    source: tuple[str, ...] = ()  # слова формы как в узле: по ним `Forms.lexeme` судит, падеж ли это
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,6 +82,8 @@ class Forms:
     entries: list[Entry]
     #: основа первого слова → формы, которые с неё начинаются
     by_first: dict[str, list[Entry]] = dataclasses.field(default_factory=dict)
+    #: (слово текста, слово узла) → одна лексема; None — только `_CASE_TAILS` (тесты без pymorphy)
+    lexeme: Callable[[str, str], bool] | None = dataclasses.field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         for e in self.entries:
@@ -196,7 +199,8 @@ def name_part(part: str, known: Callable[[str], bool]) -> bool:
 def build_forms(nodes: Iterable[NodeForms], *,
                 stubs: Iterable[tuple[str, str | None, bool]] = (),
                 owner: str = "", common: Iterable[str] = (),
-                known: Callable[[str], bool] = lambda _w: False) -> Forms:
+                known: Callable[[str], bool] = lambda _w: False,
+                lexeme: Callable[[str, str], bool] | None = None) -> Forms:
     """Формы маски из узлов графа.
 
     `stubs` — заглушки слияния: (имя заглушки, канон живого узла или None — цель не
@@ -206,7 +210,9 @@ def build_forms(nodes: Iterable[NodeForms], *,
     владелец разрешил отправлять как есть (файл `_маска_общие.md`): это единственный
     путь узлу уйти открытым (состав 26.10). `known` — есть ли слово (в нижнем регистре)
     в общем словаре языка: от него зависит только заглавная у имени из общего слова
-    и какие слова длинного имени системы маскируются ещё и поодиночке.
+    и какие слова длинного имени системы маскируются ещё и поодиночке. `lexeme` — одна ли
+    лексема у слова текста и слова узла (pymorphy, `pii_fake.same_lexeme`): канон узла получает
+    только его падеж, «Петров» при узле «Пётр» — другое слово (n793-out10 C1).
     """
     common_l = {_yo(" ".join(_words(c)).lower()) for c in common}
     nodes = list(nodes)
@@ -285,7 +291,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
             # словаре, распознавание пишет и строчными («квакин», №799 26.10)
             capital = plain and words[0][:1].isupper() \
                 or kind == PERSON and not _distinctive(words[0], known)
-            ent = Entry((base,), (tail,), kind, canon, capital=capital, exact=exact)
+            ent = Entry((base,), (tail,), kind, canon, capital=capital, exact=exact, source=(words[0],))
             if kind == PERSON and not exact:
                 for alt in _fleeting(base):
                     # запасная основа чужого имени — не форма этого («Олег» → «ольг» у «Ольги», n793-out2 C2);
@@ -308,7 +314,8 @@ def build_forms(nodes: Iterable[NodeForms], *,
         else:
             bases = [_base(w) for w in words]
             ent = Entry(tuple(b.lower() for b, _t, _e in bases), tuple(t for _b, t, _e in bases),
-                        kind, canon, capital=kind == PERSON or plain and words[0][:1].isupper())
+                        kind, canon, capital=kind == PERSON or plain and words[0][:1].isupper(),
+                        source=tuple(words))
         key = (ent.words, ent.kind, ent.group)
         if key not in seen:
             seen.add(key)
@@ -324,7 +331,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
     for e in entries:
         canons.setdefault((e.words, e.kind), set()).add(e.group)
     return Forms([dataclasses.replace(e, group=None) if len(canons[(e.words, e.kind)]) > 1 else e
-                  for e in entries])
+                  for e in entries], lexeme=lexeme)
 
 
 def _fleeting(base: str) -> list[str]:
@@ -348,11 +355,18 @@ def _word_fits(word: str, base: str, tail: int, exact: bool) -> bool:
     return w.startswith(base) and len(w) - len(base) <= tail
 
 
-def _case_of(surface: str, entry: Entry) -> bool:
-    """Слова спана — падежные формы слов узла (`_CASE_TAILS`), а не другое имя той же основы."""
-    ws = _WORD.findall(_yo(surface).lower())
-    return len(ws) == len(entry.words) and all(
-        w.startswith(b.lower()) and w[len(b):] in _CASE_TAILS for w, b in zip(ws, entry.words))
+def _case_of(surface: str, entry: Entry, lexeme: Callable[[str, str], bool] | None) -> bool:
+    """Слова спана — падежные формы слов узла, а не другое имя той же основы. Решает
+    лексема: хвост «ов», «ия» — и падеж, и другое имя («Петров» при «Пётр», n793-out10 C1),
+    а перечень хвостов не знает «Вельских» и «Толстых». Без лексемы (тесты без pymorphy) —
+    перечень `_CASE_TAILS`."""
+    raw = _WORD.findall(_yo(surface))
+    if len(raw) != len(entry.words):
+        return False
+    if lexeme is not None and len(entry.source) == len(raw):
+        return all(lexeme(w, src) for w, src in zip(raw, entry.source))
+    return all(w.lower().startswith(b.lower()) and w.lower()[len(b):] in _CASE_TAILS
+               for w, b in zip(raw, entry.words))
 
 
 def _dictionary_spans(text: str, forms: Forms) -> list[tuple[int, int, Entry]]:
@@ -575,7 +589,7 @@ def mask(text: str, forms: Forms, ner: Sequence[tuple[int, int, str]] = (), *,
         if isinstance(what, Entry):
             kind, canon = what.kind, what.group
             gkey = (kind, canon) if canon else (kind, "~", " ".join(what.words))
-            if canon and kind == PERSON and not _case_of(surface, what):
+            if canon and kind == PERSON and not _case_of(surface, what, forms.lexeme):
                 canon = None    # другое имя той же основы — своя группа, не узел
                 gkey = (kind, "~", " ".join(_base(w)[0] for w in _WORD.findall(surface)))
         else:
@@ -639,7 +653,7 @@ def forms_touching(forms: Forms, words: Iterable[str]) -> Forms:
     подстановки обязана задеть подставленное слово, остальные формы не меняются."""
     prefixes = {w[:k] for w in (_yo(_nfc(x)).casefold() for x in words) for k in range(1, len(w) + 1)}
     return Forms([e for e in forms.entries
-                  if any(_yo(b).casefold() in prefixes for b in e.words)])
+                  if any(_yo(b).casefold() in prefixes for b in e.words)], lexeme=forms.lexeme)
 
 
 def postcondition_hits(masked_text: str, forms: Forms) -> int:

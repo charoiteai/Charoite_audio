@@ -373,6 +373,9 @@ def main() -> None:
         reply = _ask_tinfoil(cfg, masked.text, graph)
         out, model, returncode, stderr = reply.text, reply.model, 0, ""
     elif provider == "anthropic":   # явно, не голым else: прочие отсеяны выше (in3 S-M2)
+        # cwd CLI кладёт в системный промпт: под маской — пустой каталог (n793-final-opus M1);
+        # до try — сбой каталога не диагноз «CLI не запустился» (n793-out10 DS-M5)
+        workdir = None if masked.level == "off" else cloud_door.empty_workdir()
         try:
             # Ревизии не положено НИ ОДНОГО инструмента: ядра и индекс уже в
             # промпте (blob выше), а Read/Grep/Glob, разрешённые прежним
@@ -385,8 +388,7 @@ def main() -> None:
                  *cloud.text_only_args()],
                 capture_output=True, text=True, timeout=600, env=env,
                 stdin=subprocess.DEVNULL,
-                # cwd CLI кладёт в системный промпт: под маской — пустой каталог (n793-final-opus M1)
-                cwd=None if masked.level == "off" else cloud_door.empty_workdir())
+                cwd=workdir)
             out = (r.stdout or "").strip()
         except OSError as e:
             print(f"CLI облака не запустился: {e}")

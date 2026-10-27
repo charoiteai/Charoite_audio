@@ -231,6 +231,9 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     claude = cloud.claude_bin()
     env = cloud.cli_env()      # то же окружение, что у зонда: иначе зонд не представителен (DS r2 по #499)
     r = None
+    # cwd CLI кладёт в системный промпт (n793-final-opus M1); до try — сбой каталога не
+    # диагноз «CLI не запустился» (n793-out10 DS-M5)
+    workdir = None if masked.level == "off" else cloud_door.empty_workdir()
     for attempt in (1, 2):
         try:
             # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
@@ -245,8 +248,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
                                 *cloud.text_only_args()],
                                capture_output=True, text=True, timeout=600, env=env,
                                stdin=subprocess.DEVNULL,
-                               # cwd CLI кладёт в системный промпт (n793-final-opus M1)
-                               cwd=None if masked.level == "off" else cloud_door.empty_workdir())
+                               cwd=workdir)
             break
         except OSError as e:
             # exec не удался: бинарник CLI меняется под ногами (обновление) —

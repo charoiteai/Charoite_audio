@@ -146,6 +146,14 @@ def test_cli_exit_under_mask_runs_in_the_empty_workdir(where):
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and n.args
              and isinstance(n.args[0], ast.List) and _prompt_args(n.args[0], "dash_p")]
     assert calls, f"{where}: не нашёл вызова CLI — сторож ослеп"
+    bound = {t.id: n.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
+             for t in n.targets if isinstance(t, ast.Name)}
     for c in calls:
         cwd = next((k.value for k in c.keywords if k.arg == "cwd"), None)
-        assert cwd is not None and "empty_workdir" in ast.unparse(cwd), f"{where}:{c.lineno}: cwd не пустой каталог"
+        if isinstance(cwd, ast.Name):
+            cwd = bound.get(cwd.id)
+        # ровно «None без маски, иначе вызов empty_workdir()» (n793-out10 S-M3, DS-M6)
+        ok = (isinstance(cwd, ast.IfExp) and ast.unparse(cwd.test) == "masked.level == 'off'"
+              and isinstance(cwd.body, ast.Constant) and cwd.body.value is None
+              and isinstance(cwd.orelse, ast.Call) and ast.unparse(cwd.orelse.func) == "cloud_door.empty_workdir")
+        assert ok, f"{where}:{c.lineno}: cwd не пустой каталог: {ast.unparse(cwd) if cwd else None}"
