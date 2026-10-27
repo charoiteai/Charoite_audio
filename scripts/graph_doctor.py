@@ -39,7 +39,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-from charoite_graph import frontmatter  # noqa: E402
+from charoite_graph import dossier, frontmatter  # noqa: E402
 import graph_links  # noqa: E402
 from charoite_graph import graph_names  # noqa: E402
 import graph_updater  # noqa: E402
@@ -230,8 +230,10 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
             words = graph_names.name_words(p.stem, tags)   # один разбор с людьми (Haiku I1, DS M4)
             if " ".join(sorted(words)) in person_keys or (len(words) == 1 and words[0] in index):
                 people_in_systems.append(p)
+    # тело досье, тот же предикат, что у ночной очереди: метка в «Источниках» или
+    # в «Правках автора» пересборкой не чинится и в счёт не идёт (n815-in3 DS C2)
     dossier_labels = [p for p in nodes if rel[p].startswith("Досье/") and not _is_stub(notes[p])
-                      and graph_names.has_speaker_actor(notes[p])]
+                      and dossier.labeled_body(notes[p])]
 
     links_total = sum(outbound.values())
     rep = {

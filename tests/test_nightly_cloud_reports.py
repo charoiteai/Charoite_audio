@@ -645,3 +645,66 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     src = inspect.getsource(ncc.main)
     assert "os.replace(tmp, dest)" in src and "O_TRUNC, 0o600" in src
     assert "tmp.unlink(missing_ok=True)" in src, "обрыв оставит .md.tmp в графе"
+
+
+def test_review_sees_and_writes_no_speaker_label(tmp_path, monkeypatch):
+    """№815: метка диаризации деятелем не уходит в облако ни из досье, ни из
+    источников, ответ с меткой пишется словом входа, а ссылка на узел-метку,
+    заменённая текстом, — не потеря источника."""
+    ndr = _load("nightly_dossier_review")
+    path = tmp_path / "Платёжный провайдер.md"
+    labeled = _DOSSIER.replace("- [[Иванов]]", "- [[Иванов]]\n- Собеседник 3 [[Люди/Собеседник 3]]\n"
+                               "- план [[Встречи/2026-07-15_Собеседник 2 и план]]")
+    path.write_text(labeled + "\n## Источники\n- [[2026-07-15_1400]]\n- **Люди:** [[Люди/Собеседник 3]]\n",
+                    encoding="utf-8")
+    files = {"2026-07-15_1400": {"kind": "встреча", "text":
+             "---\nучастники: [Собеседник 2]\n---\n# Встреча\nСобеседник 2 обещал срок\n"}}
+    seen = []
+
+    class R:
+        returncode = 0
+        stderr = ""
+
+    def run(cmd, **k):
+        seen.append(cmd[2])
+        r = R()
+        r.stdout = ndr.strip_protected(labeled.split("# Платёжный провайдер\n\n")[1]).replace(
+            "Идёт пилот", "Собеседнику 2 поручили пилот")
+        return r
+
+    monkeypatch.setattr(ndr.subprocess, "run", run)
+    monkeypatch.setattr(ndr.privacy, "night_provider", lambda cfg: "anthropic")
+    cfg = {"sufler": {"cloud_enrich": True}}
+    fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, files,
+                            ["2026-07-15_1400"], "m", cfg)
+    assert why == "" and fixed, why
+    assert not ndr.graph_names.has_speaker_actor(seen[0]), "метка ушла в облако (и из «Источников»)"
+    assert ndr.graph_names.UNLABELED_RULE in seen[0], "ревизор знает, что участник встречи — не один человек"
+    assert "участники:" not in seen[0], "шапка источника ушла в облако"
+    assert "Участнику встречи поручили пилот" in fixed
+    assert not ndr.graph_names.has_speaker_actor(fixed)
+    # ссылка на живой узел с меткой в имени — источник, сохранена и не требуется назад
+    # как «потерянная»: обе стороны сверки в одной нормализации (n815-out1 I3)
+    assert "[[Встречи/2026-07-15_Собеседник 2 и план]]" in fixed
+
+
+def test_edit_mode_stats_do_not_count_the_label_cleanup_as_an_edit(tmp_path, monkeypatch):
+    """Финальный Opus n815 M4: ответ ревизии — без меток; счёт строк против
+    сырого тела записывал бы саму чистку правкой ревизии."""
+    ndr = _load("nightly_dossier_review")
+    graph = tmp_path / "g"
+    folder = graph / ndr.CHAROITE.dossier_dir
+    folder.mkdir(parents=True)
+    labeled = _DOSSIER.replace("- [[Иванов]]", "- [[Иванов]]\n- Собеседник 3 обещал письмо")
+    (folder / "Платёжный провайдер.md").write_text(
+        labeled + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n", encoding="utf-8")
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Платёжный провайдер": ["a"]})
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
+    fixed = ndr.graph_names.unlabel_speakers(ndr.strip_protected(
+        labeled.split("# Платёжный провайдер\n\n")[1])).replace("Идёт пилот", "Пилот ⚠️ идёт")
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (fixed, ""))
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert ndr.run(graph, cfg, dry=False, limit=6) == 1
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "- **Платёжный провайдер** — +1/−1 строк, ⚠️ 1, ссылок 3→3" in report, report

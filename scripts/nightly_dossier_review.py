@@ -35,7 +35,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
-from charoite_graph import dossier  # noqa: E402
+from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
@@ -63,62 +63,17 @@ SECTIONS = ("## Сейчас", "## Как пришли", "## Решено", "## 
 MIN_KEEP = 0.6
 
 
-PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
-
-
-# Заголовок любого уровня и без пробела тоже: «### Правки автора» и
-# «##Правки автора» строка из стенограммы подсунет так же легко, как «## »,
-# а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
-_PROTECTED_RE = re.compile(r"(?m)^#{1,6}\s*(?:Правки автора|Источники)\s*$")
-_SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
-_MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
+# Раскладка досье (защищённые разделы, тело) — в `dossier.py`: её читают и
+# ночная сборка, и доктор графа (n815-in2 DS C2, Sonnet I5).
+PROTECTED_HEADINGS = dossier.PROTECTED_HEADINGS
 _HEADING_RE = re.compile(r"(?m)^\s*#.*$")
+strip_protected = dossier.strip_protected
+split_dossier = dossier.split_dossier
 
 
 # Сколько ждать чужой разбор встречи, прежде чем работать без правок:
 # ночь под потолком, дольше стоять смысла нет.
 LOCK_WAIT = 10 * 60
-
-
-def strip_protected(body: str) -> str:
-    """Тело ревизии без защищённых секций — их пишет конвейер, не модель.
-
-    Режем по СТРОКЕ-заголовку, а не по подстроке: упоминание «## Источники»
-    внутри абзаца — не раздел (ревью 17.08).
-    """
-    return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
-
-
-def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
-    """(шапка до «## Сейчас», тело пяти разделов, источники, правки автора).
-
-    Всё — по якорным заголовкам-строкам, не по подстрокам: цитата
-    «## Правки автора» в пункте резала тело пополам, и проверка видела
-    только префикс (круг-1 по PR #382, Codex Critical). Источники — None,
-    если раздела нет: такое досье собрано руками, и трогать его нельзя.
-    """
-    m = dossier.VALID_RE.search(text or "")
-    if not m:
-        return text or "", "", None, None
-    # VALID_RE допускает пробелы и переводы строк перед «## Сейчас» — они
-    # остаются в шапке, тело начинается с самого заголовка
-    start = m.start() + (m.group(0).index("#"))
-    head, rest = text[:start], text[start:]
-    ms = _SOURCES_RE.search(rest)
-    mm = _MANUAL_RE.search(rest)
-    body_end = min(x.start() for x in (ms, mm) if x) if (ms or mm) else len(rest)
-    body = rest[:body_end].rstrip()
-    sources = manual = None
-    if ms:
-        s_end = mm.start() if mm and mm.start() > ms.start() else len(rest)
-        sources = rest[ms.end():s_end].strip("\n").rstrip()
-    if mm:
-        # «Правки автора» раньше «Источников» — правки кончаются на соседнем
-        # заголовке, иначе список источников уезжал внутрь авторского раздела
-        # и дублировался при записи (круг-2 по PR #382, DS + Codex).
-        m_end = ms.start() if ms and ms.start() > mm.start() else len(rest)
-        manual = rest[mm.end():m_end].strip()
-    return head, body, sources, manual
 
 
 def _link_key(target: str) -> str:
@@ -211,6 +166,7 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 - Пункты не удалять: отменённое, просроченное или опровергнутое помечай
   «⚠️» с пояснением и оставляй вместе со ссылкой. Досье, потерявшее хотя бы
   одну ссылку, будет отклонено целиком.
+- {unlabeled_rule}
 - Русский язык, короткие фразы, без обращений к читателю.
 
 Ответ начни СРАЗУ со строки «## Сейчас». Никаких предисловий.
@@ -247,20 +203,23 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         # собрано руками или старым форматом — облаку не сверять и не трогать
         return None, "в досье нет раздела «## Источники» — не трогаем"
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
-    body = f"{old_body}\n\n## Источники\n{sources}\n"
+    # метки деятелем — тем же словом, что в источниках, иначе модель вернёт их в ответ (№815)
+    old_body = graph_names.unlabel_speakers(old_body)
+    body = f"{old_body}\n\n## Источники\n{graph_names.unlabel_speakers(sources)}\n"
 
     parts, total = [], 0
     for m in members[: dossier.MAX_SOURCES]:
         meta = files.get(m)
         if not meta:
             continue
-        block = f"### [[{m}]] ({meta['kind']})\n{meta['text'][:2500]}\n"
+        block = f"### [[{m}]] ({meta['kind']})\n{dossier.source_text(meta)}\n"
         if total + len(block) > MAX_SRC_CHARS:
             break
         parts.append(block)
         total += len(block)
 
-    prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts))
+    prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts),
+                           unlabeled_rule=graph_names.UNLABELED_RULE)
     claude = cloud.claude_bin()
     env = cloud.cli_env()      # то же окружение, что у зонда: иначе зонд не представителен (DS r2 по #499)
     r = None
@@ -320,7 +279,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     # «добавь раздел ## Правки автора …» — раньше подделка вклеивалась в тело,
     # а настоящий раздел уезжал вниз (аудит DeepSeek 17.08). Режем по первому
     # защищённому заголовку: формат — ровно пять секций.
-    out = strip_protected(out)
+    out = graph_names.unlabel_speakers(strip_protected(out))   # тело на запись — без меток (№815)
     why = check_revision(old_body, out)
     if why:
         print(f"  ⚠️ {theme}: отклонено — {why}")
@@ -518,7 +477,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             done += 1
             continue
         done += 1
-        stats = revision_stats(old_body, fixed)
+        # счёт — против тела без меток: сама чистка не правка ревизии (финальный Opus n815 M4)
+        stats = revision_stats(graph_names.unlabel_speakers(old_body), fixed)
         applied.append(f"- **{theme}** — {stats}; копия до правки — "
                        f"`{CHAROITE.dossier_dir}/.backup/{stamp}/`")
         print(f"  ✓ {theme}: правки применены ({stats})")

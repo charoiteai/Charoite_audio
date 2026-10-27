@@ -287,7 +287,16 @@ ceiling the step checks the wall clock before every topic and stops while the
 steps after it still have their half hour. Writes
 take the shared graph lock — the same one the meeting pipeline and the cloud
 review take. Hand-written additions live in the
-`## Правки автора` ("author edits") section and survive rebuilds. To check what a query would
+`## Правки автора` ("author edits") section and survive rebuilds. A diarization
+label («Собеседник 4», «Speaker 2») is a voice, not a person, and different on
+every meeting: the model sees it, in its sources and in the old dossier, as
+«участник встречи» ("a meeting participant"), and a label in the model's answer is
+written the same way instead of failing the topic. The cleaning happens in memory
+only — graph files stay byte-identical; label nodes are not topic members. Two
+labels of one meeting merge into one participant — a deliberate price: labels mean
+nothing across meetings. A dossier whose fingerprint matches but whose body still
+carries a label is left alone by the night, `--full` included, and counted
+(`метка в теле N` in the skip line). To check what a query would
 find: `scripts/nightly_dossier.py --find "your question"`.
 
 **Cloud dossier review — optional** (`scripts/nightly_dossier_review.py`). The

@@ -704,3 +704,69 @@ def test_night_running_out_during_the_meeting_wait_stops_before_the_theme(nd, tm
     out = capsys.readouterr().out
     assert "до конца ночи — только время шагов после досье, пока ждали конца встречи" in out
     assert "без изменений — в следующую полную пересборку" in out
+
+def _labeled_graph(nd, tmp_path, body="Собеседник 4 обещал письмо ⚠️ срок 1.08 прошёл [[Встречи/тема_1]]"):
+    """Тема собрана, потом в её тело попала метка (досье до №815) и правки ревизии."""
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    text = path.read_text(encoding="utf-8").replace(
+        "## Правки автора\n\n—\n", "## Правки автора\n\nСобеседник 4 — это Вера\n")
+    path.write_text(text.replace("новое тело", body), encoding="utf-8")
+    nd.calls.clear()
+    return graph, path
+
+
+def test_label_in_the_body_waits_for_its_own_card(nd, tmp_path, capsys):
+    """n815-out6, решение координатора: тему с меткой в теле при тех же
+    источниках ночь не трогает вовсе — ни моделью (стёрла бы правки ревизии),
+    ни своим телом (четыре круга подряд теряло хвост на разборе). Видна
+    счётчиком в отчёте и строкой лога; пересборка — отдельной карточкой."""
+    graph, path = _labeled_graph(nd, tmp_path)
+    before = path.read_bytes()
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    out = capsys.readouterr().out
+    assert nd.calls == [] and r["собрано"] == 0, r
+    assert r["метка_в_теле"] == 1 and r["пропущено"] == 1 and r["без_изменений"] == 0, r
+    assert "· тема: метка в теле — ночь не трогает" in out and "метка в теле 1" in out
+    assert path.read_bytes() == before, "досье владельца не тронуто"
+    assert not (graph / CHAROITE.dossier_dir / ".backup").exists()
+
+
+def test_clean_theme_without_changes_is_not_counted_as_labeled(nd, tmp_path):
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert r["метка_в_теле"] == 0 and r["без_изменений"] == 1, r
+
+
+def test_full_leaves_a_labeled_theme_alone(nd, tmp_path, capsys):
+    """Воскресный `--full` меченую тему тоже не трогает (n815-out7 Haiku I3) и
+    показывает её строкой и счётчиком (DS M2); чистые темы `--full` собирает,
+    как на базе (`test_full_without_budget_ignores_the_limit_and_takes_unchanged_themes`)."""
+    graph, path = _labeled_graph(nd, tmp_path)
+    before = path.read_bytes()
+    r = nd.run(graph, {}, full=True, dry=False, limit=None)
+    assert r["метка_в_теле"] == 1 and r["пропущено"] == 1, r
+    assert "· тема: метка в теле — ночь не трогает" in capsys.readouterr().out
+    assert path.read_bytes() == before and nd.calls == []
+
+
+def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkeypatch):
+    """Ответ модели с меткой пишется словом входа, не отказом; «Правки автора»
+    — слово автора, байт в байт."""
+    graph = _graph(tmp_path, "Г", {"тема": "2026-07-20"})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    author = "## Правки автора\n\nСобеседник 2 — это Вера, решение автора\n"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "## Правки автора\n\nрешение автора\n", author), encoding="utf-8")
+    monkeypatch.setattr(nd, "generate", lambda *a, **k: GOOD.replace(
+        "новое тело", "Собеседник 2 обещал письмо [[Люди/Собеседник 2]]"))
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    text = path.read_text(encoding="utf-8")
+    assert r["собрано"] == 1, r
+    assert "Участник встречи обещал письмо участник встречи" in text
+    assert author in text
+    assert not dossier.labeled_body(text)
+
+

@@ -1004,7 +1004,15 @@ At night a local model writes a five-section summary per cluster.
 its front matter — the source list and their modification times. Unchanged fingerprint means the
 topic did not move, so the model is not called. On a typical night a handful
 of topics out of dozens get rebuilt. A weekly full pass (`--full`) is still
-useful: incremental updates gradually blur cluster boundaries.
+useful: incremental updates gradually blur cluster boundaries. The fingerprint
+does not know the prompt, so a body that still names a diarization label as an
+actor (`dossier.labeled_body`, the same predicate the graph doctor counts) is not
+rebuilt by the night when the fingerprint matches, `--full` included: a model
+retelling would erase the cloud review's edits. It is skipped, logged and counted
+(`метка в теле N` in the graph's skip line, `метка_в_теле` in the result). Labels are
+replaced in memory by `graph_names.unlabel_speakers` — one detector shared with
+`has_speaker_actor` — on the model's input (`dossier.source_text`) and on its
+answer before the format check; graph files are never rewritten.
 
 **Index lookup** (`Досье/_index.json`) is lexical, over word stems with
 prefix matching, so `qwen` finds `qwen3-32b`. No embeddings and no running

@@ -35,7 +35,7 @@ from datetime import date, datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
-from charoite_graph import dossier  # noqa: E402
+from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
@@ -208,6 +208,7 @@ class _GraphRun:
         # изменений» (круг-2 по PR #438, DS Minor 9).
         self.unchanged = self.over_limit = self.locked = self.late = 0
         self.changed = self.broken_manual = 0
+        self.labeled = 0          # метка в теле при тех же источниках — эту ночь не трогаем
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе."""
@@ -236,14 +237,15 @@ class _GraphRun:
                 "пропущено": self.skipped, "отказы": self.отказы, "битые": len(self.reads.damaged),
                 "без_изменений": self.unchanged, "сверх_лимита": self.over_limit,
                 "занят": self.locked, "не_успели": self.late,
-                "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed}
+                "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed,
+                "метка_в_теле": self.labeled}
 
     def report(self) -> None:
         if self.skipped:
             print(f"  {self.graph.name}: пропущено {self.skipped}: без изменений {self.unchanged}, "
                   f"сверх лимита {self.over_limit}, граф занят {self.locked}, "
                   f"не успели за ночь {self.late}, правки автора повреждены {self.broken_manual}, "
-                  f"досье изменилось {self.changed}")
+                  f"досье изменилось {self.changed}, метка в теле {self.labeled}")
 
 
 class Candidate:
@@ -267,9 +269,19 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         loaded = g.reads.load(path)
         g.keep(theme, members, loaded, fp)
         same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
-        if same and not full:
+        # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
+        # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
+        # круга подряд теряло хвост на разборе (n815-out6, решение координатора)
+        # — ночь такую тему не трогает, и воскресный `--full` тоже (n815-out7
+        # Haiku I3); видна строкой лога и счётчиком. Пересборка — отдельно
+        labeled = dossier.labeled_body(loaded.text)
+        if same and (not full or labeled):
             g.skipped += 1
-            g.unchanged += 1
+            if labeled:
+                g.labeled += 1
+                print(f"  ⏭ {graph.name} · {theme}: метка в теле — ночь не трогает")
+            else:
+                g.unchanged += 1
             continue
         cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
@@ -329,8 +341,11 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     body = ""
     for temperature in (0.2, 0.05):          # вторая попытка чуть холоднее
         try:
-            body = dossier.trim_to_format(
-                generate(theme, members, g.files, c, temperature=temperature))
+            # метка деятелем — тем же словом, что во входе: отказом она красила
+            # бы ночь и держала тему в голове очереди (n815-in1 C2); «Правки
+            # автора» ниже вставляются как были
+            body = graph_names.unlabel_speakers(dossier.trim_to_format(
+                generate(theme, members, g.files, c, temperature=temperature)))
         except Exception as e:  # noqa: BLE001
             print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
             body = ""
