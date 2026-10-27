@@ -553,17 +553,20 @@ _PIECES_TAIL = re.compile(r"\s*\((?:куски|кусок)[^)]*\)\s*$")
 
 
 def check_deadline_item(line: str, speech: str, day: datetime.date | None, lang: str = "ru") -> str:
-    """Один пункт с ящиком: срок, который речь не подтверждает, — пометкой
-    `task_line.DUE_UNHEARD_MARKS` вместо срока. Срок — часть после имени и дела
-    («**Имя** — дело — срок — приписка», с третьей части), которая сроком
-    начинается (`fact_check.looks_like_due`); она меняется на пометку целиком.
+    """Один пункт с ящиком: за сроком, который речь не подтверждает, — пометка
+    `task_line.DUE_UNHEARD_MARKS` тем же разделителем; срок не стирается
+    («— до 28.11 — срок не из речи»): ошибка гейта стоит лишней пометки, а не
+    потерянного верного срока (решение 27.10, №805 out3–out5: 8 из 8 Critical —
+    стирание верного срока). Срок — часть после имени и дела («**Имя** — дело
+    — срок — приписка», с третьей части), которая сроком начинается
+    (`fact_check.looks_like_due`).
     Имя и дело гейт не читает: дата внутри дела («сдать отчёт до 28.11») и
     строка «дело — срок» без имени не судятся — разбор срока строки, общий с
     чипом приложения, — №607 (№805 out3: вырезание даты из дела стирало версию
     «до 3.10», а на 555 пунктах стенда чип рисует дату одному). Не трогает:
     пункт с решённым статусом (`task_line.settled`), с полями хвоста или
     пометкой контроля (их ставит человек и контроль), пустой срок («срок не
-    указан»), уже помеченную часть и срок, подтверждённый речью
+    указан»), уже помеченный срок (за ним пометка) и срок, подтверждённый речью
     (`fact_check.due_heard`)."""
     rec = task_line.parse(line)
     if rec is None or task_line.settled(line) or rec.fields or rec.control:
@@ -583,15 +586,17 @@ def check_deadline_item(line: str, speech: str, day: datetime.date | None, lang:
         piece = parts[i].strip()
         if piece in marks or not fact_check.looks_like_due(piece):
             continue
+        if i + 2 < len(parts) and parts[i + 2].strip() in marks:
+            continue                         # уже помечен — повторный проход те же байты
         if not fact_check.due_heard(piece, speech, day=day):
-            parts[i], changed = mark, True
+            parts[i], changed = parts[i] + parts[i - 1] + mark, True
     if not changed:
         return line
     return line[:head.end()] + "".join(parts) + suffix + trail
 
 
 def check_deadlines(text: str, speech: str, day: datetime.date | None, lang: str = "ru") -> str:
-    """Срок поручения, которого нет в речи, — пометкой «срок не из речи» (№805:
+    """Срок поручения, которого нет в речи, — с пометкой «срок не из речи» (№805:
     на длинных встречах модель додумывает 4 срока из 11, а срок в окне «Задачи»
     читается как факт). Обходит каждый пункт с ящиком во всём документе, а не
     только раздел поручений: окно «Задачи» берёт любой «- [ ]» минуток, и срок
