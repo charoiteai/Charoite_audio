@@ -728,7 +728,7 @@ def test_label_in_the_body_waits_for_its_own_card(nd, tmp_path, capsys):
     out = capsys.readouterr().out
     assert nd.calls == [] and r["собрано"] == 0, r
     assert r["метка_в_теле"] == 1 and r["пропущено"] == 1 and r["без_изменений"] == 0, r
-    assert "· тема: метка в теле — пересборка отдельно" in out and "метка в теле 1" in out
+    assert "· тема: метка в теле — ночь не трогает" in out and "метка в теле 1" in out
     assert path.read_bytes() == before, "досье владельца не тронуто"
     assert not (graph / CHAROITE.dossier_dir / ".backup").exists()
 
@@ -740,14 +740,16 @@ def test_clean_theme_without_changes_is_not_counted_as_labeled(nd, tmp_path):
     assert r["метка_в_теле"] == 0 and r["без_изменений"] == 1, r
 
 
-def test_full_rebuilds_a_labeled_theme_through_the_model_clean(nd, tmp_path):
-    """`--full` — как на базе: модель, ответ без меток, слово автора на месте."""
+def test_full_leaves_a_labeled_theme_alone(nd, tmp_path, capsys):
+    """Воскресный `--full` меченую тему тоже не трогает (n815-out7 Haiku I3) и
+    показывает её строкой и счётчиком (DS M2); чистые темы `--full` собирает,
+    как на базе (`test_full_without_budget_ignores_the_limit_and_takes_unchanged_themes`)."""
     graph, path = _labeled_graph(nd, tmp_path)
+    before = path.read_bytes()
     r = nd.run(graph, {}, full=True, dry=False, limit=None)
-    text = path.read_text(encoding="utf-8")
-    assert nd.calls == ["тема"] and r["собрано"] == 1 and r["метка_в_теле"] == 0, r
-    assert not dossier.labeled_body(text)
-    assert "## Правки автора\n\nСобеседник 4 — это Вера\n" in text
+    assert r["метка_в_теле"] == 1 and r["пропущено"] == 1, r
+    assert "· тема: метка в теле — ночь не трогает" in capsys.readouterr().out
+    assert path.read_bytes() == before and nd.calls == []
 
 
 def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkeypatch):
@@ -768,4 +770,3 @@ def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkey
     assert not dossier.labeled_body(text)
 
 
-_LABELED = "---\nотпечаток: fp\n---\n# Т\n## Сейчас\nСобеседник 4 обещал\n"

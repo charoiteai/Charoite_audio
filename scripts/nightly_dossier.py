@@ -269,16 +269,17 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         loaded = g.reads.load(path)
         g.keep(theme, members, loaded, fp)
         same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
-        if same and not full:
+        # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
+        # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
+        # круга подряд теряло хвост на разборе (n815-out6, решение координатора)
+        # — ночь такую тему не трогает, и воскресный `--full` тоже (n815-out7
+        # Haiku I3); видна строкой лога и счётчиком. Пересборка — отдельно
+        labeled = dossier.labeled_body(loaded.text)
+        if same and (not full or labeled):
             g.skipped += 1
-            if dossier.labeled_body(loaded.text):
-                # Метка диаризации в теле при тех же источниках: пересказ модели
-                # стёр бы правки облачной ревизии (⚠️, ссылки), а своё тело без
-                # модели четыре круга подряд теряло хвост на разборе (n815-out6,
-                # решение координатора) — эту ночь не трогаем, счётчик в отчёт;
-                # пересборка таких тем — отдельной карточкой
+            if labeled:
                 g.labeled += 1
-                print(f"  ⏭ {graph.name} · {theme}: метка в теле — пересборка отдельно")
+                print(f"  ⏭ {graph.name} · {theme}: метка в теле — ночь не трогает")
             else:
                 g.unchanged += 1
             continue
