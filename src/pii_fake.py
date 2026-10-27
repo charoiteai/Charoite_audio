@@ -236,6 +236,13 @@ def _gender(m, forms: list[str]) -> str:
     return "masc"
 
 
+def _sexed(forms: list[str], canon: str | None) -> list[str]:
+    """Род группы с узлом — по узлу, не по первой форме текста: «Орлова» при «Дмитрий Орлов» —
+    и род. падеж узла, и чужая жена; подделка мужского рода («Зимогорова») держит ту же
+    двусмысленность, женская давала облаку «Миланы Зимогорова ушёл» (n793-out11 DS-C1)."""
+    return [canon, *forms] if canon else forms
+
+
 def _roles(m, forms: list[str]) -> dict[str, str]:
     """Роль каждого слова группы — одна на группу, по написанию слова: тег словаря; без тега —
     роль, которой в многословной форме ещё нет (по позиции, если тегов нет вовсе), одиночное —
@@ -267,9 +274,9 @@ def _parse(m, w: str, r: str, gender: str):
                  if r in q.tag and gender in q.tag), None) or _role(m, w)[1]
 
 
-def _person(pk: _Picker, forms: list[str]) -> list[str]:
+def _person(pk: _Picker, forms: list[str], canon: str | None = None) -> list[str]:
     m = pk.m
-    gender = _gender(m, forms)
+    gender = _gender(m, _sexed(forms, canon))
     role = _roles(m, forms)
     # ключ — роль и её номер: «Иванов-Петров» — две фамилии, иначе разворот «Иванов-Иванов»
     # (n793-out5 DS-C4). Номер слова, которое в группе стоит рядом с другим той же роли, — по
@@ -359,10 +366,10 @@ def _dress_once(m, masked: pii_mask.Masked, pk: _Picker) -> tuple[Dress, str]:
     d = Dress()
     fakes: dict[str, list[str]] = {}
     for gid, g in masked.groups.items():
-        make = _person if gid.startswith(pii_mask.PERSON) else _system
         for _try in range(_TRIES):
             # выбранное уже занято в `pk` — следующая попытка берёт другие слова
-            fakes[gid] = make(pk, g.forms)
+            fakes[gid] = (_person(pk, g.forms, g.canon) if gid.startswith(pii_mask.PERSON)
+                          else _system(pk, g.forms))
             if not pk.clashes(fakes[gid]):
                 break
         else:
@@ -371,7 +378,7 @@ def _dress_once(m, masked: pii_mask.Masked, pk: _Picker) -> tuple[Dress, str]:
         d.pairs[gid] = list(zip(g.forms, fakes[gid]))
         d.canon[gid] = g.canon
         if gid.startswith(pii_mask.PERSON):
-            d.gender[gid] = _gender(m, g.forms)
+            d.gender[gid] = _gender(m, _sexed(g.forms, g.canon))
 
     def put(mt: re.Match) -> str:
         gid = f"{mt.group(1)}{mt.group(2)}{mt.group(3)}"

@@ -146,12 +146,20 @@ def test_cli_exit_under_mask_runs_in_the_empty_workdir(where):
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and n.args
              and isinstance(n.args[0], ast.List) and _prompt_args(n.args[0], "dash_p")]
     assert calls, f"{where}: не нашёл вызова CLI — сторож ослеп"
-    bound = {t.id: n.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
-             for t in n.targets if isinstance(t, ast.Name)}
+    assigns = [(t.id, n) for n in ast.walk(fn) if isinstance(n, ast.Assign)
+               for t in n.targets if isinstance(t, ast.Name)]
     for c in calls:
         cwd = next((k.value for k in c.keywords if k.arg == "cwd"), None)
         if isinstance(cwd, ast.Name):
-            cwd = bound.get(cwd.id)
+            # одно присваивание и не в том try, что ловит сбой CLI: иначе сбой каталога —
+            # диагноз «CLI не запустился» (n793-out11 S-M2, DS-M3)
+            mine = [a for name, a in assigns if name == cwd.id]
+            assert len(mine) == 1, f"{where}: {cwd.id} присвоено {len(mine)} раз"
+            cli_try = [t for t in ast.walk(fn) if isinstance(t, ast.Try)
+                       and any(x is c for x in ast.walk(t))]
+            assert not any(x is mine[0] for t in cli_try for x in ast.walk(t)), \
+                f"{where}: {cwd.id} вычислен в try вызова CLI"
+            cwd = mine[0].value
         # ровно «None без маски, иначе вызов empty_workdir()» (n793-out10 S-M3, DS-M6)
         ok = (isinstance(cwd, ast.IfExp) and ast.unparse(cwd.test) == "masked.level == 'off'"
               and isinstance(cwd.body, ast.Constant) and cwd.body.value is None

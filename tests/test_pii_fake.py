@@ -360,3 +360,17 @@ def test_other_name_of_the_same_stem_is_not_the_node(node, src, guest):
     assert len(ours) == 1, m.groups
     others = [f for g in m.groups.values() if g.canon != node for f in g.forms]
     assert others == ([guest] if guest else []), m.groups
+
+
+@pytest.mark.parametrize("node, src, gender", [
+    ("Дмитрий Орлов", "Орлова пришла. Дмитрий Орлов ушёл.", "masc"),
+    ("Ольга Орлова", "Ольга Орлова пришла. Орлову сказали.", "femn"),
+])
+def test_group_with_a_node_takes_the_node_gender(node, src, gender):
+    """«Орлова» при узле «Дмитрий Орлов» — и род. падеж узла, и жена: род подделки — по узлу,
+    иначе облако видело «Миланы Зимогорова ушёл», а ответ разворачивался в «Дмитрии Орлова»
+    (n793-out11 DS-C1)."""
+    for seed in range(5):
+        m, d, _ = _dressed(src, (pm.NodeForms(node),), seed=seed)
+        assert set(d.gender.values()) == {gender}, (seed, m.text)
+        assert pii_fake.undress(m.text, d, sent=m.text) == (src, 0), m.text

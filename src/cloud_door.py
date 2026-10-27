@@ -87,9 +87,14 @@ def _forms(cfg: dict, graph: pathlib.Path,
 
 def empty_workdir() -> pathlib.Path:
     """Пустой рабочий каталог облачного CLI под маской: путь без имени владельца
-    (CLI кладёт cwd в системный промпт), инструментов у модели нет."""
+    (CLI кладёт cwd в системный промпт), инструментов у модели нет. Каталог не создать —
+    `pii_mask.MaskRefused`: вызывающий уже умеет «ничего не отправлено» (n793-out11 S-I1)."""
     d = pathlib.Path(tempfile.gettempdir()) / "charoite-cloud-empty"
-    d.mkdir(exist_ok=True)
+    try:
+        d.mkdir(exist_ok=True)
+    except OSError as e:
+        raise pii_mask.MaskRefused(f"пустой рабочий каталог облака не создан ({type(e).__name__}) — "
+                                   "отправка отменена") from None
     return d
 
 

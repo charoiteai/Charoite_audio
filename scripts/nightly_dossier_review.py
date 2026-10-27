@@ -226,14 +226,14 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     try:
         masked = cloud_door.mask_prompt(cfg, prompt, graph,
                                           data=(theme, body, "\n".join(parts)))
+        # cwd CLI кладёт в системный промпт (n793-final-opus M1); здесь — сбой каталога не
+        # диагноз «CLI не запустился» (n793-out10 DS-M5) и не traceback ночи (n793-out11 S-I1)
+        workdir = None if masked.level == "off" else cloud_door.empty_workdir()
     except pii_mask.MaskRefused as e:
         return None, f"сбой: маска не прошла: {e}"
     claude = cloud.claude_bin()
     env = cloud.cli_env()      # то же окружение, что у зонда: иначе зонд не представителен (DS r2 по #499)
     r = None
-    # cwd CLI кладёт в системный промпт (n793-final-opus M1); до try — сбой каталога не
-    # диагноз «CLI не запустился» (n793-out10 DS-M5)
-    workdir = None if masked.level == "off" else cloud_door.empty_workdir()
     for attempt in (1, 2):
         try:
             # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не

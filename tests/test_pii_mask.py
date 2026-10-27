@@ -12,6 +12,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import cloud_door  # noqa: E402
+import pii_fake  # noqa: E402
 import pii_mask as pm  # noqa: E402
 import privacy  # noqa: E402
 from charoite_graph.graph_nodes import NodeIndex  # noqa: E402
@@ -19,6 +20,9 @@ from charoite_schema import CHAROITE  # noqa: E402
 
 
 def _forms(*nodes, **kw):
+    # лексема — как `cloud_door._forms`: иначе тесты судят перечень хвостов, которого в
+    # продукте нет (n793-out11 DS-M6, H-M3)
+    kw.setdefault("lexeme", pii_fake.same_lexeme)
     return pm.build_forms(nodes, **kw)
 
 
@@ -696,3 +700,11 @@ def test_lowercase_gloss_in_brackets_is_not_a_system_name():
                            known=GATE_KNOWN.__contains__)
     assert pm.mask("данные пришли", forms).replaced == 0
     assert pm.mask("Витрина согласий пуста", forms).replaced == 1
+
+
+def test_empty_workdir_failure_is_a_mask_refusal(tmp_path, monkeypatch):
+    """Каталог не создать — отказ маски, а не OSError мимо обработчиков ночи (n793-out11 S-I1)."""
+    monkeypatch.setattr(cloud_door.tempfile, "gettempdir", lambda: str(tmp_path))
+    (tmp_path / "charoite-cloud-empty").write_text("файл на месте каталога")
+    with pytest.raises(pm.MaskRefused):
+        cloud_door.empty_workdir()

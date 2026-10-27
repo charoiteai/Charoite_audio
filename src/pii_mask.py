@@ -307,7 +307,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
             if exact and base.isalpha() and len(base) >= 3:
                 # распознавание пишет аббревиатуру словом: «Орисе», «Злком»
                 title = Entry((base.capitalize(),), (tail,), kind, canon,
-                              capital=kind == PERSON, exact=True)
+                              capital=kind == PERSON, exact=True, source=(words[0],))
                 if (title.words, kind, canon) not in seen:
                     seen.add((title.words, kind, canon))
                     entries.append(title)

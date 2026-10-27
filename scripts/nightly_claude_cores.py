@@ -364,6 +364,10 @@ def main() -> None:
     # уже с именами. Маска не прошла — не отправляем ничего (код политики).
     try:
         masked = cloud_door.mask_prompt(cfg, prompt, graph, data=(blob,))
+        # cwd CLI кладёт в системный промпт: под маской — пустой каталог (n793-final-opus M1);
+        # здесь — сбой каталога не диагноз «CLI не запустился» (n793-out10 DS-M5) и не traceback
+        # всей ночи (n793-out11 S-I1)
+        workdir = None if masked.level == "off" else cloud_door.empty_workdir()
     except pii_mask.MaskRefused as e:
         print(f"маска не прошла — ревизия ядер не отправлена: {e}")
         sys.exit(EXIT_PRIVACY_REFUSED)
@@ -373,9 +377,6 @@ def main() -> None:
         reply = _ask_tinfoil(cfg, masked.text, graph)
         out, model, returncode, stderr = reply.text, reply.model, 0, ""
     elif provider == "anthropic":   # явно, не голым else: прочие отсеяны выше (in3 S-M2)
-        # cwd CLI кладёт в системный промпт: под маской — пустой каталог (n793-final-opus M1);
-        # до try — сбой каталога не диагноз «CLI не запустился» (n793-out10 DS-M5)
-        workdir = None if masked.level == "off" else cloud_door.empty_workdir()
         try:
             # Ревизии не положено НИ ОДНОГО инструмента: ядра и индекс уже в
             # промпте (blob выше), а Read/Grep/Glob, разрешённые прежним
