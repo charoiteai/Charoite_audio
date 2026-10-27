@@ -746,3 +746,31 @@ def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkey
     assert "Участник встречи обещал письмо участник встречи" in text
     assert author in text
     assert not dossier.labeled_body(text)
+
+
+_LABELED = "---\nотпечаток: fp\n---\n# Т\n## Сейчас\nСобеседник 4 обещал\n"
+_CLEAN = "---\nотпечаток: fp\n---\n# Т\n## Сейчас\nучастник встречи обещал\n"
+
+
+@pytest.mark.parametrize("state, text, fp, full, expected", [
+    ("missing", None, "fp", False, "NEW"),
+    ("ok", _LABELED, "другой", False, "CHANGED"),
+    ("ok", _LABELED, "fp", False, "LABELED"),
+    ("ok", _LABELED, "fp", True, "LABELED"),        # --full: метка — своя причина, не «без изменений»
+    ("damaged", _LABELED.replace("обещал", "обещал �"), "fp", False, "LABELED"),   # доктор его считает
+    ("unreadable", None, "fp", False, None),
+    ("ok", _CLEAN, "fp", False, None),
+    ("ok", _CLEAN, "fp", True, "SAME"),
+])
+def test_classify_table(nd, state, text, fp, full, expected):
+    """Причина работы ночи — таблицей (n815-out1 Sonnet M5, DS M1)."""
+    got = nd._classify(dossier.DossierLoad(state, text), fp, full)
+    assert got == (getattr(nd, expected) if expected else None)
+
+
+def test_labeled_waits_behind_changed_inside_a_graph(nd):
+    """Порядок внутри графа: свежие факты (CHANGED) раньше косметики старого текста (LABELED)."""
+    g = object()
+    order = sorted([_cand(nd, g, "метка", nd.LABELED, "2026-07-01"), _cand(nd, g, "факты", nd.CHANGED, "2026-07-20")],
+                   key=nd._graph_key)
+    assert [c.theme for c in order] == ["факты", "метка"]

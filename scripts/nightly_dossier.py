@@ -192,12 +192,14 @@ def _classify(loaded: dossier.DossierLoad, fp: str, full: bool) -> int | None:
     промпта: досье, собранные до чистки меток, при тех же источниках не
     пересобрались бы никогда (n815-in1 C1). Метка в теле — своя причина,
     после изменившихся тем: свежие факты важнее старого текста; пересборка
-    кладёт чистое тело, и причина гаснет сама (n815-in2 DS C1)."""
+    кладёт чистое тело, и причина гаснет сама (n815-in2 DS C1). Повреждённое
+    досье — тоже: доктор его считает, а «Правки автора» бережёт
+    `_manual_for_rebuild`, как при CHANGED (n815-out1 DS M1)."""
     if loaded.state == "missing":
         return NEW
     if dossier.read_fingerprint(loaded) != fp:
         return CHANGED
-    if loaded.state == "ok" and dossier.labeled_body(loaded.text):
+    if dossier.labeled_body(loaded.text):
         return LABELED
     return SAME if full else None
 

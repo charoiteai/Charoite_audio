@@ -265,11 +265,14 @@ def clusters(files: dict[str, dict], backlinks: dict[str, set[str]], *,
                     for m in LINK_RE.finditer(meta["text"])}
         members = {title} | inbound | {o for o in outbound if o in files}
         # Узел-метка «Собеседник 3» в Люди — склейка разных людей, не источник
-        # темы: ни в промпт, ни в «Источники», ни в счёт (n815-in3 DS I2)
-        members = {m for m in members if m in files
-                   and not (schema.is_person_folder(files[m]["kind"])
-                            and graph_names.is_placeholder_node(m))}
-        if len(members) >= min_size:
+        # темы: ни в промпт, ни в «Источники», ни в счёт (n815-in3 DS I2). Порог
+        # размера — по ссылкам до фильтра: иначе тема из ядра, встречи и узла-метки
+        # выпадала из очереди с меткой в досье навсегда (n815-out1 I4)
+        linked = {m for m in members if m in files}
+        members = {m for m in linked
+                   if not (schema.is_person_folder(files[m]["kind"])
+                           and graph_names.is_placeholder_node(m))}
+        if len(linked) >= min_size:
             # Хаб — первым: build_prompt берёт первые MAX_SOURCES участников,
             # и в кластере из 14+ встреч само ядро темы (её «Статус» и «Суть»)
             # в промпт не попадало вовсе — сводка собиралась без главного
@@ -334,7 +337,7 @@ PROMPT = """Ниже — узлы графа встреч по теме «{theme
 - В конце каждого пункта — ссылка на источник в виде [[Имя файла]].
 - Нет данных на раздел — поставь «—». Раздел не выдумывать.
 - Числа, имена, названия систем — дословно из источников.
-- «Участник встречи» — голос без имени, свой на каждой встрече: не человек, в «Кто в теме» его не ставить.
+- {unlabeled_rule}
 - Русский язык, короткие фразы, без вводных оборотов.
 
 Запрещено: обращаться к читателю, спрашивать «что дальше», предлагать варианты
@@ -381,7 +384,9 @@ def source_text(meta: dict) -> str:
     """Текст узла для модели — один на сборку досье и ревизию: без шапки, без
     меток деятелем (`graph_names.unlabel_speakers`), не длиннее `SRC_CHARS`.
     Чистка — до среза, в памяти: файл графа не меняется (№815)."""
-    _, body = frontmatter.split(meta.get("text") or "")
+    # BOM и пустые строки до шапки: прежний срез их терпел (n815-out1 M6); сам
+    # `frontmatter.split` строг — им же пишется шапка на запись
+    _, body = frontmatter.split((meta.get("text") or "").lstrip("\ufeff\n\r "))
     return graph_names.unlabel_speakers(body.strip())[:SRC_CHARS]
 
 
@@ -425,7 +430,8 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
     # там дата и имя идут по убыванию, здесь — по возрастанию.
     dated.sort(key=lambda t: (t[0], t[1]))
     parts = core + [t[2] for t in dated] + undated + others
-    return PROMPT.format(theme=theme, sources="\n".join(parts))
+    return PROMPT.format(theme=theme, sources="\n".join(parts),
+                         unlabeled_rule=graph_names.UNLABELED_RULE)
 
 
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],

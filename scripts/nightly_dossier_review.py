@@ -85,11 +85,8 @@ def _link_key(target: str) -> str:
 
 
 def links(body: str) -> set[str]:
-    """Пустые `[[ ]]` и `[[.md]]` — не ссылки: scan их тоже не считает. Узел-метка
-    «Собеседник 3» — не источник: чистка ответа заменяет такую ссылку текстом,
-    и ревизия не должна считать её потерянной (n815-in2 Sonnet I3)."""
-    return {k for x in dossier.LINK_RE.findall(body or "")
-            if (k := _link_key(x)) and not graph_names.is_placeholder_node(k)}
+    """Пустые `[[ ]]` и `[[.md]]` — не ссылки: scan их тоже не считает."""
+    return {k for x in dossier.LINK_RE.findall(body or "") if (k := _link_key(x))}
 
 
 def check_revision(old_body: str, new_body: str) -> str | None:
@@ -169,6 +166,7 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 - Пункты не удалять: отменённое, просроченное или опровергнутое помечай
   «⚠️» с пояснением и оставляй вместе со ссылкой. Досье, потерявшее хотя бы
   одну ссылку, будет отклонено целиком.
+- {unlabeled_rule}
 - Русский язык, короткие фразы, без обращений к читателю.
 
 Ответ начни СРАЗУ со строки «## Сейчас». Никаких предисловий.
@@ -206,7 +204,8 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         return None, "в досье нет раздела «## Источники» — не трогаем"
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
     # метки деятелем — тем же словом, что в источниках, иначе модель вернёт их в ответ (№815)
-    body = f"{graph_names.unlabel_speakers(old_body)}\n\n## Источники\n{sources}\n"
+    old_body = graph_names.unlabel_speakers(old_body)
+    body = f"{old_body}\n\n## Источники\n{graph_names.unlabel_speakers(sources)}\n"
 
     parts, total = [], 0
     for m in members[: dossier.MAX_SOURCES]:
@@ -219,7 +218,8 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         parts.append(block)
         total += len(block)
 
-    prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts))
+    prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts),
+                           unlabeled_rule=graph_names.UNLABELED_RULE)
     claude = cloud.claude_bin()
     env = cloud.cli_env()      # то же окружение, что у зонда: иначе зонд не представителен (DS r2 по #499)
     r = None

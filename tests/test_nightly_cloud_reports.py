@@ -653,8 +653,10 @@ def test_review_sees_and_writes_no_speaker_label(tmp_path, monkeypatch):
     заменённая текстом, — не потеря источника."""
     ndr = _load("nightly_dossier_review")
     path = tmp_path / "Платёжный провайдер.md"
-    labeled = _DOSSIER.replace("- [[Иванов]]", "- [[Иванов]]\n- Собеседник 3 [[Люди/Собеседник 3]]")
-    path.write_text(labeled + "\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
+    labeled = _DOSSIER.replace("- [[Иванов]]", "- [[Иванов]]\n- Собеседник 3 [[Люди/Собеседник 3]]\n"
+                               "- план [[Встречи/2026-07-15_Собеседник 2 и план]]")
+    path.write_text(labeled + "\n## Источники\n- [[2026-07-15_1400]]\n- **Люди:** [[Люди/Собеседник 3]]\n",
+                    encoding="utf-8")
     files = {"2026-07-15_1400": {"kind": "встреча", "text":
              "---\nучастники: [Собеседник 2]\n---\n# Встреча\nСобеседник 2 обещал срок\n"}}
     seen = []
@@ -676,8 +678,11 @@ def test_review_sees_and_writes_no_speaker_label(tmp_path, monkeypatch):
     fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, files,
                             ["2026-07-15_1400"], "m", cfg)
     assert why == "" and fixed, why
-    assert not ndr.graph_names.has_speaker_actor(seen[0]), "метка ушла в облако"
+    assert not ndr.graph_names.has_speaker_actor(seen[0]), "метка ушла в облако (и из «Источников»)"
+    assert ndr.graph_names.UNLABELED_RULE in seen[0], "ревизор знает, что участник встречи — не один человек"
     assert "участники:" not in seen[0], "шапка источника ушла в облако"
     assert "Участнику встречи поручили пилот" in fixed
     assert not ndr.graph_names.has_speaker_actor(fixed)
-    assert ndr.links("[[Люди/Собеседник 3]] [[Иванов]]") == {"иванов"}
+    # ссылка на живой узел с меткой в имени — источник, сохранена и не требуется назад
+    # как «потерянная»: обе стороны сверки в одной нормализации (n815-out1 I3)
+    assert "[[Встречи/2026-07-15_Собеседник 2 и план]]" in fixed

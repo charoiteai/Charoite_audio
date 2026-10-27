@@ -729,3 +729,31 @@ def test_тело_досье_с_меткой_только_в_пяти_разде
     переставлено = "# Досье\n## Сейчас\nок\n## Правки автора\n\nСобеседник 3 — Вера\n\n## Источники\n- [[В1]]\n"
     assert not dossier.labeled_body(переставлено)
     assert not dossier.labeled_body(None)
+    assert not dossier.labeled_body("# Собеседник 3\n## Сейчас\nок\n"), "шапка до «## Сейчас» — не тело"
+    # «грязно» и «чистка изменит» — один предикат: узел-метка без номера — тоже метка (n815-out1 DS M2)
+    assert dossier.labeled_body("# Д\n## Сейчас\n[[Люди/Собеседник]] за\n")
+
+
+def test_узел_метка_не_роняет_тему_ниже_порога(tmp_path):
+    """Порог размера темы — по ссылкам до фильтра узлов-меток: ядро, одна встреча
+    и узел-метка — тема, иначе досье с меткой выпадало из очереди навсегда
+    (n815-out1 Sonnet I4, DS I3)."""
+    g = _граф_с_меткой(tmp_path)
+    (g / "Встречи" / "2026-10-02_1000.md").unlink()
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    assert dossier.clusters(files, backlinks, schema=CHAROITE)["Релиз"] == ["Релиз", "2026-10-01_1000"]
+
+
+def test_шапка_после_bom_и_пустой_строки_не_уходит_модели():
+    """Прежний срез шапки терпел BOM и пустые строки перед ней (n815-out1 M6)."""
+    текст = dossier.source_text({"text": "\ufeff\n---\nучастники: [Собеседник 2]\n---\n# В1\nтекст"})
+    assert текст == "# В1\nтекст"
+
+
+def test_правило_участника_встречи_одно_на_оба_промпта(tmp_path):
+    """Ревизор без правила видел в двух «участниках встречи» одного человека и метил
+    ложное противоречие (n815-out1 Sonnet I1, DS I2)."""
+    g = _граф_с_меткой(tmp_path)
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)["Релиз"]
+    assert graph_names.UNLABELED_RULE in dossier.build_prompt("Релиз", members, files, schema=CHAROITE)

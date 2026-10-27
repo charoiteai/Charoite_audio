@@ -100,6 +100,10 @@ _SPEAKER_IN_TEXT_RE = re.compile(
 #: Закрытая скобка без вложенных в пределах строки — пометка при имени или ремарка:
 #: одинокая «(» не склеивается с «1)» маркера списка абзацем ниже (Sonnet I3).
 _PAREN_RE = re.compile(r"[(（][^()（）\n]*[)）]")
+_MASK = "\0"
+#: Вики-ссылка: цель до «|», подпись до «]]»; перенос строки внутри допустим, «[»
+#: — нет: незакрытая «[[» не съедает соседнюю ссылку (n815-out1 DS M3).
+_WIKI_LINK_RE = re.compile(r"\[\[([^\[\]|]*)(?:\|([^\[\]]*))?\]\]")
 
 
 def has_speaker_actor(text: str) -> bool:
@@ -113,13 +117,28 @@ def has_speaker_actor(text: str) -> bool:
 
 
 def _speaker_spans(text: str) -> list[tuple[int, int]]:
-    """Где в тексте метки деятелем: закрытые скобки маскируются той же длиной,
-    смещения — в исходной строке. Один поиск на детектор и чистку: две копии
-    маски разошлись бы на первой правке (n815-in3 Sonnet C1)."""
+    """Где в тексте метки деятелем, смещения — в исходной строке. Один поиск на
+    детектор и чистку: две копии разошлись бы на первой правке (n815-in3 Sonnet C1).
+
+    Маска той же длины символом вне класса разделителей метки: пробел давал
+    спану тянуться через скобку, и «Собеседник (Вера) 3» терял имя (n815-out1
+    Sonnet I2). Закрытые скобки — пометка при имени. Ссылка на узел-метку —
+    деятель целиком (спан всей ссылки); у ссылки на живой узел цель — адрес, не
+    деятель, маскируется, подпись остаётся текстом (n815-out1 DS I1)."""
     masked = text
     for _ in range(2):                 # «((Собеседник 3))» — вложенная пара
-        masked = _PAREN_RE.sub(lambda m: " " * len(m.group(0)), masked)
-    return [m.span() for m in _SPEAKER_IN_TEXT_RE.finditer(masked)]
+        masked = _PAREN_RE.sub(lambda m: _MASK * len(m.group(0)), masked)
+    spans = []
+
+    def link(m: re.Match) -> str:
+        if is_placeholder_node(_link_target_stem(text[m.start(1):m.end(1)])):
+            spans.append(m.span())
+            return _MASK * len(m.group(0))
+        return _MASK * (m.end(1) - m.start()) + masked[m.end(1):m.end()]
+
+    masked = _WIKI_LINK_RE.sub(link, masked)
+    spans += [m.span() for m in _SPEAKER_IN_TEXT_RE.finditer(masked)]
+    return sorted(spans)
 
 
 #: Метка деятелем → кто она есть: участник встречи. Падеж — по окончанию метки
@@ -128,9 +147,13 @@ def _speaker_spans(text: str) -> list[tuple[int, int]]:
 UNLABELED = "участник встречи"
 _UNLABELED_CASES = {"": UNLABELED, "а": "участника встречи", "у": "участнику встречи",
                     "ом": "участником встречи", "е": "участнике встречи"}
+#: Правило для модели — одно на сборку и ревизию: ревизор, не знавший его, видел в
+#: двух «участниках встречи» одного человека и метил ложное противоречие (n815-out1 I2).
+UNLABELED_RULE = ("«Участник встречи» — голос без имени, свой на каждой встрече: не человек. "
+                  "В «Кто в теме» его не ставить; слова двух «участников встречи» — не противоречие "
+                  "и не смена позиции одного человека.")
 _LABEL_CASE_RE = re.compile(r"(?:" + "|".join(_SPEAKER_WORDS) + r")(а|у|ом|е)?", re.IGNORECASE)
 _LABEL_TAIL_NUM_RE = re.compile(r"(?:[/\-–]\d{1,3})*")      # «Собеседник 3/4», «Собеседник 3-4»
-_WIKI_LINK_RE = re.compile(r"\[\[([^\]|\n]*)(?:\|([^\]\n]*))?\]\]")
 _SENTENCE_START_RE = re.compile(r"(?:\n|[.!?…»]\s)[\s\-*>#\d.)\[\]«\"_:]*\Z")
 _SENTENCE_LOOKBACK = 40
 
@@ -144,30 +167,32 @@ def unlabel_speakers(text: str) -> str:
     """Текст для модели и тело досье без меток деятелем: «Собеседник 3» — номер
     голоса одной встречи, а не человек; в досье по многим встречам он сводил
     факты разных людей в одного (№815). Метка → «участник встречи»; ссылка на
-    узел-метку или с меткой в цели → её подпись, без подписи — то же слово
-    (цель не переписывается: битая ссылка хуже текста). Метка в закрытых
+    узел-метку → её подпись, без подписи — то же слово (цель не переписывается:
+    битая ссылка хуже текста); ссылка на живой узел остаётся ссылкой. Метка в закрытых
     скобках при имени остаётся. Цена: два голоса одной встречи становятся одним
     «участником встречи» — сознательно, номер между встречами ничего не значит.
 
     Только в памяти — файлы графа не переписывает. Контракт (тесты):
     `not has_speaker_actor(unlabel_speakers(x))` и повтор ничего не меняет.
     """
-    def link(m: re.Match) -> str:
-        stem = _link_target_stem(m.group(1))
-        if not (is_placeholder_node(stem) or _speaker_spans(m.group(1))):
-            return m.group(0)
-        return m.group(2).strip() if m.group(2) and m.group(2).strip() else UNLABELED
-
-    text = _WIKI_LINK_RE.sub(link, text or "")
+    text = text or ""
     out, pos = [], 0
     for a, b in _speaker_spans(text):
         if a < pos:                    # хвост «/4» прошлой метки
             continue
-        b = _LABEL_TAIL_NUM_RE.match(text, b).end()
-        word = _UNLABELED_CASES[(_LABEL_CASE_RE.match(text, a).group(1) or "").lower()]
+        lm = _WIKI_LINK_RE.match(text, a) if text.startswith("[[", a) else None
+        if lm and (lm.group(2) or "").strip():
+            out += [text[pos:a], unlabel_speakers(lm.group(2).strip())]
+            pos = b
+            continue
+        if lm:
+            word = UNLABELED
+        else:
+            b = _LABEL_TAIL_NUM_RE.match(text, b).end()
+            word = _UNLABELED_CASES[(_LABEL_CASE_RE.match(text, a).group(1) or "").lower()]
         # заглавная — только в начале предложения или строки: «с Собеседником 3» → «с участником»
         before = ("\n" if a <= _SENTENCE_LOOKBACK else "") + text[max(0, a - _SENTENCE_LOOKBACK):a]
-        if text[a].isupper() and _SENTENCE_START_RE.search(before):
+        if (lm or text[a].isupper()) and _SENTENCE_START_RE.search(before):
             word = word[0].upper() + word[1:]
         out += [text[pos:a], word]
         pos = b
