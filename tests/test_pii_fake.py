@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import pii_mask as pm  # noqa: E402
 
 import pymorphy3  # noqa: E402,F401 — зависимость продукта (n793-out5 DS-C1): без неё тест красный, не skip
+import cloud_door  # noqa: E402
 import pii_fake  # noqa: E402
 
 NODES = (pm.NodeForms("Дмитрий Орлов", ("Дима",)), pm.NodeForms("Анна Белова"),
@@ -194,6 +195,9 @@ def test_fake_left_unresolved_goes_out_marked():
     d.canon["Ч9"] = None
     back, left = pii_fake.undress(f"{fake} молчал.", d, sent=m.text)
     assert back == f"⟦?{fake}⟧ молчал." and left == 1
+    # счёт доходит до вызывающих через дверь: по нему ночь не пишет досье (n793-out19 DS-I1)
+    m.dress = d
+    assert cloud_door.unmask_reply(f"{fake} молчал.", m) == (back, 1)
 
 
 def test_fake_patronymic_never_equals_the_real_one():

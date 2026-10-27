@@ -57,8 +57,8 @@ def _forms(cfg: dict, graph: pathlib.Path,
         # (n793-out1 DS-C2: отказ останавливал облако, система уходила как есть)
         nodes += [pii_mask.NodeForms(p.stem, (), CHAROITE.is_person_folder(p.parent.name))
                   for p in bad]
-        shown = ", ".join(f"{p.parent.name}/{p.name}" for p in bad[:5])
-        notes.append(f"не прочитались узлы ({len(bad)}), маска по имени файла: {shown}")
+        # notes идут в `summary()` — строку лога «без имён»: только счёт (n793-out19 S-C1 = DS-C1)
+        notes.append(f"не прочитались узлы ({len(bad)}), маска по имени файла")
     notes.append(f"словарь: людей {sum(n.person for n in nodes)}, "
                  f"систем {sum(not n.person for n in nodes)}")
     stubs: list[tuple[str, str | None, bool]] = []

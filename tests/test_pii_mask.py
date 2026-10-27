@@ -250,7 +250,10 @@ def test_unreadable_node_is_masked_by_its_file_name(tmp_path):
     forms, notes = cloud_door._forms({}, root)
     m = pm.mask("Орлов сказал, что ОРИС лежит", forms)
     assert "Орлов" not in m.text and "ОРИС" not in m.text
-    assert any("Люди/Пётр Орлов.md" in n and "Системы/ОРИС.md" in n for n in notes)
+    assert "не прочитались узлы (2), маска по имени файла" in notes
+    # notes уходят в строку лога `summary()` — имён там нет (n793-out19 S-C1 = DS-C1)
+    m.notes.extend(notes)
+    assert "Орлов" not in m.summary() and "ОРИС" not in m.summary()
 
 
 def test_graph_without_people_refuses(tmp_path):
@@ -481,7 +484,7 @@ _NIGHT_DOSSIER = ("# ЗЛК\n\n## Сейчас\n- Идёт пилот [[2026-07-
                   "## Кто в теме\n- Анна Белова\n\n## Источники\n- [[2026-07-15_1400]]\n")
 
 
-def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkeypatch):
+def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkeypatch, capsys):
     """Ночная ревизия досье через настоящую маску: тема, тело и источники — каждый в
     `data=`; выпавший кусок ушёл бы открытым, а заглушки маски этого не видят
     (n793-out18 DS-C1 = S-I2 = H-I2). Ответ возвращается в имена."""
@@ -501,7 +504,8 @@ def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkey
             returncode = 0
             stderr = ""
             # модель вернула тело как получила — с подделками
-            stdout = cmd[2].split("ТЕКУЩЕЕ ДОСЬЕ:\n", 1)[1].split("\n\n## Источники", 1)[0]
+            # по статическому каркасу PROMPT, не по заголовку из data (n793-out19 DS-M2)
+            stdout = cmd[2].split("ТЕКУЩЕЕ ДОСЬЕ:\n", 1)[1].split("\n\nИСТОЧНИКИ", 1)[0]
 
         return R()
 
@@ -509,8 +513,13 @@ def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkey
     fixed, why = ndr.review("ЗЛК", path, graph, files, ["2026-07-15_1400"], "m",
                             {"sufler": {"cloud_enrich": True}})
     assert why == "" and fixed, why
+    log = capsys.readouterr().out
     for name in ("ЗЛК", "Белова", "Аня"):
         assert name not in sent[0], f"{name} ушло в облако открытым"
+    # тема — имя файла досье, её печатает каждая строка ночи; людей в логе нет
+    assert "Белова" not in log and "Аня" not in log
+    # итог маски виден в логе, все куски нашлись (n793-out18 DS-I1; out19 S-I1 = DS-I2, S-M1)
+    assert "маска basic: замен" in log and "по всему промпту" not in log
     assert "- Анна Белова" in fixed
 
     # подделка не развернулась — ревизия отклонена, досье не тронуто (n793-out18 H-C1 = S-I1)
