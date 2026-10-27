@@ -258,6 +258,35 @@ def test_graph_without_people_refuses(tmp_path):
         cloud_door._forms({}, root)
 
 
+def test_common_file_on_the_door_skips_comment_lines(tmp_path):
+    """Файл общих слов читает дверь, а не тест: слово из него уходит как есть, а
+    закомментированное владельцем снова маскируется (мутанты PR #860, cloud_door._common)."""
+    root = _graph(tmp_path)
+    (root / "Системы" / "Шлюз.md").write_text("# Шлюз\n", encoding="utf-8")
+    (root / cloud_door.COMMON_FILE).write_text("# ЗЛК\n\nШлюз\n",
+                                               encoding="utf-8")
+    forms, _ = cloud_door._forms({}, root)
+    m = pm.mask("Шлюз упал, ЗЛК лежит", forms)
+    assert "Шлюз" in m.text and "ЗЛК" not in m.text
+
+
+def test_stub_with_a_bare_link_masks_to_its_only_canon(tmp_path):
+    """Заглушка «[[Канон]]» без папки: цель — по голому имени, раз оно одно в графе
+    (мутанты PR #860: фильтр папки заглушки, счёт уникальных имён, ветка голой ссылки)."""
+    root = _graph(tmp_path)
+    (root / "Люди" / "Нюра.md").write_text("# Нюра → [[Анна Белова]]\n\n⚠️ **Дубль слит.**\n",
+                                           encoding="utf-8")
+    forms, _ = cloud_door._forms({}, root)
+    m = pm.mask("Нюра пришла", forms)
+    assert "Нюра" not in m.text
+    assert {g.canon for g in m.groups.values()} == {"Анна Белова"}
+
+
+def test_data_at_the_start_of_the_prompt_keeps_its_region():
+    """Кусок данных с нулевой позиции — тоже найден (мутант PR #860: `<` → `<=`)."""
+    assert cloud_door._regions("Аня пришла", ["Аня пришла"]) == [(0, len("Аня пришла"))]
+
+
 def _fake_ner(monkeypatch, spans=()):
     mod = types.ModuleType("pii_ner")
     mod.spans = lambda text: list(spans)

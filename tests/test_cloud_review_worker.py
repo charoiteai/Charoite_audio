@@ -3354,3 +3354,42 @@ def test_masked_reply_not_in_utf8_is_not_published(tmp_path, monkeypatch):
     assert not rev.exists()
     partial = rev.with_suffix(rev.suffix + ".partial")
     assert not partial.exists() or "⟦" not in partial.read_text(encoding="utf-8", errors="replace")
+
+
+def test_masked_reply_not_in_utf8_survives_a_vanished_partial(tmp_path, monkeypatch):
+    """Битый ответ прочитан, а .part успел исчезнуть (уборка параллельного прогона):
+    сверка доходит до лога, исключение наверх не летит (мутант PR #860, missing_ok)."""
+    graph = _graph(tmp_path)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].buffer.write(b"\xff\xfe\n")
+        kwargs["stdout"].flush()
+        return Result()
+
+    read_bytes = pathlib.Path.read_bytes
+
+    def read_then_vanish(self):
+        raw = read_bytes(self)
+        if self == tmp_part:
+            self.unlink()
+        return raw
+
+    stamp = "2026-07-15_1400"
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    transcript = transcripts / f"{stamp}.md"
+    transcript.write_text("Анна Белова согласовала срок\n", encoding="utf-8")
+    rev = transcripts / f"{stamp}_ревизия.md"
+    tmp_part = rev.with_suffix(rev.suffix + ".part")
+    log = tmp_path / "cloud.log"
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", read_then_vanish)
+    _fake_ner(monkeypatch)
+    cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True}})
+    assert not rev.exists()
+    assert "не в UTF-8" in log.read_text(encoding="utf-8")
