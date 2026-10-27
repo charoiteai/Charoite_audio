@@ -719,7 +719,8 @@ def test_review_sees_and_writes_no_speaker_label(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ndr.subprocess, "run", run)
     monkeypatch.setattr(ndr.privacy, "night_provider", lambda cfg: "anthropic")
-    cfg = {"sufler": {"cloud_enrich": True}}
+    # маска ПДн (№793) — своими тестами; здесь метки, графа с людьми у теста нет
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False}}
     fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, files,
                             ["2026-07-15_1400"], "m", cfg)
     assert why == "" and fixed, why
