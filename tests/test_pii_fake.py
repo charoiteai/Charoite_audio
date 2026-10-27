@@ -249,6 +249,8 @@ def test_initials_stay_and_survive_a_rewritten_form():
     (("Анна-Мария", ("Аня",)), "Аня пришла. Анна-Мария ушла.", None),
     (("Анна-Мария", ("Аня",)), "Анна-Мария пришла. Аня ушла.", None),
     (("Иванович Кузнец",), "Иванович Кузнец пришёл. Кузнец ушёл.", None),
+    # «Дима» и «Дмитрий» — одна подделка (решение №799), обратно — слово канона (out9 S-M1)
+    (("Дмитрий Орлов", ("Дима",)), "Дима пришёл. Дмитрий Орлов ушёл.", "Дмитрий пришёл. Дмитрий Орлов ушёл."),
     # одна подделка фамилии у двух форм одного человека — обратно форма канона узла
     (("Анна Иванова", ("Анна Петрова",)), "Анна Иванова пришла. Анна Петрова ушла.",
      "Анна Иванова пришла. Анна Иванова ушла."),
@@ -261,6 +263,39 @@ def test_different_words_of_a_group_never_share_a_fake(node, src, back):
     for seed in range(5):
         m, d, _f = _dressed(src, (pm.NodeForms(*node),), seed=seed)
         assert pii_fake.undress(m.text, d, sent=m.text)[0] == (back or src), (seed, m.text)
+
+
+def test_lone_patronymic_makes_the_other_word_a_surname():
+    """«Иванович Кузнец»: при одном отчестве слово без тега — фамилия, подделка из пула фамилий
+    (n793-out8 DS-M3, out9 DS-M3)."""
+    pii_fake._load()
+    surn = {pii_fake._e(x) for x in (*pii_fake.SURNAMES, *pii_fake._pools["surn2"])}
+    for seed in range(5):
+        m, d, _f = _dressed("Иванович Кузнец пришёл.", (pm.NodeForms("Иванович Кузнец"),), seed=seed)
+        fake = dict(next(iter(d.pairs.values())))["Иванович Кузнец"].split()[-1]
+        assert pii_fake._e(fake) in surn, (seed, fake)
+
+
+def test_system_in_a_third_case_comes_back_not_marked():
+    """Многословная система в двух падежах, ответ — в третьем: обратно имя, не «⟦?…⟧»
+    (n793-out9 S-I1 = DS-I1: классы `same_word` — по леммам каждого слова)."""
+    morph = pii_fake._load()
+    forms = pm.build_forms([pm.NodeForms("Северный Портал", person=False)],
+                           known={"северный", "портал"}.__contains__)
+    src = "Северный Портал упал. Нет Северного Портала."
+    done = 0
+    for seed in range(40):
+        m = pm.mask(src, forms)
+        d = pii_fake.dress(m, src, forms, seed=seed)
+        fake = dict(next(iter(d.pairs.values())))["Северный Портал"]
+        datv = morph.parse(fake)[0].inflect({"datv"})
+        if " " in fake or not datv or datv.word == fake.lower():
+            continue
+        reply = f"Писали {pii_fake._keep_case(fake, datv.word)}."
+        back, left = pii_fake.undress(reply, d, sent=m.text)
+        assert left == 0 and "⟦" not in back and "Портал" in back, (seed, reply, back)
+        done += 1
+    assert done, "ни одной склоняемой подделки — тест ничего не проверил"
 
 
 @pytest.mark.parametrize("node, src", [("Северный Маяк", "Северный Портал закрыли"),

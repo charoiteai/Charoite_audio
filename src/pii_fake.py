@@ -507,14 +507,12 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
         ничего: слово останется подделкой и уйдёт помеченным (n793-out8 DS-C1 = S-I1)."""
         classes: list[tuple[set[str], list[_Slot]]] = []
         for s in slots:
-            key = _lemmas(m, s.orig)[0] if len(_WORD.findall(s.orig)) == 1 else {_e(s.orig)}
-            for c in classes:
-                if c[0] & key:
-                    c[0].update(key)
-                    c[1].append(s)
-                    break
-            else:
-                classes.append((set(key), [s]))
+            # многословный оригинал («Портала Севера») — по леммам каждого слова (n793-out9 S-I1)
+            key = set().union(*(_lemmas(m, x)[0] for x in _WORD.findall(s.orig)))
+            # слот склеивает все классы, с которыми пересёкся, — классы транзитивны (S-I2)
+            hit = [c for c in classes if c[0] & key]
+            classes = [c for c in classes if not c[0] & key]
+            classes.append((key.union(*(c[0] for c in hit)), [x for c in hit for x in c[1]] + [s]))
         if len(classes) == 1:
             return slots
         canon = d.canon.get(slots[0].gid)
@@ -522,7 +520,6 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
             ck = set().union(*(_lemmas(m, x)[0] for x in _WORD.findall(canon)))
             inc = [c for c in classes if c[0] & ck]
             if len(inc) == 1:
-                d.back["canon"] += 1
                 return inc[0][1]
         return []
 
@@ -580,14 +577,13 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
     # псевдонимом («Аня-Мария», n793-out7 DS-C2). По границам слов и только многословная:
     # одиночная подделка разворачивается пословно (n793-out6, опыт false_undress)
     # одна многословная подделка у двух форм — форма канона, иначе пословно (`same_word`)
-    origs: dict[str, set[str]] = collections.defaultdict(set)
+    origs: dict[str, tuple[str, set[str]]] = {}
     for gid, pairs in d.pairs.items():
         for orig, fake in pairs:
             if len(_WORD.findall(fake)) > 1 and fake != orig:   # «И.П.» как есть — не подделка
-                origs[fake].add(orig)
+                origs.setdefault(fake, (gid, set()))[1].add(orig)
     whole: dict[str, str] = {}
-    for fake, os_ in origs.items():
-        gid = next(g for g, prs in d.pairs.items() if any(f == fake for _o, f in prs))
+    for fake, (gid, os_) in origs.items():
         if len(os_) == 1:
             whole[fake] = next(iter(os_))
         elif d.canon.get(gid) in os_:
