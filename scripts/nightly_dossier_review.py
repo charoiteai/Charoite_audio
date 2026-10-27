@@ -477,7 +477,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             done += 1
             continue
         done += 1
-        stats = revision_stats(old_body, fixed)
+        # счёт — против тела без меток: сама чистка не правка ревизии (финальный Opus n815 M4)
+        stats = revision_stats(graph_names.unlabel_speakers(old_body), fixed)
         applied.append(f"- **{theme}** — {stats}; копия до правки — "
                        f"`{CHAROITE.dossier_dir}/.backup/{stamp}/`")
         print(f"  ✓ {theme}: правки применены ({stats})")

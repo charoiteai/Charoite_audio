@@ -706,28 +706,95 @@ def test_night_running_out_during_the_meeting_wait_stops_before_the_theme(nd, tm
     assert "без изменений — в следующую полную пересборку" in out
 
 
-def test_label_in_the_body_rebuilds_without_full_and_then_rests(nd, tmp_path, capsys):
-    """№815: отпечаток не знает промпта — досье, собранное до чистки меток, при
-    тех же источниках не пересобралось бы никогда (n815-in1 C1)."""
+def _labeled_graph(nd, tmp_path, body="Собеседник 4 обещал письмо ⚠️ срок 1.08 прошёл [[Встречи/тема_1]]"):
+    """Тема собрана, потом в её тело попала метка (досье до №815) и правки ревизии."""
     graph = _graph(tmp_path, "Г", {"тема": None})
     path = graph / CHAROITE.dossier_dir / "тема.md"
     nd.run(graph, {}, full=False, dry=False, limit=None)
-    text = path.read_text(encoding="utf-8")
-    path.write_text(text.replace("новое тело", "Собеседник 4 обещал письмо"), encoding="utf-8")
+    text = path.read_text(encoding="utf-8").replace(
+        "## Правки автора\n\n—\n", "## Правки автора\n\nСобеседник 4 — это Вера\n")
+    path.write_text(text.replace("новое тело", body), encoding="utf-8")
+    nd.calls.clear()
+    return graph, path
+
+
+def test_label_in_the_body_rebuilds_without_full_and_then_rests(nd, tmp_path, capsys):
+    """№815: отпечаток не знает промпта — досье, собранное до чистки меток, при
+    тех же источниках не пересобралось бы никогда (n815-in1 C1)."""
+    graph, path = _labeled_graph(nd, tmp_path)
     sources = {p: p.read_bytes() for p in graph.rglob("*.md") if CHAROITE.dossier_dir not in p.parts}
 
-    nd.calls.clear()
     nd.run_all([graph], {}, full=False, dry=True)
     assert "(метка в теле)" in capsys.readouterr().out and nd.calls == []
 
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == ["тема"] and r["собрано"] == 1, r
+    assert r["собрано"] == 1, r
     assert not dossier.labeled_body(path.read_text(encoding="utf-8"))
     assert {p: p.read_bytes() for p in sources} == sources, "файлы графа не трогаем"
 
-    nd.calls.clear()
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == [], "чистое тело гасит причину"
+    assert nd.calls == [] and r["собрано"] == 0, "чистое тело гасит причину"
+
+
+def test_label_rebuild_keeps_the_body_and_skips_the_model(nd, tmp_path):
+    """Финальный Opus n815 I1: источники те же — тело своё без меток. Пересказ
+    модели стёр бы правки облачной ревизии (⚠️, ссылки), которые база не тронула бы."""
+    graph, path = _labeled_graph(nd, tmp_path)
+    r = nd.run_all([graph], {}, full=False, dry=False)
+    text = path.read_text(encoding="utf-8")
+    assert nd.calls == [], "модель не звали"
+    assert r.attempts == 0, "тело без модели — не попытка модели"
+    assert r.graphs[0].built == 1
+    assert "Участник встречи обещал письмо ⚠️ срок 1.08 прошёл [[Встречи/тема_1]]" in text
+    assert "## Правки автора\n\nСобеседник 4 — это Вера\n" in text, "слово автора байт в байт"
+    # тело — только середина досье: шапка, «Источники» и «Правки автора» собираются заново, по разу
+    assert [text.count(h) for h in ("тема: тема\n", "## Источники", "## Правки автора")] == [1, 1, 1], text
+    backup = next((graph / CHAROITE.dossier_dir / ".backup").iterdir()) / "тема.md"
+    assert "Собеседник 4 обещал письмо" in backup.read_text(encoding="utf-8"), "копия до записи"
+
+
+def test_own_label_rebuild_costs_nothing_in_need(nd, tmp_path):
+    """Тело без модели возвращает None: ноль в `spent` занизил бы `need`, и
+    следующая тема с моделью стартовала бы в остаток, куда не влезает."""
+    graph, path = _labeled_graph(nd, tmp_path)
+    g, cands = nd._scan(graph, False, "2026-07-21", "2026-07-21_000000")
+    assert [c.cls for c in cands] == [nd.LABELED]
+    assert nd._build(cands[0], {}) is None and g.built == 1
+
+
+@pytest.mark.parametrize("how", ["damaged", "invalid"])
+def test_label_rebuild_without_a_usable_body_goes_to_the_model(nd, tmp_path, how):
+    """Тело своё только у читаемого досье с пятью разделами: битое
+    (доктор его считает) и неполное — пересказ модели, как раньше."""
+    graph, path = _labeled_graph(nd, tmp_path, "Собеседник 4 обещал")
+    if how == "damaged":   # байт не UTF-8 — load_dossier даёт «damaged»
+        path.write_bytes(path.read_bytes().replace("обещал".encode(), "обещал".encode() + b" \xff"))
+    else:                  # три раздела из пяти — looks_valid не пускает
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("## Как пришли\nт\n", "").replace("## Открыто\nт\n", ""),
+                        encoding="utf-8")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert nd.calls == ["тема"] and r["собрано"] == 1, r
+    assert not dossier.labeled_body(path.read_text(encoding="utf-8"))
+
+
+def test_author_who_removed_the_label_after_scan_stops_the_rebuild(nd, tmp_path, monkeypatch):
+    """Финальный Opus n815 M5: после перечтения чистое тело — причины LABELED нет."""
+    graph, path = _labeled_graph(nd, tmp_path)
+    real = nd._build
+
+    def build(cand, *a, **k):
+        if cand.theme == "тема":
+            path.write_text(path.read_text(encoding="utf-8").replace("Собеседник 4 обещал", "Вера обещала"),
+                            encoding="utf-8")
+        return real(cand, *a, **k)
+
+    monkeypatch.setattr(nd, "_build", build)
+    before = path.read_bytes()
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert nd.calls == [] and r["собрано"] == 0 and r["без_изменений"] == 1, r
+    assert path.read_bytes() != before and "Вера обещала" in path.read_text(encoding="utf-8")
+    assert not (graph / CHAROITE.dossier_dir / ".backup").exists(), "записи не было"
 
 
 def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkeypatch):

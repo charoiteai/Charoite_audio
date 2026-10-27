@@ -333,6 +333,11 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # генерации» (вход in3 №621, DS M2).
         loaded = g.reads.reload(path)
         g.keep(theme, members, loaded, fp)
+        if cand.cls == LABELED and not dossier.labeled_body(loaded.text):
+            # метку из тела убрал автор: причины пересборки больше нет (финальный Opus n815 M5)
+            g.skipped += 1
+            g.unchanged += 1
+            return None
     allowed, manual, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
         g.отказы += failures
@@ -344,7 +349,16 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return None
     g0 = clock()
     body = ""
-    for temperature in (0.2, 0.05):          # вторая попытка чуть холоднее
+    if cand.cls == LABELED and loaded.state == "ok":
+        # Источники те же — тело своё, без меток, мимо модели: тело могла править
+        # облачная ревизия (шапку она не трогает), и пересказ модели стёр бы её
+        # правки, которые база не тронула бы (финальный Opus n815 I1). Запись —
+        # тем же путём ниже: замок, сверка, копия, гейт `expect`.
+        body = graph_names.unlabel_speakers(dossier.split_dossier(loaded.text)[1])
+        if not dossier.looks_valid(body):
+            body = ""
+    own = bool(body)   # тело без модели — не цена темы для `need` и не попытка
+    for temperature in (0.2, 0.05) if not own else ():   # вторая попытка чуть холоднее
         try:
             # метка деятелем — тем же словом, что во входе: отказом она красила
             # бы ночь и держала тему в голове очереди (n815-in1 C2); «Правки
@@ -366,7 +380,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # статусом «ok» (аудит 17.08). Прежнее досье в индексе остаётся.
         g.отказы += 1
         return clock() - g0
-    gen_s = clock() - g0
+    gen_s = None if own else clock() - g0
 
     text = dossier.render(theme, body, members, g.files, fp, g.today)
     if manual:
@@ -428,7 +442,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     g.built += 1
     if copy is not None:
         print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{g.stamp}/")
-    print(f"  ✓ {g.graph.name} · {theme}: {len(members)} источников, {len(body)} зн., {gen_s:.0f}с")
+    took = "тело прежнее без меток" if gen_s is None else f"{gen_s:.0f}с"
+    print(f"  ✓ {g.graph.name} · {theme}: {len(members)} источников, {len(body)} зн., {took}")
     g.entries[theme] = {
         "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
         "источников": len(members), "собрано": g.today, "отпечаток": fp,
