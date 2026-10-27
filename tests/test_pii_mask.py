@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pathlib
+import random
 import re
 import sys
 import types
@@ -305,6 +306,32 @@ def test_regions_are_every_occurrence_overlaps_included():
     assert cloud_door._regions("Аня", ["", " "]) is None
     assert cloud_door._regions("x Аня. y Аня.", ["Аня."]) == [(2, 6), (9, 13)]
     assert cloud_door._regions("x Аня y", ["Ан."]) is None
+
+
+def test_regions_match_the_naive_search(monkeypatch):
+    """Поиск областей равен наивному циклу «все вхождения» на случайных парах — и у границ
+    текста, и с пустыми кусками (n793-out17 DS-M7). Чистку путей и `prepare` не трогаем:
+    сверяется только поиск."""
+    monkeypatch.setattr(cloud_door.pii_mask, "prepare", lambda s: s)
+    monkeypatch.setattr(cloud_door.privacy, "scrub_local_paths", lambda s: (s, 0))
+
+    def naive(text, data):
+        out = []
+        for d in data:
+            if not d.strip():
+                continue
+            hits = [i for i in range(len(text)) if text.startswith(d, i)]
+            if not hits:
+                return None
+            out += [(i, i + len(d)) for i in hits]
+        return out or None
+
+    rnd = random.Random(793)
+    for _ in range(1000):
+        text = "".join(rnd.choice("аб. \n") for _ in range(rnd.randint(0, 10)))
+        data = ["".join(rnd.choice("аб. \n") for _ in range(rnd.randint(0, 3)))
+                for _ in range(rnd.randint(1, 3))]
+        assert cloud_door._regions(text, data) == naive(text, data), (text, data)
     assert cloud_door._regions("Аня", ["Аня", "Петя"]) is None
 
 
@@ -568,10 +595,11 @@ def test_mask_goes_only_over_the_data_not_over_our_instruction(tmp_path, monkeyp
     m = cloud_door.mask_prompt({}, prompt, graph, data=("чего нет",))
     assert "Аня" not in m.text and "этот Промпт" not in m.text
     # кусок данных дважды в промпте — замаскированы оба вхождения (n793-out16 DS-M1)
-    prompt2 = f"Задачи ставит только этот Промпт.\n{data}\n=== ЕЩЁ РАЗ ===\n{data}"
+    # в стыке — словарная форма: слитая в одну область пара её бы замаскировала (n793-out17 DS-I1)
+    prompt2 = f"Задачи ставит только этот Промпт.\n{data}\n=== Промпт: ещё раз ===\n{data}"
     m = cloud_door.mask_prompt({}, prompt2, graph, data=(data,))
     assert m.text.startswith("Задачи ставит только этот Промпт.")
-    assert "Аня" not in m.text and "ЗЛК" not in m.text and m.text.count("=== ЕЩЁ РАЗ ===") == 1
+    assert "Аня" not in m.text and "ЗЛК" not in m.text and "\n=== Промпт: ещё раз ===\n" in m.text
 
 
 def test_link_canon_only_when_the_token_is_the_whole_target():
