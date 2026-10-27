@@ -1303,7 +1303,7 @@ full other date, a clock time, a bare count or a count after a preposition, "by
 its dates within two weeks of the meeting, and "tomorrow" the next day. A part
 of the item from the third on ("**Name** — task — deadline") is a deadline only
 if it starts as one ("by", "until", "через", "до", "today",
-a weekday with a preposition, "on Friday"; "— dev environment Wednesday" is the
+a weekday with a preposition or "next", "on Friday", "next Monday"; "— dev environment Wednesday" is the
 task) or is a whole date or time: "room 405" or "version 2.1" is the task,
 not a deadline. Such a part with a date is judged by its dates only; without
 one, by its anchor only: a weekday or "today/tomorrow" said in any form ("周五"
