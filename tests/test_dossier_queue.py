@@ -759,7 +759,7 @@ def test_own_label_rebuild_costs_nothing_in_need(nd, tmp_path):
     graph, path = _labeled_graph(nd, tmp_path)
     g, cands = nd._scan(graph, False, "2026-07-21", "2026-07-21_000000")
     assert [c.cls for c in cands] == [nd.LABELED]
-    assert nd._build(cands[0], {}) is None and g.built == 1
+    assert nd._build(cands[0], {}, False) is None and g.built == 1
 
 
 @pytest.mark.parametrize("how", ["damaged", "three", "four", "subheading", "tail"])
@@ -805,7 +805,7 @@ def test_author_who_removed_the_label_after_scan_stops_the_rebuild(nd, tmp_path,
         "Собеседник 4 обещал", "Вера обещала"), encoding="utf-8"))
     before = path.read_bytes()
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert nd.calls == [] and r["собрано"] == 0 and r["без_изменений"] == 1, r
+    assert nd.calls == [] and r["собрано"] == 0 and r["без_изменений"] == 1 and r["пропущено"] == 1, r
     assert path.read_bytes() != before and "Вера обещала" in path.read_text(encoding="utf-8")
     assert not (graph / CHAROITE.dossier_dir / ".backup").exists(), "записи не было"
 

@@ -319,7 +319,7 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
-def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT, full: bool = False) -> float | None:
+def _build(cand: Candidate, c: dict, full: bool, lock_wait=lambda: LOCK_WAIT) -> float | None:
     """Собрать одну тему. Возвращает секунды генерации — цену темы для
     `need`, без ожидания замка; None — модель не звали. Собрана ли тема —
     счётчик `g.built` (флаг рядом с ним мутанты #819 не видели); `lock_wait` —
@@ -536,7 +536,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             return live_gate.night_wait_cap(
                 LOCK_WAIT if rest is None else min(LOCK_WAIT, rest), now=wall_clock)
         refused, before = g.отказы, g.built
-        gen_s = _build(cand, c, lock_wait, full)
+        gen_s = _build(cand, c, full, lock_wait)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
         if called:                 # цена темы — генерация, без ожидания замка (Haiku I1)
             spent.append(gen_s)

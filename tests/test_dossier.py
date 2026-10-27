@@ -797,6 +797,6 @@ def test_kept_body_refuses_a_cut_that_render_does_not_write(cut, kept):
     text = ("---\nотпечаток: f\n---\n# Т\n## Сейчас\nСобеседник 4 обещал\n## Как пришли\nт\n## Решено\nт\n"
             "## Открыто\nт\n## Кто в теме\nИван\n" + cut + "Пётр\n\n## Источники\n- [[a]]\n")
     body = dossier.kept_body(text)
-    assert bool(body) is kept
+    assert isinstance(body, str) and bool(body) is kept   # "" — не None: тело всегда строка
     if kept:
         assert "Участник встречи обещал" in body and "Пётр" in body
