@@ -432,3 +432,36 @@ def test_held_entity_line_names_the_node_it_was_led_to(tmp_path):
         "[[Люди/Владимир Иванов|Владимир Иванов]])_")
     held[("Системы", "Вова")] = ("collective", ["Люди/Владимир Иванов"], "")
     assert "узел не создан: голое имя" in g.entity_line(graph, e, held)
+
+
+# --- финальный Opus (n611-final-opus) --------------------------------------------
+
+
+def test_stub_with_a_missing_target_does_not_give_birth_to_a_bare_node(tmp_path, monkeypatch):
+    """Заглушка «Сашка → [[Люди/Саша]]» при удалённом (разделённом) «Саша»: писатель
+    завёл бы голый узел по цели при живом «Саша Образцов». Затвор судит тот узел,
+    куда пишет писатель (n611-final-opus C1)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    (graph / "Люди" / "Сашка.md").write_text("# Сашка → [[Люди/Саша]]\n", encoding="utf-8")
+    got = g.collective_held(graph, [("Сашка", "Люди")], owner="")
+    assert got == {("сашка", "Люди"): ("Сашка", ["Люди/Саша Образцов"], "Люди/Саша")}
+    note = _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Сашка"), _person("Гоша")]})
+    assert not (graph / "Люди" / "Саша.md").exists()
+    assert "- Сашка — разработчик: сроки релиза _(узел не выбран: поиск ведёт в Саша — " in note, note
+
+
+def test_stub_with_a_missing_target_still_creates_a_full_node(tmp_path):
+    """Цель заглушки — полное имя: узел по цели заводится, как раньше."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    (graph / "Люди" / "Петя.md").write_text("# Петя → [[Люди/Пётр Иванов]]\n", encoding="utf-8")
+    assert g.collective_held(graph, [("Петя", "Люди")], owner="") == {}
+
+
+def test_cloud_review_with_write_access_is_told_to_leave_held_names(tmp_path):
+    """Ревизия с правом записи знает пометку удержания: строку не связывать, в голый
+    узел не дописывать и не сливать (n611-final-opus I1; снятие при переносе — №607)."""
+    kw = dict(transcript_name="t.md", folder=tmp_path, graph=tmp_path, rev_name="rev.md", stamp="s",
+              arch_folder=None)
+    edit = g.cloud_enrich_prompt(may_edit=True, **kw)
+    assert "«_(узел не выбран: …)_» не превращай в ссылку" in edit
+    assert "узел не выбран" not in g.cloud_enrich_prompt(may_edit=False, **kw)

@@ -826,7 +826,8 @@ line keeps the role, the contribution and links to the namesakes, and `_Канд
 one line per name. When the lookup led another spelling (another name key) into a bare node, the
 note names that node — on the participant line and the entity line alike, and the meeting head
 re-sent after a review reads the held participant line too. A stub with a broken byte is
-a stub for the writer as well: the lookup follows it to its canon.
+a stub for the writer as well: the lookup follows it to its canon. A stub whose chain is broken is judged by the node the
+writer would create at its target, so a bare node is not born next to a living full one.
 
 One resolver, `src/graph_links.py`, decides whether a `[[link]]` is alive
 for the doctor, the cloud review and clean-ups alike: full path, note

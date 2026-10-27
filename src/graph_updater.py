@@ -1870,6 +1870,19 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
                 and entity_node_verdict(graph, folder, clean)[0] == "resolved":
             continue
         target = find_canonical(graph, clean, folder=folder)
+        if target is None and folder is not None:
+            # цепочка заглушки оборвана — писатель заведёт узел по её цели («Сашка →
+            # [[Люди/Саша]]», а «Саша» разделён и удалён); судим этот узел (n611-final-opus C1).
+            # Цель есть, но сама заглушка или нечитаема — писатель не пишет никуда, и
+            # удержание лишь добавляет строку с кандидатами
+            stub = graph / folder / f"{safe_name(clean)}.md"
+            try:
+                text = stub.read_text(encoding="utf-8", errors="replace") if stub.is_file() else ""
+            except OSError:
+                text = ""
+            alt = _stub_birth(graph, folder, text) if redirects.is_merged(text) else None
+            if alt is not None:
+                target = alt
         if target is not None and target.parent.name not in _PEOPLE_FOLDERS:
             continue
         judged = target.stem if target is not None else clean
@@ -1995,6 +2008,18 @@ def _create_entity(p: pathlib.Path, title: str, typ: str, desc: str, day: str, m
         _write_entity(p, meeting_line, desc, meeting_link, day)
 
 
+def _stub_birth(graph: pathlib.Path, folder: str, text: str) -> pathlib.Path | None:
+    """Узел, который писатель заводит или дописывает по цели заглушки с оборванной
+    цепочкой, — один расчёт для `upsert_entity` и затвора сборных: затвор судит путь,
+    куда реально пишет писатель (n611-final-opus C1). Цель вне папок узлов (Досье,
+    служебное, выше графа) — не узел: туда не пишем, не создаём и не читаем
+    (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)."""
+    target = redirects.stub_target(text)
+    leaf = pathlib.PurePosixPath(target).name if target else ""
+    alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
+    return _node_path(graph, alt, NODE_FOLDERS) if alt is not None else None
+
+
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                   desc: str, meeting_link: str, contrib: str,
                   node: pathlib.Path | None = None):
@@ -2041,13 +2066,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         # заводим ПО ЦЕЛИ заглушки — слияние сказало «этот человек
         # теперь там», и имя заглушки иначе навсегда закрывает ветку
         # «создать» (DS r3 I1). Событие — в журнал, не только в stdout.
-        target = redirects.stub_target(text)
-        leaf = pathlib.PurePosixPath(target).name if target else ""
-        alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
-        # цель вне папок узлов (Досье, служебное, выше графа) — не узел: туда не пишем,
-        # не создаём и не читаем (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)
-        if alt is not None:
-            alt = _node_path(graph, alt, NODE_FOLDERS)
+        alt = _stub_birth(graph, folder, text)
         # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
         alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
         if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
@@ -3694,7 +3713,10 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "Исправил метку стенограммы — в «## Участники» заметки этой встречи "
         "назови верного человека, а из узла Люди с ошибочным именем убери строку "
         "этой встречи в «## Встречи» и её связи (перенеси их в узел верного "
-        "человека), если этого человека на встрече не было.\n"
+        "человека), если этого человека на встрече не было. Строку с пометкой "
+        "«_(узел не выбран: …)_» не превращай в ссылку и в узел не переноси: "
+        "голое имя при живых тёзках — человек не определён; в голый узел-тёзку "
+        "ничего не дописывай и его не сливай.\n"
         "3. Файлы не удаляй и не переименовывай — удаление Чароит просто не "
         "перенесёт в граф. Явный дубль сливай так: факты и ссылки — в канон, а на месте "
         "дубля оставь заглушку «# Имя → [[Папка/Канон]]» с пометкой «Дубль. "
