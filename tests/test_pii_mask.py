@@ -464,6 +464,62 @@ def test_mask_prompt_masks_names_aliases_stubs_and_owner(tmp_path, monkeypatch):
     assert back.startswith("Аня, Белова А и Игорь") and n == 0
 
 
+def _night_dossier(monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "nightly_dossier_review", ROOT / "scripts" / "nightly_dossier_review.py")
+    ndr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ndr)
+    monkeypatch.setattr(ndr.privacy, "night_provider", lambda cfg: "anthropic")
+    return ndr
+
+
+_NIGHT_DOSSIER = ("# ЗЛК\n\n## Сейчас\n- Идёт пилот [[2026-07-15_1400]]\n\n"
+                  "## Как пришли\n- Начали в июне [[2026-07-15_1400]]\n\n"
+                  "## Решено\n- Провайдер выбран [[2026-07-15_1400]]\n\n"
+                  "## Открыто\n- Срок до 1.08 [[2026-07-15_1400]]\n\n"
+                  "## Кто в теме\n- Анна Белова\n\n## Источники\n- [[2026-07-15_1400]]\n")
+
+
+def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkeypatch):
+    """Ночная ревизия досье через настоящую маску: тема, тело и источники — каждый в
+    `data=`; выпавший кусок ушёл бы открытым, а заглушки маски этого не видят
+    (n793-out18 DS-C1 = S-I2 = H-I2). Ответ возвращается в имена."""
+    _fake_ner(monkeypatch)
+    ndr = _night_dossier(monkeypatch)
+    (tmp_path / "g").mkdir()
+    graph = _graph(tmp_path / "g")
+    path = tmp_path / "ЗЛК.md"
+    path.write_text(_NIGHT_DOSSIER, encoding="utf-8")
+    files = {"2026-07-15_1400": {"kind": "встреча", "text": "Аня обещала срок\n"}}
+    sent = []
+
+    def run(cmd, **k):
+        sent.append(cmd[2])
+
+        class R:
+            returncode = 0
+            stderr = ""
+            # модель вернула тело как получила — с подделками
+            stdout = cmd[2].split("ТЕКУЩЕЕ ДОСЬЕ:\n", 1)[1].split("\n\n## Источники", 1)[0]
+
+        return R()
+
+    monkeypatch.setattr(ndr.subprocess, "run", run)
+    fixed, why = ndr.review("ЗЛК", path, graph, files, ["2026-07-15_1400"], "m",
+                            {"sufler": {"cloud_enrich": True}})
+    assert why == "" and fixed, why
+    for name in ("ЗЛК", "Белова", "Аня"):
+        assert name not in sent[0], f"{name} ушло в облако открытым"
+    assert "- Анна Белова" in fixed
+
+    # подделка не развернулась — ревизия отклонена, досье не тронуто (n793-out18 H-C1 = S-I1)
+    monkeypatch.setattr(ndr.cloud_door, "unmask_reply", lambda reply, m: ("⟦?Тамара⟧", 1))
+    fixed, why = ndr.review("ЗЛК", path, graph, files, ["2026-07-15_1400"], "m",
+                            {"sufler": {"cloud_enrich": True}})
+    assert fixed is None and why == "в ответе не развернулось подделок маски: 1 — досье не тронуто"
+
+
 def test_mask_prompt_refuses_full_level_and_missing_graph(tmp_path, monkeypatch):
     _fake_ner(monkeypatch)
     graph = _graph(tmp_path)
