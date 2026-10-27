@@ -149,6 +149,17 @@ def stamp_of(name: str) -> str | None:
     return m.group(1)
 
 
+def day_of(path: pathlib.Path) -> dt.date | None:
+    """День встречи по пути её главного файла — живого `.md` или с темой.
+    None — имя не встречи (производная, чужой файл, невозможная дата).
+
+    `stamp_of` берёт имя без расширения: на «2026-10-26_101500.md» он сам вернул
+    бы None (№805, in3 Haiku C1) — поэтому `.stem` здесь, а не у вызывающих."""
+    stamp = stamp_of(pathlib.Path(path).stem)
+    start = started_at(stamp) if stamp else None
+    return start.date() if start else None
+
+
 def first_line(path: pathlib.Path) -> str:
     """Первая строка файла (первые 200 байт) — шапка встречи «# Встреча …».
     Одно чтение на live_sidecar и meeting_processing (DS r13 по #489)."""

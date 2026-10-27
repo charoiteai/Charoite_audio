@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import pathlib
 from typing import NamedTuple
 
@@ -32,6 +33,7 @@ import action_items
 import channel_trace
 import fact_check
 import live_sidecar
+import meeting_stamp
 import privacy
 import transcript
 
@@ -43,6 +45,10 @@ class MeetingSource:
     # В финале строка среза записи после конца звонка (№733): в хеш не входит —
     # это свойство источника для паспорта минуток, не его тело
     cut: bool = False
+    # День встречи (№805) — опора дат без месяца в сроках поручений («к 28-му»):
+    # из имени главного файла (`meeting_stamp.day_of`). В хеш не входит, как и
+    # `cut`; None — день неизвестен, такие даты речью не подтверждены
+    day: datetime.date | None = None
 
     def canon(self) -> str:
         """Каноническое тело источника для хеша паспорта."""
@@ -70,12 +76,14 @@ def of(live: pathlib.Path, text: str) -> MeetingSource:
     выходного круга по №317). Штамп нужен только писателю до переезда пары
     (`ChannelTrace`) — у читателей его нет."""
     return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live),
-                         cut=any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(text)))
+                         cut=any(channel_trace.is_after_call_cut(n) for n in transcript.notes_of(text)),
+                         day=meeting_stamp.day_of(live))
 
-def live(speech: str, note: str | None) -> MeetingSource:
+def live(speech: str, note: str | None, *, day: datetime.date | None = None) -> MeetingSource:
     """Источник живого пути: речь из `Transcript.full()`, оговорка из
-    `ChannelTrace.summary()` того же процесса."""
-    return MeetingSource(speech, note)
+    `ChannelTrace.summary()` того же процесса, день — `meeting_stamp.day_of`
+    пути стенограммы."""
+    return MeetingSource(speech, note, day=day)
 
 
 def with_note(doc: str, note: str | None) -> str:
@@ -107,15 +115,21 @@ def finish_minutes(doc: str, source: MeetingSource, *, owner: str,
     без скраба пути машины, порядок шагов расходился (№732).
 
     Порядок — контракт: сверка со стенограммой по тому множеству, что видела
-    модель (речь + оговорка), затем чекбоксы окна «Задачи», затем владелец
+    модель (речь + оговорка), затем чекбоксы окна «Задачи», затем срок
+    поручения против речи (`check_deadlines`, №805: после чекбоксов — гейт
+    читает строку задачи; до «не участник» — та снимает чекбокс, и срок
+    поручения чужому без проверки остался бы в тексте), затем владелец
     одним написанием и пометка «не участник» (`finalize_assignees`), затем
     строка оговорки, последней — скраб пути машины: хеш паспорта и отметка
     автотекста снимаются с этих байтов. Все шаги идемпотентны: повторный
     вызов по готовому документу его не меняет: прежняя оговорка снимается
     до шагов, прежнюю сноску снимает `annotate`."""
     doc = without_note(doc, source.recording_note)
-    doc = fact_check.annotate(doc, source.canon())
+    doc = fact_check.annotate(doc, source.canon(), day=source.day)
     doc = action_items.normalize(doc)
+    # срок — по тому же тексту, что и сноска: одно решение «дата подтверждена»
+    # на один вход, иначе сноска молчала о дате, которую гейт стёр (Haiku I4 out1)
+    doc = action_items.check_deadlines(doc, source.canon(), source.day, lang=lang)
     doc = action_items.finalize_assignees(doc, participants, owner, lang=lang)
     doc = with_note(doc, source.recording_note)
     doc, _n = privacy.scrub_local_paths(doc)

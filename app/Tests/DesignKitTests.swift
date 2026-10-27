@@ -50,6 +50,57 @@ final class DesignKitTests: XCTestCase {
         XCTAssertEqual(try? XCTUnwrap(TaskDue.parse("сдать к 10.08")).day, 10)
     }
 
+    /// Окно дня без месяца (№805): протокол подтверждает «до 28.10» речью «к 28-му»,
+    /// только если дата в окне встречи — и год этой даты обязан совпасть с тем, что
+    /// чип выводит из якоря. Один источник — tests/fixtures/due_window.json, его
+    /// читает и pytest (fact_check.due_dates). Срок в его же день — `.soon(days: 0)`.
+    func testDueWindowMatchesTheSharedTable() throws {
+        struct Case: Decodable {
+            let meeting: String; let date: String; let in_window: Bool; let window: [String]; let dates: [String]
+        }
+        struct Table: Decodable { let grace_days: Int; let cases: [Case] }
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let table = try JSONDecoder().decode(
+            Table.self, from: Data(contentsOf: root.appendingPathComponent("tests/fixtures/due_window.json")))
+        XCTAssertEqual(TaskDue.restatedGraceDays, table.grace_days, "люфт — одно число с протоколом")
+        func ymd(_ s: String) -> (Int, Int, Int) {
+            let p = s.split(separator: "-").compactMap { Int($0) }
+            return (p[0], p[1], p[2])
+        }
+        var checked = 0
+        for c in table.cases {
+            XCTAssertEqual(c.window.contains(c.date), c.in_window, "\(c.meeting): \(c.date)")
+            let (my, mm, md) = ymd(c.meeting)
+            if !c.in_window {
+                // дата вне окна протокола и для чипа не «на днях»: ни просрочки, ни
+                // близкого срока на день встречи (DS M2 out2: таблица сверяла сама себя)
+                let due = try XCTUnwrap(TaskDue.parse("сдать до \(c.date)"))
+                XCTAssertEqual(due.status(now: date(my, mm, md), anchor: date(my, mm, md)), .later,
+                               "\(c.meeting): \(c.date) вне окна")
+                checked += 1
+            }
+            for full in c.dates {
+                let (y, m, d) = ymd(full)
+                let due = try XCTUnwrap(TaskDue.parse(String(format: "сдать до %02d.%02d", d, m)))
+                XCTAssertTrue(c.window.contains(due.short), "\(c.meeting): \(due.short) в окне")
+                XCTAssertEqual(due.status(now: date(y, m, d), anchor: date(my, mm, md)), .soon(days: 0),
+                               "\(c.meeting): \(due.short) — это \(full)")
+                checked += 1
+            }
+        }
+        XCTAssertGreaterThan(checked, 0)
+    }
+
+    func testImpossibleDayHasNoStatusWithoutAnchor() throws {
+        // без якоря «до 31.04» за два дня до 01.05 было «через 2 дня» (№805 out3, Haiku I6)
+        let due = try XCTUnwrap(TaskDue.parse("подать до 31.04"))
+        XCTAssertEqual(due.status(now: date(2026, 4, 29), anchor: nil), .later)
+        XCTAssertEqual(due.status(now: date(2026, 4, 29), anchor: date(2026, 4, 29)), .later)
+        let live = try XCTUnwrap(TaskDue.parse("подать до 30.04"))
+        XCTAssertEqual(live.status(now: date(2026, 4, 29), anchor: nil), .soon(days: 1))
+    }
+
     func testOverdueCountsDaysWithinTheYear() throws {
         let due = try XCTUnwrap(TaskDue.parse("отчёт до 24.07"))
         guard case .overdue(let days) = due.status(now: date(2026, 8, 4), anchor: nil) else {

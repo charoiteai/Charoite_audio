@@ -1286,6 +1286,41 @@ rebuild; before it the draft and MCP skipped the fact check and the rebuild
 skipped the scrub). The app's minutes parser skips the service tail lines
 (`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
 `fact_check.FOOTNOTE_MARK`).
+The deadline gate (№805) sits between the checkboxes and the owner canon
+(`action_items.check_deadlines`): an action item's deadline the speech does not
+confirm gets the mark "срок не из речи" after it, with the same dash
+(`task_line.DUE_UNHEARD_MARKS`, ru/en/zh) — on long meetings the model invents
+about a third of deadlines, and a deadline in the Tasks tab reads as a fact. The
+deadline itself is not erased (decision 27.10: in five review rounds every
+erasure error lost a correct deadline; a marking error costs one extra mark), and
+the chip is drawn as before; `task_line.key` drops the mark, so the review bridge
+still sees the same task; the model's date is also in the footnote. "A date is confirmed by speech" is one decision for the footnote and
+the gate (`fact_check._date_heard`): a day without a month ("by the 28th")
+confirms a date only inside the meeting-day window (`fact_check.due_dates`:
+the nearest such day not before "meeting − 7 days" and not before the meeting
+itself), and the day must be said as a day ("by the 28th", "28 числа"; not a
+full other date, a clock time, a bare count or a count after a preposition, "by
+28 people"); a weekday said in any form ("on Friday", "по пятницам") confirms
+its dates within two weeks of the meeting, and "tomorrow" the next day. A part
+of the item from the third on ("**Name** — task — deadline") is a deadline only
+if it starts as one ("by", "until", "через", "до", "today",
+a weekday with a preposition or "next", "on Friday", "next Monday"; "— dev environment Wednesday" is the
+task; in Chinese a bare "周五" is a deadline too) or is a whole date or time: "room 405" or "version 2.1" is the task,
+not a deadline. Such a part with a date is judged by its dates only; without
+one, by its anchor only: a weekday or "today/tomorrow" said in any form ("周五"
+for "星期五" too); numbers without a date ("by 16:00", "by the 28th", "by 5 pm")
+and other words ("in 3 days", "urgent", "by release 3.4") are not judged: speech
+says numbers differently ("at four", "28 November"), and a rule about them erased
+correct deadlines. The
+name and the task text are not read: a date inside the task ("сдать отчёт до
+28.11") is not judged (one deadline parser shared with the app chip is №607).
+The gate walks every checkbox item of the minutes (the Tasks tab reads them all),
+splits on any dash, and judges against the same text as the footnote (speech
+plus note).
+The meeting day comes from the transcript file name
+(`meeting_stamp.day_of`, `MeetingSource.day`, not hashed). The grace days and
+the year of a windowed date are the app's `TaskDue` rule; both sides read the
+shared table `tests/fixtures/due_window.json`.
 The built-in minutes templates and the MCP prompt do not ask the model for
 the meeting date (№738): it used to copy the most prominent date of the talk,
 and every reader takes the date from the file stamp anyway.

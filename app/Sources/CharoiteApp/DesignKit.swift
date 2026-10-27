@@ -280,15 +280,30 @@ struct TaskDue: Equatable {
                                     to: calendar.startOfDay(for: target)).day ?? 0
         }
         var days = daysAhead()
-        let nextYear = anchor.map { anchor -> Bool in
+        if let anchor {
+            // С якорем — ближайшая такая дата не раньше «встреча − люфт», и год
+            // может быть и прошлым: «до 30.12» на встрече 02.01 — просрочка, а
+            // не декабрь через год (№805 out1, Sonnet I4). То же правило у
+            // протокола (`fact_check.due_dates`); сверяет tests/fixtures/due_window.json.
             let earliest = calendar.date(byAdding: .day, value: -Self.restatedGraceDays,
                                          to: calendar.startOfDay(for: anchor)) ?? anchor
-            return target < earliest
-        } ?? (days < -183)
-        if nextYear, let next = calendar.date(byAdding: .year, value: 1, to: target) {
+            for shift in [-1, 0, 1] {
+                guard let cand = calendar.date(byAdding: .year, value: shift, to: target),
+                      calendar.component(.day, from: cand) == day else { continue }
+                if cand >= earliest {
+                    target = cand
+                    break
+                }
+            }
+            days = daysAhead()
+        } else if days < -183, let next = calendar.date(byAdding: .year, value: 1, to: target) {
             target = next
             days = daysAhead()
         }
+        // «до 29.02» в невисокосном году, «до 31.04»: календарь молча даёт 01.03 и
+        // 01.05, а у протокола такой даты нет — статуса нет, с якорем и без
+        // (№805 out2, DS M3, Haiku M3; out3, Haiku I6)
+        guard calendar.component(.day, from: target) == day else { return .later }
         if days < 0 { return .overdue(days: -days) }
         if days <= 7 { return .soon(days: days) }
         return .later
