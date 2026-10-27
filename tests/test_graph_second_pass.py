@@ -26,7 +26,7 @@ def model(monkeypatch):
     """Подставная модель: первые `n1` вызовов — первый проход, дальше — второй."""
     m = types.SimpleNamespace(calls=[], events=[], answers={}, reports=[], n1=3, live=False)
 
-    def fake_extract(cfg, text, rule=""):
+    def fake_extract(cfg, text, rule="", raise_http=False):
         m.calls.append(len(text))
         m.events.append("extract")
         got = m.answers.get(1 if len(m.calls) <= m.n1 else 2)
@@ -364,3 +364,83 @@ def test_first_pass_split_unchanged_with_flag_on(model):
     g.extract(ON, "x" * 22_500)
     assert model.calls[:3] == [12_000, 11_500, 500]
     assert len(model.calls) == 3 + 4                  # второй: 0, 5500, 11000, 16500; хвост 500 — в нахлёсте
+
+
+def test_merge_ignores_non_strings_among_first_pass_decisions():
+    """Словарь с текстом решения в первом проходе — не решение и не глушит то же решение второго."""
+    x = "Заказать стенд нагрузочного тестирования"
+    assert g._second_pass_decisions([{"текст": x}], [x]) == [x]
+
+
+@pytest.mark.parametrize("drop", [True, False])
+def test_first_pass_without_decisions_takes_the_second(model, drop):
+    """У первого прохода решений нет (ключа нет или список пуст) — добавка становится списком решений."""
+    first = _first(решения=[])
+    if drop:
+        del first["решения"]
+    model.answers[1] = lambda n: dict(first)
+    model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
+    assert g.extract(ON, LONG)["решения"] == ["Новое решение по бюджету"]
+
+
+def test_stems_are_pinned():
+    """Основы — часть порога замера: префикс пять букв, слова от четырёх букв, ё = е, числа целиком."""
+    assert g._stems("Отчёт по релизу сервиса, ещё раз 15") == {"отчет", "релиз", "серви", "15"}
+
+
+def test_merge_treats_yo_as_ye():
+    """Пара склеивается только через ё → е: иначе общих основ две, а не три."""
+    assert g._second_pass_decisions(["Утвердить отчёт сервиса"], ["Утвердить отчет сервиса завтра"]) == []
+
+
+class _FakeLLM:
+    """Подставной клиент модели: запоминает system и отвечает по очереди из `script`."""
+    systems: list = []
+    script: list = []
+
+    def __init__(self, cfg):
+        pass
+
+    def complete(self, prompt, *, system=None, **kw):
+        type(self).systems.append(system)
+        step = type(self).script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    _FakeLLM.systems, _FakeLLM.script = [], []
+    monkeypatch.setattr(g, "LLM", _FakeLLM)
+    monkeypatch.setattr(g.llm_health, "ensure_alive", lambda cfg, log: True)
+    monkeypatch.setattr(g, "_yield_to_live", lambda: None)
+    monkeypatch.setattr(g, "_report", lambda n, total: None)
+    monkeypatch.setattr(g.live_gate, "daemon_alive", lambda root: False)
+    return _FakeLLM
+
+
+@pytest.mark.parametrize("lang, english", [("en", True), ("ru", False)])
+def test_prompt_language_branch(fake_llm, lang, english):
+    fake_llm.script = ['{"решения": []}']
+    g._extract({"llm": {"model": "m"}, "sufler": {"language": lang}}, "реплика.")
+    assert ("LANGUAGE: write every field VALUE in English" in fake_llm.systems[0]) is english
+
+
+def test_busy_model_stops_the_second_pass(fake_llm):
+    """«Модель занята» на первом куске второго прохода — проход останавливается, а не ждёт
+    тот же срок на каждом следующем куске; первый проход остаётся (финальный Opus, I1)."""
+    fake_llm.script = ['{"решения": ["Перенести релиз сервиса отчётов на пятницу"]}'] * 3 + [
+        g.LLMHTTPError(503, "занята")] + ['{"решения": ["лишнее"]}'] * 5
+    data = g.extract({"llm": {"model": "m"}, "sufler": {"graph_second_pass": True}}, LONG)
+    assert len(fake_llm.systems) == 3 + 1
+    assert data["решения"] == ["Перенести релиз сервиса отчётов на пятницу"]
+
+
+def test_busy_model_in_the_first_pass_is_unchanged(fake_llm):
+    """Первый проход «модель занята» по-прежнему пропускает кусок и идёт дальше."""
+    fake_llm.script = [g.LLMHTTPError(503, "занята"), '{"решения": ["Решение второго куска"]}',
+                       '{"решения": []}']
+    data = g.extract({"llm": {"model": "m"}}, LONG)
+    assert len(fake_llm.systems) == 3
+    assert data["решения"] == ["Решение второго куска"]

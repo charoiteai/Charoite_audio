@@ -353,10 +353,10 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
             break
         _report(n, total)
         try:
-            got = _extract(cfg, part, project_rule)
-        except requests.RequestException as e:
-            # Модель не отвечает — следующий кусок ждал бы те же пять минут таймаута
-            # (выход n821-out2, Sonnet I2).
+            got = _extract(cfg, part, project_rule, raise_http=True)
+        except (requests.RequestException, LLMHTTPError) as e:
+            # Модель не отвечает или занята — следующий кусок ждал бы тот же таймаут
+            # (выход n821-out2, Sonnet I2; финальный Opus, I1).
             print(f"граф: второй проход прерван ({type(e).__name__}: {e}) — остаётся найденное")
             break
         except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
@@ -405,7 +405,10 @@ def _second_pass_decisions(first: list, second: list) -> list:
     тот же порог склеил бы разные решения внутри одного прохода и чужие списки
     (вход n821-in1, Sonnet I4, DeepSeek I1).
     """
-    seen = {str(d).strip().casefold() for d in first}
+    # Сравниваем только со строками: словарь среди решений первого не решение и
+    # не должен глушить настоящее решение второго (финальный Opus, M1).
+    first = [d for d in first if isinstance(d, str)]
+    seen = {d.strip().casefold() for d in first}
     first_stems = [_stems(d) for d in first]
     added = []
     for d in second:
@@ -490,7 +493,8 @@ def _dedup(items: list) -> list:
     return out
 
 
-def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
+def _extract(cfg: dict, transcript: str, project_rule: str = "",
+             raise_http: bool = False) -> dict | None:
     # think=false обязателен: у qwen3.6 рассуждение включено по умолчанию
     # и делит бюджет с ответом. На разборе стенограммы модель уходила
     # думать на тысячи знаков — и JSON приходил пустым или обрывался.
@@ -577,6 +581,11 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             print(f"граф: {who} ответил HTTP {e.status} — {hint}")
         else:
             print(f"граф: {who} вернул ошибку: {e.detail}")
+        # Второму проходу «модель занята» — повод остановиться, а не пропустить
+        # кусок: каждый следующий ждал бы те же BUSY_WAIT, пока готовый первый
+        # проход не записан (финальный Opus по №821, I1). Первый проход — как был.
+        if raise_http:
+            raise
         return None
     # Разбор строгий и остаётся строгим, в том числе когда сервер без грамматики
     # (№419) держит модель на промпте: весь ответ — один объект. Проза вокруг,
