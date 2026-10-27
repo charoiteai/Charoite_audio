@@ -828,7 +828,9 @@ note names that node — on the participant line and the entity line alike, and 
 re-sent after a review reads the held participant line too. A stub with a broken byte is
 a stub for the writer as well: the lookup follows it to its canon. A stub whose chain is broken is judged by the node the
 writer would create at its target (the same `_stub_birth` path), so a bare node is not born next to a living full one;
-a target outside the node folders is not a node: the writer does not write there and the gate does not hold the name.
+a target outside the node folders is not a node: the writer does not write there, and the gate judges the name itself by
+the usual threshold. An entity the writer does not hand to `upsert_entity` (verdict near, ambiguous or junk) is not judged
+by its stub either.
 
 One resolver, `src/graph_links.py`, decides whether a `[[link]]` is alive
 for the doctor, the cloud review and clean-ups alike: full path, note

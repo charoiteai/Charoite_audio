@@ -1867,11 +1867,14 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
         key = name_key(clean)
         if not key or (key, folder) in held:
             continue
-        if folder is not None and folder not in _PEOPLE_FOLDERS \
-                and entity_node_verdict(graph, folder, clean)[0] == "resolved":
+        # сущность писатель отдаёт `upsert_entity` только при «new»/«existing» (apply_entities):
+        # при «near»/«ambiguous»/«junk» он заглушку не проходит — и затвор её цель не судит (n611-out5 DS I1)
+        verdict = entity_node_verdict(graph, folder, clean)[0] \
+            if folder is not None and folder not in _PEOPLE_FOLDERS else ""
+        if verdict == "resolved":
             continue
         target = find_canonical(graph, clean, folder=folder)
-        if target is None and folder is not None:
+        if target is None and folder is not None and verdict in ("", "new", "existing"):
             # цепочка заглушки оборвана — писатель заведёт узел по её цели («Сашка →
             # [[Люди/Саша]]», а «Саша» разделён и удалён); судим этот узел (n611-final-opus C1).
             # Цель есть, но сама заглушка или нечитаема — писатель не пишет никуда, и
@@ -3715,11 +3718,13 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "Исправил метку стенограммы — в «## Участники» заметки этой встречи "
         "назови верного человека, а из узла Люди с ошибочным именем убери строку "
         "этой встречи в «## Встречи» и её связи (перенеси их в узел верного "
-        "человека), если этого человека на встрече не было. Строку с пометкой "
-        f"«_({_HELD_PERSON.strip(' _(')} …)_» или «_({_HELD_ENTITY.strip(' _(')} …)_» "
+        "человека), если этого человека на встрече не было, — кроме строк сборного "
+        f"имени ниже. Строку, где в пометке «_({_HELD_PERSON.strip(' _(')} …)_» или "
+        f"«_({_HELD_ENTITY.strip(' _(')} …)_» стоит «{_HELD_WHY['collective']}», "
         "не превращай в ссылку, в узел не переноси и узла под это имя не создавай: "
         "человек не определён; в узел из «поиск ведёт в …» и в голый узел-тёзку "
-        "ничего не дописывай и их не сливай.\n"
+        "ничего не дописывай и их не сливай. Прочие пометки «узел не создан» "
+        "(опечатка, несколько кандидатов) — обычные дубли и кандидаты.\n"
         "3. Файлы не удаляй и не переименовывай — удаление Чароит просто не "
         "перенесёт в граф. Явный дубль сливай так: факты и ссылки — в канон, а на месте "
         "дубля оставь заглушку «# Имя → [[Папка/Канон]]» с пометкой «Дубль. "

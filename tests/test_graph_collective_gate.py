@@ -465,8 +465,11 @@ def test_cloud_review_with_write_access_is_told_to_leave_held_names(tmp_path):
     kw = dict(transcript_name="t.md", folder=tmp_path, graph=tmp_path, rev_name="rev.md", stamp="s",
               arch_folder=None)
     edit = g.cloud_enrich_prompt(may_edit=True, **kw)
-    assert "«_(узел не выбран: …)_» или «_(узел не создан: …)_» не превращай в ссылку" in edit
+    assert "«_(узел не выбран: …)_» или «_(узел не создан: …)_» стоит «голое имя при живых тёзках», " \
+           "не превращай в ссылку" in edit, edit
     assert "узла под это имя не создавай" in edit
+    assert "кроме строк сборного имени ниже" in edit          # правка метки не спорит с запретом (out5 Haiku M3)
+    assert g._HELD_WHY["collective"] in edit
     assert "узел не выбран" not in g.cloud_enrich_prompt(may_edit=False, **kw)
     # промпт и писатель держат одни маркеры: заметка с удержанными строками их содержит
     for marker in (g._HELD_PERSON, g._HELD_ENTITY):
@@ -493,6 +496,29 @@ def test_gate_judges_the_node_the_writer_would_write(tmp_path, target, extra, bo
     got = g._stub_birth(graph, "Люди", text)
     assert (got.relative_to(graph).with_suffix("").as_posix() if got else None) == born
     assert bool(g.collective_held(graph, [("Сашка", "Люди")], owner="")) is held
+
+
+def test_stub_target_outside_nodes_leaves_the_name_to_its_own_threshold(tmp_path):
+    """Заглушка с целью вне папок узлов затвор никуда не ведёт: имя судится само —
+    сборное «Саша» держится, как без заглушки (n611-out5 DS M1 / Haiku M2)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    (graph / "Люди" / "Саша.md").write_text("# Саша → [[Досье/Саша]]\n", encoding="utf-8")
+    assert g.collective_held(graph, [("Саша", "Люди")], owner="") == \
+        {("саша", "Люди"): ("Саша", ["Люди/Саша Образцов"], "")}
+
+
+def test_entity_the_writer_does_not_upsert_is_not_judged_by_its_stub(tmp_path):
+    """Сущность с вердиктом «near» писатель в `upsert_entity` не отдаёт и заглушку не
+    проходит — затвор цель заглушки не судит; при «new» судит (n611-out5 DS I1)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    (graph / "Системы" / "Бот 2.md").write_text("# Бот 2 → [[Люди/Саша]]\n", encoding="utf-8")
+    _node(graph, "Системы/Бот 2x")
+    assert g.entity_node_verdict(graph, "Системы", "Бот 2")[0] == "near"
+    assert g.collective_held(graph, [("Бот 2", "Системы")], owner="") == {}
+    (graph / "Системы" / "Бот 2x.md").unlink()
+    assert g.entity_node_verdict(graph, "Системы", "Бот 2")[0] == "new"
+    assert g.collective_held(graph, [("Бот 2", "Системы")], owner="") == \
+        {("бот 2", "Системы"): ("Бот 2", ["Люди/Саша Образцов"], "Люди/Саша")}
 
 
 # --- мутанты CI #864 в дверях mutation_critical ----------------------------------
