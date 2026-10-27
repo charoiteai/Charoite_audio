@@ -261,9 +261,15 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         return None
     # Второй проход знает о себе заранее: счётчик частей в статусе общий на оба
     # прохода, иначе человек увидел бы «3/3», а за ним снова «1/6».
-    second = (_split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2)
-              if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2
-              else [])
+    second = []
+    if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2:
+        if _language(cfg) == "ru":
+            second = _split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2, short_tail=False)
+        else:
+            # Порог склейки 0,7/3 мерен только на русских встречах: в китайском
+            # основы слов не выделяются вовсе (склейка пропустила бы все повторы),
+            # в английском похожими делают служебные слова (выход n821-out1, DS C1).
+            print(f"граф: второй проход: нет замера для языка {_language(cfg)!r} — только первый")
     try:
         if len(transcript) <= CHUNK_CHARS:
             if second:
@@ -284,10 +290,23 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     return _with_second_pass(cfg, data, second, project_rule, done)
 
 
-def _split(transcript: str, size: int, overlap: int) -> list[str]:
-    """Куски стенограммы с нахлёстом — одна нарезка на оба прохода и на тесты."""
+def _language(cfg: dict) -> str:
+    """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`."""
+    return str(cfg.get("sufler", {}).get("language", "ru")).lower()
+
+
+def _split(transcript: str, size: int, overlap: int, short_tail: bool = True) -> list[str]:
+    """Куски стенограммы с нахлёстом — одна нарезка на оба прохода и на тесты.
+
+    `short_tail=False` — хвост не длиннее нахлёста целиком лежит в предыдущем
+    куске и отдельным вызовом модели не идёт (второй проход, выход n821-out1,
+    DS M3). Первый проход режет как прежде: с выключенным флагом разбор не
+    меняется ни на вызов."""
     step = size - overlap
-    return [transcript[i:i + size] for i in range(0, len(transcript), step)]
+    starts = range(0, len(transcript), step)
+    if not short_tail:
+        starts = [i for i in starts if i == 0 or len(transcript) - i > overlap]
+    return [transcript[i:i + size] for i in starts]
 
 
 def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str,
@@ -305,28 +324,41 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
 
     Второй проход — добавка, а не условие: его сбой оставляет разбор первого,
     а не роняет всю встречу в «модель недоступна» (Sonnet I2, DeepSeek I2).
+    Сбой одного куска теряет только этот кусок: решения, найденные до него,
+    остаются (выход n821-out1, Sonnet M1).
     """
+    if _live_now():
+        # Первый проход готов и ждёт записи: ждать конца живой встречи ради
+        # добавки значило бы держать готовый граф часами (выход n821-out1, Sonnet I3).
+        print("граф: второй проход пропущен: живая встреча — остаётся разбор первого")
+        return data
     total = done + len(parts)
     print(f"граф: второй проход — {len(parts)} частями по {CHUNK_CHARS_2} знаков")
-    found: list = []
-    try:
-        for n, part in enumerate(parts, done + 1):
-            _report(n, total)
-            # Модель только что отработала первый проход: встреча могла начаться
-            # за это время, и живая встреча важнее добавки к разбору.
+    found: list[str] = []
+    for n, part in enumerate(parts, done + 1):
+        _report(n, total)
+        try:
+            # Встреча могла начаться посреди второго прохода — уступаем, как и
+            # между кусками первого.
             _yield_to_live()
             got = _extract(cfg, part, project_rule)
-            if not got:
-                print(f"граф: часть {n}/{total} не разобралась — продолжаю")
-                continue
-            found.extend(got.get("решения") or [])
-    except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
-        print(f"граф: второй проход прерван ({type(e).__name__}: {e}) — "
-              f"остаётся разбор первого")
-        return data
-    added = _second_pass_decisions(data.get("решения") or [], _dedup(found))
+        except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
+            print(f"граф: часть {n}/{total} второго прохода упала ({type(e).__name__}: {e}) — продолжаю")
+            continue
+        if not got:
+            print(f"граф: часть {n}/{total} не разобралась — продолжаю")
+            continue
+        got_decisions = got.get("решения")
+        # Строка вместо списка дописала бы решения по букве (выход n821-out1, DS I, Sonnet I1).
+        if isinstance(got_decisions, list):
+            found.extend(d for d in got_decisions if isinstance(d, str) and d.strip())
+    first = data.get("решения")
+    if not isinstance(first, list):
+        # Тот же сбой формы у первого прохода: строка не сравнивается и не дописывается по букве.
+        first = [first] if isinstance(first, str) and first.strip() else []
+    added = _second_pass_decisions(first, _dedup(found))
     if added:
-        data["решения"] = list(data.get("решения") or []) + added
+        data["решения"] = first + added
     print(f"граф: второй проход добавил решений: {len(added)} (найдено {len(found)})")
     return data
 
@@ -376,6 +408,11 @@ def _same_decision(a: set[str], b: set[str]) -> bool:
         return False
     shared = len(a & b)
     return shared >= SECOND_PASS_MIN_SHARED and shared / min(len(a), len(b)) >= SECOND_PASS_MIN_SHARE
+
+
+def _live_now() -> bool:
+    """Идёт ли живая встреча прямо сейчас — без ожидания (см. live_gate)."""
+    return live_gate.daemon_alive(_root())
 
 
 def _yield_to_live() -> None:
@@ -492,7 +529,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
                               "(node names, summaries, statuses, updates, topics; people "
                               "as spoken). Keep the JSON KEYS exactly as specified above. "
                               "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block."}
-                       .get(str(cfg.get("sufler", {}).get("language", "ru")).lower(), ""))
+                       .get(_language(cfg), ""))
     )
     # Ошибка сервера здесь стоила всего пост-процессинга: исключение летело
     # наружу, main() падал с трейсбеком в logs/graph_*.log, и не выполнялось

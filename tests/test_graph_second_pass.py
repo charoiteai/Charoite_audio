@@ -24,7 +24,7 @@ OFF = {"sufler": {"graph_second_pass": False}}
 @pytest.fixture
 def model(monkeypatch):
     """Подставная модель: первые `n1` вызовов — первый проход, дальше — второй."""
-    m = types.SimpleNamespace(calls=[], events=[], answers={}, reports=[], n1=3)
+    m = types.SimpleNamespace(calls=[], events=[], answers={}, reports=[], n1=3, live=False)
 
     def fake_extract(cfg, text, rule=""):
         m.calls.append(len(text))
@@ -36,6 +36,8 @@ def model(monkeypatch):
     monkeypatch.setattr(g.llm_health, "ensure_alive", lambda cfg, log: True)
     monkeypatch.setattr(g, "_yield_to_live", lambda: m.events.append("yield"))
     monkeypatch.setattr(g, "_report", lambda n, total: m.reports.append((n, total)))
+    # Живая встреча — из теста, а не из лока на машине, где идут тесты.
+    monkeypatch.setattr(g, "_live_now", lambda: m.live)
     return m
 
 
@@ -46,7 +48,7 @@ def _first(**extra):
     return base
 
 
-LONG = "реплика. " * 3000          # 27 000 знаков: 3 куска по 12000 и 6 кусков по 6000
+LONG = "реплика. " * 3000          # 27 000 знаков: 3 куска по 12000 и 5 кусков по 6000
 
 
 def test_flag_off_is_the_old_extract(model):
@@ -172,3 +174,115 @@ def test_one_progress_counter_and_yield_before_every_later_chunk(model):
     assert model.events.count("yield") == n1 + n2
     first_extract = model.events.index("extract")
     assert all(model.events[i - 1] == "yield" for i, e in enumerate(model.events) if e == "extract" and i > first_extract)
+
+
+def test_chunk_numbers_are_pinned():
+    """Нарезка — часть замера: другие числа кусков значили бы другую цену и другое покрытие."""
+    assert len(LONG) == 27_000
+    first = g._split(LONG, g.CHUNK_CHARS, g.CHUNK_OVERLAP)
+    second = g._split(LONG, g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2, short_tail=False)
+    assert (g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2) == (6_000, 500)
+    assert [len(p) for p in first] == [12_000, 12_000, 5_000]
+    assert [len(p) for p in second] == [6_000, 6_000, 6_000, 6_000, 5_000]
+    for parts, overlap in ((first, g.CHUNK_OVERLAP), (second, g.CHUNK_OVERLAP_2)):
+        for a, b in zip(parts, parts[1:]):
+            assert a[-overlap:] == b[:overlap]
+
+
+@pytest.mark.parametrize("length, parts", [(11_400, 2), (11_500, 2), (11_501, 3)])
+def test_second_pass_drops_tail_inside_the_overlap(length, parts):
+    """Хвост не длиннее нахлёста целиком лежит в прошлом куске — лишнего вызова модели нет."""
+    text = "x" * length
+    got = g._split(text, g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2, short_tail=False)
+    assert len(got) == parts
+    assert got[-1].endswith(text[-g.CHUNK_OVERLAP_2:])        # конец стенограммы покрыт
+
+
+def test_first_pass_keeps_its_old_tail():
+    """Первый проход режет как прежде, даже короткий хвост: флаг выключен — ни одного изменения."""
+    assert len(g._split("x" * 22_500, g.CHUNK_CHARS, g.CHUNK_OVERLAP)) == 3
+
+
+def test_short_tail_costs_no_model_call(model):
+    model.n1 = 1
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": []}
+    g.extract(ON, "x" * 11_400)
+    assert len(model.calls) == 1 + 2
+
+
+@pytest.mark.parametrize("lang", ["en", "zh", "EN"])
+def test_no_second_pass_outside_russian(model, lang):
+    """Порог склейки мерен на русском: в zh основ нет, в en похожими делают служебные слова."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
+    data = g.extract({"sufler": {"graph_second_pass": True, "language": lang}}, LONG)
+    assert len(model.calls) == 3
+    assert data == _first()
+
+
+def test_russian_named_explicitly_keeps_second_pass(model):
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
+    data = g.extract({"sufler": {"graph_second_pass": True, "language": "RU"}}, LONG)
+    assert len(model.calls) == 3 + 5
+    assert data["решения"][-1] == "Новое решение по бюджету"
+
+
+def test_second_pass_string_instead_of_list_adds_nothing(model):
+    """Строка вместо списка дописала бы решения по букве."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": "Новое решение по бюджету"}
+    assert g.extract(ON, LONG) == _first()
+
+
+def test_second_pass_skips_junk_items_but_keeps_strings(model):
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": [None, {"текст": "x"}, "  ", 5, "Новое решение по бюджету"]}
+    assert g.extract(ON, LONG)["решения"][2:] == ["Новое решение по бюджету"]
+
+
+def test_first_pass_string_is_not_split_into_letters(model):
+    model.answers[1] = lambda n: _first(решения="Перенести релиз сервиса отчётов на пятницу")
+    model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету",
+                                              "Релиз сервиса отчётов перенести на пятницу утром"]}
+    assert g.extract(ON, LONG)["решения"] == ["Перенести релиз сервиса отчётов на пятницу",
+                                             "Новое решение по бюджету"]
+
+
+def test_live_meeting_before_second_pass_keeps_first_without_waiting(model):
+    """Первый проход готов, началась встреча — граф пишется сейчас, добавка не ждёт часами."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
+    model.live = True
+    data = g.extract(ON, LONG)
+    assert len(model.calls) == 3
+    assert data == _first()
+    assert model.events.count("yield") == 3          # уступки только первого прохода
+
+
+def test_failure_of_a_late_chunk_keeps_what_earlier_chunks_found(model):
+    """Сбой одного куска второго прохода теряет только этот кусок."""
+    model.answers[1] = lambda n: _first()
+
+    def second(n):
+        if n == 3 + 5:
+            raise requests.ReadTimeout("кусок не успел")
+        if n == 3 + 2:
+            raise ValueError("ответ не разобрался")
+        return {"решения": [f"Отдельное дело номер {n} по закупке"]}
+    model.answers[2] = second
+    data = g.extract(ON, LONG)
+    assert len(model.calls) == 3 + 5
+    assert data["решения"][2:] == [f"Отдельное дело номер {n} по закупке" for n in (4, 6, 7)]
+
+
+@pytest.mark.parametrize("a, b, same", [
+    ({"a", "b"}, {"a", "b", "c"}, False),                              # доля 1,0, но общих 2
+    ({"a", "b", "c", "d", "e"}, {"a", "b", "c", "x", "y"}, False),     # общих 3, доля 0,6
+    ({"a", "b", "c"}, {"a", "b", "c", "x", "y", "z"}, True),           # общих 3, доля 1,0
+    (set("abcdefghij"), set("abcdefgxyz"), True),                      # общих 7, доля ровно 0,7
+    (set("abcdefghij"), set("abcdefxyzw"), False),                     # общих 6, доля 0,6
+])
+def test_merge_threshold_edges(a, b, same):
+    assert g._same_decision(a, b) is same
