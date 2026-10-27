@@ -270,16 +270,24 @@ def test_common_file_on_the_door_skips_comment_lines(tmp_path):
     assert "Шлюз" in m.text and "ЗЛК" not in m.text
 
 
-def test_stub_with_a_bare_link_masks_to_its_only_canon(tmp_path):
-    """Заглушка «[[Канон]]» без папки: цель — по голому имени, раз оно одно в графе
-    (мутанты PR #860: фильтр папки заглушки, счёт уникальных имён, ветка голой ссылки)."""
+@pytest.mark.parametrize("stub, twin, canon", [
+    ("# Нюра → [[Анна Белова]]", False, "Анна Белова"),
+    ("# Нюра → [[Анна Белова]]", True, None),
+    ("# Нюра → [[Люди/Анна Белова]]", True, "Анна Белова"),
+    ("# Нюра → см. [[Анна Белова]] · [[ЗЛК]]", False, None),
+], ids=["bare-unique", "bare-twin", "folder-twin", "fork"])
+def test_stub_link_masks_to_its_canon_only_when_it_is_certain(tmp_path, stub, twin, canon):
+    """Заглушка «[[Канон]]» без папки — к канону, только если имя одно в графе; с папкой —
+    к канону и при тёзке; развилка — без канона и без отказа маски (мутанты PR #860:
+    фильтр папки заглушки, счёт уникальных имён, ветка голой ссылки; n793-out13)."""
     root = _graph(tmp_path)
-    (root / "Люди" / "Нюра.md").write_text("# Нюра → [[Анна Белова]]\n\n⚠️ **Дубль слит.**\n",
-                                           encoding="utf-8")
+    if twin:
+        (root / "Системы" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+    (root / "Люди" / "Нюра.md").write_text(stub + "\n\n⚠️ **Дубль слит.**\n", encoding="utf-8")
     forms, _ = cloud_door._forms({}, root)
     m = pm.mask("Нюра пришла", forms)
     assert "Нюра" not in m.text
-    assert {g.canon for g in m.groups.values()} == {"Анна Белова"}
+    assert {g.canon for g in m.groups.values()} == {canon}
 
 
 def test_data_at_the_start_of_the_prompt_keeps_its_region():

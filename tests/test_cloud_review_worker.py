@@ -3372,11 +3372,13 @@ def test_masked_reply_not_in_utf8_survives_a_vanished_partial(tmp_path, monkeypa
         return Result()
 
     read_bytes = pathlib.Path.read_bytes
+    vanished = []
 
     def read_then_vanish(self):
         raw = read_bytes(self)
         if self == tmp_part:
             self.unlink()
+            vanished.append(self)
         return raw
 
     stamp = "2026-07-15_1400"
@@ -3390,6 +3392,7 @@ def test_masked_reply_not_in_utf8_survives_a_vanished_partial(tmp_path, monkeypa
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(pathlib.Path, "read_bytes", read_then_vanish)
     _fake_ner(monkeypatch)
-    cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True}})
-    assert not rev.exists()
+    code = cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True}})
+    assert vanished == [tmp_part], "подмена не сработала — гонки не было, тест ничего не проверил"
+    assert code == cloud_review.RC_ERROR and not rev.exists()
     assert "не в UTF-8" in log.read_text(encoding="utf-8")
