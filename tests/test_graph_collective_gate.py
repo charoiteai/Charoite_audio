@@ -9,6 +9,8 @@ import json
 import pathlib
 import sys
 
+import pytest
+
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SRC))
@@ -463,5 +465,88 @@ def test_cloud_review_with_write_access_is_told_to_leave_held_names(tmp_path):
     kw = dict(transcript_name="t.md", folder=tmp_path, graph=tmp_path, rev_name="rev.md", stamp="s",
               arch_folder=None)
     edit = g.cloud_enrich_prompt(may_edit=True, **kw)
-    assert "«_(узел не выбран: …)_» не превращай в ссылку" in edit
+    assert "«_(узел не выбран: …)_» или «_(узел не создан: …)_» не превращай в ссылку" in edit
+    assert "узла под это имя не создавай" in edit
     assert "узел не выбран" not in g.cloud_enrich_prompt(may_edit=False, **kw)
+    # промпт и писатель держат одни маркеры: заметка с удержанными строками их содержит
+    for marker in (g._HELD_PERSON, g._HELD_ENTITY):
+        assert f"«_({marker.strip(' _(')} …)_»" in edit
+
+
+# --- out4 (n611-out4) ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target, extra, born, held", [
+    ("[[Саша]]", "", "Люди/Саша", True),                 # голая цель — в папке заглушки
+    ("[[Люди/Саша]]", "# Саша → [[Люди/Нет]]\n", "Люди/Саша", True),   # цель — тоже заглушка
+    ("[[Системы/Саша]]", "", "Системы/Саша", False),     # другая папка: тёзок там нет (№607)
+    ("[[Досье/Саша]]", "", None, False),                 # вне папок узлов: писатель не пишет
+])
+def test_gate_judges_the_node_the_writer_would_write(tmp_path, target, extra, born, held):
+    """Затвор и писатель считают путь записи одним `_stub_birth` (n611-out4, Haiku M)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    (graph / "Досье").mkdir()
+    if extra:
+        (graph / "Люди" / "Саша.md").write_text(extra, encoding="utf-8")
+    text = f"# Сашка → {target}\n"
+    (graph / "Люди" / "Сашка.md").write_text(text, encoding="utf-8")
+    got = g._stub_birth(graph, "Люди", text)
+    assert (got.relative_to(graph).with_suffix("").as_posix() if got else None) == born
+    assert bool(g.collective_held(graph, [("Сашка", "Люди")], owner="")) is held
+
+
+# --- мутанты CI #864 в дверях mutation_critical ----------------------------------
+
+
+def test_gate_skips_empty_and_repeated_names_without_a_lookup(tmp_path, monkeypatch):
+    """Пустой ключ (метка говорящего, знак) и повтор того же имени в том же месте не
+    ищутся заново: одна таблица — один поиск на (ключ, место)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов", "Люди/Саша")
+    seen = []
+    real = g.find_canonical
+    monkeypatch.setattr(g, "find_canonical", lambda gr, n, **kw: seen.append((n, kw.get("folder"))) or real(gr, n, **kw))
+    got = g.collective_held(graph, [("—", "Люди"), ("Саша", "Люди"), ("Саша", "Люди"), ("—", None), ("Саша", None)],
+                            owner="")
+    assert set(got) == {("саша", "Люди"), ("саша", None)}
+    assert seen == [("Саша", "Люди"), ("Саша", None)], seen
+
+
+def test_journal_takes_the_person_place_first(tmp_path, monkeypatch):
+    """Одна строка журнала на имя: человек раньше сущности; сущность — в своей папке
+    и со своим типом; имя только концом связи — в папке людей с типом «связь»."""
+    calls = []
+    real = g._journal_held_entity
+    monkeypatch.setattr(g, "_journal_held_entity",
+                        lambda gr, folder, name, typ, *a: calls.append((folder, name, typ)) or real(gr, folder, name, typ, *a))
+    for i, data, want in [
+        (1, {"люди": [_person("Саша"), _person("Гоша")], "сущности": [{"имя": "Саша", "суть": "бот"}]},
+         [("Люди", "Саша", "person")]),
+        (2, {"люди": [_person("Гоша")], "сущности": [{"имя": "Саша", "суть": "бот"}]},
+         [("Системы", "Саша", "entity")]),
+        (3, {"люди": [_person("Гоша")], "связи": [{"от": "Саша", "к": "Гоша", "тип": "ведёт"}]},
+         [("Люди", "Саша", "связь")]),
+    ]:
+        graph = _graph(tmp_path / str(i), "Люди/Саша Образцов")
+        _node(graph, "Люди/Саша")
+        calls.clear()
+        _meeting(tmp_path / str(i), monkeypatch, graph, data)
+        assert [c for c in calls if c[1] == "Саша"] == want, (i, calls)
+
+
+def test_alias_into_another_folder_touches_its_index_only(tmp_path, monkeypatch):
+    """Встреча, легшая по псевдониму в узел другой папки, трогает её указатель;
+    удержанное сборное имя чужой указатель не трогает (DS I3: только тронутые)."""
+    rebuilt = []
+    monkeypatch.setattr(g, "rebuild_folder_index", lambda gr, folder: rebuilt.append(folder))
+    graph = _graph(tmp_path / "1", "Люди/Гоша Лесков")
+    _node(graph, "Системы/Платформа Икс", 'aliases: ["Платформа"]\n')
+    _meeting(tmp_path / "1", monkeypatch, graph,
+             {"люди": [_person("Гоша Лесков")], "сущности": [{"имя": "Платформа", "тип": "команда", "суть": "x"}]})
+    assert "Системы" in rebuilt, rebuilt
+
+    rebuilt.clear()
+    graph2 = _graph(tmp_path / "2", "Люди/Саша Образцов")
+    _node(graph2, "Люди/Саша")
+    _meeting(tmp_path / "2", monkeypatch, graph2,
+             {"люди": [], "сущности": [{"имя": "Саша", "тип": "команда", "суть": "бот"}]})
+    assert rebuilt == [], rebuilt

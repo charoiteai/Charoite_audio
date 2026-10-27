@@ -716,6 +716,7 @@ _PERSON_LINK = re.compile(r"\[\[Люди/[^\]|]+\|(?P<name>[^\]]+)\]\]")
 # хвост строки участника со сборным именем (held_note): узла нет, ссылки в начале
 # строки нет, а участник есть — его читает и переотправка шапки (n611-out3 DS I1)
 _HELD_PERSON = " _(узел не выбран: "
+_HELD_ENTITY = " _(узел не создан: "      # тот же хвост у сущности (entity_line)
 
 
 def note_decisions(text: str) -> list[str]:
@@ -1497,7 +1498,7 @@ def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]
         return f"- [[{cands[0]}|{safe_name(name)}]] {head}{mark}"
     tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
     lead = _held_lead(via[0]) if via else ""
-    return f"- {safe_name(name)} {head} _(узел не создан: {lead}{_HELD_WHY[verdict]}{tail})_"
+    return f"- {safe_name(name)} {head}{_HELD_ENTITY}{lead}{_HELD_WHY[verdict]}{tail})_"
 
 
 def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> dict[tuple[str, str], tuple[str, list[str]]]:
@@ -3137,12 +3138,13 @@ def main():
     # попадает к человеку (n611-out1 DS M1 / Sonnet I2); люди раньше сущностей; имя
     # только концом связи — тип «связь», не «person» (n611-out2 Haiku M3)
     ent_type = {(_ckey(e["имя"]), _efolder(e)): e.get("тип") or "entity" for e in ents_all}
-    journaled: set[str] = set()
-    for (key, folder), (name, cands, _) in sorted(collective.items(), key=lambda kv: kv[0][1] != "Люди"):
-        if key not in journaled:
-            journaled.add(key)
-            _journal_held_entity(graph, folder or "Люди", name, ent_type.get((key, folder), "person" if folder else "связь"),
-                                 "collective", cands, meeting_link)
+    first: dict[str, tuple] = {}
+    for (key, folder), val in collective.items():
+        if key not in first or folder == "Люди":      # человек вытесняет сущность и конец связи
+            first[key] = (folder, val)
+    for key, (folder, (name, cands, _)) in first.items():
+        _journal_held_entity(graph, folder or "Люди", name, ent_type.get((key, folder), "person" if folder else "связь"),
+                             "collective", cands, meeting_link)
     if collective:
         print("граф: голое имя при живых тёзках, узел не выбран: "
               + ", ".join(sorted({v[0] for v in collective.values()})))
@@ -3714,9 +3716,10 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "назови верного человека, а из узла Люди с ошибочным именем убери строку "
         "этой встречи в «## Встречи» и её связи (перенеси их в узел верного "
         "человека), если этого человека на встрече не было. Строку с пометкой "
-        "«_(узел не выбран: …)_» не превращай в ссылку и в узел не переноси: "
-        "голое имя при живых тёзках — человек не определён; в голый узел-тёзку "
-        "ничего не дописывай и его не сливай.\n"
+        f"«_({_HELD_PERSON.strip(' _(')} …)_» или «_({_HELD_ENTITY.strip(' _(')} …)_» "
+        "не превращай в ссылку, в узел не переноси и узла под это имя не создавай: "
+        "человек не определён; в узел из «поиск ведёт в …» и в голый узел-тёзку "
+        "ничего не дописывай и их не сливай.\n"
         "3. Файлы не удаляй и не переименовывай — удаление Чароит просто не "
         "перенесёт в граф. Явный дубль сливай так: факты и ссылки — в канон, а на месте "
         "дубля оставь заглушку «# Имя → [[Папка/Канон]]» с пометкой «Дубль. "
