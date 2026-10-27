@@ -295,6 +295,15 @@ def test_data_at_the_start_of_the_prompt_keeps_its_region():
     assert cloud_door._regions("Аня пришла", ["Аня пришла"]) == [(0, len("Аня пришла"))]
 
 
+def test_regions_are_every_occurrence_overlaps_included():
+    """Все вхождения куска, перекрытия тоже — как прежний цикл `find(d, start + 1)`;
+    знаки регулярных выражений в данных — буквально."""
+    assert cloud_door._regions("аааа", ["аа"]) == [(0, 2), (1, 3), (2, 4)]
+    assert cloud_door._regions("x Аня. y Аня.", ["Аня."]) == [(2, 6), (9, 13)]
+    assert cloud_door._regions("x Аня y", ["Ан."]) is None
+    assert cloud_door._regions("Аня", ["Аня", "Петя"]) is None
+
+
 def test_stub_chain_reaches_the_canon(tmp_path):
     """Заглушка на заглушку после месяца слияний — к канону в конце цепочки (мутант PR #860:
     `not in seen` → `in seen` обрывал цепочку на первом шаге)."""
