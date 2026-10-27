@@ -382,7 +382,7 @@ def complete_body(body: str) -> bool:
     заголовком. `looks_valid` судит ответ модели (четыре из пяти, подстрокой) и
     пропустил бы тело, урезанное `split_dossier` по «### Источники» внутри
     раздела, — недостающий раздел застыл бы до смены источников (n815-out3)."""
-    heads = {m.group(1) for m in re.finditer(r"(?m)^##[ \t]*(.+?)[ \t]*$", body or "")}
+    heads = {m.group(1) for m in re.finditer(r"(?m)^##[^\S\n]*(.+?)[^\S\n]*$", body or "")}
     return all(h in heads for h in _BODY_HEADS)
 
 
@@ -579,18 +579,25 @@ def labeled_body(text: str) -> bool:
     return graph_names.has_speaker_actor(split_dossier(text or "")[1])
 
 
-# «Источники»/«Правки автора» не тем уровнем, что пишет `render` («## »)
-_OFF_LEVEL_CUT_RE = re.compile(r"(?m)^(?!##[ \t])#{1,6}[ \t]*(?:Источники|Правки автора)[ \t]*$")
+# Раздел автора, как его пишет `render` и находит `KEEP_RE`: всё после него — слово автора
+_RENDER_MANUAL_RE = re.compile(r"(?m)^## Правки автора$")
 
 
 def kept_body(text: str | None) -> str:
     """Тело досье без меток — для записи без модели — или "", тогда модель.
-    Целое тело: все пять разделов (`complete_body`), и `split_dossier` режет
-    его по заголовку уровня два: подзаголовок «### Источники» внутри
-    последнего раздела отрезал бы его хвост молча (n815-out4 Sonnet I1, DS I1)."""
-    if _OFF_LEVEL_CUT_RE.search(text or ""):
+
+    `split_dossier` режет тело по первому защищённому заголовку любого уровня
+    и с любым пробелом (`_PROTECTED_RE`), а `render` пишет ровно одну строку
+    «## Источники» до «## Правки автора». Своё тело — только когда до раздела
+    автора защищённые заголовки те же, что пишет `render`: иначе срез отрезал
+    бы хвост последнего раздела молча (n815-out4 I1; n815-out5 Haiku C1, C2,
+    DS I1). Что автор пишет под «## Правки автора», срез не двигает и тему
+    к модели не уводит (n815-out5 Sonnet I1). И тело целое: все пять разделов."""
+    text = text or ""
+    m = _RENDER_MANUAL_RE.search(text)
+    if [h.group(0) for h in _PROTECTED_RE.finditer(text[:m.start()] if m else text)] != ["## Источники"]:
         return ""
-    body = graph_names.unlabel_speakers(split_dossier(text or "")[1])
+    body = graph_names.unlabel_speakers(split_dossier(text)[1])
     return body if complete_body(body) else ""
 
 

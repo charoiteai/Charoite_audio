@@ -783,6 +783,7 @@ def test_complete_body_wants_all_five_sections_as_level_two_headings():
     assert not dossier.complete_body(body.replace("## Кто в теме  \n", "Кто в теме ## Кто в теме\n"))
     assert not dossier.complete_body(body.replace("## Решено\n", ""))
     assert not dossier.complete_body(None)
+    assert dossier.complete_body(body.replace("## Кто в теме  \n", "## Кто в теме\u00a0\n")), "NBSP — пробел (n815-out5 Haiku M2)"
 
 
 @pytest.mark.parametrize("cut, kept", [
@@ -790,6 +791,9 @@ def test_complete_body_wants_all_five_sections_as_level_two_headings():
     ("### Источники\n- x\n", False),        # хвост последнего раздела ушёл бы в «Источники»
     ("##Источники\n", False),
     ("# Правки автора\n", False),
+    ("##\nИсточники\n", False),             # `\s` резака съедает перевод строки (n815-out5 Haiku C2, DS I1)
+    ("##\u00a0Источники\n", False),
+    ("## Источники\n", False),               # второй «## Источники» до настоящего (n815-out5 Haiku C1)
     ("Источники\n", True),                   # не заголовок
 ])
 def test_kept_body_refuses_a_cut_that_render_does_not_write(cut, kept):
@@ -800,3 +804,16 @@ def test_kept_body_refuses_a_cut_that_render_does_not_write(cut, kept):
     assert isinstance(body, str) and bool(body) is kept   # "" — не None: тело всегда строка
     if kept:
         assert "Участник встречи обещал" in body and "Пётр" in body
+
+
+@pytest.mark.parametrize("manual, kept", [
+    ("### Источники\n- моя заметка\n", True),   # слово автора срез не двигает (n815-out5 Sonnet I1)
+    ("## Источники\n", True),
+    ("", True),
+])
+def test_kept_body_ignores_headings_inside_the_author_section(manual, kept):
+    text = ("---\nотпечаток: f\n---\n# Т\n## Сейчас\nСобеседник 4 обещал\n## Как пришли\nт\n## Решено\nт\n"
+            "## Открыто\nт\n## Кто в теме\nПётр\n\n## Источники\n- [[a]]\n\n## Правки автора\n\n" + manual)
+    assert bool(dossier.kept_body(text)) is kept
+    assert not dossier.kept_body(text.replace("## Правки автора\n", "## Правки автора \n")), \
+        "раздел автора не той строкой — защищённые заголовки уже не как у render"

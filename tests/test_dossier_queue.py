@@ -753,6 +753,19 @@ def test_label_rebuild_keeps_the_body_and_skips_the_model(nd, tmp_path):
     assert "Собеседник 4 обещал письмо" in backup.read_text(encoding="utf-8"), "копия до записи"
 
 
+def test_heading_in_the_author_section_keeps_the_own_body(nd, tmp_path):
+    """n815-out5 Sonnet I1, DS: подзаголовок в «Правках автора» срез тела не
+    двигает — модель тело не переписывает, слово автора остаётся байт в байт."""
+    graph, path = _labeled_graph(nd, tmp_path)
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "Собеседник 4 — это Вера\n", "Собеседник 4 — это Вера\n### Источники\n- моя заметка\n"), encoding="utf-8")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    text = path.read_text(encoding="utf-8")
+    assert nd.calls == [] and r["собрано"] == 1, r
+    assert "Участник встречи обещал письмо ⚠️" in text
+    assert "## Правки автора\n\nСобеседник 4 — это Вера\n### Источники\n- моя заметка\n" in text
+
+
 def test_own_label_rebuild_costs_nothing_in_need(nd, tmp_path):
     """Тело без модели возвращает None: ноль в `spent` занизил бы `need`, и
     следующая тема с моделью стартовала бы в остаток, куда не влезает."""
@@ -920,7 +933,8 @@ def test_labeled_waits_behind_changed_inside_a_graph(nd):
 
 def test_reread_that_is_still_labeled_writes_the_author_edit(nd, tmp_path, monkeypatch):
     """Перечитали, метка на месте — своё тело берётся из перечитанного, а не из
-    снимка скана: правка автора не откатывается (n815-out4 DS M2)."""
+    снимка скана: правка автора не откатывается. Сторож источника тела против
+    мутанта `cand.loaded`, не регресс-тест правки out4 (n815-out5 DS M3)."""
     graph, path = _labeled_graph(nd, tmp_path)
     _edit_before_build(nd, monkeypatch, lambda: path.write_text(path.read_text(encoding="utf-8").replace(
         "обещал письмо", "обещал письмо и смету"), encoding="utf-8"))
