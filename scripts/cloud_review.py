@@ -1532,6 +1532,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             _drop_own_snapshots(graph, stamp)
             backup = cloud_pen = None
             unlock()
+    # Песочница есть только у правящего прогона: каждое понижение выше гасит её вместе
+    # с may_edit. Ниже cwd CLI выбирается по одной cloud_pen — инвариант держит код,
+    # а не комментарий (n793-out14, критика Sonnet и DS).
+    if cloud_pen is not None and not may_edit:
+        raise RuntimeError("песочница облака без права правки — понижение не погасило её")
     prompt = graph_updater.cloud_enrich_prompt(
         transcript_name=transcript.name, folder=transcript.parent,
         graph=cloud_pen if may_edit and cloud_pen is not None else graph,
@@ -1568,7 +1573,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # write-режим: cwd — ТОЛЬКО песочница, реальным путём из проверки выше,
     # без фолбэка в папку стенограмм (luna, круг-4); фолбэк остаётся чтению.
     try:
-        # песочница есть только у правящего прогона: каждое понижение выше гасит её вместе с may_edit
+        # песочница есть только у правящего прогона (проверка инварианта выше)
         work_dir = (cloud_pen if cloud_pen is not None
                     else graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
                     if masked.level == "off" or tools_graph

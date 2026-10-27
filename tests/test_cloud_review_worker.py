@@ -3422,6 +3422,29 @@ def test_unwritable_unmasked_reply_survives_a_vanished_partial(tmp_path, monkeyp
     assert "не развернуть в имена" in log.read_text(encoding="utf-8")
 
 
+def test_unwritable_unmasked_reply_leaves_no_partial_with_fakes(tmp_path, monkeypatch):
+    """Развёрнутый ответ не записался, .part с подставными именами на месте: он удаляется,
+    а не переезжает в .partial рядом с ревизией (n793-out14 DS I2: без `unlink` тест выше зелёный)."""
+    graph = _graph(tmp_path)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+    tmp_part = tmp_path / "transcripts" / "2026-07-15_1400_ревизия.md.part"
+    write_text = pathlib.Path.write_text
+    failed = []
+
+    def fail(self, *a, **k):
+        if self == tmp_part:
+            failed.append(self)
+            raise OSError("диск отвалился")
+        return write_text(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", fail)
+    code, cap, rev, log = _masked_run(tmp_path, monkeypatch, graph, {"sufler": {"cloud_enrich": True}})
+    assert failed == [tmp_part], "подмена не сработала — записи развёрнутого ответа не было"
+    assert code == cloud_review.RC_ERROR and not rev.exists()
+    assert not tmp_part.exists() and not rev.with_suffix(rev.suffix + ".partial").exists()
+
+
 def test_empty_workdir_refusal_is_an_error_code_and_sends_nothing(tmp_path, monkeypatch):
     """Пустой каталог облака не создан — отказ маски тем же кодом, что прочие отказы:
     ночь видит провал, CLI не зовётся (мутант PR #860: `return RC_ERROR` → `None`)."""

@@ -371,6 +371,11 @@ def test_mask_prompt_without_a_graph_is_a_refusal(monkeypatch):
     ("Анна", ("анн", 3, False)),
     ("Олег", ("олег", 3, False)),
     ("Ян", ("ян", 2, False)),       # «Ян» не ловит «января»
+    ("Лесной", ("лесн", 5, False)),     # остаток ровно 4 — окончание срезается («Лесного»)
+    ("Вельский", ("вель", 5, False)),   # то же для «-ский»
+    ("Седой", ("седо", 3, False)),      # остаток 3 — окончание не срезается
+    ("Ия", ("ия", 2, False)),       # два знака на гласную — основа целиком
+    ("Вор", ("вор", 2, False)),     # три знака не на гласную — хвост 2
 ], ids=str)
 def test_base_of_a_name_and_its_tail(word, base):
     """Основа и потолок хвоста — граница «падеж имени / другое слово» (мутанты PR #860 в
@@ -381,6 +386,8 @@ def test_base_of_a_name_and_its_tail(word, base):
 def test_single_capital_letter_is_not_an_abbreviation():
     """«В», «Я» в начале фразы — не аббревиатура (мутант PR #860: `2 <=` → `0 <=`)."""
     assert not pm._is_abbrev("В") and pm._is_abbrev("ВО")
+    # верхняя граница — шесть заглавных
+    assert pm._is_abbrev("АБВГДЕ") and not pm._is_abbrev("АБВГДЕЖ")
 
 
 @pytest.mark.parametrize("mask, edit, blocked", [
