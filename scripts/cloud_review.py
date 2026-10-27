@@ -1568,7 +1568,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # write-режим: cwd — ТОЛЬКО песочница, реальным путём из проверки выше,
     # без фолбэка в папку стенограмм (luna, круг-4); фолбэк остаётся чтению.
     try:
-        work_dir = (cloud_pen if may_edit and cloud_pen is not None
+        # песочница есть только у правящего прогона: каждое понижение выше гасит её вместе с may_edit
+        work_dir = (cloud_pen if cloud_pen is not None
                     else graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
                     if masked.level == "off" or tools_graph
                     # под маской cwd без инструментов не нужен, а его путь CLI кладёт в

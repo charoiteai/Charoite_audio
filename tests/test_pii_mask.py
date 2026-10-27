@@ -295,6 +295,104 @@ def test_data_at_the_start_of_the_prompt_keeps_its_region():
     assert cloud_door._regions("Аня пришла", ["Аня пришла"]) == [(0, len("Аня пришла"))]
 
 
+def test_stub_chain_reaches_the_canon(tmp_path):
+    """Заглушка на заглушку после месяца слияний — к канону в конце цепочки (мутант PR #860:
+    `not in seen` → `in seen` обрывал цепочку на первом шаге)."""
+    root = _graph(tmp_path)
+    (root / "Люди" / "Нюра.md").write_text("# Нюра → [[Люди/Белова А]]\n\n⚠️ **Дубль слит.**\n",
+                                           encoding="utf-8")
+    m = pm.mask("Нюра пришла", cloud_door._forms({}, root)[0])
+    assert "Нюра" not in m.text
+    assert {g.canon for g in m.groups.values()} == {"Анна Белова"}
+
+
+def test_stub_folder_decides_whether_the_stub_is_masked(tmp_path):
+    """Заглушка в папке систем — маскируется к канону системы; в папке тем (Ядра) — нет
+    (мутант PR #860: `in SYSTEM_FOLDERS` → `not in`)."""
+    root = _graph(tmp_path)
+    (root / "Системы" / "Квант.md").write_text("# Квант → [[Системы/ЗЛК]]\n\n⚠️ **Дубль слит.**\n",
+                                               encoding="utf-8")
+    (root / "Ядра" / "Удержание.md").write_text("# Удержание → [[Ядра/Ретеншн]]\n\n⚠️ **Дубль слит.**\n",
+                                                encoding="utf-8")
+    m = pm.mask("Квант лежит, Удержание растёт", cloud_door._forms({}, root)[0])
+    assert "Квант" not in m.text and "Удержание" in m.text
+    assert {g.canon for g in m.groups.values()} == {"ЗЛК"}
+
+
+def test_door_without_a_dictionary_masks_every_system_name(tmp_path):
+    """Без общего словаря (`known` не передан) обычное слово в имени системы — тоже имя:
+    умолчание двери маскирует больше, а не меньше (мутант PR #860: `False` → `True`)."""
+    root = _graph(tmp_path)
+    (root / "Системы" / "Шлюз.md").write_text("# Шлюз\n", encoding="utf-8")
+    # со словарём «шлюз» строчными — речь, без словаря — тоже имя системы
+    m = pm.mask("Шлюз упал, вчера шлюз снова лежал", cloud_door._forms({}, root)[0])
+    assert "шлюз" not in m.text.lower()
+
+
+def test_door_masks_the_owner_named_in_the_config(tmp_path):
+    """Владелец из `sufler.user_name` маскируется и без своего узла в графе
+    (мутант PR #860: `cfg.get("sufler") or {}` → `and`)."""
+    root = _graph(tmp_path)
+    forms, _ = cloud_door._forms({"sufler": {"user_name": "Олег Сидоров"}}, root)
+    assert "Сидоров" not in pm.mask("Сидоров на связи", forms).text
+
+
+def test_door_note_counts_people_and_systems_apart(tmp_path):
+    """Строка словаря в логе: люди и системы — раздельно (мутант PR #860: `not n.person` → `n.person`)."""
+    root = _graph(tmp_path)
+    (root / "Системы" / "Шлюз.md").write_text("# Шлюз\n", encoding="utf-8")
+    _, notes = cloud_door._forms({}, root)
+    assert notes == ["словарь: людей 1, систем 2"]
+
+
+def test_empty_workdir_is_one_directory_for_every_call(tmp_path, monkeypatch):
+    """Каталог тот же при втором вызове (ночь зовёт его на каждую ревизию) и возвращается
+    вызывающему (мутанты PR #860: `exist_ok=True` → `False`, `return d` → `None`)."""
+    monkeypatch.setattr(cloud_door.tempfile, "gettempdir", lambda: str(tmp_path))
+    first = cloud_door.empty_workdir()
+    assert first == tmp_path / "charoite-cloud-empty" and first.is_dir()
+    assert cloud_door.empty_workdir() == first
+
+
+def test_mask_prompt_without_a_graph_is_a_refusal(monkeypatch):
+    """Граф не передан вовсе — отказ с причиной, а не падение на `None.is_dir()`
+    (мутант PR #860: `or` → `and`)."""
+    _fake_ner(monkeypatch)
+    with pytest.raises(pm.MaskRefused, match="граф недоступен"):
+        cloud_door.mask_prompt({}, "Аня пришла", None, data=("Аня пришла",))
+
+
+@pytest.mark.parametrize("word, base", [
+    ("ВО", ("ВО", 0, True)),        # двухбуквенная аббревиатура — только целым словом
+    ("ЗЛК", ("ЗЛК", 2, True)),      # «ЗЛКа»
+    ("S3D", ("S3D", 0, True)),      # с цифрой — точно, без хвоста
+    ("Бой", ("бо", 2, False)),      # окончание «-ой» не срезается с остатком короче 4
+    ("Аня", ("ан", 2, False)),      # «Аней», но не «анкета»
+    ("Анна", ("анн", 3, False)),
+    ("Олег", ("олег", 3, False)),
+    ("Ян", ("ян", 2, False)),       # «Ян» не ловит «января»
+], ids=str)
+def test_base_of_a_name_and_its_tail(word, base):
+    """Основа и потолок хвоста — граница «падеж имени / другое слово» (мутанты PR #860 в
+    `_base` и `_is_abbrev`: пороги длины и связки условий)."""
+    assert pm._base(word) == base
+
+
+def test_single_capital_letter_is_not_an_abbreviation():
+    """«В», «Я» в начале фразы — не аббревиатура (мутант PR #860: `2 <=` → `0 <=`)."""
+    assert not pm._is_abbrev("В") and pm._is_abbrev("ВО")
+
+
+@pytest.mark.parametrize("mask, edit, blocked", [
+    (True, True, True), (False, True, False), (True, False, False),
+])
+def test_mask_blocks_edit_only_when_the_owner_allowed_it(mask, edit, blocked):
+    """Причина «маска сняла правку» — только когда правка разрешена, а маска включена
+    (мутант PR #860: `== "text"` → `!=`)."""
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": edit, "cloud_mask": mask}}
+    assert privacy.mask_blocks_edit(cfg, env={}) is blocked
+
+
 def _fake_ner(monkeypatch, spans=()):
     mod = types.ModuleType("pii_ner")
     mod.spans = lambda text: list(spans)

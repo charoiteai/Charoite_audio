@@ -602,7 +602,7 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     monkeypatch.setattr(ncc.live_gate, "night_window_open", fake_window)
 
     def fake_run(cmd, **kw):
-        events.append(("облако",))
+        events.append(("облако", kw.get("cwd")))
 
         class R:
             returncode = 0
@@ -629,6 +629,18 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
         f"вызывающий передал свой потолок ({window_event[3]!r}) — потолок целиком у live_gate"
     report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
     assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
+    # без маски cwd CLI не трогаем; под маской — пустой каталог, а не каталог демона
+    # с именем владельца в пути (мутант PR #860: `masked.level == "off"` → `!=`)
+    assert next(e for e in events if e[0] == "облако")[1] is None
+
+    events.clear()
+    empty = tmp_path / "charoite-cloud-empty"
+    monkeypatch.setattr(ncc.cloud_door, "mask_prompt",
+                        lambda c, prompt, g, data: ncc.pii_mask.Masked(prompt, "basic"))
+    monkeypatch.setattr(ncc.cloud_door, "empty_workdir", lambda: empty)
+    os.utime(cores / "Ядро.md", (time.time() + 3, time.time() + 3))   # ядро изменилось — новая ночь
+    ncc.main()
+    assert next(e for e in events if e[0] == "облако")[1] == empty
 
     # --- окно закрыто (ночь вышла): в облако идти нельзя, выход с кодом 0
     events.clear()

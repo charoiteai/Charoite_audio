@@ -3396,3 +3396,43 @@ def test_masked_reply_not_in_utf8_survives_a_vanished_partial(tmp_path, monkeypa
     assert vanished == [tmp_part], "подмена не сработала — гонки не было, тест ничего не проверил"
     assert code == cloud_review.RC_ERROR and not rev.exists()
     assert "не в UTF-8" in log.read_text(encoding="utf-8")
+
+
+def test_unwritable_unmasked_reply_survives_a_vanished_partial(tmp_path, monkeypatch):
+    """Развёрнутый ответ не записался, и .part при этом исчез: прогон доходит до лога
+    отказом, исключение наверх не летит (мутант PR #860, `missing_ok` после записи)."""
+    graph = _graph(tmp_path)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+    tmp_part = tmp_path / "transcripts" / "2026-07-15_1400_ревизия.md.part"
+    write_text = pathlib.Path.write_text
+    vanished = []
+
+    def vanish_then_fail(self, *a, **k):
+        if self == tmp_part:
+            self.unlink()
+            vanished.append(self)
+            raise OSError("диск отвалился")
+        return write_text(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", vanish_then_fail)
+    code, cap, rev, log = _masked_run(tmp_path, monkeypatch, graph, {"sufler": {"cloud_enrich": True}})
+    assert vanished == [tmp_part], "подмена не сработала — записи развёрнутого ответа не было"
+    assert code == cloud_review.RC_ERROR and not rev.exists()
+    assert "не развернуть в имена" in log.read_text(encoding="utf-8")
+
+
+def test_empty_workdir_refusal_is_an_error_code_and_sends_nothing(tmp_path, monkeypatch):
+    """Пустой каталог облака не создан — отказ маски тем же кодом, что прочие отказы:
+    ночь видит провал, CLI не зовётся (мутант PR #860: `return RC_ERROR` → `None`)."""
+    graph = _graph(tmp_path)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Анна Белова.md").write_text("# Анна Белова\n", encoding="utf-8")
+
+    def refuse():
+        raise cloud_review.pii_mask.MaskRefused("пустой рабочий каталог облака не создан (PermissionError)")
+
+    monkeypatch.setattr(cloud_review.cloud_door, "empty_workdir", refuse)
+    code, cap, rev, log = _masked_run(tmp_path, monkeypatch, graph, {"sufler": {"cloud_enrich": True}})
+    assert code == cloud_review.RC_ERROR and "cmd" not in cap and not rev.exists()
+    assert "маска не прошла" in log.read_text(encoding="utf-8")
