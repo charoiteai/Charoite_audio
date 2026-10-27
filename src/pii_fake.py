@@ -6,12 +6,15 @@
 На 5 встречах №799 подделки дали лишних ⛔ 4 против 11 у меток: метку «Дим» и «Диму» модель
 читала как двух людей.
 
-Одна подделка на группу: все формы и псевдонимы узла сходятся в одно подставное имя, падеж
-формы переносится. Подделки выбираются заново на каждый запрос (облако не связывает узел
-между запросами) и не совпадают ни с формой словаря графа, ни со словом отправляемого текста.
+Подделка — на слово группы по роли (имя, фамилия, отчество) и его номеру: формы одного слова
+(«Дима», «Диму», «Дмитрию») сходятся в одно подставное слово, падеж формы переносится; разные
+слова одной роли («Иванов-Петров», «Аня» при «Анна-Мария») получают разные. Инициал уходит
+как есть. Подделки выбираются заново на каждый запрос (облако не связывает узел между
+запросами) и не совпадают ни с формой словаря графа, ни со словом отправляемого текста.
 
 Обратно (`undress`) — по лемме подделки: слово ответа → исходное слово в падеже ответа;
-не склоняется — исходное имя как есть. Новые имена модели не трогаются, только считаются.
+не склоняется — исходное имя как есть. Подделка, общая у разных слов узла, — слово канона;
+без канона — остаётся помеченной. Новые имена модели не трогаются, только считаются.
 """
 from __future__ import annotations
 
@@ -225,6 +228,8 @@ class _Picker:
 def _gender(m, forms: list[str]) -> str:
     for f in forms:
         for w in _WORD.findall(f):
+            if len(w) == 1:
+                continue   # род — не по букве инициала (n793-out8 H-M1)
             r, p = _role(m, w)
             if r in ("Name", "Surn") and ("masc" in p.tag or "femn" in p.tag):
                 return "femn" if "femn" in p.tag else "masc"
@@ -248,7 +253,8 @@ def _roles(m, forms: list[str]) -> dict[str, str]:
             if _e(w) in role:
                 continue
             if len(ws) > 1 and have and not {"Name", "Surn"} <= have:
-                role[_e(w)] = "Surn" if "Name" in have else "Name"
+                # недостающая роль; при одном отчестве — фамилия: «Иванович Кузнец» (out8 DS-M3)
+                role[_e(w)] = "Name" if "Surn" in have and "Name" not in have else "Surn"
             else:
                 role[_e(w)] = "Name" if len(ws) > 1 and i == 0 else "Surn"
             have.add(role[_e(w)])
@@ -277,6 +283,7 @@ def _person(pk: _Picker, forms: list[str]) -> list[str]:
             lem = _e(_parse(m, w, role[_e(w)], gender).normal_form)
             if sum(1 for x in ws if role[_e(x)] == role[_e(w)]) > 1 and lem not in order[role[_e(w)]]:
                 order[role[_e(w)]].append(lem)
+    extra: dict[str, dict[str, int]] = collections.defaultdict(dict)
     parts: dict[tuple[str, int], str | None] = {}
     out = []
     for f in forms:
@@ -292,7 +299,14 @@ def _person(pk: _Picker, forms: list[str]) -> list[str]:
             r = role[_e(w)]
             p = _parse(m, w, r, gender)
             lem_e = _e(p.normal_form)
-            k = (r, order[r].index(lem_e) if lem_e in order[r] else nth[r])
+            if lem_e in order[r]:
+                k = (r, order[r].index(lem_e))
+            elif order[r]:
+                # слово вне многословной формы при своих номерах роли — свой номер, не первый:
+                # «Аня» при «Анна-Мария» — не подделка «Анны» (n793-out8 S-I1)
+                k = (r, len(order[r]) + extra[r].setdefault(lem_e, len(extra[r])))
+            else:
+                k = (r, nth[r])
             nth[r] += 1
             if k not in parts:
                 if r == "Patr":
@@ -487,14 +501,46 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
     d.back = collections.Counter()
     sent_words = {_e(w) for w in _WORD.findall(sent)}
 
+    def same_word(slots: list[_Slot]) -> list[_Slot]:
+        """Слоты одного исходного слова. Одна подделка у разных слов группы («Аня» и «Анна»
+        из «Анна-Мария», две фамилии одного человека) — слово канона узла; без канона —
+        ничего: слово останется подделкой и уйдёт помеченным (n793-out8 DS-C1 = S-I1)."""
+        classes: list[tuple[set[str], list[_Slot]]] = []
+        for s in slots:
+            key = _lemmas(m, s.orig)[0] if len(_WORD.findall(s.orig)) == 1 else {_e(s.orig)}
+            for c in classes:
+                if c[0] & key:
+                    c[0].update(key)
+                    c[1].append(s)
+                    break
+            else:
+                classes.append((set(key), [s]))
+        if len(classes) == 1:
+            return slots
+        canon = d.canon.get(slots[0].gid)
+        if canon:
+            ck = set().union(*(_lemmas(m, x)[0] for x in _WORD.findall(canon)))
+            inc = [c for c in classes if c[0] & ck]
+            if len(inc) == 1:
+                d.back["canon"] += 1
+                return inc[0][1]
+        return []
+
     def one(mt: re.Match) -> str:
         w = mt.group(0)
         hit = [s for s in exact.get(_e(w), ()) if _fits(s, w)]
         if hit and len({s.gid for s in hit}) == 1:
+            hit = same_word(hit)
+            if not hit:
+                return w
             d.back["exact"] += 1
             return next((s for s in hit if s.fake == w), hit[0]).orig
         lemmas, cases = _lemmas(m, w)
         slots = [s for lem in lemmas for s in by_lemma.get(lem, ()) if _fits(s, w)]
+        if slots and len({s.gid for s in slots}) == 1:
+            slots = same_word(slots)
+            if not slots:
+                return w
         if not slots or len({s.gid for s in slots}) != 1:
             if w[:1].isupper() and _e(w) not in sent_words and any(
                     ("Name" in p.tag or "Surn" in p.tag) for p in m.parse(w)):
@@ -533,11 +579,19 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
     # псевдонима и формы («Аня» и «Анна-Мария» — одна подделка имени), иначе вернулось бы
     # псевдонимом («Аня-Мария», n793-out7 DS-C2). По границам слов и только многословная:
     # одиночная подделка разворачивается пословно (n793-out6, опыт false_undress)
-    whole: dict[str, str] = {}
-    for pairs in d.pairs.values():
+    # одна многословная подделка у двух форм — форма канона, иначе пословно (`same_word`)
+    origs: dict[str, set[str]] = collections.defaultdict(set)
+    for gid, pairs in d.pairs.items():
         for orig, fake in pairs:
-            if len(_WORD.findall(fake)) > 1:
-                whole.setdefault(fake, orig)
+            if len(_WORD.findall(fake)) > 1 and fake != orig:   # «И.П.» как есть — не подделка
+                origs[fake].add(orig)
+    whole: dict[str, str] = {}
+    for fake, os_ in origs.items():
+        gid = next(g for g, prs in d.pairs.items() if any(f == fake for _o, f in prs))
+        if len(os_) == 1:
+            whole[fake] = next(iter(os_))
+        elif d.canon.get(gid) in os_:
+            whole[fake] = d.canon[gid]
     rx = _WORD
     if whole:
         alts = "|".join(re.escape(f) for f in sorted(whole, key=len, reverse=True))
