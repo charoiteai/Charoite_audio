@@ -10,7 +10,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-from charoite_graph import dossier  # noqa: E402
+from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_graph.graph_schema import name_date  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 
@@ -119,9 +119,7 @@ def _эталон_отбора(members: list[str], files: dict[str, dict]) -> li
         meta = files.get(m)
         if not meta:
             continue
-        body = re.sub(r"^---.*?^---", "", meta["text"],
-                      flags=re.S | re.M).strip()[:dossier.SRC_CHARS]
-        block = f"### [[{m}]] ({meta['kind']})\n{body}\n"
+        block = f"### [[{m}]] ({meta['kind']})\n{dossier.source_text(meta)}\n"
         if total + len(block) > dossier.PROMPT_CHARS:
             break
         out.append(m)
@@ -289,6 +287,10 @@ def test_брак_модели_не_проходит_валидацию():
     норм = ("## Сейчас\nсостояние\n## Как пришли\nхроника\n"
             "## Решено\nрешения\n## Открыто\nвопросы\n## Кто в теме\nлюди\n")
     assert dossier.looks_valid(норм)
+    # метка деятелем — не брак формата: отказ по ней красил бы ночь и держал
+    # тему в голове очереди (n815-in1 C2); `_build` снимает метку ДО этой
+    # проверки, и `looks_valid` судит только формат
+    assert dossier.looks_valid(норм.replace("люди", "Собеседник 4 обещал письмо"))
 
 
 def test_предисловие_модели_отрезается():
@@ -682,3 +684,48 @@ def test_ночное_досье_find_ищет_в_папке_досье_схем
     monkeypatch.setattr(sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--find", "погода"])
     assert nd.main() == 0
     assert "досье не найдено" in capsys.readouterr().out
+
+
+def _граф_с_меткой(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Тема с метками диаризации во встречах и узлом-меткой в Люди (№815)."""
+    g = tmp_path / "граф"
+    for d in ("Ядра", "Встречи", "Люди"):
+        (g / d).mkdir(parents=True)
+    (g / "Ядра" / "Релиз.md").write_text("# Релиз\nСтатус: идёт\n", encoding="utf-8")
+    (g / "Встречи" / "2026-10-01_1000.md").write_text(
+        "---\ntype: встреча\n---\n# В1\n[[Ядра/Релиз]]: Собеседник 3 предложил перенос, "
+        "[[Люди/Собеседник 2]] против, Вера (Собеседник 4) за.\n", encoding="utf-8")
+    (g / "Встречи" / "2026-10-02_1000.md").write_text(
+        "# В2\n[[Ядра/Релиз]] — решили ждать\n---\nСобеседнику 3 поручили письмо\n---\nхвост\n",
+        encoding="utf-8")
+    (g / "Люди" / "Собеседник 2.md").write_text("# Собеседник 2\n[[Ядра/Релиз]]\n", encoding="utf-8")
+    return g
+
+
+def test_вход_модели_без_меток_деятелем_а_файлы_графа_не_тронуты(tmp_path):
+    """№815: метка «Собеседник N» — номер голоса одной встречи; в досье она сводила
+    факты разных людей в одного. Чистка — только в памяти: файл графа байт в байт."""
+    g = _граф_с_меткой(tmp_path)
+    before = {p: p.read_bytes() for p in g.rglob("*.md")}
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)["Релиз"]
+    assert "Собеседник 2" not in members, "узел-метка — не источник темы"
+    prompt = dossier.build_prompt("Релиз", members, files, schema=CHAROITE)
+    sources = prompt.split("ЗАДАНИЕ")[0]
+    assert not graph_names.has_speaker_actor(sources), sources
+    assert "участник встречи предложил" in sources.lower() and "Вера (Собеседник 4) за" in sources
+    assert "type: встреча" not in sources, "шапка срезана"
+    assert "решили ждать\n---\nУчастнику встречи поручили письмо\n---\nхвост" in sources, \
+        "черта посреди заметки — не шапка: текст между чертами остаётся"
+    assert {p: p.read_bytes() for p in g.rglob("*.md")} == before
+
+
+def test_тело_досье_с_меткой_только_в_пяти_разделах():
+    тело = "## Сейчас\nСобеседник 3 решил\n## Кто в теме\nВера\n"
+    assert dossier.labeled_body("---\nтема: x\n---\n# Досье\n" + тело + "## Источники\n- [[В1]]\n")
+    чистое = ("# Досье\n## Сейчас\nВера (Собеседник 4) решила\n## Источники\n- **Люди:** [[Люди/Собеседник 3]]\n"
+              "## Правки автора\n\nСобеседник 3 — это Вера\n")
+    assert not dossier.labeled_body(чистое), "метка в «Источниках» и «Правках автора» — не тело"
+    переставлено = "# Досье\n## Сейчас\nок\n## Правки автора\n\nСобеседник 3 — Вера\n\n## Источники\n- [[В1]]\n"
+    assert not dossier.labeled_body(переставлено)
+    assert not dossier.labeled_body(None)

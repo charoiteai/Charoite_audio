@@ -704,3 +704,45 @@ def test_night_running_out_during_the_meeting_wait_stops_before_the_theme(nd, tm
     out = capsys.readouterr().out
     assert "до конца ночи — только время шагов после досье, пока ждали конца встречи" in out
     assert "без изменений — в следующую полную пересборку" in out
+
+
+def test_label_in_the_body_rebuilds_without_full_and_then_rests(nd, tmp_path, capsys):
+    """№815: отпечаток не знает промпта — досье, собранное до чистки меток, при
+    тех же источниках не пересобралось бы никогда (n815-in1 C1)."""
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace("новое тело", "Собеседник 4 обещал письмо"), encoding="utf-8")
+    sources = {p: p.read_bytes() for p in graph.rglob("*.md") if CHAROITE.dossier_dir not in p.parts}
+
+    nd.calls.clear()
+    nd.run_all([graph], {}, full=False, dry=True)
+    assert "(метка в теле)" in capsys.readouterr().out and nd.calls == []
+
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert nd.calls == ["тема"] and r["собрано"] == 1, r
+    assert not dossier.labeled_body(path.read_text(encoding="utf-8"))
+    assert {p: p.read_bytes() for p in sources} == sources, "файлы графа не трогаем"
+
+    nd.calls.clear()
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert nd.calls == [], "чистое тело гасит причину"
+
+
+def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkeypatch):
+    """Ответ модели с меткой пишется словом входа, не отказом; «Правки автора»
+    — слово автора, байт в байт."""
+    graph = _graph(tmp_path, "Г", {"тема": "2026-07-20"})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    author = "## Правки автора\n\nСобеседник 2 — это Вера, решение автора\n"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "## Правки автора\n\nрешение автора\n", author), encoding="utf-8")
+    monkeypatch.setattr(nd, "generate", lambda *a, **k: GOOD.replace(
+        "новое тело", "Собеседник 2 обещал письмо [[Люди/Собеседник 2]]"))
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    text = path.read_text(encoding="utf-8")
+    assert r["собрано"] == 1, r
+    assert "Участник встречи обещал письмо участник встречи" in text
+    assert author in text
+    assert not dossier.labeled_body(text)

@@ -109,10 +109,69 @@ def has_speaker_actor(text: str) -> bool:
     Собеседник 4)») — пометка при имени, а не деятель. Скобки вырезаются парами:
     незакрытая «(» выше по тексту («:(», обрезанная ссылка) метку не прячет
     (n611-s1-out2 DS I3)."""
-    text = text or ""
+    return bool(_speaker_spans(text or ""))
+
+
+def _speaker_spans(text: str) -> list[tuple[int, int]]:
+    """Где в тексте метки деятелем: закрытые скобки маскируются той же длиной,
+    смещения — в исходной строке. Один поиск на детектор и чистку: две копии
+    маски разошлись бы на первой правке (n815-in3 Sonnet C1)."""
+    masked = text
     for _ in range(2):                 # «((Собеседник 3))» — вложенная пара
-        text = _PAREN_RE.sub(" ", text)
-    return bool(_SPEAKER_IN_TEXT_RE.search(text))
+        masked = _PAREN_RE.sub(lambda m: " " * len(m.group(0)), masked)
+    return [m.span() for m in _SPEAKER_IN_TEXT_RE.finditer(masked)]
+
+
+#: Метка деятелем → кто она есть: участник встречи. Падеж — по окончанию метки
+#: («слова Собеседника 3» → «слова участника встречи»). Слово не метка: за
+#: «участник» идёт «встречи», а не номер, — повторная чистка ничего не меняет.
+UNLABELED = "участник встречи"
+_UNLABELED_CASES = {"": UNLABELED, "а": "участника встречи", "у": "участнику встречи",
+                    "ом": "участником встречи", "е": "участнике встречи"}
+_LABEL_CASE_RE = re.compile(r"(?:" + "|".join(_SPEAKER_WORDS) + r")(а|у|ом|е)?", re.IGNORECASE)
+_LABEL_TAIL_NUM_RE = re.compile(r"(?:[/\-–]\d{1,3})*")      # «Собеседник 3/4», «Собеседник 3-4»
+_WIKI_LINK_RE = re.compile(r"\[\[([^\]|\n]*)(?:\|([^\]\n]*))?\]\]")
+_SENTENCE_START_RE = re.compile(r"(?:\n|[.!?…»]\s)[\s\-*>#\d.)\[\]«\"_:]*\Z")
+_SENTENCE_LOOKBACK = 40
+
+
+def _link_target_stem(target: str) -> str:
+    """Цель ссылки как имя узла: последний сегмент без якоря и `.md` (как `dossier.scan`)."""
+    return re.split(r"[#^]", target)[0].split("/")[-1].strip().removesuffix(".md").strip()
+
+
+def unlabel_speakers(text: str) -> str:
+    """Текст для модели и тело досье без меток деятелем: «Собеседник 3» — номер
+    голоса одной встречи, а не человек; в досье по многим встречам он сводил
+    факты разных людей в одного (№815). Метка → «участник встречи»; ссылка на
+    узел-метку или с меткой в цели → её подпись, без подписи — то же слово
+    (цель не переписывается: битая ссылка хуже текста). Метка в закрытых
+    скобках при имени остаётся. Цена: два голоса одной встречи становятся одним
+    «участником встречи» — сознательно, номер между встречами ничего не значит.
+
+    Только в памяти — файлы графа не переписывает. Контракт (тесты):
+    `not has_speaker_actor(unlabel_speakers(x))` и повтор ничего не меняет.
+    """
+    def link(m: re.Match) -> str:
+        stem = _link_target_stem(m.group(1))
+        if not (is_placeholder_node(stem) or _speaker_spans(m.group(1))):
+            return m.group(0)
+        return m.group(2).strip() if m.group(2) and m.group(2).strip() else UNLABELED
+
+    text = _WIKI_LINK_RE.sub(link, text or "")
+    out, pos = [], 0
+    for a, b in _speaker_spans(text):
+        if a < pos:                    # хвост «/4» прошлой метки
+            continue
+        b = _LABEL_TAIL_NUM_RE.match(text, b).end()
+        word = _UNLABELED_CASES[(_LABEL_CASE_RE.match(text, a).group(1) or "").lower()]
+        # заглавная — только в начале предложения или строки: «с Собеседником 3» → «с участником»
+        before = ("\n" if a <= _SENTENCE_LOOKBACK else "") + text[max(0, a - _SENTENCE_LOOKBACK):a]
+        if text[a].isupper() and _SENTENCE_START_RE.search(before):
+            word = word[0].upper() + word[1:]
+        out += [text[pos:a], word]
+        pos = b
+    return "".join(out) + text[pos:]
 
 
 def _is_tag(inner: str, tags: frozenset[str]) -> bool:

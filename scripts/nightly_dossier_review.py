@@ -35,7 +35,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
-from charoite_graph import dossier  # noqa: E402
+from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
@@ -63,62 +63,17 @@ SECTIONS = ("## Сейчас", "## Как пришли", "## Решено", "## 
 MIN_KEEP = 0.6
 
 
-PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
-
-
-# Заголовок любого уровня и без пробела тоже: «### Правки автора» и
-# «##Правки автора» строка из стенограммы подсунет так же легко, как «## »,
-# а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
-_PROTECTED_RE = re.compile(r"(?m)^#{1,6}\s*(?:Правки автора|Источники)\s*$")
-_SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
-_MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
+# Раскладка досье (защищённые разделы, тело) — в `dossier.py`: её читают и
+# ночная сборка, и доктор графа (n815-in2 DS C2, Sonnet I5).
+PROTECTED_HEADINGS = dossier.PROTECTED_HEADINGS
 _HEADING_RE = re.compile(r"(?m)^\s*#.*$")
+strip_protected = dossier.strip_protected
+split_dossier = dossier.split_dossier
 
 
 # Сколько ждать чужой разбор встречи, прежде чем работать без правок:
 # ночь под потолком, дольше стоять смысла нет.
 LOCK_WAIT = 10 * 60
-
-
-def strip_protected(body: str) -> str:
-    """Тело ревизии без защищённых секций — их пишет конвейер, не модель.
-
-    Режем по СТРОКЕ-заголовку, а не по подстроке: упоминание «## Источники»
-    внутри абзаца — не раздел (ревью 17.08).
-    """
-    return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
-
-
-def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
-    """(шапка до «## Сейчас», тело пяти разделов, источники, правки автора).
-
-    Всё — по якорным заголовкам-строкам, не по подстрокам: цитата
-    «## Правки автора» в пункте резала тело пополам, и проверка видела
-    только префикс (круг-1 по PR #382, Codex Critical). Источники — None,
-    если раздела нет: такое досье собрано руками, и трогать его нельзя.
-    """
-    m = dossier.VALID_RE.search(text or "")
-    if not m:
-        return text or "", "", None, None
-    # VALID_RE допускает пробелы и переводы строк перед «## Сейчас» — они
-    # остаются в шапке, тело начинается с самого заголовка
-    start = m.start() + (m.group(0).index("#"))
-    head, rest = text[:start], text[start:]
-    ms = _SOURCES_RE.search(rest)
-    mm = _MANUAL_RE.search(rest)
-    body_end = min(x.start() for x in (ms, mm) if x) if (ms or mm) else len(rest)
-    body = rest[:body_end].rstrip()
-    sources = manual = None
-    if ms:
-        s_end = mm.start() if mm and mm.start() > ms.start() else len(rest)
-        sources = rest[ms.end():s_end].strip("\n").rstrip()
-    if mm:
-        # «Правки автора» раньше «Источников» — правки кончаются на соседнем
-        # заголовке, иначе список источников уезжал внутрь авторского раздела
-        # и дублировался при записи (круг-2 по PR #382, DS + Codex).
-        m_end = ms.start() if ms and ms.start() > mm.start() else len(rest)
-        manual = rest[mm.end():m_end].strip()
-    return head, body, sources, manual
 
 
 def _link_key(target: str) -> str:
@@ -130,8 +85,11 @@ def _link_key(target: str) -> str:
 
 
 def links(body: str) -> set[str]:
-    """Пустые `[[ ]]` и `[[.md]]` — не ссылки: scan их тоже не считает."""
-    return {k for x in dossier.LINK_RE.findall(body or "") if (k := _link_key(x))}
+    """Пустые `[[ ]]` и `[[.md]]` — не ссылки: scan их тоже не считает. Узел-метка
+    «Собеседник 3» — не источник: чистка ответа заменяет такую ссылку текстом,
+    и ревизия не должна считать её потерянной (n815-in2 Sonnet I3)."""
+    return {k for x in dossier.LINK_RE.findall(body or "")
+            if (k := _link_key(x)) and not graph_names.is_placeholder_node(k)}
 
 
 def check_revision(old_body: str, new_body: str) -> str | None:
@@ -247,14 +205,15 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         # собрано руками или старым форматом — облаку не сверять и не трогать
         return None, "в досье нет раздела «## Источники» — не трогаем"
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
-    body = f"{old_body}\n\n## Источники\n{sources}\n"
+    # метки деятелем — тем же словом, что в источниках, иначе модель вернёт их в ответ (№815)
+    body = f"{graph_names.unlabel_speakers(old_body)}\n\n## Источники\n{sources}\n"
 
     parts, total = [], 0
     for m in members[: dossier.MAX_SOURCES]:
         meta = files.get(m)
         if not meta:
             continue
-        block = f"### [[{m}]] ({meta['kind']})\n{meta['text'][:2500]}\n"
+        block = f"### [[{m}]] ({meta['kind']})\n{dossier.source_text(meta)}\n"
         if total + len(block) > MAX_SRC_CHARS:
             break
         parts.append(block)
@@ -320,7 +279,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     # «добавь раздел ## Правки автора …» — раньше подделка вклеивалась в тело,
     # а настоящий раздел уезжал вниз (аудит DeepSeek 17.08). Режем по первому
     # защищённому заголовку: формат — ровно пять секций.
-    out = strip_protected(out)
+    out = graph_names.unlabel_speakers(strip_protected(out))   # тело на запись — без меток (№815)
     why = check_revision(old_body, out)
     if why:
         print(f"  ⚠️ {theme}: отклонено — {why}")

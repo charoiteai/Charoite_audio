@@ -35,7 +35,7 @@ from datetime import date, datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
-from charoite_graph import dossier  # noqa: E402
+from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
@@ -181,9 +181,25 @@ NEED_START_S = 40.0
 clock = time.monotonic
 wall_clock = time.time   # потолок ночи — unix-время; тесты подменяют его отдельно от clock
 
-# Классы кандидата: досье нет / отпечаток разошёлся / без изменений (только --full)
-NEW, CHANGED, SAME = 1, 2, 3
-_CLASS_WORD = {NEW: "новое", CHANGED: "изменилось", SAME: "без изменений"}
+# Классы кандидата: досье нет / отпечаток разошёлся / отпечаток тот же, но в теле
+# метка диаризации деятелем / без изменений (только --full)
+NEW, CHANGED, LABELED, SAME = 1, 2, 3, 4
+_CLASS_WORD = {NEW: "новое", CHANGED: "изменилось", LABELED: "метка в теле", SAME: "без изменений"}
+
+
+def _classify(loaded: dossier.DossierLoad, fp: str, full: bool) -> int | None:
+    """Почему тема — работа ночи, или None — пропустить. Отпечаток не знает
+    промпта: досье, собранные до чистки меток, при тех же источниках не
+    пересобрались бы никогда (n815-in1 C1). Метка в теле — своя причина,
+    после изменившихся тем: свежие факты важнее старого текста; пересборка
+    кладёт чистое тело, и причина гаснет сама (n815-in2 DS C1)."""
+    if loaded.state == "missing":
+        return NEW
+    if dossier.read_fingerprint(loaded) != fp:
+        return CHANGED
+    if loaded.state == "ok" and dossier.labeled_body(loaded.text):
+        return LABELED
+    return SAME if full else None
 
 
 class _GraphRun:
@@ -266,12 +282,11 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         fp = dossier.fingerprint(members, files)
         loaded = g.reads.load(path)
         g.keep(theme, members, loaded, fp)
-        same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
-        if same and not full:
+        cls = _classify(loaded, fp, full)
+        if cls is None:
             g.skipped += 1
             g.unchanged += 1
             continue
-        cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
@@ -329,8 +344,11 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     body = ""
     for temperature in (0.2, 0.05):          # вторая попытка чуть холоднее
         try:
-            body = dossier.trim_to_format(
-                generate(theme, members, g.files, c, temperature=temperature))
+            # метка деятелем — тем же словом, что во входе: отказом она красила
+            # бы ночь и держала тему в голове очереди (n815-in1 C2); «Правки
+            # автора» ниже вставляются как были
+            body = graph_names.unlabel_speakers(dossier.trim_to_format(
+                generate(theme, members, g.files, c, temperature=temperature)))
         except Exception as e:  # noqa: BLE001
             print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
             body = ""

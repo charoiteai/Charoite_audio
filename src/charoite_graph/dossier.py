@@ -40,6 +40,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
+from charoite_graph import frontmatter, graph_names
 from charoite_graph.graph_schema import GraphSchema, name_date
 from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
@@ -263,7 +264,11 @@ def clusters(files: dict[str, dict], backlinks: dict[str, set[str]], *,
         outbound = {m.group(1).split("/")[-1].strip()
                     for m in LINK_RE.finditer(meta["text"])}
         members = {title} | inbound | {o for o in outbound if o in files}
-        members = {m for m in members if m in files}
+        # Узел-метка «Собеседник 3» в Люди — склейка разных людей, не источник
+        # темы: ни в промпт, ни в «Источники», ни в счёт (n815-in3 DS I2)
+        members = {m for m in members if m in files
+                   and not (schema.is_person_folder(files[m]["kind"])
+                            and graph_names.is_placeholder_node(m))}
         if len(members) >= min_size:
             # Хаб — первым: build_prompt берёт первые MAX_SOURCES участников,
             # и в кластере из 14+ встреч само ядро темы (её «Статус» и «Суть»)
@@ -329,6 +334,7 @@ PROMPT = """Ниже — узлы графа встреч по теме «{theme
 - В конце каждого пункта — ссылка на источник в виде [[Имя файла]].
 - Нет данных на раздел — поставь «—». Раздел не выдумывать.
 - Числа, имена, названия систем — дословно из источников.
+- «Участник встречи» — голос без имени, свой на каждой встрече: не человек, в «Кто в теме» его не ставить.
 - Русский язык, короткие фразы, без вводных оборотов.
 
 Запрещено: обращаться к читателю, спрашивать «что дальше», предлагать варианты
@@ -371,6 +377,14 @@ def trim_to_format(body: str) -> str:
     return body[m.start():].strip() if m else (body or "").strip()
 
 
+def source_text(meta: dict) -> str:
+    """Текст узла для модели — один на сборку досье и ревизию: без шапки, без
+    меток деятелем (`graph_names.unlabel_speakers`), не длиннее `SRC_CHARS`.
+    Чистка — до среза, в памяти: файл графа не меняется (№815)."""
+    _, body = frontmatter.split(meta.get("text") or "")
+    return graph_names.unlabel_speakers(body.strip())[:SRC_CHARS]
+
+
 def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
                  schema: GraphSchema) -> str:
     """Промпт темы: отбор по бюджету, подача — ядро и встречи от старой к новой.
@@ -386,10 +400,7 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
         meta = files.get(m)
         if not meta:
             continue
-        body = meta["text"]
-        body = re.sub(r"^---.*?^---", "", body, flags=re.S | re.M).strip()
-        body = body[:SRC_CHARS]
-        block = f"### [[{m}]] ({meta['kind']})\n{body}\n"
+        block = f"### [[{m}]] ({meta['kind']})\n{source_text(meta)}\n"
         if total + len(block) > PROMPT_CHARS:
             break
         selected.append((m, meta, block))
@@ -490,6 +501,65 @@ def preserve_manual(old_text: str) -> str | None:
         return None
     kept = m.group(1).strip()
     return kept if kept and kept != "—" else None
+
+
+PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
+
+
+# Заголовок любого уровня и без пробела тоже: «### Правки автора» и
+# «##Правки автора» строка из стенограммы подсунет так же легко, как «## »,
+# а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
+_PROTECTED_RE = re.compile(r"(?m)^#{1,6}\s*(?:Правки автора|Источники)\s*$")
+_SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
+_MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
+
+
+def strip_protected(body: str) -> str:
+    """Тело ревизии без защищённых секций — их пишет конвейер, не модель.
+
+    Режем по СТРОКЕ-заголовку, а не по подстроке: упоминание «## Источники»
+    внутри абзаца — не раздел (ревью 17.08).
+    """
+    return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
+
+
+def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
+    """(шапка до «## Сейчас», тело пяти разделов, источники, правки автора).
+
+    Всё — по якорным заголовкам-строкам, не по подстрокам: цитата
+    «## Правки автора» в пункте резала тело пополам, и проверка видела
+    только префикс (круг-1 по PR #382, Codex Critical). Источники — None,
+    если раздела нет: такое досье собрано руками, и трогать его нельзя.
+    """
+    m = VALID_RE.search(text or "")
+    if not m:
+        return text or "", "", None, None
+    # VALID_RE допускает пробелы и переводы строк перед «## Сейчас» — они
+    # остаются в шапке, тело начинается с самого заголовка
+    start = m.start() + (m.group(0).index("#"))
+    head, rest = text[:start], text[start:]
+    ms = _SOURCES_RE.search(rest)
+    mm = _MANUAL_RE.search(rest)
+    body_end = min(x.start() for x in (ms, mm) if x) if (ms or mm) else len(rest)
+    body = rest[:body_end].rstrip()
+    sources = manual = None
+    if ms:
+        s_end = mm.start() if mm and mm.start() > ms.start() else len(rest)
+        sources = rest[ms.end():s_end].strip("\n").rstrip()
+    if mm:
+        # «Правки автора» раньше «Источников» — правки кончаются на соседнем
+        # заголовке, иначе список источников уезжал внутрь авторского раздела
+        # и дублировался при записи (круг-2 по PR #382, DS + Codex).
+        m_end = ms.start() if ms and ms.start() > mm.start() else len(rest)
+        manual = rest[mm.end():m_end].strip()
+    return head, body, sources, manual
+
+
+def labeled_body(text: str) -> bool:
+    """В теле досье (пять разделов, без «Источников» и «Правок автора») действует
+    метка диаризации? Один предикат на доктора графа и ночную очередь — иначе
+    лента считала бы одно, а ночь чинила другое (n815-in3 DS C2)."""
+    return graph_names.has_speaker_actor(split_dossier(text or "")[1])
 
 
 @dataclass(frozen=True)
