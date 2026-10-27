@@ -431,8 +431,7 @@ def _second_pass_decisions(first: list, second: list) -> list:
 
 
 def _same_decision(a: set[str], b: set[str]) -> bool:
-    if not a or not b:
-        return False
+    # Пустой набор отсекает первое условие: общих 0 < SECOND_PASS_MIN_SHARED, до деления не доходит.
     shared = len(a & b)
     return shared >= SECOND_PASS_MIN_SHARED and shared / min(len(a), len(b)) >= SECOND_PASS_MIN_SHARE
 

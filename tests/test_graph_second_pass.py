@@ -387,6 +387,23 @@ def test_first_pass_without_decisions_takes_the_second(model, drop):
 def test_stems_are_pinned():
     """Основы — часть порога замера: префикс пять букв, слова от четырёх букв, ё = е, числа целиком."""
     assert g._stems("Отчёт по релизу сервиса, ещё раз 15") == {"отчет", "релиз", "серви", "15"}
+    assert g._stems("план") == {"план"}                 # ровно четыре буквы — уже слово
+
+
+@pytest.mark.parametrize("a, b", [(set(), {"а1", "б2", "в3"}), ({"а1", "б2", "в3"}, set()), (set(), set())])
+def test_empty_stems_are_never_the_same_decision(a, b):
+    """Решение без основ («Да», цифры-мусор) ни с чем не склеивается и не делит на ноль."""
+    assert g._same_decision(a, b) is False
+
+
+@pytest.mark.parametrize("extra, second", [(0, False), (1, True)])
+def test_second_pass_starts_strictly_above_its_chunk(model, extra, second):
+    """Ровно CHUNK_CHARS_2 знаков — та же нарезка, что у первого прохода; на знак больше — уже две части."""
+    model.n1 = 1
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": []}
+    g.extract(ON, "x" * (g.CHUNK_CHARS_2 + extra))
+    assert len(model.calls) == (1 + 2 if second else 1)
 
 
 def test_merge_treats_yo_as_ye():
@@ -445,6 +462,7 @@ def test_model_refusal_in_the_second_pass(fake_llm, capsys, error, stops):
         assert len(fake_llm.systems) == 3 + 1
         assert data["решения"] == ["Перенести релиз сервиса отчётов на пятницу"]
         assert "второй проход прерван" in out
+        assert f"дольше {g.BUSY_WAIT // 60:.0f} мин\n" in out      # причина есть, обещания повтора нет
         assert "повтор подберёт" not in out
     else:
         assert len(fake_llm.systems) == 3 + 5
@@ -461,4 +479,5 @@ def test_busy_model_in_the_first_pass_is_unchanged(fake_llm, capsys):
     data = g.extract({"llm": {"model": "m"}}, LONG)
     assert len(fake_llm.systems) == 3
     assert data["решения"] == ["Решение второго куска"]
-    assert "повтор подберёт незавершённую встречу" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"дольше {g.BUSY_WAIT // 60:.0f} мин — часть пропущена; повтор подберёт незавершённую встречу" in out

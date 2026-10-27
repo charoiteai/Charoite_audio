@@ -37,6 +37,14 @@ def test_default_is_everything_on():
     assert install_profile.tier3_enabled({}) is True
 
 
+def test_graph_second_pass_is_off_unless_the_owner_turns_it_on():
+    """Второй проход разбора (№821) — +2–2,5 минуты модели на встречу: умолчание — выключено."""
+    assert install_profile.graph_second_pass_enabled({}) is False
+    assert install_profile.graph_second_pass_enabled({"sufler": {"graph_second_pass": True}}) is True
+    assert install_profile.graph_second_pass_enabled({"sufler": {"graph_second_pass": "yes"}}) is True
+    assert install_profile.graph_second_pass_enabled({"sufler": {"graph_second_pass": "no"}}) is False
+
+
 def test_embedding_loops_have_their_own_switch():
     """Ревизия ядер поднимает bge-m3 так же, как дежавю: без своего
     выключателя обещание «на 8 ГБ эмбеддера нет» ломалось на первой встрече."""
