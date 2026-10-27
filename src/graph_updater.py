@@ -354,11 +354,20 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
         _report(n, total)
         try:
             got = _extract(cfg, part, project_rule, raise_http=True)
-        except (requests.RequestException, LLMHTTPError) as e:
-            # Модель не отвечает или занята — следующий кусок ждал бы тот же таймаут
-            # (выход n821-out2, Sonnet I2; финальный Opus, I1).
+        except requests.RequestException as e:
+            # Модель не отвечает — следующий кусок ждал бы тот же таймаут
+            # (выход n821-out2, Sonnet I2).
             print(f"граф: второй проход прерван ({type(e).__name__}: {e}) — остаётся найденное")
             break
+        except LLMHTTPError as e:
+            # Занята или недоступна — каждый следующий кусок ждал бы те же BUSY_WAIT
+            # (финальный Opus, I1). Прочий отказ (400, 404, сломанный ответ) — про
+            # этот кусок, остаток прохода он не отменяет (проверка правок Opus, I1).
+            if llm.is_retry_later(e):
+                print(f"граф: второй проход прерван (HTTP {e.status}, {e.kind}) — остаётся найденное")
+                break
+            print(f"граф: часть {n}/{total} второго прохода упала (HTTP {e.status}, {e.kind}) — продолжаю")
+            continue
         except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
             print(f"граф: часть {n}/{total} второго прохода упала ({type(e).__name__}: {e}) — продолжаю")
             continue
@@ -572,9 +581,11 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "",
         cloud = privacy.cloud_engine_active(cfg)
         who = "шлюз" if cloud else "Ollama"
         if llm.is_retry_later(e):
+            # Второму проходу повтора не будет — встреча уже разобрана первым:
+            # обещание здесь только для первого (проверка правок Opus по №821).
             print(f"граф: {'облако недоступно или лимит' if cloud else 'модель занята'} "
-                  f"(HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин — "
-                  "часть пропущена; повтор подберёт незавершённую встречу")
+                  f"(HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин"
+                  + ("" if raise_http else " — часть пропущена; повтор подберёт незавершённую встречу"))
         elif e.status != 200:
             hint = ("проверьте llm.cloud_model, адрес и ключ" if cloud
                     else f"модель {cfg['llm']['model']} установлена? (ollama pull)")

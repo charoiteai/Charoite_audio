@@ -366,10 +366,11 @@ def test_first_pass_split_unchanged_with_flag_on(model):
     assert len(model.calls) == 3 + 4                  # второй: 0, 5500, 11000, 16500; хвост 500 — в нахлёсте
 
 
-def test_merge_ignores_non_strings_among_first_pass_decisions():
-    """Словарь с текстом решения в первом проходе — не решение и не глушит то же решение второго."""
+@pytest.mark.parametrize("junk", [{"текст": "Заказать стенд нагрузочного тестирования"}, 5, None])
+def test_merge_ignores_non_strings_among_first_pass_decisions(junk):
+    """Не-строка среди решений первого — не решение: не глушит решение второго и не роняет склейку."""
     x = "Заказать стенд нагрузочного тестирования"
-    assert g._second_pass_decisions([{"текст": x}], [x]) == [x]
+    assert g._second_pass_decisions([junk], [x]) == [x]
 
 
 @pytest.mark.parametrize("drop", [True, False])
@@ -427,20 +428,37 @@ def test_prompt_language_branch(fake_llm, lang, english):
     assert ("LANGUAGE: write every field VALUE in English" in fake_llm.systems[0]) is english
 
 
-def test_busy_model_stops_the_second_pass(fake_llm):
-    """«Модель занята» на первом куске второго прохода — проход останавливается, а не ждёт
-    тот же срок на каждом следующем куске; первый проход остаётся (финальный Opus, I1)."""
-    fake_llm.script = ['{"решения": ["Перенести релиз сервиса отчётов на пятницу"]}'] * 3 + [
-        g.LLMHTTPError(503, "занята")] + ['{"решения": ["лишнее"]}'] * 5
+@pytest.mark.parametrize("error, stops", [
+    (g.LLMHTTPError(503, "занята"), True),
+    (g.LLMHTTPError(400, "плохой запрос"), False),
+    (g.LLMHTTPError(200, "x", kind="broken"), False),
+])
+def test_model_refusal_in_the_second_pass(fake_llm, capsys, error, stops):
+    """«Занята/недоступна» на первом куске второго прохода — проход останавливается, а не ждёт
+    тот же срок на каждом следующем куске (финальный Opus, I1). Прочий отказ — про этот кусок:
+    проход идёт дальше (проверка правок Opus, I1). Первый проход остаётся в обоих случаях."""
+    fake_llm.script = ['{"решения": ["Перенести релиз сервиса отчётов на пятницу"]}'] * 3 + [error] + [
+        '{"решения": ["Заказать стенд нагрузочного тестирования"]}'] * 4
     data = g.extract({"llm": {"model": "m"}, "sufler": {"graph_second_pass": True}}, LONG)
-    assert len(fake_llm.systems) == 3 + 1
-    assert data["решения"] == ["Перенести релиз сервиса отчётов на пятницу"]
+    out = capsys.readouterr().out
+    if stops:
+        assert len(fake_llm.systems) == 3 + 1
+        assert data["решения"] == ["Перенести релиз сервиса отчётов на пятницу"]
+        assert "второй проход прерван" in out
+        assert "повтор подберёт" not in out
+    else:
+        assert len(fake_llm.systems) == 3 + 5
+        assert data["решения"] == ["Перенести релиз сервиса отчётов на пятницу",
+                                   "Заказать стенд нагрузочного тестирования"]
+        assert "второй проход прерван" not in out
+        assert "второго прохода упала" in out
 
 
-def test_busy_model_in_the_first_pass_is_unchanged(fake_llm):
+def test_busy_model_in_the_first_pass_is_unchanged(fake_llm, capsys):
     """Первый проход «модель занята» по-прежнему пропускает кусок и идёт дальше."""
     fake_llm.script = [g.LLMHTTPError(503, "занята"), '{"решения": ["Решение второго куска"]}',
                        '{"решения": []}']
     data = g.extract({"llm": {"model": "m"}}, LONG)
     assert len(fake_llm.systems) == 3
     assert data["решения"] == ["Решение второго куска"]
+    assert "повтор подберёт незавершённую встречу" in capsys.readouterr().out
