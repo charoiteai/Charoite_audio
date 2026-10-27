@@ -38,11 +38,12 @@ def _graph(tmp_path: pathlib.Path, *nodes: str) -> pathlib.Path:
 def _held(graph, names, owner=""):
     got = g.collective_held(graph, [(n, "Люди") for n in names], owner=owner, born=names)
     assert all(f == "Люди" for _, f in got), got
-    return {k: cands for (k, _), (_, cands) in got.items()}
+    return {k: cands for (k, _), (_, cands, _) in got.items()}
 
 
-def _meeting(tmp_path, monkeypatch, graph, data, owner=""):
-    """Прогон main() на подставном разборе: модель, архив, хук и память — заглушки."""
+def _meeting(tmp_path, monkeypatch, graph, data, owner="", sent=None):
+    """Прогон main() на подставном разборе: модель, архив, хук и память — заглушки;
+    `sent` собирает имена участников, ушедших в память."""
     voices = [p["имя"] for p in data.get("люди", [])]
     speech = "".join(f"**{n}** [10:{i:02d}]: обсуждаем релиз, сроки и проверку стенда, {n} отвечает по делу.\n"
                      for i, n in enumerate(voices * 3)) + "Конец обсуждения. " * 20
@@ -56,6 +57,9 @@ def _meeting(tmp_path, monkeypatch, graph, data, owner=""):
     for fn in ("_open_progress", "harden_umask", "archive_and_publish", "run_post_hook",
                "reindex_memory", "meeting_facts_to_brain", "_revise_meeting_cores"):
         monkeypatch.setattr(g, fn, lambda *a, **k: None)
+    if sent is not None:
+        monkeypatch.setattr(g, "meeting_facts_to_brain",
+                            lambda cfg, stamp, title, people, *a: sent.extend(p["имя"] for p in people))
     monkeypatch.setattr(g.privacy, "cloud_enrich_enabled", lambda cfg: False)
     monkeypatch.setattr(g, "LLM", lambda cfg: (_ for _ in ()).throw(RuntimeError("модели нет")))
     g.main()
@@ -236,7 +240,7 @@ def test_key_carries_the_place(tmp_path):
     _node(graph, "Системы/Бот", 'aliases: ["Сашка"]\n')
     got = g.collective_held(graph, [("Сашка", "Люди"), ("Сашка", "Системы")], owner="")
     assert set(got) == {("сашка", "Люди")}, got
-    assert got[("сашка", "Люди")] == ("Сашка", ["Люди/Саша Образцов"])
+    assert got[("сашка", "Люди")] == ("Сашка", ["Люди/Саша Образцов"], "Люди/Саша")
 
 
 def test_entity_resolved_by_alias_outside_people_is_not_held(tmp_path):
@@ -254,7 +258,7 @@ def test_new_entity_with_a_person_word_is_held(tmp_path):
     точное имя в любой папке (n611-in2; out1 Haiku I1 — принятая цена)."""
     graph = _graph(tmp_path, "Люди/Ромашка Иванова")
     got = g.collective_held(graph, [("Ромашка", "Системы")], owner="")
-    assert got == {("ромашка", "Системы"): ("Ромашка", ["Люди/Ромашка Иванова"])}
+    assert got == {("ромашка", "Системы"): ("Ромашка", ["Люди/Ромашка Иванова"], "")}
 
 
 def test_fuller_name_glued_to_a_bare_node_is_held_not_written(tmp_path):
@@ -276,7 +280,8 @@ def test_link_only_name_goes_to_the_journal(tmp_path, monkeypatch):
         "люди": [_person("Гоша")], "связи": [{"от": "Саша", "к": "Релиз", "тип": "ведёт"}]})
     assert "- Саша → [[Системы/Релиз|Релиз]]: ведёт" in note
     journal = (graph / g.CANDIDATES_NOTE).read_text(encoding="utf-8")
-    assert journal.count("«Саша» (person) — голое имя при живых тёзках: [[Люди/Саша Образцов]]") == 1, journal
+    assert journal.count("«Саша» (связь) — голое имя при живых тёзках: [[Люди/Саша Образцов]]") == 1, \
+        "имя только концом связи — тип «связь» (n611-out2 Haiku M3)"
     assert sasha.read_bytes() == before
 
 
@@ -315,3 +320,60 @@ def test_gate_reads_nothing_without_names(tmp_path, monkeypatch):
     graph = _graph(tmp_path, "Люди/Саша", "Люди/Саша Образцов")
     monkeypatch.setattr(g, "_read_node", lambda *a, **k: (_ for _ in ()).throw(AssertionError("читал узлы")))
     assert g.collective_held(graph, [], owner="") == {}
+
+
+# --- круг n611-out2 --------------------------------------------------------------
+
+
+def test_unreadable_stub_redirect_is_not_a_namesake(tmp_path):
+    """Заглушка-редирект с битым байтом (конфликт iCloud) — заглушка и для затвора,
+    и для доктора: читается с заменой, как `graph_links.read_notes` (n611-out2 Haiku C1)."""
+    graph = _graph(tmp_path, "Люди/Саша", "Люди/Иван Петров")
+    (graph / "Люди" / "Саша Старый.md").write_bytes("# Саша Старый → [[Люди/Иван Петров]]\n".encode() + b"\xff\n")
+    assert _held(graph, ["Саша"]) == {}
+    assert graph_doctor.inspect(graph, owner="")["feed"]["collective"] == []
+
+
+def test_unopenable_namesake_still_holds(tmp_path, monkeypatch):
+    """Узел, который не открыть вовсе (OSError), остаётся живым тёзкой: заглушкой он
+    не доказан (n611-out1 DS C1 после правки out2)."""
+    graph = _graph(tmp_path, "Люди/Саша", "Люди/Саша Сидоров")
+    real = pathlib.Path.read_text
+
+    def read_text(self, *a, **k):
+        if self.stem == "Саша Сидоров":
+            raise PermissionError("нет прав")
+        return real(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+    assert _held(graph, ["Саша"]) == {"саша": ["Люди/Саша Сидоров"]}
+
+
+def test_doctor_feed_record_without_node_is_skipped(tmp_path):
+    """Запись прошлой ленты без `node` — не падение доктора (n611-out2 DS M2 / Haiku I2)."""
+    graph = _graph(tmp_path, "Люди/Саша", "Люди/Саша Образцов")
+    feed = {"collective": [{"linked_from": 1}, {"node": 7, "linked_from": 1}]}
+    assert graph_doctor.inspect(graph, owner="", prev_feed=feed)["collective_new_links"] is None
+
+
+def test_glued_fuller_name_names_the_node_it_was_led_to(tmp_path, monkeypatch):
+    """Полное имя, которое поиск приводит в голый узел, — в заметке видно, куда его
+    вёл поиск: «голое имя» у полного имени иначе не читается (n611-out2 DS M3)."""
+    graph = _graph(tmp_path, "Люди/Владимир Иванов")
+    bare = _node(graph, "Люди/Владимир")
+    before = bare.read_bytes()
+    note = _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Владимир Попов"), _person("Гоша")]})
+    assert "- Владимир Попов — разработчик: сроки релиза _(узел не выбран: поиск ведёт в Владимир — " \
+           "голое имя при живых тёзках: [[Люди/Владимир Иванов|Владимир Иванов]])_" in note, note
+    assert bare.read_bytes() == before
+    assert g.held_note(["Люди/Саша Образцов"]) == \
+        " _(узел не выбран: голое имя при живых тёзках: [[Люди/Саша Образцов|Саша Образцов]])_"
+
+
+def test_held_participant_still_reaches_memory(tmp_path, monkeypatch):
+    """Затвор держит узел, а не факт: участник со сборным именем уходит в память
+    встречи вместе с остальными (n611-out2, шаг Haiku по понижению)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    _node(graph, "Люди/Саша")
+    sent = []
+    _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Саша"), _person("Гоша")]}, sent=sent)
+    assert sent == ["Саша", "Гоша"]

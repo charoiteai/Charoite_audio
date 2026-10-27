@@ -813,16 +813,18 @@ baseline feed — a meeting that reached such a node past the gate.
 
 The meeting gate for collective names (`graph_updater.collective_held`) is a filter on top
 of the lookup, modelled on background voices: before the first write of a meeting one table
-`name key → candidates` is built from every name the meeting renders — people, entities and
+`(name key, place) → candidates` is built from every name the meeting renders — people, entities and
 both ends of links — over the live people nodes plus the people born by this meeting. Each
 name is resolved by `find_canonical` first, so an alias on the collective node leads to the
 node and the node is judged; a target outside the people folders keeps its old path, and so
-does an entity the writer files by an alias outside People. The table is keyed by the name and
-its place (people, entity folder, link end), and a namesake counts by its file name — an
-unreadable node is not proven a stub and keeps the gate shut. A held
+does an entity the writer files by an alias outside People. The place (people, entity folder,
+link end) is part of the key because the lookup depends on the folder. A namesake counts by its
+file name: a node read with replacement characters (as the doctor reads) is a stub if it says
+so, and only a node that cannot be opened at all keeps the gate shut. A held
 name gets no `upsert_entity`, no link in the note and no `apply_entities` verdict: the note
 line keeps the role, the contribution and links to the namesakes, and `_Кандидаты.md` gets
-one line per name.
+one line per name. When the lookup led a fuller name into a bare node, the note names that
+node.
 
 One resolver, `src/graph_links.py`, decides whether a `[[link]]` is alive
 for the doctor, the cloud review and clean-ups alike: full path, note

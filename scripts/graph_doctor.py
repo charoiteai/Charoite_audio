@@ -209,9 +209,7 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
     # Скобка с именем системы или команды при человеке — пометка, не фамилия:
     # «Илья (ОТДЕЛ)» не тёзка «отдел» и не делает Системы/ОТДЕЛ человеком.
     placeholder_set = set(placeholders)
-    # папки людей — те же, что у затвора записи (n611-out1 DS M2)
-    people = [p for p in nodes if rel[p].startswith(tuple(f"{f}/" for f in graph_updater._PEOPLE_FOLDERS))
-              and p not in placeholder_set
+    people = [p for p in nodes if rel[p].startswith("Люди/") and p not in placeholder_set
               and not _is_stub(notes[p])]
     tags = frozenset(p.stem.casefold().replace("ё", "е") for p in nodes
                      if rel[p].startswith(("Системы/", "Команды/")))
@@ -310,7 +308,8 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         known = prev_feed.get("collective")
         known = known if isinstance(known, list) else None
         was_links = {x["node"]: x["linked_from"] for x in (known or [])
-                     if isinstance(x, dict) and isinstance(x.get("linked_from"), int)
+                     if isinstance(x, dict) and isinstance(x.get("node"), str)
+                     and isinstance(x.get("linked_from"), int)
                      and not isinstance(x.get("linked_from"), bool)}
         # база без меры (лента старого формата, битая) — «не с чем сравнить», не ноль
         # (n611-out1 Sonnet M1); пустой список сборных — честный ноль

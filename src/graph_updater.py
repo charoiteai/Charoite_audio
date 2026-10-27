@@ -1454,11 +1454,15 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
     return path, bool(n)
 
 
-def held_note(cands: list[str]) -> str:
+def held_note(cands: list[str], via: str = "") -> str:
     """Хвост строки участника со сборным именем: узла нет, кандидаты — ссылками,
-    чтобы Obsidian связал встречу с ними, а не со сборным узлом (№611)."""
+    чтобы Obsidian связал встречу с ними, а не со сборным узлом (№611). `via` —
+    сборный узел, к которому поиск привёл другое написание («Владимир Попов» →
+    «Владимир»): без него причина «голое имя» не читается у полного имени
+    (n611-out2 DS M3). Причина в журнале не меняется — она ключ пары (№236)."""
     tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
-    return f" _(узел не выбран: {_HELD_WHY['collective']}{tail})_"
+    lead = f"поиск ведёт в {via.split('/', 1)[-1]} — " if via else ""
+    return f" _(узел не выбран: {lead}{_HELD_WHY['collective']}{tail})_"
 
 
 def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple[str, list[str]]]) -> str:
@@ -1798,9 +1802,10 @@ def drop_background(people: list[dict], speech: str) -> tuple[list[dict], list[s
 
 
 def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *, owner: str,
-                    born: list[str] = (), meeting_link: str = "",
-                    ) -> dict[tuple[str, str | None], tuple[str, list[str]]]:
-    """Имена встречи, которые не пишутся в узел: `(name_key, папка)` → (имя, кандидаты «Люди/X»).
+                    born: list[str] = (),
+                    ) -> dict[tuple[str, str | None], tuple[str, list[str], str]]:
+    """Имена встречи, которые не пишутся в узел: `(name_key, папка)` → (имя,
+    кандидаты «Люди/X», сборный узел поиска — если имя пришло в него другим написанием).
 
     Голое имя при живых тёзках — сборный узел: каждый «Саша» любой встречи садился
     в `Люди/Саша`, и под ним копились факты разных людей (№611; замер 27.10 — 42
@@ -1820,7 +1825,9 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
     которую писатель кладёт по псевдониму в узел вне людей (`entity_node_verdict`
     «resolved»), не держится (DS I1). Тёзка — по имени файла: нечитаемый узел не
     доказан заглушкой и считается живым, иначе конфликтная копия iCloud открывала
-    затвор (DS C1)."""
+    затвор (DS C1). Не-UTF-8 читается с заменой, как у доктора (`graph_links.read_notes`):
+    заглушка-редирект с битым байтом остаётся заглушкой и не держит имя ложно
+    (n611-out2 Haiku C1); нечитаемым остаётся только OSError."""
     if not names:
         return {}
     tags = frozenset(f.stem.casefold().replace("ё", "е") for place in ("Системы", "Команды")
@@ -1830,14 +1837,17 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
         for f in sorted((graph / place).glob("*.md")) if (graph / place).is_dir() else ():
             if f.name.startswith("_") or is_placeholder_node(f.stem):
                 continue
-            text = _read_node(f, meeting_link)
-            if text is None or not redirects.is_merged(text):
+            try:
+                merged = redirects.is_merged(f.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                merged = False
+            if not merged:
                 live.setdefault(f.stem, f"{place}/{f.stem}")
     for n in born:      # уже живой под другой формой («Образцов Саша») — не второй кандидат
         if find_canonical(graph, safe_name(n), folder=_PEOPLE_FOLDERS[0]) is None:
             live.setdefault(safe_name(n), f"{_PEOPLE_FOLDERS[0]}/{safe_name(n)}")
     index = namesake_index(live, tags)
-    held: dict[tuple[str, str | None], tuple[str, list[str]]] = {}
+    held: dict[tuple[str, str | None], tuple[str, list[str], str]] = {}
     for name, folder in names:
         clean = safe_name(strip_speaker_label(name))
         key = name_key(clean)
@@ -1851,7 +1861,8 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
             continue
         judged = target.stem if target is not None else clean
         if is_collective(judged, index, owner=owner, tags=tags):
-            held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)))
+            held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)),
+                                   f"{target.parent.name}/{target.stem}" if judged != clean else "")
     return held
 
 
@@ -3085,24 +3096,24 @@ def main():
         graph, [(p["имя"], "Люди") for p in people]
         + [(e["имя"], _efolder(e)) for e in ents]
         + [(str(l[k]), None) for l in links for k in ("от", "к")],
-        owner=str((cfg.get("sufler") or {}).get("user_name") or ""), born=[p["имя"] for p in people],
-        meeting_link=meeting_link)
+        owner=str((cfg.get("sufler") or {}).get("user_name") or ""), born=[p["имя"] for p in people])
     _ckey = lambda n: name_key(safe_name(strip_speaker_label(str(n))))  # noqa: E731
     people_all, ents_all = people, ents
     people = [p for p in people_all if (_ckey(p["имя"]), "Люди") not in collective]
     ents = [e for e in ents_all if (_ckey(e["имя"]), _efolder(e)) not in collective]
     # журнал — одна строка на имя, по самой таблице: имя только концом связи тоже
-    # попадает к человеку (n611-out1 DS M1 / Sonnet I2); люди раньше сущностей
+    # попадает к человеку (n611-out1 DS M1 / Sonnet I2); люди раньше сущностей; имя
+    # только концом связи — тип «связь», не «person» (n611-out2 Haiku M3)
     ent_type = {(_ckey(e["имя"]), _efolder(e)): e.get("тип") or "entity" for e in ents_all}
     journaled: set[str] = set()
-    for (key, folder), (name, cands) in sorted(collective.items(), key=lambda kv: kv[0][1] != "Люди"):
+    for (key, folder), (name, cands, _) in sorted(collective.items(), key=lambda kv: kv[0][1] != "Люди"):
         if key not in journaled:
             journaled.add(key)
-            _journal_held_entity(graph, folder or "Люди", name, ent_type.get((key, folder), "person"),
+            _journal_held_entity(graph, folder or "Люди", name, ent_type.get((key, folder), "person" if folder else "связь"),
                                  "collective", cands, meeting_link)
     if collective:
         print("граф: голое имя при живых тёзках, узел не выбран: "
-              + ", ".join(sorted({name for name, _ in collective.values()})))
+              + ", ".join(sorted({v[0] for v in collective.values()})))
 
     # 1) upsert людей и сущностей — ДО заметки встречи, чтобы canon_link
     # резолвил ссылки по уже существующим файлам узлов (иначе фантомные дубли)
@@ -3163,7 +3174,7 @@ def main():
                + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}"
                   if (_ckey(p["имя"]), "Люди") not in collective else
                   f"- {safe_name(p['имя'])} — {p.get('роль','')}: {p.get('вклад','')}"
-                  + held_note(collective[(_ckey(p["имя"]), "Люди")][1]) for p in people_all]
+                  + held_note(*collective[(_ckey(p["имя"]), "Люди")][1:]) for p in people_all]
                # метка диаризации — текстом, без ссылки: узла у неё нет
                + [f"- {safe_name(p['имя'])} — {p.get('роль','')}: {p.get('вклад','')}" for p in anon]
                # голос из фона записи — текстом и с пометкой: узла нет, след есть
@@ -3202,7 +3213,9 @@ def main():
 
     # 3б) факты встречи → внешняя память (brain :8100) — только если её включили
     if graph_ok:
-        meeting_facts_to_brain(cfg, stamp, title, people, topics, decisions)
+        # участник со сборным именем остаётся фактом встречи: держится узел, не память
+        # (n611-out2, шаг Haiku по понижению)
+        meeting_facts_to_brain(cfg, stamp, title, people_all, topics, decisions)
 
     # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что
