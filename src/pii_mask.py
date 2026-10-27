@@ -38,6 +38,11 @@ _VOWEL_END = "аяеиоуыюйь"
 #: окончания для проверки «общее ли слово» по общему словарю (`_distinctive`)
 _INFLECT = ("а", "я", "ы", "и", "е", "у", "ю", "о", "ь", "й", "ом", "ем", "ой", "ей",
             "ов", "ев", "ам", "ям", "ами", "ями", "ах", "ях")
+#: Хвост слова человека сверх основы узла, при котором слово — падеж узла, а не другое имя
+#: той же основы: «Василию» — Василий, «Василиса», «Васильев» — нет (n793-final-opus C1).
+#: Маскируется слово по-прежнему по основе; узел (канон) группе даёт только этот хвост.
+_CASE_TAILS = frozenset(("", *_INFLECT, *_ENDINGS, "ым", "ыми", "ых", "ими", "их", "ия", "ию", "ием",
+                         "ии", "ою", "ею", "ье", "ья", "ью", "ьем"))
 _LETTERS = r"[^\W\d_]"
 #: Слово текста: буквы и цифры («Ф1»), без подчёркивания.
 _WORD = re.compile(r"[^\W_]+")
@@ -343,6 +348,13 @@ def _word_fits(word: str, base: str, tail: int, exact: bool) -> bool:
     return w.startswith(base) and len(w) - len(base) <= tail
 
 
+def _case_of(surface: str, entry: Entry) -> bool:
+    """Слова спана — падежные формы слов узла (`_CASE_TAILS`), а не другое имя той же основы."""
+    ws = _WORD.findall(_yo(surface).lower())
+    return len(ws) == len(entry.words) and all(
+        w.startswith(b.lower()) and w[len(b):] in _CASE_TAILS for w, b in zip(ws, entry.words))
+
+
 def _dictionary_spans(text: str, forms: Forms) -> list[tuple[int, int, Entry]]:
     """Все вхождения форм по словам текста; пересечения решает `_pick`."""
     text = _yo(text)
@@ -563,6 +575,9 @@ def mask(text: str, forms: Forms, ner: Sequence[tuple[int, int, str]] = (), *,
         if isinstance(what, Entry):
             kind, canon = what.kind, what.group
             gkey = (kind, canon) if canon else (kind, "~", " ".join(what.words))
+            if canon and kind == PERSON and not _case_of(surface, what):
+                canon = None    # другое имя той же основы — своя группа, не узел
+                gkey = (kind, "~", " ".join(_base(w)[0] for w in _WORD.findall(surface)))
         else:
             kind, canon = what, None
             # падежные формы одного имени — одна группа, как у словаря (n793-out1 DS-7)

@@ -136,3 +136,16 @@ def test_reply_is_unmasked_before_it_is_written():
         calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
                  and isinstance(n.func, ast.Attribute) and n.func.attr == "unmask_reply"]
         assert calls, f"{where}: ответ не разворачивается из ID"
+
+
+@pytest.mark.parametrize("where", sorted(w for w, how in MASKED_EXITS.items() if how == "dash_p"))
+def test_cli_exit_under_mask_runs_in_the_empty_workdir(where):
+    """CLI кладёт cwd в системный промпт: вызов `claude -p` ночи задаёт `cwd=` с
+    `cloud_door.empty_workdir()`, иначе в облако уходит путь кода (n793-final-opus M1)."""
+    fn = _func(*where)
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and n.args
+             and isinstance(n.args[0], ast.List) and _prompt_args(n.args[0], "dash_p")]
+    assert calls, f"{where}: не нашёл вызова CLI — сторож ослеп"
+    for c in calls:
+        cwd = next((k.value for k in c.keywords if k.arg == "cwd"), None)
+        assert cwd is not None and "empty_workdir" in ast.unparse(cwd), f"{where}:{c.lineno}: cwd не пустой каталог"

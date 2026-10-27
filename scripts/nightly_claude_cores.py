@@ -384,7 +384,9 @@ def main() -> None:
                  *cloud.effort_args(cloud.effort(cfg, "cloud_night_effort")),   # №214
                  *cloud.text_only_args()],
                 capture_output=True, text=True, timeout=600, env=env,
-                stdin=subprocess.DEVNULL)
+                stdin=subprocess.DEVNULL,
+                # cwd CLI кладёт в системный промпт: под маской — пустой каталог (n793-final-opus M1)
+                cwd=None if masked.level == "off" else cloud_door.empty_workdir())
             out = (r.stdout or "").strip()
         except OSError as e:
             print(f"CLI облака не запустился: {e}")

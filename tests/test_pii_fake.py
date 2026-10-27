@@ -331,3 +331,17 @@ def test_abbreviation_fake_is_not_a_word(monkeypatch):
     monkeypatch.setattr(pk.rnd, "choice", lambda _xs: next(seq))
     monkeypatch.setattr(pk.rnd, "random", lambda: 1.0)
     assert pk.abbr() != "ПЛАН"
+
+
+@pytest.mark.parametrize("node, src", [
+    ("Василий Петров", "Василиса пришла. Василий Петров ушёл."),
+    ("Василий Петров", "Васильев пришёл. Василий Петров ушёл."),
+    ("Юлий Орлов", "Юлиана пришла. Юлий Орлов ушёл."),
+    ("Дмитрий Орлов", "Дмитриева пришла. Дмитрий Орлов ушёл."),
+    ("Василий Петров", "Василию сказали. Василием Петровым довольны. Василий Петров ушёл."),
+])
+def test_other_name_of_the_same_stem_is_not_the_node(node, src):
+    """Гость с основой узла («Василиса» при «Василий») — своя группа и своя подделка:
+    иначе разворот писал в граф имя узла (n793-final-opus C1). Падеж узла — узел."""
+    m, d, _ = _dressed(src, (pm.NodeForms(node),), seed=0)
+    assert pii_fake.undress(m.text, d, sent=m.text) == (src, 0), m.text

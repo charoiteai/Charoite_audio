@@ -244,7 +244,9 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
                                 *cloud.effort_args(cloud.effort(cfg, "cloud_night_effort")),   # №214
                                 *cloud.text_only_args()],
                                capture_output=True, text=True, timeout=600, env=env,
-                               stdin=subprocess.DEVNULL)
+                               stdin=subprocess.DEVNULL,
+                               # cwd CLI кладёт в системный промпт (n793-final-opus M1)
+                               cwd=None if masked.level == "off" else cloud_door.empty_workdir())
             break
         except OSError as e:
             # exec не удался: бинарник CLI меняется под ногами (обновление) —
