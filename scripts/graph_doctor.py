@@ -214,8 +214,10 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
     tags = frozenset(p.stem.casefold().replace("ё", "е") for p in nodes
                      if rel[p].startswith(("Системы/", "Команды/")))
     index = graph_names.namesake_index((p.stem for p in people), tags)
-    collective = [(p, graph_names.bare_namesakes(p.stem, index, owner=owner, tags=tags)) for p in people]
-    collective = sorted(((p, n) for p, n in collective if n), key=lambda x: (-len(linkers[x[0]]), x[0].stem))
+    # сборный — тем же предикатом, что держит запись встречи (graph_updater.collective_held)
+    collective = [(p, graph_names.bare_namesakes(p.stem, index, owner=owner, tags=tags)) for p in people
+                  if graph_names.is_collective(p.stem, index, owner=owner, tags=tags)]
+    collective = sorted(collective, key=lambda x: (-len(linkers[x[0]]), x[0].stem))
     # Человек в Системах — по полному ключу, порядку слов (DS M1) и слову имени: на
     # рабочем графе 26.10 все 4 находки — по слову («Настя», фамилия) или полному имени.
     person_keys = set()
@@ -297,9 +299,33 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         if fresh:
             tail = "" if prev_feed is None else f", новых с прошлой ночи {len(fresh)}"
             warnings.append(text.format(n=len(now)) + tail + "; список — logs/graph_feed.json")
+    # Мера затвора встречи (№611 этап 2): новые ссылки в УЖЕ известные сборные. Сверка
+    # выше видит только новый узел, а рост `linked_from` старого — нет (n611-in2 DS C4).
+    # Число — в сводке и ленте каждого прохода: база ночи сдвигается, и приёмка
+    # суммирует ленты, а не ловит предупреждение (n611-in3 Sonnet I5).
+    new_links = None
+    if prev_feed is not None:
+        known = prev_feed.get("collective")
+        known = known if isinstance(known, list) else None
+        was_links = {x["node"]: x["linked_from"] for x in (known or [])
+                     if isinstance(x, dict) and isinstance(x.get("node"), str)
+                     and isinstance(x.get("linked_from"), int)
+                     and not isinstance(x.get("linked_from"), bool)}
+        # база без меры (лента старого формата, битая) — «не с чем сравнить», не ноль
+        # (n611-out1 Sonnet M1); пустой список сборных — честный ноль
+        if known is not None and (was_links or not known):
+            new_links = sum(max(0, len(linkers[q]) - was_links[p])
+                            for p, (q, _) in zip(collective_paths, collective) if p in was_links)
+        if new_links:
+            # рост ссылок не называет источник: встреча мимо затвора, ручная ссылка
+            # или ночное слияние (n611-out1 DS M3)
+            warnings.append(f"новых ссылок в известные сборные узлы с прошлой ночи: {new_links} — "
+                            "встреча мимо затвора, ручная ссылка или слияние; список — logs/graph_feed.json")
+    rep["collective_new_links"] = new_links
     rep["warnings"] = warnings
     rep["feed"] = {
         "notes": len(notes),
+        "collective_new_links": new_links,
         "collective": [{"node": p, "linked_from": len(linkers[q]), "namesakes": n}
                        for p, (q, n) in zip(collective_paths, collective)],
         "people_in_systems": [rel[p] for p in people_in_systems],

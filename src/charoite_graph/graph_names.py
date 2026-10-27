@@ -210,6 +210,16 @@ def bare_namesakes(name: str, index: dict[str, list[str]], *, owner: str,
                   if not (len(own) >= 2 and set(name_words(n, tags)) <= own))
 
 
+def is_collective(name: str, index: dict[str, list[str]], *, owner: str,
+                  tags: frozenset[str] = frozenset()) -> bool:
+    """Сборное имя: голое, и среди живых есть хоть один многословный тёзка.
+
+    Один порог на доктора (счёт сборных узлов) и на затвор встречи в
+    `graph_updater` (имя не пишется в узел): порог «≥ 2» у затвора при «≥ 1» у
+    доктора оставлял 15 из 42 сборных копить ссылки (n611-in3 Sonnet C2 / DS C1)."""
+    return bool(bare_namesakes(name, index, owner=owner, tags=tags))
+
+
 def strip_speaker_label(name: str) -> str:
     """«Саша (Спикер 1)» → «Саша»: метка диаризации в скобках у настоящего
     имени — пометка модели, не часть имени.

@@ -801,13 +801,36 @@ meeting into itself (memory audit, 07.09). At night
 broken links (separately for active folders and for `Встречи-архив`, which
 the pipeline never re-reads), labels among People, orphans, duplicates,
 near-duplicates by the name key and across word order, `_MOC.md` coverage,
-collective nodes by the one predicate `graph_names.bare_namesakes` (the input gate
-will decide by it too) — into `logs/graph_doctor.json`, full lists into
+collective nodes by the one predicate `graph_names.is_collective` (the meeting gate
+decides by it too; the doctor reads people from `Люди/` only, the gate from every people folder of the schema) — into `logs/graph_doctor.json`, full lists into
 `logs/graph_feed.json`, both written atomically through `safe_write`; "new" collective
 nodes are counted against `logs/graph_feed_base.json`, the feed at the end of the previous night,
 which only `--advance-base` (the night's final pass) moves, and never before the report and the feed are written,
 nor for a graph read below 80 % of its last night's notes; the morning brief shows a summary and
 warnings by thresholds (the broken-link threshold counts active links only).
+`collective_new_links` is the growth of incoming notes of collective nodes already in the
+baseline feed — a meeting that reached such a node past the gate.
+
+The meeting gate for collective names (`graph_updater.collective_held`) is a filter on top
+of the lookup, modelled on background voices: before the first write of a meeting one table
+`(name key, place) → candidates` is built from every name the meeting renders — people, entities and
+both ends of links — over the live people nodes plus the people born by this meeting. Each
+name is resolved by `find_canonical` first, so an alias on the collective node leads to the
+node and the node is judged; a target outside the people folders keeps its old path, and so
+does an entity the writer files by an alias outside People. The place (people, entity folder,
+link end) is part of the key because the lookup depends on the folder. A namesake counts by its
+file name: a node read with replacement characters (as the doctor reads) is a stub if it says
+so, and only a node that cannot be opened at all keeps the gate shut. A held
+name gets no `upsert_entity`, no link in the note and no `apply_entities` verdict: the note
+line keeps the role, the contribution and links to the namesakes, and `_Кандидаты.md` gets
+one line per name. When the lookup led another spelling (another name key) into a bare node, the
+note names that node — on the participant line and the entity line alike, and the meeting head
+re-sent after a review reads the held participant line too. A stub with a broken byte is
+a stub for the writer as well: the lookup follows it to its canon. A stub whose chain is broken is judged by the node the
+writer would create at its target (the same `_stub_birth` path), so a bare node is not born next to a living full one;
+a target outside the node folders is not a node: the writer does not write there, and the gate judges the name itself by
+the usual threshold. An entity the writer does not hand to `upsert_entity` (verdict near, ambiguous or junk) is not judged
+by its stub either.
 
 One resolver, `src/graph_links.py`, decides whether a `[[link]]` is alive
 for the doctor, the cloud review and clean-ups alike: full path, note

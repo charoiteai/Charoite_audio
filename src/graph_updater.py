@@ -431,8 +431,8 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
 # лёгком модуле без requests/llm, который импортируют демон, doctor и
 # уборка ссылок; здесь — те же имена для прежних вызывающих и тестов.
 from charoite_graph.graph_names import (  # noqa: E402,F401
-    _PLACEHOLDER_RE, bag_key, is_placeholder_node, is_speaker_placeholder,
-    name_key, safe_name, strip_speaker_label,
+    _PLACEHOLDER_RE, bag_key, bare_namesakes, is_collective, is_placeholder_node, is_speaker_placeholder,
+    name_key, namesake_index, safe_name, strip_speaker_label,
 )
 
 
@@ -713,6 +713,10 @@ _DECISIONS_HEAD = re.compile(r"^(?P<hashes>#{2,4})\s*Решения\s*$", re.M)
 _SECTION_HEAD = re.compile(r"^#{2,4}\s+(?P<name>.+?)\s*$")
 _NOTE_TITLE = re.compile(r"^# Встреча \S+(?: — (?P<title>.+))?\s*$", re.M)
 _PERSON_LINK = re.compile(r"\[\[Люди/[^\]|]+\|(?P<name>[^\]]+)\]\]")
+# хвост строки участника со сборным именем (held_note): узла нет, ссылки в начале
+# строки нет, а участник есть — его читает и переотправка шапки (n611-out3 DS I1)
+_HELD_PERSON = " _(узел не выбран: "
+_HELD_ENTITY = " _(узел не создан: "      # тот же хвост у сущности (entity_line)
 
 
 def note_decisions(text: str) -> list[str]:
@@ -734,7 +738,8 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
     из разбора модели, только по факту, а не по гипотезе. Участник — строка
     «## Участники», начинающаяся ссылкой на человека (после «✅»); строки
     «упомянуты, отсутствуют» и «не участники» ссылки несут, но участниками
-    не начинаются."""
+    не начинаются. Участник со сборным именем (№611) ссылки не несёт — его
+    строку узнаём по хвосту `held_note`."""
     m = _NOTE_TITLE.search(text)
     title = (m.group("title") or "").strip() if m else ""
     people: list[dict] = []
@@ -750,6 +755,8 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
             pm = _PERSON_LINK.match(head)
             if pm:
                 people.append({"имя": pm.group("name").strip()})
+            elif _HELD_PERSON in head:
+                people.append({"имя": head.split(" — ", 1)[0].strip()})
         elif section == "Темы" and ln.startswith("- "):
             topics.append(ln[2:].strip())
     return title, people, topics
@@ -1227,7 +1234,8 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
 # журнале нет — оно в шапке узла (AUTO_ALIASES_KEY, №286).
 _HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескольким узлам", "near": "похоже на существующий узел",
              "aliased": "псевдоним по повтору", "by_alias": "по псевдониму узла",
-             "stub": "ядро — заглушка без канона в Ядрах"}
+             "stub": "ядро — заглушка без канона в Ядрах",
+             "collective": "голое имя при живых тёзках"}
 
 # Папки, чьи псевдонимы читаются глобально и куда автопсевдоним может быть
 # записан. Люди — нет, и на чтении, и на записи: человек с псевдонимом
@@ -1453,17 +1461,34 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
     return path, bool(n)
 
 
-def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple[str, list[str]]]) -> str:
+def held_note(cands: list[str], via: str = "") -> str:
+    """Хвост строки участника со сборным именем: узла нет, кандидаты — ссылками,
+    чтобы Obsidian связал встречу с ними, а не со сборным узлом (№611). `via` —
+    сборный узел, к которому поиск привёл другое написание («Владимир Попов» →
+    «Владимир»): без него причина «голое имя» не читается у полного имени
+    (n611-out2 DS M3). Причина в журнале не меняется — она ключ пары (№236)."""
+    tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
+    return f"{_HELD_PERSON}{_held_lead(via)}{_HELD_WHY['collective']}{tail})_"
+
+
+def _held_lead(via: str) -> str:
+    """Начало причины удержания у имени, которое поиск привёл в сборный узел другим
+    написанием, — одно для участника и сущности (n611-out3 DS M2)."""
+    return f"поиск ведёт в {via.split('/', 1)[-1]} — " if via else ""
+
+
+def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]) -> str:
     """Строка сущности в заметке встречи: ссылка на узел, а если узла не
     завели (№193) — текст с пометкой и ссылками на кандидатов, чтобы Obsidian
     связал встречу с ними, а не с фантомом. Ключ `held` — папка и имя: одно
-    имя в двух типах — две разные записи (DS M5 / GLM M4 r1 по #544)."""
+    имя в двух типах — две разные записи (DS M5 / GLM M4 r1 по #544). У
+    сборного имени третье поле — узел поиска (`collective_held`)."""
     folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
     name = e["имя"]
     head = f"({e.get('тип', '')}) — {e.get('суть', '')}"
     if (folder, name) not in held:
         return f"- {canon_link(graph, name, folder)} {head}"
-    verdict, cands = held[(folder, name)]
+    verdict, cands, *via = held[(folder, name)]
     if verdict in ("aliased", "by_alias"):
         # встреча легла в узел другой папки, чем сказал тип: ссылка на него с
         # именем из разбора (canon_link с папкой типа его не увидит). Пометка —
@@ -1472,7 +1497,8 @@ def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple[
         mark = f" _({_HELD_WHY[verdict]})_" if verdict == "aliased" else ""
         return f"- [[{cands[0]}|{safe_name(name)}]] {head}{mark}"
     tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
-    return f"- {safe_name(name)} {head} _(узел не создан: {_HELD_WHY[verdict]}{tail})_"
+    lead = _held_lead(via[0]) if via else ""
+    return f"- {safe_name(name)} {head}{_HELD_ENTITY}{lead}{_HELD_WHY[verdict]}{tail})_"
 
 
 def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> dict[tuple[str, str], tuple[str, list[str]]]:
@@ -1611,9 +1637,9 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
         if p in visited:                     # кольцо — по пути в написании схемы
             return None
         visited.add(p)
-        try:
-            text = p.read_text(encoding="utf-8")
-        except (OSError, ValueError):
+        try:        # только чтение: битый байт не делает заглушку узлом (n611-out3 Haiku I1)
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             return p
         if not redirects.is_merged(text):
             return p
@@ -1789,6 +1815,87 @@ def drop_background(people: list[dict], speech: str) -> tuple[list[dict], list[s
     return kept, noise
 
 
+def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *, owner: str,
+                    born: list[str] = (),
+                    ) -> dict[tuple[str, str | None], tuple[str, list[str], str]]:
+    """Имена встречи, которые не пишутся в узел: `(name_key, папка)` → (имя,
+    кандидаты «Люди/X», сборный узел поиска — если имя пришло в него другим написанием).
+
+    Голое имя при живых тёзках — сборный узел: каждый «Саша» любой встречи садился
+    в `Люди/Саша`, и под ним копились факты разных людей (№611; замер 27.10 — 42
+    узла). Поиск узла — тот же `find_canonical` с той же папкой, что у потребителя
+    (`names` — пары «имя, папка»: люди — «Люди», сущность — папка типа, конец
+    связи — без папки), а судим найденную цель: «Саш», псевдоним на самом сборном и
+    связь без папки приходят в сборный обходом, а не входным именем (n611-in2 S-C1,
+    n611-in3 S-C1, S-C3). Цели нет — судим входное имя: голый узел при живом
+    полном не рождается. Цель вне папок людей — как раньше, её видит доктор
+    (`people_in_systems`; n611-in3 DS C2). Порог — `is_collective`, один с доктором.
+
+    Таблица строится ДО записи встречи: `born` — многословные имена людей этой же
+    встречи, тёзки наравне с живыми узлами (n611-in3 Sonnet I1).
+
+    Ключ — с папкой места: поиск зависит от папки, и вердикт одного вхождения не
+    снимает другое, у которого свой узел (n611-out1 DS I2 / Sonnet I1). Сущность,
+    которую писатель кладёт по псевдониму в узел вне людей (`entity_node_verdict`
+    «resolved»), не держится (DS I1). Тёзка — по имени файла: нечитаемый узел не
+    доказан заглушкой и считается живым, иначе конфликтная копия iCloud открывала
+    затвор (DS C1). Не-UTF-8 читается с заменой, как у доктора (`graph_links.read_notes`):
+    заглушка-редирект с битым байтом остаётся заглушкой и не держит имя ложно
+    (n611-out2 Haiku C1); нечитаемым остаётся только OSError."""
+    if not names:
+        return {}
+    tags = frozenset(f.stem.casefold().replace("ё", "е") for place in ("Системы", "Команды")
+                     if (graph / place).is_dir() for f in (graph / place).glob("*.md"))
+    live: dict[str, str] = {}
+    for place in _PEOPLE_FOLDERS:
+        for f in sorted((graph / place).glob("*.md")) if (graph / place).is_dir() else ():
+            if f.name.startswith("_") or is_placeholder_node(f.stem) or not f.is_file():
+                continue
+            try:
+                merged = redirects.is_merged(f.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                merged = False
+            if not merged:
+                live.setdefault(f.stem, f"{place}/{f.stem}")
+    for n in born:      # уже живой под другой формой («Образцов Саша») — не второй кандидат
+        if find_canonical(graph, safe_name(n), folder=_PEOPLE_FOLDERS[0]) is None:
+            live.setdefault(safe_name(n), f"{_PEOPLE_FOLDERS[0]}/{safe_name(n)}")
+    index = namesake_index(live, tags)
+    held: dict[tuple[str, str | None], tuple[str, list[str], str]] = {}
+    for name, folder in names:
+        clean = safe_name(strip_speaker_label(name))
+        key = name_key(clean)
+        if not key or (key, folder) in held:
+            continue
+        # сущность писатель отдаёт `upsert_entity` только при «new»/«existing» (apply_entities):
+        # при «near»/«ambiguous»/«junk» он заглушку не проходит — и затвор её цель не судит (n611-out5 DS I1)
+        verdict = entity_node_verdict(graph, folder, clean)[0] \
+            if folder is not None and folder not in _PEOPLE_FOLDERS else ""
+        if verdict == "resolved":
+            continue
+        target = find_canonical(graph, clean, folder=folder)
+        if target is None and folder is not None and verdict in ("", "new", "existing"):
+            # цепочка заглушки оборвана — писатель заведёт узел по её цели («Сашка →
+            # [[Люди/Саша]]», а «Саша» разделён и удалён); судим этот узел (n611-final-opus C1).
+            # Цель есть, но сама заглушка или нечитаема — писатель не пишет никуда, и
+            # удержание лишь добавляет строку с кандидатами
+            stub = graph / folder / f"{safe_name(clean)}.md"
+            try:
+                text = stub.read_text(encoding="utf-8", errors="replace") if stub.is_file() else ""
+            except OSError:
+                text = ""
+            alt = _stub_birth(graph, folder, text) if redirects.is_merged(text) else None
+            if alt is not None:
+                target = alt
+        if target is not None and target.parent.name not in _PEOPLE_FOLDERS:
+            continue
+        judged = target.stem if target is not None else clean
+        if is_collective(judged, index, owner=owner, tags=tags):
+            held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)),
+                                   f"{target.parent.name}/{target.stem}" if name_key(judged) != key else "")
+    return held
+
+
 def merge_vocatives(people: list[dict]) -> list[dict]:
     """«Коль» и «Коля» из одного разбора — один человек.
 
@@ -1905,6 +2012,18 @@ def _create_entity(p: pathlib.Path, title: str, typ: str, desc: str, day: str, m
         _write_entity(p, meeting_line, desc, meeting_link, day)
 
 
+def _stub_birth(graph: pathlib.Path, folder: str, text: str) -> pathlib.Path | None:
+    """Узел, который писатель заводит или дописывает по цели заглушки с оборванной
+    цепочкой, — один расчёт для `upsert_entity` и затвора сборных: затвор судит путь,
+    куда реально пишет писатель (n611-final-opus C1). Цель вне папок узлов (Досье,
+    служебное, выше графа) — не узел: туда не пишем, не создаём и не читаем
+    (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)."""
+    target = redirects.stub_target(text)
+    leaf = pathlib.PurePosixPath(target).name if target else ""
+    alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
+    return _node_path(graph, alt, NODE_FOLDERS) if alt is not None else None
+
+
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                   desc: str, meeting_link: str, contrib: str,
                   node: pathlib.Path | None = None):
@@ -1951,13 +2070,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         # заводим ПО ЦЕЛИ заглушки — слияние сказало «этот человек
         # теперь там», и имя заглушки иначе навсегда закрывает ветку
         # «создать» (DS r3 I1). Событие — в журнал, не только в stdout.
-        target = redirects.stub_target(text)
-        leaf = pathlib.PurePosixPath(target).name if target else ""
-        alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
-        # цель вне папок узлов (Досье, служебное, выше графа) — не узел: туда не пишем,
-        # не создаём и не читаем (n777-final-fix: Sonnet I1 / DS I2 / Haiku C2; как follow_stubs)
-        if alt is not None:
-            alt = _node_path(graph, alt, NODE_FOLDERS)
+        alt = _stub_birth(graph, folder, text)
         # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
         alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
         if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
@@ -3010,6 +3123,35 @@ def main():
              if isinstance(l, dict) and l.get("от") and l.get("к")]
     topics = [t for t in (data.get("темы") or []) if isinstance(t, str) and t.strip()]
 
+    # Сборные имена (№611 этап 2): голое имя при живых тёзках не пишется ни в узел,
+    # ни ссылкой — строкой с кандидатами, как фон выше. Одна таблица на встречу по
+    # всем рисуемым именам (люди, сущности, концы связей) и до первой записи: затвор
+    # только на записи людей обходили сущность, связь и рендер заметки (n611-in2/in3).
+    _efolder = lambda e: ENT_FOLDER.get(e.get("тип", ""), "Системы")  # noqa: E731
+    collective = collective_held(
+        graph, [(p["имя"], "Люди") for p in people]
+        + [(e["имя"], _efolder(e)) for e in ents]
+        + [(str(l[k]), None) for l in links for k in ("от", "к")],
+        owner=str((cfg.get("sufler") or {}).get("user_name") or ""), born=[p["имя"] for p in people])
+    _ckey = lambda n: name_key(safe_name(strip_speaker_label(str(n))))  # noqa: E731
+    people_all, ents_all = people, ents
+    people = [p for p in people_all if (_ckey(p["имя"]), "Люди") not in collective]
+    ents = [e for e in ents_all if (_ckey(e["имя"]), _efolder(e)) not in collective]
+    # журнал — одна строка на имя, по самой таблице: имя только концом связи тоже
+    # попадает к человеку (n611-out1 DS M1 / Sonnet I2); люди раньше сущностей; имя
+    # только концом связи — тип «связь», не «person» (n611-out2 Haiku M3)
+    ent_type = {(_ckey(e["имя"]), _efolder(e)): e.get("тип") or "entity" for e in ents_all}
+    first: dict[str, tuple] = {}
+    for (key, folder), val in collective.items():
+        if key not in first or folder == "Люди":      # человек вытесняет сущность и конец связи
+            first[key] = (folder, val)
+    for key, (folder, (name, cands, _)) in first.items():
+        _journal_held_entity(graph, folder or "Люди", name, ent_type.get((key, folder), "person" if folder else "связь"),
+                             "collective", cands, meeting_link)
+    if collective:
+        print("граф: голое имя при живых тёзках, узел не выбран: "
+              + ", ".join(sorted({v[0] for v in collective.values()})))
+
     # 1) upsert людей и сущностей — ДО заметки встречи, чтобы canon_link
     # резолвил ссылки по уже существующим файлам узлов (иначе фантомные дубли)
     for p in people:
@@ -3018,10 +3160,14 @@ def main():
     # Сущность получает узел не безусловно (№193): мусор, опечатка существующего
     # имени и «подходит нескольким» — текстом в заметке и в _Кандидаты.md графа
     held = apply_entities(graph, ents, meeting_link)
+    # сущность со сборным именем — текстом с кандидатами тем же entity_line (журнал — выше)
+    for e in ents_all:
+        if (_ckey(e["имя"]), _efolder(e)) in collective:
+            held[(_efolder(e), e["имя"])] = ("collective", *collective[(_ckey(e["имя"]), _efolder(e))][1:])
 
     touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
     # встреча по псевдониму легла в узел ДРУГОЙ папки — её указатель тоже тронут (DS M4 / GLM M5)
-    touched |= {c[0].split("/", 1)[0] for (v, c) in held.values() if v in ("aliased", "by_alias") and c}
+    touched |= {c[0].split("/", 1)[0] for (v, c, *_) in held.values() if v in ("aliased", "by_alias") and c}
     for folder in sorted(touched & set(FOLDER_INDEX)):
         try:
             rebuild_folder_index(graph, folder)      # только тронутые папки (DS I3)
@@ -3038,7 +3184,7 @@ def main():
     # Узлы графа сюда НЕ идут: там вся история проекта, и ушедший три года
     # назад сотрудник оставался бы допустимым говорящим навсегда — контракт
     # обещает участника встречи (круг-3 по PR #438, GLM Important 2).
-    speakers = {p["имя"] for p in people if p.get("имя")} | {p["имя"] for p in anon}
+    speakers = {p["имя"] for p in people_all if p.get("имя")} | {p["имя"] for p in anon}
     # Три языка — как в manifest архива: русский, английский, китайский.
     # «Ольга (аналитик)» — это Ольга: роль в скобках в имя узла не идёт,
     # скобки снимаем ДО запятой (круг-5 по PR #438, GLM Minor 4). Парсер один
@@ -3059,16 +3205,20 @@ def main():
           f"# Встреча {stamp}" + (f" — {title}" if title else ""), ""]
     if topics:
         md += ["## Темы"] + [f"- {t}" for t in topics] + [""]
-    if people or anon:
+    if people_all or anon:
         md += (["## Участники"]
-               + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}" for p in people]
+               # сборное имя — текстом с ролью, вкладом и кандидатами: факт остаётся в заметке
+               + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}"
+                  if (_ckey(p["имя"]), "Люди") not in collective else
+                  f"- {safe_name(p['имя'])} — {p.get('роль','')}: {p.get('вклад','')}"
+                  + held_note(*collective[(_ckey(p["имя"]), "Люди")][1:]) for p in people_all]
                # метка диаризации — текстом, без ссылки: узла у неё нет
                + [f"- {safe_name(p['имя'])} — {p.get('роль','')}: {p.get('вклад','')}" for p in anon]
                # голос из фона записи — текстом и с пометкой: узла нет, след есть
                + [f"- {safe_name(n)} — фон записи, не участник (узел не создан)" for n in noise]
                + [""])
-    if ents:
-        md += ["## Сущности"] + [entity_line(graph, e, held) for e in ents] + [""]
+    if ents_all:
+        md += ["## Сущности"] + [entity_line(graph, e, held) for e in ents_all] + [""]
     if cores:
         md += ["## Ядра"] + [f"- {canon_link(graph, c['имя'], 'Ядра')} — {c.get('обновление', c.get('статус', ''))}" for c in cores] + [""]
     if decisions:
@@ -3077,7 +3227,9 @@ def main():
         # «он», «Фанта», обрывки слов: ссылка — только на узел, который в графе
         # есть (свой прогон уже завёл людей, сущности и ядра выше); остальное —
         # текстом. Раньше canon_link давал голое [[он]] (Sonnet 28.08 I3).
-        md += ["## Связи"] + [f"- {link_or_text(graph, l['от'])} → {link_or_text(graph, l['к'])}: {l.get('тип','')}" for l in links] + [""]
+        # конец связи со сборным именем — текстом: ссылка копила бы его в сборный (n611-in3 C3)
+        end = lambda n: safe_name(n) if (_ckey(n), None) in collective else link_or_text(graph, n)  # noqa: E731
+        md += ["## Связи"] + [f"- {end(l['от'])} → {end(l['к'])}: {l.get('тип','')}" for l in links] + [""]
     md += [f"Стенограмма: `{tpath}`"]
     vdir = graph / "Встречи"
     if graph_ok:
@@ -3098,7 +3250,9 @@ def main():
 
     # 3б) факты встречи → внешняя память (brain :8100) — только если её включили
     if graph_ok:
-        meeting_facts_to_brain(cfg, stamp, title, people, topics, decisions)
+        # участник со сборным именем остаётся фактом встречи: держится узел, не память
+        # (n611-out2, шаг Haiku по понижению)
+        meeting_facts_to_brain(cfg, stamp, title, people_all, topics, decisions)
 
     # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что
@@ -3564,7 +3718,13 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "Исправил метку стенограммы — в «## Участники» заметки этой встречи "
         "назови верного человека, а из узла Люди с ошибочным именем убери строку "
         "этой встречи в «## Встречи» и её связи (перенеси их в узел верного "
-        "человека), если этого человека на встрече не было.\n"
+        "человека), если этого человека на встрече не было, — кроме строк сборного "
+        f"имени ниже. Строку, где в пометке «_({_HELD_PERSON.strip(' _(')} …)_» или "
+        f"«_({_HELD_ENTITY.strip(' _(')} …)_» стоит «{_HELD_WHY['collective']}», "
+        "не превращай в ссылку, в узел не переноси и узла под это имя не создавай: "
+        "человек не определён; в узел из «поиск ведёт в …» и в голый узел-тёзку "
+        "ничего не дописывай и их не сливай. Прочие пометки «узел не создан» "
+        "(опечатка, несколько кандидатов) — обычные дубли и кандидаты.\n"
         "3. Файлы не удаляй и не переименовывай — удаление Чароит просто не "
         "перенесёт в граф. Явный дубль сливай так: факты и ссылки — в канон, а на месте "
         "дубля оставь заглушку «# Имя → [[Папка/Канон]]» с пометкой «Дубль. "

@@ -205,7 +205,12 @@
    existing node, or matches several nodes: the name stays as text in the
    meeting note with links to the candidates, and the candidate goes to
    `_Кандидаты.md` at the graph root — confirm with an alias in the node or
-   create the node by hand. Speaker labels ("Собеседник N", "Speaker N") are
+   create the node by hand. A bare one-word name while full namesakes live
+   ("Саша" next to "Саша Образцов") is not written into any node either —
+   as a person, an entity or a link end: the meeting note keeps the line with
+   the role, the contribution and links to the namesakes, and the name goes
+   to `_Кандидаты.md`; the bare node itself stays as it was until a human
+   splits it. Speaker labels ("Собеседник N", "Speaker N") are
    not people: they get neither a node nor a link, otherwise different people
    from different meetings would be glued into one file. Label nodes left by
    older versions are turned into plain text by
@@ -382,7 +387,8 @@ under one node), people filed as Systems and dossiers with a diarization label a
 an actor; its `logs/graph_doctor.json` feeds warnings into the brief (collective
 nodes and people in Systems warn only on nodes new since the end of the previous night — the
 baseline `logs/graph_feed_base.json` is moved only by the night's final pass, so a new node shows in
-both briefs of that night), the full lists go to `logs/graph_feed.json`, and the second pass
+both briefs of that night; new links into already known collective nodes warn too — a meeting
+written past the gate), the full lists go to `logs/graph_feed.json`, and the second pass
 measures the graph after the night's merges. Memory vectors
 (`scripts/graph_search_index.py`) embed changed graph blocks with bge-m3 for
 the daemon's in-process memory (see "Graph memory lives in the daemon") —
