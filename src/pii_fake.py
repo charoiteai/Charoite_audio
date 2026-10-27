@@ -231,39 +231,66 @@ def _gender(m, forms: list[str]) -> str:
     return "masc"
 
 
-def _words(m, f: str, gender: str):
-    """Слова формы человека: (совпадение, роль, разбор в роде группы); инициал — тоже слово
-    своей роли (в фамилии с инициалами первая буква — имя)."""
-    for i, mt in enumerate(_WORD.finditer(f)):
-        w = mt.group(0)
-        r, p = _role(m, w)
-        r = r or ("Name" if i == 0 else "Surn")
-        p = next((q for q in sorted(m.parse(w), key=lambda q: "Fixd" in q.tag)
-                  if r in q.tag and gender in q.tag), p)
-        yield mt, r, p
+def _roles(m, forms: list[str]) -> dict[str, str]:
+    """Роль каждого слова группы — одна на группу, по написанию слова: тег словаря; без тега —
+    роль, которой в многословной форме ещё нет (по позиции, если тегов нет вовсе), одиночное —
+    фамилия. Иначе «Кузнец» отдельно — имя, а в «Пётр Кузнец» — фамилия (n793-out7 DS-C2)."""
+    role: dict[str, str] = {}
+    words = [[w for w in _WORD.findall(f) if len(w) > 1] for f in forms]
+    for ws in words:
+        for w in ws:
+            r, _p = _role(m, w)
+            if r:
+                role.setdefault(_e(w), r)
+    for ws in sorted(words, key=len, reverse=True):
+        have = {role[_e(w)] for w in ws if _e(w) in role}
+        for i, w in enumerate(ws):
+            if _e(w) in role:
+                continue
+            if len(ws) > 1 and have and not {"Name", "Surn"} <= have:
+                role[_e(w)] = "Surn" if "Name" in have else "Name"
+            else:
+                role[_e(w)] = "Name" if len(ws) > 1 and i == 0 else "Surn"
+            have.add(role[_e(w)])
+    return role
+
+
+def _parse(m, w: str, r: str, gender: str):
+    """Разбор слова в его роли и роде группы; без такого разбора — разбор `_role`."""
+    return next((q for q in sorted(m.parse(w), key=lambda q: "Fixd" in q.tag)
+                 if r in q.tag and gender in q.tag), None) or _role(m, w)[1]
 
 
 def _person(pk: _Picker, forms: list[str]) -> list[str]:
     m = pk.m
     gender = _gender(m, forms)
+    role = _roles(m, forms)
     # ключ — роль и её номер: «Иванов-Петров» — две фамилии, иначе разворот «Иванов-Иванов»
-    # (n793-out5 DS-C4). Номер слова, которое в группе встречается рядом с другим той же
-    # роли, — по его лемме: одиночное «Петров» — вторая фамилия «Иванов-Петров», а не первая
-    # (n793-out6 H-C1). Прочие — по порядку в форме: «Дима» и «Дмитрий» — одна подделка.
+    # (n793-out5 DS-C4). Номер слова, которое в группе стоит рядом с другим той же роли, — по
+    # его лемме: одиночное «Петров» — вторая фамилия «Иванов-Петров» (n793-out6 H-C1). Прочие —
+    # по порядку в форме: «Дима» и «Дмитрий» — одна подделка (след меток №799: «Дим/Диму» —
+    # два человека); какое из них вернуть, решает разворот формы целиком (`undress`)
     order: dict[str, list[str]] = collections.defaultdict(list)
     for f in forms:
-        ws = list(_words(m, f, gender))
-        ws = [x for x in ws if len(x[0].group(0)) > 1]
-        for _mt, r, p in ws:
-            if sum(1 for x in ws if x[1] == r) > 1 and _e(p.normal_form) not in order[r]:
-                order[r].append(_e(p.normal_form))
+        ws = [w for w in _WORD.findall(f) if len(w) > 1]
+        for w in ws:
+            lem = _e(_parse(m, w, role[_e(w)], gender).normal_form)
+            if sum(1 for x in ws if role[_e(x)] == role[_e(w)]) > 1 and lem not in order[role[_e(w)]]:
+                order[role[_e(w)]].append(lem)
     parts: dict[tuple[str, int], str | None] = {}
     out = []
     for f in forms:
         res, pos = [], 0
         nth: collections.Counter = collections.Counter()
-        for mt, r, p in _words(m, f, gender):
+        for mt in _WORD.finditer(f):
             w = mt.group(0)
+            if len(w) == 1:
+                # инициал уходит как есть и обратно не трогается: две буквы при подставной
+                # фамилии человека не выдают, а подставные буквы модель переписывает («Белов К.»),
+                # и в граф ушли бы чужие (n793-out7 S-C1 = DS-C1)
+                continue
+            r = role[_e(w)]
+            p = _parse(m, w, r, gender)
             lem_e = _e(p.normal_form)
             k = (r, order[r].index(lem_e) if lem_e in order[r] else nth[r])
             nth[r] += 1
@@ -278,11 +305,7 @@ def _person(pk: _Picker, forms: list[str]) -> list[str]:
                     raise pii_mask.MaskRefused("пул подставных имён исчерпан — отправка отменена")
             case, num = _case(p)
             lem = p.normal_form
-            if len(w) == 1:
-                # инициал — первая буква подделки той же роли: настоящая буква не уходит
-                # (n793-out6 S-I3 = H-I2); обратно — только целой формой (`undress`)
-                fw = parts[k][:1]
-            elif r == "Name" and lem[-1:] in "ая" and _e(w) in (_e(lem[:-1]), _e(lem[:-1]) + "ь"):
+            if r == "Name" and lem[-1:] in "ая" and _e(w) in (_e(lem[:-1]), _e(lem[:-1]) + "ь"):
                 # звательная усечённая («Саш», «Дим») — так же усечь подделку на -а/-я
                 fw = parts[k][:-1] if parts[k][-1:] in "ая" else parts[k]
             elif r == "Surn":
@@ -506,19 +529,29 @@ def undress(reply: str, d: Dress, *, sent: str = "") -> tuple[str, int]:
             return "[[" + d.canon[next(iter(gids))]
         return "[[" + _WORD.sub(one, target)
 
-    # форма с инициалами (фамилия и две буквы) — обратно целиком, раньше слов: буква отдельно
-    # не индексируется. Только многословная и по границам слов: одиночная буква-подделка
-    # («А» от мусорного спана NER) внутри «ДАП» — не имя (n793-out6, опыт false_undress)
-    for gid, pairs in d.pairs.items():
-        for orig, fake in sorted(pairs, key=lambda x: -len(x[1])):
-            ws = _WORD.findall(fake)
-            if len(ws) > 1 and any(len(w) == 1 for w in ws):
-                reply, n = re.subn(rf"(?<![^\W_]){re.escape(fake)}(?![^\W_])",
-                                   lambda _mt, o=orig: o, reply)
-                d.back["exact"] += n
+    # многословная подделка — обратно своей формой целиком, раньше слов: слово, общее у
+    # псевдонима и формы («Аня» и «Анна-Мария» — одна подделка имени), иначе вернулось бы
+    # псевдонимом («Аня-Мария», n793-out7 DS-C2). По границам слов и только многословная:
+    # одиночная подделка разворачивается пословно (n793-out6, опыт false_undress)
+    whole: dict[str, str] = {}
+    for pairs in d.pairs.values():
+        for orig, fake in pairs:
+            if len(_WORD.findall(fake)) > 1:
+                whole.setdefault(fake, orig)
+    rx = _WORD
+    if whole:
+        alts = "|".join(re.escape(f) for f in sorted(whole, key=len, reverse=True))
+        rx = re.compile(rf"(?<![^\W_])(?:{alts})(?![^\W_])|{_WORD.pattern}")
+
+    def piece(mt: re.Match) -> str:
+        if mt.group(0) in whole:
+            d.back["exact"] += 1
+            return whole[mt.group(0)]
+        return one(mt)
+
     text = re.sub(r"\[\[([^\]|#\n]+)", link, reply)
     parts = re.split(r"(\[\[[^\]|#\n]+)", text)
-    text = "".join(p if p.startswith("[[") else _WORD.sub(one, p) for p in parts)
+    text = "".join(p if p.startswith("[[") else rx.sub(piece, p) for p in parts)
     # осталась — слово, которое всё ещё разбирается в подделку (двум группам сразу и т. п.):
     # в граф оно уйдёт помеченным «⟦?…⟧», как обещают сообщения вызывающих (n793-out4 S-I3)
     left = 0

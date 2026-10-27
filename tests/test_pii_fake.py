@@ -228,18 +228,30 @@ def test_single_second_word_keeps_its_own_fake():
             assert pii_fake.undress(reply, d, sent=m.text)[0] == alone, (seed, m.text)
 
 
-def test_initials_are_fake_letters_and_come_back_with_the_form():
-    """Инициалы в спане NER (фамилия и две буквы) — буквы подделки, настоящие не уходят; обратно —
-    целой формой (n793-out6 S-I3 = H-I2)."""
+def test_initials_stay_and_survive_a_rewritten_form():
+    """Инициалы в спане NER (фамилия и две буквы) уходят как есть: модель переписывает форму
+    («Фамилия И.», «И. П. Фамилия»), и подставные буквы ушли бы в граф чужими (n793-out7
+    S-C1 = DS-C1). Фамилия — подделка, обратно верно в любой записи."""
     src = "Орлов И.П. пришёл. Иван Орлов ушёл."  # приватный-образец: синтетические инициалы
     forms = pm.build_forms((pm.NodeForms("Иван Орлов"),))
-    seen = set()
-    for seed in range(8):
+    for seed in range(5):
         m = pm.mask(src, forms, [(0, 10, pm.PERSON)])
         d = pii_fake.dress(m, src, forms, seed=seed)
-        seen.add(m.text.split()[1])
+        sur = m.text.split()[0]
+        assert sur != "Орлов" and m.text.split()[1] == "И.П."  # приватный-образец: синтетические инициалы
         assert pii_fake.undress(m.text, d, sent=m.text)[0] == src
-    assert seen - {"И.П."}, "буквы подделки, а не исходные"
+        assert pii_fake.undress(f"Вёл {sur} И.", d, sent=m.text)[0] == "Вёл Орлов И."
+        assert pii_fake.undress(f"И. П. {sur} пришёл", d, sent=m.text)[0] == "И. П. Орлов пришёл"
+
+
+@pytest.mark.parametrize("node, src", [(("Пётр Кузнец",), "Кузнец пришёл. Пётр Кузнец ушёл."),
+                                       (("Анна-Мария", ("Аня",)), "Аня пришла. Анна-Мария ушла.")])
+def test_different_words_of_a_group_never_share_a_fake(node, src):
+    """Слово без тега словаря («Кузнец») и псевдоним вне многословной формы («Аня») не делят
+    подделку с другим словом группы: иначе «Кузнец Кузнец», «Аня-Мария» (n793-out7 DS-C2)."""
+    for seed in range(5):
+        m, d, _f = _dressed(src, (pm.NodeForms(*node),), seed=seed)
+        assert pii_fake.undress(m.text, d, sent=m.text)[0] == src, (seed, m.text)
 
 
 @pytest.mark.parametrize("node, src", [("Северный Маяк", "Северный Портал закрыли"),
@@ -262,8 +274,8 @@ def test_single_letter_fake_is_not_replaced_inside_words():
     """Мусорный спан NER «А» с подделкой «П»: ответ без имён не меняется — «ДАП» и
     «сканирование» остаются (n793-out6, опыт на ответах без маски: 299 ложных замен)."""
     d = pii_fake.Dress()
-    d.pairs = {"Ч~1": [("А", "П")], "Ч~2": [("с", "а")], "Ч1": [("Орлов И.П.", "Белов К.Л.")]}  # приватный-образец: синтетические инициалы
-    reply = "ДАП сканирование П с. Белов К.Л. пришёл"  # приватный-образец: синтетические инициалы
+    d.pairs = {"Ч~1": [("А", "П")], "Ч~2": [("с", "а")], "Ч1": [("Орлов И.П.", "Белов И.П.")]}  # приватный-образец: синтетические инициалы
+    reply = "ДАП сканирование П с. Белов И.П. пришёл"  # приватный-образец: синтетические инициалы
     assert pii_fake.undress(reply, d, sent=reply)[0] == "ДАП сканирование П с. Орлов И.П. пришёл"  # приватный-образец: синтетические инициалы
 
 

@@ -5,6 +5,7 @@ import pathlib
 import re
 import sys
 import types
+import unicodedata
 
 import pytest
 
@@ -619,6 +620,31 @@ def test_name_broken_by_a_line_break_is_masked():
     forms = pm.build_forms([pm.NodeForms("Старый офис", person=False)], known={"старый", "офис"}.__contains__)
     m = pm.mask("Вчера\nСтарый\nофис\nобсудили", forms)
     assert m.replaced == 1 and "офис" not in m.text
+
+
+@pytest.mark.parametrize("text", ["Вчера\r\nСтарый\r\nофис\r\nобсудили", "Старый\n\nофис",
+                                  "Старый\rофис", "Старый\n> офис", "Старый\n>\n> офис"])
+def test_crlf_and_blank_line_inside_a_name_are_masked(text):
+    """`\r\n` и пустая строка между словами имени — тот же разрыв в данных (n793-out7 H-C1)."""
+    forms = pm.build_forms([pm.NodeForms("Старый офис", person=False)], known={"старый", "офис"}.__contains__)
+    m = pm.mask(text, forms)
+    assert m.replaced == 1 and "офис" not in m.text
+
+
+@pytest.mark.parametrize("node,text,fake", [
+    ("Северный Маяк", "Северный Маяк", "Маяк"), ("Маяк 12", "МАЯК 12", "МАЯК"),
+    ("Маяк-12", "Маяк-12", "Маяк"), ("Северный Маяк", "Северный Маяком", "Маяком"),
+    ("Ёлкин Маяк", "Елкин Маяк", "Елкин"),
+    ("Ёлкин Маяк", unicodedata.normalize("NFD", "Ёлкин Маяк"), unicodedata.normalize("NFD", "Ёлкин"))])
+def test_forms_touching_keeps_every_form_the_fake_can_complete(node, text, fake):
+    """Гейт `dress` считает только формы, которые задевают подделку: регистр, «ё», хвост,
+    цифра, дефис и NFD не сужают отбор (n793-out7 DS-M2)."""
+    known = {"северный", "маяк", "ёлкин", "портал"}.__contains__
+    forms = pm.build_forms([pm.NodeForms(node, person=False), pm.NodeForms("Портал", person=False)],
+                           known=known)
+    near = pm.forms_touching(forms, [fake])
+    assert pm.postcondition_hits(text, near) == pm.postcondition_hits(text, forms) > 0
+    assert len(near.entries) < len(forms.entries)
 
 
 def test_line_break_before_a_timestamp_is_not_a_joint():
