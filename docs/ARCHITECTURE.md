@@ -816,7 +816,10 @@ of the lookup, modelled on background voices: before the first write of a meetin
 `name key → candidates` is built from every name the meeting renders — people, entities and
 both ends of links — over the live people nodes plus the people born by this meeting. Each
 name is resolved by `find_canonical` first, so an alias on the collective node leads to the
-node and the node is judged; a target outside the people folders keeps its old path. A held
+node and the node is judged; a target outside the people folders keeps its old path, and so
+does an entity the writer files by an alias outside People. The table is keyed by the name and
+its place (people, entity folder, link end), and a namesake counts by its file name — an
+unreadable node is not proven a stub and keeps the gate shut. A held
 name gets no `upsert_entity`, no link in the note and no `apply_entities` verdict: the note
 line keeps the role, the contribution and links to the namesakes, and `_Кандидаты.md` gets
 one line per name.

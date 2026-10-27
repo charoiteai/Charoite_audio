@@ -209,7 +209,9 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
     # Скобка с именем системы или команды при человеке — пометка, не фамилия:
     # «Илья (ОТДЕЛ)» не тёзка «отдел» и не делает Системы/ОТДЕЛ человеком.
     placeholder_set = set(placeholders)
-    people = [p for p in nodes if rel[p].startswith("Люди/") and p not in placeholder_set
+    # папки людей — те же, что у затвора записи (n611-out1 DS M2)
+    people = [p for p in nodes if rel[p].startswith(tuple(f"{f}/" for f in graph_updater._PEOPLE_FOLDERS))
+              and p not in placeholder_set
               and not _is_stub(notes[p])]
     tags = frozenset(p.stem.casefold().replace("ё", "е") for p in nodes
                      if rel[p].startswith(("Системы/", "Команды/")))
@@ -306,13 +308,20 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
     new_links = None
     if prev_feed is not None:
         known = prev_feed.get("collective")
-        was_links = {x["node"]: x["linked_from"] for x in (known if isinstance(known, list) else [])
-                     if isinstance(x, dict) and isinstance(x.get("linked_from"), int)}
-        new_links = sum(max(0, len(linkers[q]) - was_links[p])
-                        for p, (q, _) in zip(collective_paths, collective) if p in was_links)
+        known = known if isinstance(known, list) else None
+        was_links = {x["node"]: x["linked_from"] for x in (known or [])
+                     if isinstance(x, dict) and isinstance(x.get("linked_from"), int)
+                     and not isinstance(x.get("linked_from"), bool)}
+        # база без меры (лента старого формата, битая) — «не с чем сравнить», не ноль
+        # (n611-out1 Sonnet M1); пустой список сборных — честный ноль
+        if known is not None and (was_links or not known):
+            new_links = sum(max(0, len(linkers[q]) - was_links[p])
+                            for p, (q, _) in zip(collective_paths, collective) if p in was_links)
         if new_links:
+            # рост ссылок не называет источник: встреча мимо затвора, ручная ссылка
+            # или ночное слияние (n611-out1 DS M3)
             warnings.append(f"новых ссылок в известные сборные узлы с прошлой ночи: {new_links} — "
-                            "запись встречи мимо затвора; список — logs/graph_feed.json")
+                            "встреча мимо затвора, ручная ссылка или слияние; список — logs/graph_feed.json")
     rep["collective_new_links"] = new_links
     rep["warnings"] = warnings
     rep["feed"] = {

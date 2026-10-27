@@ -36,7 +36,9 @@ def _graph(tmp_path: pathlib.Path, *nodes: str) -> pathlib.Path:
 
 
 def _held(graph, names, owner=""):
-    return g.collective_held(graph, [(n, "Люди") for n in names], owner=owner, born=names)
+    got = g.collective_held(graph, [(n, "Люди") for n in names], owner=owner, born=names)
+    assert all(f == "Люди" for _, f in got), got
+    return {k: cands for (k, _), (_, cands) in got.items()}
 
 
 def _meeting(tmp_path, monkeypatch, graph, data, owner=""):
@@ -207,5 +209,109 @@ def test_doctor_new_links_ignore_new_nodes_and_odd_feed(tmp_path):
     (graph / "Встречи" / "2026-10-01_1000.md").write_text("# В1\n- [[Люди/Саша]]\n", encoding="utf-8")
     assert graph_doctor.inspect(graph, owner="", prev_feed={"collective": []})["collective_new_links"] == 0
     odd = {"collective": [{"node": "Люди/Саша.md", "linked_from": "два"}, "мусор"]}
-    assert graph_doctor.inspect(graph, owner="", prev_feed=odd)["collective_new_links"] == 0
-    assert graph_doctor.inspect(graph, owner="", prev_feed={"collective": "мусор"})["collective_new_links"] == 0
+    assert graph_doctor.inspect(graph, owner="", prev_feed=odd)["collective_new_links"] is None, \
+        "база без меры — не с чем сравнить, не ноль (n611-out1 Sonnet M1)"
+    assert graph_doctor.inspect(graph, owner="", prev_feed={"collective": "мусор"})["collective_new_links"] is None
+    assert graph_doctor.inspect(graph, owner="", prev_feed={})["collective_new_links"] is None
+
+
+# --- круг n611-out1 --------------------------------------------------------------
+
+
+def test_unreadable_namesake_keeps_the_gate_shut(tmp_path):
+    """Тёзка — по имени файла: нечитаемый узел (конфликтная копия iCloud) не доказан
+    заглушкой и считается живым, как у доктора (n611-out1 DS C1)."""
+    graph = _graph(tmp_path, "Люди/Саша")
+    (graph / "Люди" / "Саша Сидоров.md").write_bytes(b"---\n---\n# \xff\xfe\n")
+    assert _held(graph, ["Саша"]) == {"саша": ["Люди/Саша Сидоров"]}
+    assert [c["node"] for c in graph_doctor.inspect(graph, owner="")["feed"]["collective"]] == ["Люди/Саша.md"]
+
+
+def test_key_carries_the_place(tmp_path):
+    """Один ключ — разные места: человек «Сашка» ведёт в сборный по псевдониму и
+    держится, сущность «Сашка» с псевдонимом на своём узле Систем — нет
+    (n611-out1 Sonnet I1 / DS I2)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    _node(graph, "Люди/Саша", 'aliases: ["Сашка"]\n')
+    _node(graph, "Системы/Бот", 'aliases: ["Сашка"]\n')
+    got = g.collective_held(graph, [("Сашка", "Люди"), ("Сашка", "Системы")], owner="")
+    assert set(got) == {("сашка", "Люди")}, got
+    assert got[("сашка", "Люди")] == ("Сашка", ["Люди/Саша Образцов"])
+
+
+def test_entity_resolved_by_alias_outside_people_is_not_held(tmp_path):
+    """Писатель кладёт сущность по псевдониму в узел другой папки — затвор её не
+    держит (n611-out1 DS I1)."""
+    graph = _graph(tmp_path, "Люди/Саня Петров")
+    _node(graph, "Модели/М", 'aliases: ["Саня"]\n')
+    assert g.entity_node_verdict(graph, "Системы", "Саня") == ("resolved", ["Модели/М"])
+    assert g.collective_held(graph, [("Саня", "Системы")], owner="") == {}
+
+
+def test_new_entity_with_a_person_word_is_held(tmp_path):
+    """Новая сущность с голым именем при живом полном тёзке держится: родившись в
+    Системах, она перехватит следующую встречу этого человека — поиск находит
+    точное имя в любой папке (n611-in2; out1 Haiku I1 — принятая цена)."""
+    graph = _graph(tmp_path, "Люди/Ромашка Иванова")
+    got = g.collective_held(graph, [("Ромашка", "Системы")], owner="")
+    assert got == {("ромашка", "Системы"): ("Ромашка", ["Люди/Ромашка Иванова"])}
+
+
+def test_fuller_name_glued_to_a_bare_node_is_held_not_written(tmp_path):
+    """Поиск подстрокой ведёт «Владимир Попов» в голый «Владимир»; без затвора
+    встреча легла бы в сборный узел чужого человека. Затвор держит — факт в
+    заметке с кандидатами (n611-out1 DS C2 / Haiku C1; склейка поиска — №607)."""
+    graph = _graph(tmp_path, "Люди/Владимир", "Люди/Владимир Иванов")
+    assert g.find_canonical(graph, "Владимир Попов", folder="Люди") == graph / "Люди" / "Владимир.md"
+    assert _held(graph, ["Владимир Попов"]) == {"владимир попов": ["Люди/Владимир Иванов"]}
+
+
+def test_link_only_name_goes_to_the_journal(tmp_path, monkeypatch):
+    """Имя только концом связи — в заметке текстом и строкой в `_Кандидаты.md`
+    (n611-out1 DS M1 / Sonnet I2)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов", "Системы/Релиз")
+    sasha = _node(graph, "Люди/Саша")
+    before = sasha.read_bytes()
+    note = _meeting(tmp_path, monkeypatch, graph, {
+        "люди": [_person("Гоша")], "связи": [{"от": "Саша", "к": "Релиз", "тип": "ведёт"}]})
+    assert "- Саша → [[Системы/Релиз|Релиз]]: ведёт" in note
+    journal = (graph / g.CANDIDATES_NOTE).read_text(encoding="utf-8")
+    assert journal.count("«Саша» (person) — голое имя при живых тёзках: [[Люди/Саша Образцов]]") == 1, journal
+    assert sasha.read_bytes() == before
+
+
+def test_owner_from_config_reaches_the_gate(tmp_path, monkeypatch):
+    """Владелец из `sufler.user_name` доходит до затвора в main(): его полное имя —
+    не тёзка, «Саша» пишется в свой узел как раньше (DS-C4; out1 Sonnet M4)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    sasha = _node(graph, "Люди/Саша")
+    before = sasha.read_bytes()
+    note = _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Саша")]}, owner="Саша Образцов")
+    assert sasha.read_bytes() != before, "не сборный — встреча легла в узел"
+    assert "узел не выбран" not in note and not (graph / g.CANDIDATES_NOTE).exists()
+
+
+def test_one_journal_line_for_a_person_and_an_untyped_entity(tmp_path, monkeypatch):
+    """Человек и сущность без типа под одним сборным именем — одна строка журнала,
+    и повтор той же встречи её не дублирует (out1 Sonnet M3, M4)."""
+    graph = _graph(tmp_path, "Люди/Саша Образцов")
+    _node(graph, "Люди/Саша")
+    data = {"люди": [_person("Саша"), _person("Гоша")], "сущности": [{"имя": "Саша", "суть": "бот"}]}
+    _meeting(tmp_path, monkeypatch, graph, data)
+    _meeting(tmp_path, monkeypatch, graph, data)
+    journal = (graph / g.CANDIDATES_NOTE).read_text(encoding="utf-8")
+    assert journal.count("«Саша»") == 1, journal
+
+    graph2 = _graph(tmp_path / "2", "Люди/Саша Образцов")
+    _node(graph2, "Люди/Саша")
+    data2 = {"люди": [_person("Гоша")], "сущности": [{"имя": "Саша", "суть": "бот"}]}
+    _meeting(tmp_path / "2", monkeypatch, graph2, data2)
+    _meeting(tmp_path / "2", monkeypatch, graph2, data2)
+    journal2 = (graph2 / g.CANDIDATES_NOTE).read_text(encoding="utf-8")
+    assert journal2.count("«Саша» (entity)") == 1, journal2
+
+
+def test_gate_reads_nothing_without_names(tmp_path, monkeypatch):
+    graph = _graph(tmp_path, "Люди/Саша", "Люди/Саша Образцов")
+    monkeypatch.setattr(g, "_read_node", lambda *a, **k: (_ for _ in ()).throw(AssertionError("читал узлы")))
+    assert g.collective_held(graph, [], owner="") == {}
