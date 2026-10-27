@@ -65,8 +65,10 @@ final class TasksCanonTests: XCTestCase {
         let rows = try JSONDecoder().decode(
             [Row].self, from: Data(contentsOf: root.appendingPathComponent("tests/fixtures/task_lines.json")))
         let marks = ["срок не из речи", "deadline not heard", "期限未在讲话中提到"]
+        for mark in marks {   // каждая пометка — хотя бы одной строкой таблицы (n805-out7, DS M4)
+            XCTAssertTrue(rows.contains { $0.line.contains(mark) }, "в таблице нет строки с пометкой «\(mark)»")
+        }
         let marked = rows.filter { r in marks.contains { r.line.contains($0) } }
-        XCTAssertGreaterThanOrEqual(marked.count, 3, "в таблице нет строк с пометкой — тест ничего не проверил")
         for r in marked {
             let text = r.line.replacingOccurrences(of: #"^\s*[-*] \[.\] "#, with: "", options: .regularExpression)
             XCTAssertEqual(TasksService.sameTaskKey(text), r.key, r.line)
