@@ -579,6 +579,21 @@ def labeled_body(text: str) -> bool:
     return graph_names.has_speaker_actor(split_dossier(text or "")[1])
 
 
+# «Источники»/«Правки автора» не тем уровнем, что пишет `render` («## »)
+_OFF_LEVEL_CUT_RE = re.compile(r"(?m)^(?!##[ \t])#{1,6}[ \t]*(?:Источники|Правки автора)[ \t]*$")
+
+
+def kept_body(text: str | None) -> str:
+    """Тело досье без меток — для записи без модели — или "", тогда модель.
+    Целое тело: все пять разделов (`complete_body`), и `split_dossier` режет
+    его по заголовку уровня два: подзаголовок «### Источники» внутри
+    последнего раздела отрезал бы его хвост молча (n815-out4 Sonnet I1, DS I1)."""
+    if _OFF_LEVEL_CUT_RE.search(text or ""):
+        return ""
+    body = graph_names.unlabel_speakers(split_dossier(text or "")[1])
+    return body if complete_body(body) else ""
+
+
 @dataclass(frozen=True)
 class DossierLoad:
     state: Literal["ok", "damaged", "unreadable", "missing"]

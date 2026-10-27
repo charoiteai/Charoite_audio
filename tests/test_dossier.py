@@ -783,3 +783,20 @@ def test_complete_body_wants_all_five_sections_as_level_two_headings():
     assert not dossier.complete_body(body.replace("## Кто в теме  \n", "Кто в теме ## Кто в теме\n"))
     assert not dossier.complete_body(body.replace("## Решено\n", ""))
     assert not dossier.complete_body(None)
+
+
+@pytest.mark.parametrize("cut, kept", [
+    ("", True),
+    ("### Источники\n- x\n", False),        # хвост последнего раздела ушёл бы в «Источники»
+    ("##Источники\n", False),
+    ("# Правки автора\n", False),
+    ("Источники\n", True),                   # не заголовок
+])
+def test_kept_body_refuses_a_cut_that_render_does_not_write(cut, kept):
+    """Своё тело — только при срезе по «## »-заголовку, как пишет `render` (n815-out4 Sonnet I1, DS I1)."""
+    text = ("---\nотпечаток: f\n---\n# Т\n## Сейчас\nСобеседник 4 обещал\n## Как пришли\nт\n## Решено\nт\n"
+            "## Открыто\nт\n## Кто в теме\nИван\n" + cut + "Пётр\n\n## Источники\n- [[a]]\n")
+    body = dossier.kept_body(text)
+    assert bool(body) is kept
+    if kept:
+        assert "Участник встречи обещал" in body and "Пётр" in body

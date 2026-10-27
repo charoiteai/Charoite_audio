@@ -226,7 +226,6 @@ class _GraphRun:
         # изменений» (круг-2 по PR #438, DS Minor 9).
         self.unchanged = self.over_limit = self.locked = self.late = 0
         self.changed = self.broken_manual = 0
-        self.full = False         # --full прогона: перечитанное досье классифицируется им же
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе."""
@@ -279,7 +278,6 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
     files, backlinks = dossier.scan(graph, schema=CHAROITE)
     cl = dossier.clusters(files, backlinks, schema=CHAROITE) if files else {}
     g = _GraphRun(graph, files, cl, today, stamp)
-    g.full = full
     found = []
     for theme, members in cl.items():
         path = g.folder / f"{theme}.md"
@@ -321,11 +319,12 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
-def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | None:
+def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT, full: bool = False) -> float | None:
     """Собрать одну тему. Возвращает секунды генерации — цену темы для
     `need`, без ожидания замка; None — модель не звали. Собрана ли тема —
     счётчик `g.built` (флаг рядом с ним мутанты #819 не видели); `lock_wait` —
-    сколько ждать замок, считается в момент записи, после генерации."""
+    сколько ждать замок, считается в момент записи, после генерации; `full` —
+    `--full` прогона: перечитанное досье классифицируется им же (n815-out4 DS M1)."""
     g, theme, members, fp = cand.g, cand.theme, cand.members, cand.fp
     path = g.folder / f"{theme}.md"
     loaded, cls = cand.loaded, cand.cls
@@ -338,7 +337,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # Перечитанное — тот же `_classify`, что на скане: автор убрал метку —
         # причины нет (финальный Opus n815 M5); файл пропал — NEW, не читается
         # или отпечаток другой — CHANGED, как на базе (n815-out3 DS C1, I2)
-        cls = _classify(loaded, fp, g.full)
+        cls = _classify(loaded, fp, full)
         if cls is None:
             g.skipped += 1
             g.unchanged += 1
@@ -359,9 +358,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # облачная ревизия (шапку она не трогает), и пересказ модели стёр бы её
         # правки, которые база не тронула бы (финальный Opus n815 I1). Запись —
         # тем же путём ниже: замок, сверка, копия, гейт `expect`.
-        body = graph_names.unlabel_speakers(dossier.split_dossier(loaded.text)[1])
-        if not dossier.complete_body(body):
-            body = ""
+        body = dossier.kept_body(loaded.text)
     own = bool(body)   # тело без модели — не цена темы для `need` и не попытка
     for temperature in (0.2, 0.05) if not own else ():   # вторая попытка чуть холоднее
         try:
@@ -413,7 +410,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
         fresh = dossier.load_dossier(path)
         if fresh.state != loaded.state or fresh.text != loaded.text:
-            when = "перед записью" if own else "за время генерации"
+            when = "при сверке под замком" if own else "за время генерации"
             print(f"  ⏸ {theme}: досье изменилось {when} — тема уйдёт на следующую ночь")
             g.skipped += 1
             g.changed += 1
@@ -539,7 +536,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             return live_gate.night_wait_cap(
                 LOCK_WAIT if rest is None else min(LOCK_WAIT, rest), now=wall_clock)
         refused, before = g.отказы, g.built
-        gen_s = _build(cand, c, lock_wait)
+        gen_s = _build(cand, c, lock_wait, full)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
         if called:                 # цена темы — генерация, без ожидания замка (Haiku I1)
             spent.append(gen_s)
