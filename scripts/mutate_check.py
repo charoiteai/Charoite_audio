@@ -1770,7 +1770,7 @@ def main(argv: list[str]) -> int:
     throttle = machine_power.background_throttle()
     if throttle:
         print(f"мутатор не стартует: процесс в фоновом режиме — {throttle}; потолки времени "
-              "тестов рассчитаны на обычные ядра. Запусти без taskpolicy.")
+              f"тестов рассчитаны на обычные ядра. {machine_power.BACKGROUND_REMEDY}")
         return EXIT_BACKGROUND_QOS
     # Один вызов гварда старта на все роли — одиночный прогон, родитель `--jobs` и
     # его доли: другой мутатор помехой не считается (замок разделяемый, №444 B).
@@ -1945,6 +1945,11 @@ def main(argv: list[str]) -> int:
             cap = mutant_cap(args.timeout, durations[suite])
             if not admits(args.budget_s, started, durations[suite], cap, args.timeout):
                 aborted = "бюджет"
+            # Зажим, наложенный посреди прогона (`taskpolicy -p`), — тоже между
+            # мутантами и тоже мимо `--force`: дочерний pytest его наследует и
+            # отказывает кодом 17, а rc≠0 засчитался бы «убит» (out1 Haiku C1).
+            elif зажим := machine_power.background_throttle():
+                aborted = f"фоновый режим процесса — {зажим}"
             # Живой контур и ночь важнее метрики: началась запись или ночной
             # цикл — прерываемся между мутантами (круг-1, DS: координация
             # была однонаправленной — ночь ждала нас, мы ночь не видели).
@@ -1986,6 +1991,12 @@ def main(argv: list[str]) -> int:
                 r = timed_run(work, suite, args.timeout, cap)
             finally:
                 target.write_text(original, encoding="utf-8")
+            if r.rc == EXIT_BACKGROUND_QOS:
+                # Отказ обвязки — не вердикт мутанту: не судился, прогон стоп
+                aborted = "фоновый режим процесса (отказ набора, код 17)"
+                print(f"⏹ {aborted} — прерываюсь ({facts.tested}/{len(plan)} "
+                      "проверено, остальное не судилось)")
+                break
             facts.tested += 1
             facts.critical_tested += mut.critical
             alive = r.status == PASSED

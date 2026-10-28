@@ -24,7 +24,6 @@ Apple Silicon: 1 — энергосбережение; оба профиля (`p
 """
 from __future__ import annotations
 
-import ctypes
 import re
 import subprocess
 import sys
@@ -36,6 +35,8 @@ LIBSYSTEM = "/usr/lib/libSystem.B.dylib"
 THROTTLED_QOS = {0x09: "BACKGROUND", 0x05: "MAINTENANCE"}
 #: `PRIO_DARWIN_PROCESS` из `sys/resource.h`: 1 — процесс в darwin-фоне (`taskpolicy -b`).
 PRIO_DARWIN_PROCESS = 4
+#: Что делать человеку — одна фраза на обвязку pytest и мутатор.
+BACKGROUND_REMEDY = "Запусти без taskpolicy и не из фонового задания launchd."
 LOW_POWER_MODE = 1
 TIMEOUT_S = 2.0
 
@@ -87,17 +88,21 @@ def read_low_power(run=subprocess.run) -> bool | None:
     return parse_low_power(res.stdout)
 
 
-def background_throttle(load=ctypes.CDLL) -> str | None:
+def background_throttle(load=None) -> str | None:
     """Зажат ли текущий процесс фоновым режимом; строка — какой сигнал, None — нет
     (или не macOS, или сигнал не читается).
 
     Класс QoS — потока, который спрашивает: звать из главного. Зажим наследуют
     дети (опыт 28.10), поэтому ответ контроллера pytest верен и для его воркеров.
+    Не читается — None, а не отказ: libSystem — системная libc, без неё не
+    запустился бы и сам python (`otool -L`), так что это ветка чужих платформ.
+    `ctypes` — при вызове: модуль импортирует демон, которому датчик не нужен.
     """
     if sys.platform != "darwin":
         return None
+    import ctypes
     try:
-        lib = load(LIBSYSTEM)
+        lib = (load or ctypes.CDLL)(LIBSYSTEM)
         lib.qos_class_self.restype = ctypes.c_uint
         lib.getpriority.restype = ctypes.c_int
         qos = lib.qos_class_self()
@@ -106,6 +111,8 @@ def background_throttle(load=ctypes.CDLL) -> str | None:
         return None
     if qos in THROTTLED_QOS:
         return f"QoS {THROTTLED_QOS[qos]} (taskpolicy -c {THROTTLED_QOS[qos].lower()})"
+    # ядро отдаёт 1, и под `taskpolicy -b`, и после setpriority(PRIO_DARWIN_BG = 0x1000) —
+    # опыт 28.10 (out1 DS-C1 отклонён); другого положительного значения не видели
     if darwin_bg == 1:
-        return "darwin-фон (taskpolicy -b)"
+        return "darwin-фон (taskpolicy -b или фоновое задание launchd)"
     return None

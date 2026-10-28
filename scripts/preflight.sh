@@ -65,6 +65,15 @@ busy=$("$PY" -c "import sys, pathlib; sys.path.insert(0, 'src'); import busy_sig
 if [ -n "$busy" ] && [ -z "${PREFLIGHT_FORCE:-}" ]; then
   echo "preflight: машина занята ($busy) — тяжёлые шаги отложены; PREFLIGHT_FORCE=1 только с чужого согласия"; exit 3
 fi
+# Зажим процесса (`taskpolicy -c background`, `-b`, фоновое задание launchd) — тот же
+# отказ, что у обвязки pytest и мутатора, но здесь, до шагов: иначе их код 17 читался
+# бы как FAIL pytest и mutation при нуле упавших тестов (№817, out1: S-I1 = DS-I2 = H-I1).
+# PREFLIGHT_FORCE его не снимает: под зажимом набор откажет сам.
+throttle=$("$PY" -c "import sys; sys.path.insert(0, 'src'); import machine_power; print(machine_power.background_throttle() or '')") \
+  || { echo "preflight: режим процесса не читается — прогон не стартует"; exit 2; }
+if [ -n "$throttle" ]; then
+  echo "preflight: процесс в фоновом режиме ($throttle) — потолки времени набора рассчитаны на обычные ядра; запусти без зажима"; exit 17
+fi
 [ -z "$(git status --porcelain)" ] || echo "   ! рабочее дерево не чистое: шаг 4 (мутатор) судит HEAD, незакоммиченного не видит"
 
 step "1. статика: ruff (правила — pyproject) · раскладка · маркеры приватности"

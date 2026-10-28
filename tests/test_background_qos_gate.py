@@ -8,11 +8,16 @@
 `pytest_configure` контроллера.
 """
 import os
+import pathlib
 import sys
+import tomllib
+import types
 
 import pytest
 
+import conftest
 import exit_codes
+import machine_power
 
 TASKPOLICY = "/usr/sbin/taskpolicy"
 ПРОБА = """
@@ -50,3 +55,39 @@ def test_обычный_режим_проходит_через_обвязку(в
     result = внутренний_pytest(ПРОБА, обвязка=True)
     out = result.stdout + result.stderr
     assert result.returncode == 0 and "1 passed" in out, out
+
+
+def test_решение_гейта_зажим_даёт_exit_17(monkeypatch):
+    """Решение обвязки без настоящего taskpolicy — идёт и на Linux CI (out1 DS-I3)."""
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: "QoS BACKGROUND (taskpolicy -c background)")
+    with pytest.raises(pytest.exit.Exception) as e:
+        conftest.отказ_под_зажимом(types.SimpleNamespace())
+    assert e.value.returncode == exit_codes.EXIT_BACKGROUND_QOS
+    assert "QoS BACKGROUND" in e.value.msg and machine_power.BACKGROUND_REMEDY in e.value.msg
+
+
+def test_решение_гейта_без_зажима_молчит(monkeypatch):
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: None)
+    assert conftest.отказ_под_зажимом(types.SimpleNamespace()) is None
+
+
+def test_воркер_xdist_датчик_не_спрашивает(monkeypatch):
+    """Воркер наследует зажим контроллера: ответ уже дан, второй опрос — лишний."""
+    def датчик():
+        raise AssertionError("воркер не спрашивает датчик")
+    monkeypatch.setattr(machine_power, "background_throttle", датчик)
+    assert conftest.отказ_под_зажимом(types.SimpleNamespace(workerinput={})) is None
+
+
+def test_гейт_стоит_первым_в_pytest_configure():
+    """До снятия `CHAROITE_ROOT` и временного корня: отказ ничего не меняет в окружении."""
+    import inspect
+    тело = inspect.getsource(conftest.pytest_configure)
+    assert тело.index("отказ_под_зажимом(config)") < тело.index("CHAROITE_ROOT\", None)")
+
+
+def test_потолок_внутреннего_pytest_ниже_внешнего():
+    """90 с ниже `timeout` pyproject: иначе два сигнала гонятся (out1 DS-M4)."""
+    with open(pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as f:
+        внешний = tomllib.load(f)["tool"]["pytest"]["ini_options"]["timeout"]
+    assert conftest.ПОТОЛОК_ВНУТРЕННЕГО_С < int(внешний)

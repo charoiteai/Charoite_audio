@@ -32,6 +32,8 @@ def tree(tmp_path):
     shutil.copy(ROOT / "scripts" / "preflight.sh", t / "scripts" / "preflight.sh")
     shutil.copy(ROOT / "src" / "exit_codes.py", t / "src" / "exit_codes.py")
     (t / "src" / "busy_signals.py").write_text("def machine_busy(root, **k):\n    return []\n")
+    (t / "src" / "machine_power.py").write_text(
+        "import os\ndef background_throttle():\n    return os.environ.get('FAKE_THROTTLE') or None\n")
     (t / ".github" / "workflows" / "ci.yml").write_text("env:\n  RUFF_VERSION: '0.0.0'\n")
     for name in ("layout_map.py", "check_private_markers.py"):
         (t / "scripts" / name).write_text("")
@@ -84,3 +86,21 @@ def test_force_does_not_reach_the_mutator(tree, tmp_path):
     r, argv = _preflight(tree, tmp_path, 0, "ok", PREFLIGHT_FORCE="1")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "--range" in argv and "--force" not in argv
+
+
+@pytest.mark.parametrize("force", [{}, {"PREFLIGHT_FORCE": "1"}], ids=["без_force", "force"])
+def test_background_qos_refuses_before_the_steps(tree, tmp_path, force):
+    """Зажим процесса — отказ кодом 17 до шагов с причиной, а не FAIL pytest и
+    mutation от их кода 17 (№817, out1); `PREFLIGHT_FORCE` его не снимает."""
+    r, argv = _preflight(tree, tmp_path, 0, "ok", FAKE_THROTTLE="QoS BACKGROUND (taskpolicy -c background)", **force)
+    assert r.returncode == 17, r.stdout + r.stderr
+    assert "фоновом режиме (QoS BACKGROUND" in r.stdout and "FAIL" not in r.stdout, r.stdout
+    assert argv == ""                       # мутатор не запускался
+
+
+def test_unreadable_throttle_is_a_named_refusal(tree, tmp_path):
+    """Датчик не импортируется — отказ с причиной: сломанный датчик ≠ обычный режим."""
+    (tree / "src" / "machine_power.py").write_text("raise ImportError('нет')\n")
+    r, argv = _preflight(tree, tmp_path, 0, "ok")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "режим процесса не читается" in r.stdout and argv == ""
