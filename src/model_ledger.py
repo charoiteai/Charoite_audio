@@ -90,7 +90,7 @@ def _who(skip: frozenset[str]) -> tuple[str, str]:
     if tag:
         return tag, "tag"
     f = sys._getframe(2)
-    while f is not None and f.f_code.co_filename in skip:
+    while f is not None and f.f_globals.get("__name__") in skip:
         f = f.f_back
     return ("untagged:" + _frame_name(f) if f is not None else "untagged:?"), "stack"
 
@@ -121,7 +121,8 @@ def _proc() -> str:
 
 
 class Call:
-    """Один запрос к модели — от первой попытки до конца ответа или отказа."""
+    """Один запрос к модели — от первой попытки до конца ответа или отказа.
+    `skip` — имена модулей транспорта, чьи кадры потребителем не считаются."""
 
     def __init__(self, root: pathlib.Path, cfg: dict | None, *, engine: str, model: str | None,
                  kind: str, method: str, skip: frozenset[str]) -> None:

@@ -466,7 +466,16 @@ STREAM_TIMEOUT = (10.0, 120.0)
 #: (DS r1 критика / GLM r1 M5 по #558).
 DOC_STREAM_TIMEOUT = (10.0, 300.0)
 #: Кадры этого модуля журнал вызовов пропускает, ища потребителя по стеку (№807).
-_LEDGER_SKIP = frozenset({__file__})
+_LEDGER_SKIP = frozenset({__name__})
+
+
+def _ledger_outcome(e: BaseException) -> str:
+    """Исход для журнала вызовов: журнал не вправе подменить исключение вызова
+    своим (подменённый в тестах `requests` без `Timeout` и т. п.)."""
+    try:
+        return failure_kind(e)
+    except Exception:  # noqa: BLE001
+        return "other"
 
 # Оговорка о неполной записи — факт о ЗАПИСИ, не речь: блок снаружи тегов
 # стенограммы, ПОСЛЕ свёртки `_fit` и любой обрезки (иначе уедет в сводку
@@ -1078,7 +1087,7 @@ class LLM:
         try:
             yield call
         except BaseException as e:
-            call.finish(failure_kind(e))
+            call.finish(_ledger_outcome(e))
             raise
         call.finish("ok")
 
@@ -1134,7 +1143,7 @@ class LLM:
             if err is None or isinstance(err, GeneratorExit):
                 self.call.finish("ok" if self.call.done_s is not None else "closed")
             else:
-                self.call.finish(failure_kind(err))
+                self.call.finish(_ledger_outcome(err))
 
         def iter_lines(self, *a, **kw):
             for line in self._r.iter_lines(*a, **kw):
@@ -1190,7 +1199,7 @@ class LLM:
                 return self._LeasedStream(r, self._lease("stream", timeout).__enter__(), call)
             raise RuntimeError("unreachable")  # pragma: no cover
         except BaseException as e:
-            call.finish(failure_kind(e))
+            call.finish(_ledger_outcome(e))
             raise
 
     def _mlx_payload(self, messages: list[dict], *, think: bool | None,
@@ -1507,7 +1516,7 @@ class LLM:
                 # вызовы (минутки timeout=600, разбор графа) резались 45 с и молча уходили
                 # на локальную модель; CLOUD_TIMEOUT целиком — только для стрима подсказок
                 # (аудит 13.09, DS I1)
-                with self._complete_call(self.cloud_model) as call:
+                with self._complete_call(payload.get("model")) as call:
                     r = self._post_busy(f"{self.base}/chat/completions", payload,
                                         (CLOUD_TIMEOUT[0], max(CLOUD_TIMEOUT[1], float(timeout))),
                                         wait, call=call)
@@ -1546,7 +1555,7 @@ class LLM:
             payload = self._mlx_payload(messages, think=think,
                                         num_predict=num_predict,
                                         temperature=temperature, stream=False)
-            with self._complete_call(self.mlx_model) as call:
+            with self._complete_call(payload.get("model")) as call:
                 r = self._post_with_revive(f"{self.base}/v1/chat/completions",
                                            payload, timeout, revive, busy_wait, call=call)
                 body = self._checked_body(r)

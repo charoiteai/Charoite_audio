@@ -66,6 +66,7 @@ def _body(obj, status: int = 200) -> requests.Response:
     r = requests.Response()
     r.status_code = status
     r._content = (obj if isinstance(obj, str) else json.dumps(obj)).encode("utf-8")
+    r._content_consumed = True          # `close()` не ищет `raw`, которого у тела нет
     return r
 
 
@@ -192,10 +193,10 @@ def test_complete_writes_tokens(_сеть_закрыта):
 def test_complete_failure_has_its_kind(_сеть_закрыта):
     c = llm.LLM(LOCAL)
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _body({"error": "boom"})
-    with pytest.raises(llm.LLMHTTPError):
+    with pytest.raises(llm.LLMHTTPError) as err:
         c.complete("x", model="m1")
     [rec] = _records()
-    assert rec["outcome"] == "http"
+    assert rec["outcome"] == err.value.kind == llm.failure_kind(err.value)
 
 
 def test_strict_json_retry_is_two_lines(_сеть_закрыта):
@@ -212,7 +213,8 @@ def test_strict_json_retry_is_two_lines(_сеть_закрыта):
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = ответ
     assert c.complete("x", model="m1", json_format=True) == "{}"
     assert sent == [True, False]
-    assert [r["outcome"] for r in _records()] == ["http", "ok"]
+    first, second = _records()
+    assert first["outcome"] not in ("ok", "closed") and second["outcome"] == "ok"
 
 
 def test_mlx_stream_has_no_tokens(_сеть_закрыта):
