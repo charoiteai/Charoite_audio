@@ -114,39 +114,46 @@ def term(root: pathlib.Path) -> int | None:
     вызова (финальный Opus, I1). None — конфиг не прочитан: строка пишется,
     но ничего не стирается — срок владельца неизвестен."""
     root = pathlib.Path(root)
-    fp = config_loader.fingerprint(root)
-    with _term_lock:
-        hit = _terms.get(str(root))
-    if hit is not None and hit[0] == fp:
-        return hit[1]
-    try:
-        n: int | None = keep_days(config_loader.load_user_or_example(root))
+    try:    # целиком: исключение отпечатка иначе стоило бы строки, а не уборки (выход n807-out5, DS M3)
+        fp = config_loader.fingerprint(root)
+        with _term_lock:
+            hit = _terms.get(str(root))
+        if hit is not None and hit[0] == fp:
+            return hit[1]
+        n = keep_days(config_loader.load_user_or_example(root))
     except Exception as exc:  # noqa: BLE001 — битый конфиг не вправе уронить вызов модели
         once.say(("model_ledger", "term", type(exc).__name__),
                  f"model_ledger: конфиг не прочитан ({type(exc).__name__}) — журнал пишется, "
                  "прежние дни не стираются", stream=sys.stderr)
-        n = None
+        return None
     with _term_lock:
         _terms[str(root)] = (fp, n)
     return n
 
 
-def keep_days(cfg: dict | None) -> int:
-    """Срок журнала из `llm.ledger_keep_days`; мусор в конфиге — умолчание, не отказ.
+def keep_days(cfg) -> int | None:
+    """Срок журнала из разобранного конфига: число дней, `0` — выключен, None — не понят.
 
-    Выключает (и стирает прежние дни) только точный `0`: `-1` и `0.5` — не
-    «выключить», а мусор, иначе опечатка молча стирала бы журнал (выход n807-out2)."""
-    section = cfg.get("llm") if isinstance(cfg, dict) else None
-    raw = section.get("ledger_keep_days", KEEP_DAYS_DEFAULT) if isinstance(section, dict) else KEEP_DAYS_DEFAULT
+    Умолчание 35 — только когда конфиг понят, а ключа в нём нет. Пустой файл
+    (`None`), не словарь, `llm:` не словарём, мусор в значении — «владельца не
+    поняли»: строка пишется, прежние дни не стираются (выход n807-out5, три
+    головы). Выключает (и стирает прежние дни) только целое `0`: `"0"`, `false`,
+    `0.0`, `-1`, `0.5` — не «выключить» (выходы n807-out2…out4)."""
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("llm", {}), dict):
+        _not_understood("конфиг не словарь" if not isinstance(cfg, dict) else "llm не словарь")
+        return None
+    raw = cfg.get("llm", {}).get("ledger_keep_days", KEEP_DAYS_DEFAULT)
     n = _count(raw)
     if n is None or n != raw or (n == 0 and not isinstance(raw, int)):   # 0.0 — не выключатель (выход n807-out4)
-        # «0» строкой или false — не выключатель: молча включённый журнал
-        # человек считал бы выключенным (выход n807-out3)
-        once.say(("model_ledger", "keep_days"),
-                 f"model_ledger: llm.ledger_keep_days не понят ({type(raw).__name__}) — "
-                 f"срок {KEEP_DAYS_DEFAULT} дней; выключает только число 0", stream=sys.stderr)
-        return KEEP_DAYS_DEFAULT
+        _not_understood(f"llm.ledger_keep_days ({type(raw).__name__})")
+        return None
     return min(n, KEEP_DAYS_MAX)
+
+
+def _not_understood(what: str) -> None:
+    once.say(("model_ledger", "keep_days", what),
+             f"model_ledger: {what} не понят — журнал пишется, прежние дни не стираются; "
+             "выключает только число 0", stream=sys.stderr)
 
 
 def _count(x) -> int | None:
@@ -273,11 +280,12 @@ def _cut_reason(body: dict) -> str | None:
 def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
     """Стереть дни старше срока — по дате в имени, раз в день на процесс;
     `keep == 0` — все дни."""
-    key = (str(logs), today, keep)   # новый срок с диска — новая уборка в тот же день
-    with _sweep_lock:
-        if key in _swept:
-            return
-        _swept.add(key)
+    if keep:    # выключенный журнал убирает каждый раз: 0 → N → 0 за день оставил бы день N (выход n807-out5)
+        key = (str(logs), today, keep)   # новый срок с диска — новая уборка в тот же день
+        with _sweep_lock:
+            if key in _swept:
+                return
+            _swept.add(key)
     if keep:    # jsonl_log (base) создаёт каталог без 0700; выключенный журнал каталог не заводит (выход n807-out3)
         with contextlib.suppress(OSError):   # права — попутно; уборка по имени — главное (выход n807-out4)
             charoite_paths.secure_dir(logs)

@@ -223,7 +223,7 @@
     },
     "model_ledger": {
       "layer": "llm",
-      "why": "журнал вызовов модели по потребителям (№807): строку пишет транспорт llm.py из своих швов (_open_stream, _post_busy), метку потребителя ставят демон и разбор графа — слой транспорта, рядом с арендой model_lease; сам зовёт только runtime и base (charoite_paths, jsonl_log, once)."
+      "why": "журнал вызовов модели по потребителям (№807): строку пишет транспорт llm.py из своих швов (_open_stream, _post_busy), метку потребителя ставят демон и разбор графа — слой транспорта, рядом с арендой model_lease; сам зовёт только runtime и base (charoite_paths, config_loader — срок из конфига корня, jsonl_log, once)."
     },
     "jsonl_log": {
       "layer": "base",
