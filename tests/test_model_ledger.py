@@ -455,9 +455,25 @@ def test_warmup_at_start_applies_the_term(_сеть_закрыта):
     assert (_logs().stat().st_mode & 0o777) == 0o700
 
 
-@pytest.mark.parametrize("raw", ["0", False, -1, 0.5])
+@pytest.mark.parametrize("raw", ["0", False, -1, 0.5, 0.0, -0.0])
 def test_unreadable_term_is_said_once(raw, capsys, monkeypatch):
     monkeypatch.setattr(model_ledger.once, "_said", set())
     assert model_ledger.keep_days({"llm": {"ledger_keep_days": raw}}) == 35
     assert model_ledger.keep_days({"llm": {"ledger_keep_days": raw}}) == 35
     assert capsys.readouterr().err.count("ledger_keep_days не понят") == 1
+
+
+@pytest.mark.parametrize("n, want", [(10**12, 10**12), (10**12 + 1, None), (0, 0), (-1, None)])
+def test_token_count_bounds(n, want):
+    assert model_ledger._tokens(n) == want
+
+
+def test_sweep_survives_a_failed_chmod(tmp_path, monkeypatch):
+    """Сбой прав каталога не отменяет уборку дня и не пишет «журнал не пишется»
+    после записанной строки (выход n807-out4)."""
+    old = tmp_path / "model_calls-2000-01-01.jsonl"
+    old.write_text("{}\n")
+    monkeypatch.setattr(model_ledger.charoite_paths, "secure_dir",
+                        lambda p: (_ for _ in ()).throw(OSError("нет прав")))
+    model_ledger._sweep(tmp_path, 35, "2026-10-28")
+    assert not old.exists()

@@ -107,7 +107,7 @@ def keep_days(cfg: dict | None) -> int:
     section = cfg.get("llm") if isinstance(cfg, dict) else None
     raw = section.get("ledger_keep_days", KEEP_DAYS_DEFAULT) if isinstance(section, dict) else KEEP_DAYS_DEFAULT
     n = _count(raw)
-    if n is None or n != raw:
+    if n is None or n != raw or (n == 0 and not isinstance(raw, int)):   # 0.0 — не выключатель (выход n807-out4)
         # «0» строкой или false — не выключатель: молча включённый журнал
         # человек считал бы выключенным (выход n807-out3)
         once.say(("model_ledger", "keep_days"),
@@ -248,7 +248,8 @@ def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
             return
         _swept.add(key)
     if keep:    # jsonl_log (base) создаёт каталог без 0700; выключенный журнал каталог не заводит (выход n807-out3)
-        charoite_paths.secure_dir(logs)
+        with contextlib.suppress(OSError):   # права — попутно; уборка по имени — главное (выход n807-out4)
+            charoite_paths.secure_dir(logs)
     cutoff = "9999" if keep == 0 else time.strftime("%Y-%m-%d", time.localtime(time.time() - keep * 86400))
     try:
         names = os.listdir(logs)
