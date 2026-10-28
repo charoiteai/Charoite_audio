@@ -57,14 +57,11 @@ def fingerprint(root: pathlib.Path, *, code: pathlib.Path | None = None) -> tupl
     В ключе оба кандидата: появление собственного `config.yaml` там, где
     читался пример, — тоже причина перечитать.
     """
-    def когда(p: pathlib.Path) -> tuple | None:
-        # не только mtime: правка с сохранённым временем (`cp -p`, `touch -r`)
-        # иначе осталась бы невидимой (выход n807-out5, Haiku I1 = Sonnet M2)
+    def когда(p: pathlib.Path) -> float:
         try:
-            st = p.stat()
+            return p.stat().st_mtime
         except OSError:
-            return None
-        return (st.st_mtime_ns, st.st_size, st.st_ino)
+            return -1.0
 
     свой = root / "config" / "config.yaml"
     пример = (code or CODE_ROOT) / "config" / "config.example.yaml"

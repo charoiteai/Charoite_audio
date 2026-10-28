@@ -576,9 +576,9 @@ LOG_KINDS: dict[str, LogKind] = {
     "memory_bench_alert": LogKind("memory_bench_alert", "shared", None, (".json",), sweep=False, whole=True),
     # исход гейта слотов ночи (№630): единственная запись, почему ночь не шла — ретеншн не трогает
     "nightly_gate": LogKind("nightly_gate", "shared", None, (".json",), sweep=False, whole=True),
-    # журнал вызовов модели по потребителям (№807): файл на день, срок — свой
-    # (`llm.ledger_keep_days`, уборка по дате в имени у писателя `model_ledger`); общий
-    # ретеншн судит по mtime и сроку записи звука — стёр бы журнал после двух суток простоя
+    # журнал вызовов модели по потребителям (№807): файл на день, только дописывается —
+    # срока у него пока нет; общий ретеншн судит по mtime и сроку записи звука и стёр бы
+    # журнал после двух суток простоя
     "model_calls": LogKind("model_calls-", "shared", None, (".jsonl",), sweep=False),
 }
 

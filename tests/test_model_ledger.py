@@ -37,18 +37,15 @@ DONE = {"done": True, "prompt_eval_count": 120, "eval_count": 7,
 
 @pytest.fixture(autouse=True)
 def _чистый_учёт(monkeypatch, tmp_path):
-    # свой config.yaml корня теста: иначе срок пришёл бы из примера поставки в корне
-    # кода — скрытый участник прогона (выход n807-out5, Haiku M2 = DS M2)
+    # свой config.yaml корня теста: выключатель журнала читается только оттуда
     if charoite_paths.resolve_root(llm.__file__) != tmp_path / "данные":   # до записи config.yaml (выход n807-out6, DS I4)
         pytest.fail("корень данных теста не tmp_path — config.yaml не пишу")
     _owner_config("llm: {}\n")
-    model_ledger._swept.clear()
-    model_ledger._terms.clear()
+    model_ledger._switch.clear()
     llm._strict_json_clear()
     monkeypatch.setattr(llm.time, "sleep", lambda s: None)   # паузы «занято» — без ожидания
     yield
-    model_ledger._swept.clear()
-    model_ledger._terms.clear()
+    model_ledger._switch.clear()
     llm._strict_json_clear()
 
 
@@ -57,17 +54,13 @@ def _logs() -> pathlib.Path:
 
 
 def _owner_config(text: str, stamp: float | None = None) -> pathlib.Path:
-    """`config.yaml` корня данных теста (`tmp_path/данные`): срок журнала — только отсюда."""
+    """`config.yaml` корня данных теста (`tmp_path/данные`): выключатель журнала — только отсюда."""
     p = charoite_paths.resolve_root(llm.__file__) / "config" / "config.yaml"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
     if stamp is not None:
         os.utime(p, (stamp, stamp))
     return p
-
-
-def _day(days_ago: int) -> str:
-    return time.strftime("%Y-%m-%d", time.localtime(time.time() - days_ago * 86400))
 
 
 def _records() -> list[dict]:
@@ -271,28 +264,51 @@ def test_keep_zero_turns_the_ledger_off(_сеть_закрыта):
     assert list(_logs().glob("model_calls-*")) == []
 
 
-@pytest.mark.parametrize("raw, want", [(None, 35), (7, 7), (7.0, 7), (0, 0), (-3, None), (-1, None),
-                                       (0.5, None), (2.9, None), ("10", None), (True, None),
-                                       (float("nan"), None), (10**400, 36500)])
-def test_keep_days_from_config(raw, want):
-    cfg = {"llm": {} if raw is None else {"ledger_keep_days": raw}}
-    assert model_ledger.keep_days(cfg) == want
+def test_switch_off_keeps_earlier_days(_сеть_закрыта):
+    """Журнал ничего не стирает: выключатель только перестаёт писать (выход n807-out7 —
+    стирание из №807 убрано целиком)."""
+    old = _logs() / "model_calls-2000-01-01.jsonl"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("{}\n", encoding="utf-8")
+    _owner_config("llm:\n  ledger_keep_days: 0\n")
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert [p.name for p in _logs().glob("model_calls-*")] == [old.name]
+    assert old.read_text(encoding="utf-8") == "{}\n"
 
 
-def test_old_days_are_swept_by_the_name(tmp_path):
-    """Срок — по дате в имени файла, не по mtime: общий ретеншн `logs/` стёр бы
-    журнал через двое суток простоя (вход S-C1)."""
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    today = time.strftime("%Y-%m-%d")
-    recent = time.strftime("%Y-%m-%d", time.localtime(time.time() - 3 * 86400))
-    for day in ("2020-01-01", recent):
-        (logs / f"model_calls-{day}.jsonl").write_text("{}\n", encoding="utf-8")
-        os.utime(logs / f"model_calls-{day}.jsonl", (1, 1))      # mtime не решает
-    (logs / "model_calls-чужое.jsonl").write_text("{}\n", encoding="utf-8")
-    model_ledger._sweep(logs, 35, today)
-    assert sorted(p.name for p in logs.iterdir()) == sorted(
-        [f"model_calls-{recent}.jsonl", "model_calls-чужое.jsonl"])
+@pytest.mark.parametrize("text", [None, "битая ссылка", "", "- a\n", "llm: строкой\n", "llm: [не закрыт\n",
+                                  "ledger_keep_days: 0\n", "llm:\n  ledger_keep_days: '0'\n",
+                                  "llm:\n  ledger_keep_days: false\n", "llm:\n  ledger_keep_days: 0.0\n",
+                                  "llm:\n  ledger_keep_days: 1\n"])
+def test_only_an_integer_zero_in_the_own_config_switches_off(_сеть_закрыта, text):
+    """Своего файла нет, он не читается, не понят, или в ключе не целое `0` —
+    журнал пишет; старых дней не трогает ни при каком тексте (выходы n807-out2…out7)."""
+    own = charoite_paths.resolve_root(llm.__file__) / "config" / "config.yaml"
+    if text is None:
+        own.unlink()
+    elif text == "битая ссылка":
+        own.unlink()
+        own.symlink_to(own.parent / "нет-такого.yaml")
+    else:
+        _owner_config(text)
+    old = _logs() / "model_calls-2000-01-01.jsonl"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("{}\n", encoding="utf-8")
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert old.exists() and len(_records()) == 2      # строка старого файла и строка этого вызова
+
+
+def test_callers_config_does_not_switch_the_ledger_off(_сеть_закрыта):
+    """Словарь, собранный процессом руками (`scripts/runtime_profile.py`), журнал
+    не выключает — только config.yaml корня (финальный Opus, I1)."""
+    c = llm.LLM({**LOCAL, "llm": {**LOCAL["llm"], "ledger_keep_days": 0}})
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert len(_records()) == 1
 
 
 def test_write_failure_does_not_break_the_call(_сеть_закрыта, monkeypatch, capsys):
@@ -332,15 +348,11 @@ def test_torn_line_is_not_glued_to_the_next(tmp_path):
     assert len(warned) == 1
 
 
-@pytest.mark.parametrize("term", [35, 0])
-def test_write_cost_is_small(tmp_path, term):
-    """Запись идёт в нити вызова после снятия аренды (вход S-I5): замер цены. При `0`
-    уборка идёт на каждом вызове — `listdir` каталога с 500 чужими именами (выход n807-out6, DS I8)."""
+def test_write_cost_is_small(tmp_path):
+    """Запись идёт в нити вызова после снятия аренды (вход S-I5): замер цены
+    вместе с проверкой выключателя по отпечатку конфига."""
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "config.yaml").write_text(f"llm:\n  ledger_keep_days: {term}\n")
-    (tmp_path / "logs").mkdir()
-    for i in range(500):
-        (tmp_path / "logs" / f"чужое-{i}.log").write_text("")
+    (tmp_path / "config" / "config.yaml").write_text("llm: {}\n")
     call = model_ledger.Call(tmp_path, engine="ollama", model="m1", kind="stream",
                              method="hint", skip=frozenset())
     took = []
@@ -395,19 +407,6 @@ def test_answer_cut_by_the_token_ceiling_is_marked(_сеть_закрыта, eng
     assert rec["outcome"] == "ok" and rec["cut"] == "length"
 
 
-def test_ledger_off_removes_earlier_days(_сеть_закрыта):
-    """Выключенный журнал не оставляет прежних дней без механизма удаления (выход n807-out1)."""
-    logs = _logs()
-    logs.mkdir(parents=True, exist_ok=True)
-    old = logs / f"model_calls-{time.strftime('%Y-%m-%d')}.jsonl"
-    old.write_text("{}\n", encoding="utf-8")
-    _owner_config("llm:\n  ledger_keep_days: 0\n")
-    c = llm.LLM(LOCAL)
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
-    "".join(c.stream("x", model="m1"))
-    assert list(logs.glob("model_calls-*")) == []
-
-
 def test_line_survives_a_failing_lease_release(_сеть_закрыта, monkeypatch):
     c = llm.LLM(LOCAL)
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
@@ -441,20 +440,6 @@ def test_torn_multibyte_char_breaks_one_line_not_the_file(tmp_path):
     assert got == [{"модель": "первая"}, {"модель": "третья"}] and len(warned) == 1
 
 
-@pytest.mark.parametrize("doc", [None, "строкой", ["a"], {"llm": "строкой"}, {"llm": [1]},
-                                 {"ledger_keep_days": 400}, {"ledger_keep_days": 400, "llm": {}}])
-def test_keep_days_of_a_config_not_understood_is_unknown(doc):
-    """Пустой файл, не словарь, `llm:` без словаря — «не поняли», а не 35 (выход n807-out5)."""
-    assert model_ledger.keep_days(doc) is None
-
-
-def test_missing_key_is_the_default():
-    """`llm:` без значения — пустой раздел, как у остального продукта (выход n807-out6, DS I2)."""
-    assert model_ledger.keep_days({}) == 35
-    assert model_ledger.keep_days({"llm": {}}) == 35
-    assert model_ledger.keep_days({"llm": None}) == 35
-
-
 def test_warmup_is_its_own_consumer(_сеть_закрыта):
     """Прогрев — прямая цель нити: без метки стек назвал бы потребителем
     `threading.Thread.run` (выход n807-out2, DS I1)."""
@@ -482,22 +467,6 @@ def test_huge_server_numbers_do_not_break_the_answer(_сеть_закрыта):
     assert rec["out_tok"] == 7
 
 
-def test_warmup_at_start_applies_the_term(_сеть_закрыта):
-    """Срок с диска действует с прогрева на старте демона и консоли, а не с первой
-    подсказки встречи (выход n807-out3, Haiku I1; срок владельца — выход n807-out5, DS M2)."""
-    _owner_config("llm:\n  ledger_keep_days: 400\n")
-    old = _logs() / "model_calls-2000-01-01.jsonl"
-    kept = _logs() / f"model_calls-{_day(60)}.jsonl"
-    old.parent.mkdir(parents=True, exist_ok=True)
-    old.write_text("{}\n")
-    kept.write_text("{}\n")
-    c = llm.LLM(LOCAL)
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("готов"))
-    c.warmup()
-    assert not old.exists() and kept.exists()
-    assert (_logs().stat().st_mode & 0o777) == 0o700
-
-
 def test_warmup_honours_the_switch_off(_сеть_закрыта):
     _owner_config("llm:\n  ledger_keep_days: 0\n")
     c = llm.LLM(LOCAL)
@@ -506,81 +475,23 @@ def test_warmup_honours_the_switch_off(_сеть_закрыта):
     assert not list(_logs().glob("model_calls-*"))
 
 
-@pytest.mark.parametrize("raw", ["0", False, -1, 0.5, 0.0, -0.0])
-def test_unreadable_term_is_said_once(raw, capsys, monkeypatch):
-    monkeypatch.setattr(model_ledger.once, "_said", set())
-    assert model_ledger.keep_days({"llm": {"ledger_keep_days": raw}}) is None
-    assert model_ledger.keep_days({"llm": {"ledger_keep_days": raw}}) is None
-    assert capsys.readouterr().err.count("ledger_keep_days") == 1
-
-
 @pytest.mark.parametrize("n, want", [(10**12, 10**12), (10**12 + 1, None), (0, 0), (-1, None)])
 def test_token_count_bounds(n, want):
     assert model_ledger._tokens(n) == want
 
 
-def test_sweep_survives_a_failed_chmod(tmp_path, monkeypatch):
-    """Сбой прав каталога не отменяет уборку дня и не пишет «журнал не пишется»
-    после записанной строки (выход n807-out4)."""
-    old = tmp_path / "model_calls-2000-01-01.jsonl"
-    old.write_text("{}\n")
-    monkeypatch.setattr(model_ledger.charoite_paths, "secure_dir",
-                        lambda p: (_ for _ in ()).throw(OSError("нет прав")))
-    model_ledger._sweep(tmp_path, 35, "2026-10-28")
-    assert not old.exists()
-
-
-def test_owner_term_beats_the_callers_config(_сеть_закрыта):
-    """Словарь, собранный процессом руками (`scripts/runtime_profile.py`), срок
-    владельца не сокращает: 400 в config.yaml — файл 60-дневной давности жив
-    (финальный Opus, I1)."""
-    _owner_config("llm:\n  ledger_keep_days: 400\n")
-    old = _logs() / f"model_calls-{_day(60)}.jsonl"
-    old.parent.mkdir(parents=True, exist_ok=True)
-    old.write_text("{}\n")
-    c = llm.LLM({**LOCAL, "llm": {**LOCAL["llm"], "ledger_keep_days": 1}})   # срок вызывающего — не довод
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
-    "".join(c.stream("x", model="m1"))
-    assert old.exists()
-    assert len(_records()) == 2          # пустая строка старого файла и строка этого вызова
-
-
 def test_switch_off_reaches_a_live_client(_сеть_закрыта):
     """Правка config.yaml действует у живого клиента со следующего вызова —
     демону не нужен перезапуск (кэш по отпечатку конфига)."""
-    cfg = _owner_config("llm:\n  ledger_keep_days: 35\n", stamp=1_000_000)
+    cfg = _owner_config("llm: {}\n", stamp=1_000_000)
     c = llm.LLM(LOCAL)
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
     "".join(c.stream("x", model="m1"))
     assert len(_records()) == 1
     _owner_config("llm:\n  ledger_keep_days: 0\n", stamp=2_000_000)
     "".join(c.stream("x", model="m1"))
-    assert list(_logs().glob("model_calls-*")) == []
+    assert len(_records()) == 1          # новой строки нет, прежняя цела
     assert cfg.exists()
-
-
-def test_unread_config_writes_but_does_not_sweep(_сеть_закрыта, capsys, monkeypatch):
-    """Конфиг корня не разобран — срок владельца неизвестен: строка пишется,
-    прежние дни не стираются, причина — одной строкой."""
-    monkeypatch.setattr(model_ledger.once, "_said", set())
-    _owner_config("llm: [не закрыт\n")
-    old = _logs() / "model_calls-2000-01-01.jsonl"
-    old.parent.mkdir(parents=True, exist_ok=True)
-    old.write_text("")
-    c = llm.LLM(LOCAL)
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
-    "".join(c.stream("x", model="m1"))
-    "".join(c.stream("x", model="m1"))
-    assert old.exists() and len(_records()) == 2
-    assert capsys.readouterr().err.count("config.yaml не прочитан") == 1
-
-
-def test_name_with_a_newline_is_not_ours(tmp_path):
-    """`$` совпадал перед завершающим `\\n` — чужой файл стирался (финальный Opus, M1)."""
-    odd = tmp_path / "model_calls-2000-01-01.jsonl\n"
-    odd.write_text("")
-    model_ledger._sweep(tmp_path, 35, "2026-10-28")
-    assert odd.exists()
 
 
 class _ReadTimeoutRaw(io.BytesIO):
@@ -607,50 +518,8 @@ def test_read_timeout_mid_stream_is_a_timeout(_сеть_закрыта):
     assert rec["outcome"] == "timeout" and rec["first_s"] is not None
 
 
-@pytest.mark.parametrize("text", ["", "- a\n", "llm: строкой\n", "ledger_keep_days: 400\n",
-                                  "llm:\n  ledger_keep_days: много\n"])
-def test_config_not_understood_sweeps_nothing(_сеть_закрыта, text, capsys, monkeypatch):
-    """Обнулённый или непонятый config.yaml — не «владелец сказал 35»: строка пишется,
-    60-дневный файл жив, причина — одной строкой (выход n807-out5, три головы)."""
-    monkeypatch.setattr(model_ledger.once, "_said", set())
-    _owner_config(text)
-    kept = _logs() / f"model_calls-{_day(60)}.jsonl"
-    kept.parent.mkdir(parents=True, exist_ok=True)
-    kept.write_text("")
-    c = llm.LLM(LOCAL)
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
-    "".join(c.stream("x", model="m1"))
-    assert kept.exists() and len(_records()) == 1
-    assert "прежние дни не стираются" in capsys.readouterr().err
-
-
-def test_switch_off_twice_in_a_day_removes_the_day_between(_сеть_закрыта):
-    """0 → 35 → 0 в один день: строка, записанная при 35, стирается вторым 0 (выход n807-out5)."""
-    c = llm.LLM(LOCAL)
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
-    for stamp, term in ((1_000_000, 0), (2_000_000, 35), (3_000_000, 0)):
-        _owner_config(f"llm:\n  ledger_keep_days: {term}\n", stamp=stamp)
-        "".join(c.stream("x", model="m1"))
-        assert bool(list(_logs().glob("model_calls-*"))) == bool(term)
-
-
-def test_edit_with_the_same_mtime_is_seen(_сеть_закрыта):
-    """`cp -p` с тем же временем: отпечаток видит правку по размеру и inode —
-    кэш не держит срок 1 после правки на 400 (выход n807-out5, Haiku I1)."""
-    _owner_config("llm:\n  ledger_keep_days: 1\n", stamp=1_000_000)
-    c = llm.LLM(LOCAL)
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
-    "".join(c.stream("x", model="m1"))
-    _owner_config("llm:\n  ledger_keep_days: 400\n", stamp=1_000_000)
-    kept = _logs() / f"model_calls-{_day(60)}.jsonl"
-    kept.write_text("")
-    model_ledger._swept.clear()          # следующий день процесса
-    "".join(c.stream("x", model="m1"))
-    assert kept.exists()
-
-
 def test_failing_fingerprint_keeps_the_line(_сеть_закрыта, monkeypatch, capsys):
-    """`term` тотален: сбой отпечатка — «срок неизвестен», а не потерянная строка (выход n807-out5, DS M3)."""
+    """Проверка выключателя тотальна: сбой отпечатка — строка пишется, а не теряется (выход n807-out5, DS M3)."""
     monkeypatch.setattr(model_ledger.once, "_said", set())
     monkeypatch.setattr(model_ledger.config_loader, "fingerprint",
                         lambda root: (_ for _ in ()).throw(RuntimeError("сбой")))
@@ -659,36 +528,3 @@ def test_failing_fingerprint_keeps_the_line(_сеть_закрыта, monkeypatc
     "".join(c.stream("x", model="m1"))
     assert len(_records()) == 1
     assert "не пишется" not in capsys.readouterr().err
-
-
-def _own_config_unseen(how: str) -> None:
-    own = charoite_paths.resolve_root(llm.__file__) / "config" / "config.yaml"
-    if how == "нет":
-        own.unlink()
-    elif how == "битая ссылка":
-        own.unlink()
-        own.symlink_to(own.parent / "нет-такого.yaml")
-    elif how == "нет прав":
-        own.parent.chmod(0)
-
-
-@pytest.mark.parametrize("how", ["нет", "битая ссылка", "нет прав"])
-def test_unseen_own_config_never_lends_the_example_term(_сеть_закрыта, how):
-    """Своего config.yaml не видно — загрузчик взял бы пример поставки с его 35;
-    пример не слово владельца: строка пишется, 60-дневный файл жив (выход n807-out6,
-    DS C1 = Haiku C1). Срок владельца 400 — сначала виден, потом пропадает."""
-    _owner_config("llm:\n  ledger_keep_days: 400\n")
-    kept = _logs() / f"model_calls-{_day(60)}.jsonl"
-    kept.parent.mkdir(parents=True, exist_ok=True)
-    kept.write_text("")
-    c = llm.LLM(LOCAL)
-    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
-    "".join(c.stream("x", model="m1"))
-    model_ledger._swept.clear()          # следующий день процесса — уборка снова
-    config_dir = charoite_paths.resolve_root(llm.__file__) / "config"
-    try:
-        _own_config_unseen(how)
-        "".join(c.stream("x", model="m1"))
-    finally:
-        config_dir.chmod(0o755)
-    assert kept.exists() and len(_records()) == 2

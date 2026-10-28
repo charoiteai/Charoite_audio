@@ -23,15 +23,18 @@
 
 В строке нет ни текста промпта, ни ответа, ни текста ошибки, ни пути встречи —
 только имена кода, модель, числа и вид исхода. Файл на день
-`logs/model_calls-ГГГГ-ММ-ДД.jsonl`; срок — `llm.ledger_keep_days` из конфига
-КОРНЯ, где лежат файлы (умолчание 35 — окно месячного решения №809, `0`
-выключает журнал): конфиг в аргументе `LLM` сроком владельца не распоряжается
-(финальный Opus, I1); своего `config.yaml` нет, он не читается или не понят —
-строка пишется, ничего не стирается (выходы n807-out5, out6), уборка по дате в имени
-у писателя: общий ретеншн `logs/` судит по mtime файла и сроку записи звука, он
-стёр бы журнал через двое суток простоя (входной круг S-C1, DS I1). Запись —
-после снятия аренды, ошибка записи глотается одной строкой на процесс: вызов
-модели важнее своего журнала.
+`logs/model_calls-ГГГГ-ММ-ДД.jsonl`. Журнал только дописывает: срока хранения
+у него нет, писатель ничего не стирает — каждый способ вывести «срок
+владельца» (пустой конфиг, пример поставки, умолчание при пропущенном ключе)
+находил путь к стиранию по числу, которого владелец не писал (выходы
+n807-out5…out7); единый уборщик `logs/` — отдельная задача. Общий ретеншн
+`logs/` журнал не трогает: он судит по mtime и сроку записи звука и стёр бы
+журнал через двое суток простоя (входной круг S-C1, DS I1). Ровно `0` в
+`llm.ledger_keep_days` СВОЕГО `config/config.yaml` корня перестаёт писать,
+прежние дни остаются; словарь в аргументе `LLM` журнал не выключает
+(финальный Opus, I1), правка доходит до живого демона со следующего вызова.
+Запись — после снятия аренды, ошибка записи глотается одной строкой на
+процесс: вызов модели важнее своего журнала.
 
 Вне журнала сознательно: пробы `llm_health` (один токен), удержание модели
 `_hold_tick` (без генерации), дверь векторов и приложение Swift — их запросы
@@ -44,7 +47,6 @@ import contextvars
 import math
 import os
 import pathlib
-import re
 import sys
 import threading
 import time
@@ -57,16 +59,11 @@ import jsonl_log
 import once
 
 LEDGER_KIND = "model_calls"
-KEEP_DAYS_DEFAULT = 35
-KEEP_DAYS_MAX = 36500           # дальше срок уводит дату отсечки за календарь
 
 _consumer: contextvars.ContextVar[str | None] = contextvars.ContextVar("model_ledger_consumer",
                                                                       default=None)
-_DAY_FILE = re.compile(r"model_calls-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl")   # fullmatch: `$` пропускал имя с `\n` (Opus M1)
-_sweep_lock = threading.Lock()
-_swept: set[tuple[str, str, int]] = set()     # (каталог, день, срок) — уборка раз в день на процесс и срок
-_term_lock = threading.Lock()
-_terms: dict[str, tuple[tuple, int | None]] = {}   # корень → (отпечаток конфига, срок)
+_switch_lock = threading.Lock()
+_switch: dict[str, tuple[tuple, bool]] = {}   # корень → (отпечаток конфига, журнал выключен)
 
 
 @contextlib.contextmanager
@@ -107,71 +104,35 @@ def _who(skip: frozenset[str]) -> tuple[str, str]:
         return "untagged:?", "stack"
 
 
-def term(root: pathlib.Path) -> int | None:
-    """Срок журнала корня `root` — из его конфига на диске, с кэшем по отпечатку.
+def switched_off(root: pathlib.Path) -> bool:
+    """Выключен ли журнал корня `root` — по его `config/config.yaml`, с кэшем по отпечатку.
 
-    Что писать и что стирать в `logs/` корня, решает только конфиг этого корня:
-    словарь, который процесс собрал сам (`scripts/runtime_profile.py`) или
-    прочёл на старте (демон), срок владельца не сокращает и журнал не
-    выключает; правка `config.yaml` действует у живого демона со следующего
-    вызова (финальный Opus, I1).
-
-    Стирать вправе только СВОЙ `config/config.yaml` корня. Пример поставки,
-    который загрузчик берёт, когда своего не видно (нет, битая ссылка, нет
-    прав на каталог, заглушка iCloud), — не слово владельца: его 35 стёрли бы
-    дни, которые владелец велел хранить (выход n807-out6, DS C1 = Haiku C1).
-    Поэтому файл читается здесь напрямую, а не через выбор загрузчика: «пропал
-    между выбором и чтением» — исключение, а не пример. None — своего файла нет,
-    он не читается или не понят: строка пишется, ничего не стирается."""
+    Выключает только СВОЙ файл корня: словарь, который процесс собрал сам
+    (`scripts/runtime_profile.py`) или прочёл на старте (демон), журнал не
+    выключает, а правка `config.yaml` действует у живого демона со следующего
+    вызова (финальный Opus, I1). Файла нет, он не читается или не понят —
+    журнал пишет: строка — числа, а не слова, и ничего не стирает."""
     root = pathlib.Path(root)
-    own = root / "config" / "config.yaml"
-    try:    # целиком: исключение отпечатка иначе стоило бы строки, а не уборки (выход n807-out5, DS M3)
+    try:    # целиком: сбой отпечатка или чтения стоил бы строки (выход n807-out5, DS M3)
         fp = config_loader.fingerprint(root)
-        with _term_lock:
-            hit = _terms.get(str(root))
+        with _switch_lock:
+            hit = _switch.get(str(root))
         if hit is not None and hit[0] == fp:
             return hit[1]
-        n = keep_days(yaml.safe_load(own.read_text(encoding="utf-8")))
-    except Exception as exc:  # noqa: BLE001 — битый или невидимый конфиг не вправе уронить вызов модели
-        once.say(("model_ledger", f"term:{type(exc).__name__}"),
-                 f"model_ledger: свой config.yaml не прочитан ({type(exc).__name__}) — журнал пишется, "
-                 "прежние дни не стираются", stream=sys.stderr)
-        return None
-    with _term_lock:
-        _terms[str(root)] = (fp, n)
-    return n
+        off = _off(yaml.safe_load((root / "config" / "config.yaml").read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 — битый или невидимый конфиг не вправе уронить вызов модели
+        return False
+    with _switch_lock:
+        _switch[str(root)] = (fp, off)
+    return off
 
 
-def keep_days(cfg) -> int | None:
-    """Срок журнала из разобранного конфига: число дней, `0` — выключен, None — не понят.
-
-    Умолчание 35 — только когда конфиг понят, а ключа в нём нет; `llm:` без
-    значения — пустой раздел, как у остального продукта (выход n807-out6, DS I2).
-    Пустой файл (`None`), не словарь, `llm` не словарём, ключ не под `llm:`
-    (сбитый отступ), мусор в значении — «владельца не поняли»: строка пишется,
-    прежние дни не стираются (выходы n807-out5, out6). Выключает (и стирает
-    прежние дни) только целое `0`: `"0"`, `false`, `0.0`, `-1`, `0.5` — не
-    «выключить» (выходы n807-out2…out4)."""
+def _off(cfg) -> bool:
+    """`llm.ledger_keep_days` — ровно целое `0`; `"0"`, `false`, `0.0` — не выключатель
+    (выходы n807-out2…out4). Прочие значения ключа пока ничего не делают: срока нет."""
     section = cfg.get("llm") if isinstance(cfg, dict) else None
-    section = {} if section is None else section
-    if not isinstance(cfg, dict) or not isinstance(section, dict):
-        _not_understood("конфиг не словарь" if not isinstance(cfg, dict) else "llm не словарь")
-        return None
-    if "ledger_keep_days" in cfg:
-        _not_understood("ledger_keep_days вне раздела llm")
-        return None
-    raw = section.get("ledger_keep_days", KEEP_DAYS_DEFAULT)
-    n = _count(raw)
-    if n is None or n != raw or (n == 0 and not isinstance(raw, int)):   # 0.0 — не выключатель (выход n807-out4)
-        _not_understood(f"llm.ledger_keep_days ({type(raw).__name__})")
-        return None
-    return min(n, KEEP_DAYS_MAX)
-
-
-def _not_understood(what: str) -> None:
-    once.say(("model_ledger", f"keep_days:{what}"),
-             f"model_ledger: {what} не понят — журнал пишется, прежние дни не стираются; "
-             "выключает только число 0", stream=sys.stderr)
+    raw = section.get("ledger_keep_days") if isinstance(section, dict) else None
+    return type(raw) is int and raw == 0
 
 
 def _count(x) -> int | None:
@@ -268,17 +229,12 @@ class Call:
             return
         self._finished = True
         try:
-            keep = term(self.root)
+            if switched_off(self.root):
+                return
             day = time.strftime("%Y-%m-%d", time.localtime(self.ts))
             path = charoite_paths.log_path(self.root, LEDGER_KIND, part=day)
-            if keep == 0:
-                # выключенный журнал не пишет и не оставляет прежних дней: иначе
-                # у них не осталось бы ни одного механизма удаления (выход n807-out1)
-                _sweep(path.parent, 0, day)
-                return
+            charoite_paths.secure_dir(path.parent)   # jsonl_log (base) заводит каталог без 0700 (выход n807-out3)
             jsonl_log.append_record(path, self.record(outcome))
-            if keep is not None:
-                _sweep(path.parent, keep, day)
         except Exception as exc:  # noqa: BLE001 — журнал не вправе уронить генерацию
             once.say(("model_ledger", type(exc).__name__),
                      f"model_ledger: журнал вызовов модели не пишется ({type(exc).__name__}) — "
@@ -293,27 +249,3 @@ def _cut_reason(body: dict) -> str | None:
     if not reason and isinstance(choices, list) and choices and isinstance(choices[0], dict):
         reason = choices[0].get("finish_reason")
     return reason if reason == "length" else None
-
-
-def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
-    """Стереть дни старше срока — по дате в имени, раз в день на процесс;
-    `keep == 0` — все дни."""
-    if keep:    # выключенный журнал убирает каждый раз: 0 → N → 0 за день оставил бы день N (выход n807-out5)
-        key = (str(logs), today, keep)   # новый срок с диска — новая уборка в тот же день
-        with _sweep_lock:
-            if key in _swept:
-                return
-            _swept.add(key)
-    if keep:    # jsonl_log (base) создаёт каталог без 0700; выключенный журнал каталог не заводит (выход n807-out3)
-        with contextlib.suppress(OSError):   # права — попутно; уборка по имени — главное (выход n807-out4)
-            charoite_paths.secure_dir(logs)
-    cutoff = "9999" if keep == 0 else time.strftime("%Y-%m-%d", time.localtime(time.time() - keep * 86400))
-    try:
-        names = os.listdir(logs)
-    except OSError:
-        return
-    for name in names:
-        m = _DAY_FILE.fullmatch(name)
-        if m and m.group(1) < cutoff:
-            with contextlib.suppress(OSError):
-                (logs / name).unlink()

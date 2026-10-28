@@ -137,9 +137,15 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   (`model_ledger.consumer(...)`) where the stack lies — the daemon's shared
   `_collect`, the two graph passes; elsewhere (the debrief is
   `untagged:graph_updater.main`, its only direct model call) the first frame
-  outside `llm.py`, marked `untagged:`. The ledger keeps its own term by the
-  date in the file name (`llm.ledger_keep_days`, 35; exactly `0` = off and deletes earlier days). Only the owner's own `config/config.yaml` of the data root the files live in may delete: a config the caller built itself cannot shorten the term, an edit reaches a running daemon on its next call, and when that file is missing, unreadable or not understood (empty, not a mapping, junk value, key outside `llm:`) the ledger keeps writing but deletes nothing — the shipped example never lends its term: the shared
-  `logs/` retention judges by mtime and the audio term and would wipe it.
+  outside `llm.py`, marked `untagged:`. The ledger only appends and
+  deletes nothing: no retention term yet (every way of deriving "the owner's
+  term" — an empty config, the shipped example, the default for a missing key —
+  found a path to deleting by a number the owner never wrote); the shared
+  `logs/` retention leaves it alone, since it judges by mtime and the audio term
+  and would wipe it. Exactly `0` in `llm.ledger_keep_days` of the data root's own
+  `config/config.yaml` stops writing (earlier days stay); a config the caller
+  built itself cannot switch it off, and an edit reaches a running daemon on its
+  next call.
   Outside the ledger by design: one-token health probes, the hold tick, the
   embedder and the Swift app's own chat requests. `wall_s` starts at the first
   POST: the daemon's pulse `model_ms` for a hint also counts building the
