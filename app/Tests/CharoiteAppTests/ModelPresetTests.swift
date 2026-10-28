@@ -106,32 +106,6 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertEqual(fullFlags["deja_vu"], "true")
     }
 
-    /// Второй проход разбора (№821) мерен только на модели «Полного»: его
-    /// сеет один «Полный», условной записью «ключа нет» (№822, сверки n822-in1, out1).
-    func testВторойПроходСеетТолькоПолный() {
-        XCTAssertEqual(ModelPresetPolicy.seededKeys, ["graph_second_pass"])
-        for preset in ModelPresetPolicy.all {
-            XCTAssertEqual(preset.seedWrites(wroteHere: [:]),
-                           preset.id == "full" ? [.init(key: "graph_second_pass", expected: nil, value: "true")] : [],
-                           preset.id)
-            XCTAssertFalse(preset.configFlags.contains { ModelPresetPolicy.seededKeys.contains($0.key) },
-                           "\(preset.id): не флаг машины — иначе смена пресета затрёт выбор владельца")
-        }
-    }
-
-    /// «Полный», потом «Лёгкий» в том же показе мастера: свой посев откатывается,
-    /// повторный «Полный» возвращает его; повтор того же пресета ничего не пишет.
-    func testСменаПресетаОткатываетТолькоСвойПосев() {
-        let full = ModelPresetPolicy.recommended(forGB: 64)
-        let light = ModelPresetPolicy.all.first { $0.id == "light" }!
-        let k = "graph_second_pass"
-        XCTAssertEqual(light.seedWrites(wroteHere: [k: "true"]), [.init(key: k, expected: "true", value: "false")])
-        XCTAssertEqual(full.seedWrites(wroteHere: [k: "false"]), [.init(key: k, expected: "false", value: "true")])
-        XCTAssertEqual(full.seedWrites(wroteHere: [k: "true"]), [])
-        XCTAssertEqual(light.seedWrites(wroteHere: [:]), [], "не сеяли — «Лёгкий» ключ не трогает")
-        XCTAssertEqual(light.seedWrites(wroteHere: [k: "false"]), [], "свой откат уже лёг — повтор ничего не пишет")
-    }
-
     func testТяжёлыеПрофилиНичегоНеОтключают() {
         for preset in ModelPresetPolicy.all where preset.needsGB >= 16 {  // 16, 32, 64
             XCTAssertTrue(preset.graph, "\(preset.id): граф — смысл продукта")

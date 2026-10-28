@@ -30,12 +30,6 @@ struct FirstRunView: View {
     @State private var graphPath = AppSettings.configValue("graph_dir") ?? ""
     @State private var configSaved = false
     @State private var presetSaveFailed = false
-    /// Что мастер сам посеял в этом показе (`ModelPreset.seedWrites`).
-    @State private var seededHere: [String: String] = [:]
-    /// Корень, в который сеяли: смена корня в Настройках — посев чужого файла не наш.
-    @State private var seededRoot = ""
-    @State private var seeding = false
-    @State private var seedFailure: String?
     /// Текст отказа записи конфига; nil — отказа не было.
     @State private var configSaveFailure: String?
     /// Выбранный набор моделей. По умолчанию — тот, что уже в конфиге, а
@@ -216,9 +210,7 @@ struct FirstRunView: View {
                     applyPreset()
                 }
                 .charoite(.regular, .m)
-                .onChange(of: presetID) { _, _ in seedFailure = nil }   // отказ — про прежний выбор
-                .disabled(seeding
-                          || pulls.isPulling(selectedPreset.model)
+                .disabled(pulls.isPulling(selectedPreset.model)
                           || pulls.isPulling(selectedPreset.smallModel))
                 if presetSaveFailed {
                     Text(L.t("Не удалось записать пресет в config.yaml — проверьте путь установки",
@@ -235,18 +227,6 @@ struct FirstRunView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                }
-            }
-            if let seedFailure {
-                HStack(spacing: 8) {
-                    Text(L.t("Модели записаны, второй проход разбора — нет: \(seedFailure)",
-                             "Models saved, the second extraction pass was not: \(seedFailure)",
-                             "模型已保存，第二轮解析未写入：\(seedFailure)"))
-                        .font(.caption).foregroundStyle(.red).lineLimit(2)
-                    // Своя кнопка: «Записать» серая, пока качаются модели (n822-out2, Sonnet I1).
-                    Button(L.t("Повторить", "Retry", "重试")) { seed(selectedPreset) }
-                        .charoite(.regular, .s)
-                        .disabled(seeding)
                 }
             }
             if let err = selectedPreset.models.compactMap({ pulls.failed[$0] }).first {
@@ -268,12 +248,9 @@ struct FirstRunView: View {
         // машина тянет (граф, дежавю, ревизия ядер, модель тезисов). Пишем
         // одной операцией: по ключу за раз конфиг оставался наполовину новым,
         // наполовину старым, и это ничем себя не выдавало.
-        // Посеянные ключи (второй проход разбора) — отдельной условной записью
-        // после основной: та создаёт config.yaml на свежей машине, а посев
-        // пишет, только если ключа нет, и сверяется PyYAML (сверка n822-out1).
-        // Ручное значение владельца пресет не трогает.
         let saved = AppSettings.setConfigValues(
-            [("model", preset.model), ("small_model", preset.smallModel)] + preset.configFlags)
+            [("model", preset.model), ("small_model", preset.smallModel)]
+            + preset.configFlags)
         if !saved {
             presetSaveFailed = true
             return
@@ -281,26 +258,6 @@ struct FirstRunView: View {
         presetSaveFailed = false
         for model in preset.models { pulls.pull(model) }
         readiness.refresh(force: true)
-        seed(preset)
-    }
-
-    /// Посеять ключи пресета условной записью (`ModelPresetPolicy.seed`).
-    private func seed(_ preset: ModelPreset) {
-        seedFailure = nil
-        let root = AppSettings.charoiteRoot
-        if root.path != seededRoot {
-            seededHere = [:]
-            seededRoot = root.path
-        }
-        let writes = preset.seedWrites(wroteHere: seededHere)
-        guard !writes.isEmpty else { return }
-        seeding = true
-        Task { @MainActor in
-            let result = await ModelPresetPolicy.seed(writes, wroteHere: seededHere, root: root)
-            seededHere = result.wroteHere
-            seedFailure = result.failure
-            seeding = false
-        }
     }
 
     /// Имя и папка графа — то, что раньше правили в YAML руками.

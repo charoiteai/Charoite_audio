@@ -263,7 +263,7 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     # прохода, иначе человек увидел бы «3/3», а за ним снова «1/6».
     second = []
     if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2:
-        if _language(cfg) == "ru":       # пустой ключ, `ru-RU`, `ru_RU` — тоже ru (_language)
+        if _language(cfg) == "ru":       # пустой ключ — тоже ru (_language); `ru-RU` — без замера
             second = _split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2, short_tail=False)
         else:
             # Порог склейки 0,7/3 мерен только на русских встречах: в китайском
@@ -300,10 +300,10 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
 def _language(cfg: dict) -> str:
     """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`.
     Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3).
-    Основной тег: `en-US` — en, `ru_RU` — ru, один ответ и промпту, и второму проходу
-    (n822-out2, DS M7)."""
-    lang = str((cfg.get("sufler") or {}).get("language") or "ru").strip().lower()
-    return lang.replace("_", "-").split("-")[0] or "ru"
+    Точное значение без разбора тега: `en-US` здесь не en — как у минуток и архива
+    (`meeting_archive._config_lang`), иначе граф ушёл бы на английский при русских минутках
+    (финальный Opus №822, I3). Единый разбор языка — долг №615."""
+    return str((cfg.get("sufler") or {}).get("language") or "ru").strip().lower() or "ru"
 
 
 def _split(transcript: str, size: int, overlap: int, short_tail: bool = True) -> list[str]:

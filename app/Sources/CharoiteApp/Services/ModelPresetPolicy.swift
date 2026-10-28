@@ -79,88 +79,9 @@ struct ModelPreset: Identifiable, Equatable {
          // честно сказано, что там разметка срабатывает реже.
          ("markup_model", markupModel)]
     }
-
-    /// Ключи, которые профиль только СЕЕТ: пишет, если в конфиге их ещё нет.
-    ///
-    /// Второй проход разбора (`sufler.graph_second_pass`, №821) стоит времени
-    /// модели на каждую встречу, и это решение владельца очереди разбора, а не
-    /// свойство машины. Замер 27.10 (+145 с на встречу, покрытие решений
-    /// 57–65 → 77–82 %) — только на qwen3.6:35b-mlx, поэтому сеет его один
-    /// «Полный»; у 27B и 4B польза не мерилась, а цена ×2–4 (№822). Ручное
-    /// значение — и true, и false — пресет не трогает: в отличие от configFlags,
-    /// где «Записать» намеренно переписывает контуры под машину (сверка n822-in1).
-    var seededFlags: [(key: String, value: String)] {
-        id == "full" ? [("graph_second_pass", "true")] : []
-    }
-
-    /// Условная запись посеянного ключа: `value`, только если в конфиге всё ещё
-    /// `expected` (`nil` — ключа нет или он пуст).
-    struct SeedWrite: Equatable {
-        let key: String
-        let expected: String?
-        let value: String
-    }
-
-    /// План посева для «Записать в конфиг». `wroteHere` — что мастер сам
-    /// посеял в этом показе: «Полный», потом «Лёгкий» откатывает свой же посев
-    /// в "false", а значение владельца (ключ был до мастера) не трогает никто —
-    /// условие `expected` проверяет `setConfigValueIfUnchanged` под оракулом
-    /// PyYAML (сверка n822-out1). Посеянные ключи — булевы, откат — "false".
-    func seedWrites(wroteHere: [String: String]) -> [SeedWrite] {
-        let mine = Dictionary(seededFlags.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
-        return ModelPresetPolicy.seededKeys.compactMap { key in
-            let expected = wroteHere[key]
-            guard let target = mine[key] ?? (expected == nil ? nil : "false"),
-                  target != expected else { return nil }
-            return SeedWrite(key: key, expected: expected, value: target)
-        }
-    }
 }
 
 enum ModelPresetPolicy {
-    /// Все ключи, которые сеет хоть один профиль.
-    static var seededKeys: [String] {
-        Array(Set(all.flatMap { $0.seededFlags.map(\.key) })).sorted()
-    }
-
-    /// Посеять ключи по плану `seedWrites` — тем же путём, что кнопка Nemotron
-    /// (`setConfigValueIfUnchanged`: построчная правка секции sufler, сверка
-    /// PyYAML, CAS по байтам). Построчное «ключа нет» расходилось с PyYAML на
-    /// ключе в кавычках, `key :`, втором блоке `sufler :` — посев дописывал
-    /// дубль поверх ручного false (круг n822-out1, DS C1, Haiku C1).
-    /// Возвращает, что мастер посеял, и причину отказа человеку.
-    @MainActor
-    static func seed(_ writes: [ModelPreset.SeedWrite], wroteHere: [String: String],
-                     root: URL) async -> (wroteHere: [String: String], failure: String?) {
-        var wrote = wroteHere
-        var failure: String?
-        for w in writes {
-            var outcome = await AppSettings.setConfigValueIfUnchanged(w.key, expected: w.expected,
-                                                                      value: w.value, root: root)
-            // Байты сдвинула чужая запись в окне проверки (имя, папка графа), а
-            // значение всё ещё то, что ждали, — это не правка владельца: одна
-            // повторная попытка (n822-out2, DS I1, Haiku I-1).
-            if case .changed(let current) = outcome, current == w.expected {
-                outcome = await AppSettings.setConfigValueIfUnchanged(w.key, expected: w.expected,
-                                                                      value: w.value, root: root)
-            }
-            switch outcome {
-            case .written:
-                wrote[w.key] = w.value
-            case .changed(let current) where current == w.expected:
-                // Файл меняют снова и снова — посев не лёг, но и значение не чужое: помним как было.
-                failure = L.t("config.yaml меняли во время записи", "config.yaml changed during the write",
-                              "写入期间 config.yaml 被修改")
-            case .changed:
-                // Значение теперь не наше: владелец поправил файл — не трогаем и не откатываем.
-                wrote[w.key] = nil
-            case .failed(let reason):
-                failure = reason
-            }
-        }
-        return (wrote, failure)
-    }
-
 
     /// Все варианты, от тяжёлого к лёгкому.
     ///
@@ -193,9 +114,11 @@ enum ModelPresetPolicy {
             smallModel: "qwen3.5:4b",
             needsGB: 64,
             graph: true, dejaVu: true,
-            note: L.t("Наш рабочий набор: 42 решения и 39 ядер на встречу, медиана разбора 57 с. На русских встречах включает второй проход разбора: больше решений, +2–2,5 мин на встречу.",
-                      "Our working set: 42 decisions and 39 cores per meeting, 57 s median. On Russian-language meetings it turns on a second extraction pass: more decisions, +2–2.5 min per meeting.",
-                      "我们的日常配置：每场会议 42 条决定、39 个核心，解析中位数 57 秒。俄语会议会开启第二轮解析：决定更多，每场会议多 2–2.5 分钟。")),
+            // Умолчание второго прохода живёт в демоне (`install_profile.graph_second_pass_enabled`,
+            // №822): пресет ключ не пишет, заметка только называет цену.
+            note: L.t("Наш рабочий набор: 42 решения и 39 ядер на встречу, медиана разбора 57 с. На русских встречах с этой моделью по умолчанию идёт второй проход разбора, если он не выключен в config.yaml: больше решений, +2–2,5 мин на встречу.",
+                      "Our working set: 42 decisions and 39 cores per meeting, 57 s median. On Russian-language meetings this model runs a second extraction pass by default unless it is turned off in config.yaml: more decisions, +2–2.5 min per meeting.",
+                      "我们的日常配置：每场会议 42 条决定、39 个核心，解析中位数 57 秒。俄语会议上该模型默认进行第二轮解析（除非在 config.yaml 中关闭）：决定更多，每场会议多 2–2.5 分钟。")),
         ModelPreset(
             id: "precise",
             title: L.t("Точный", "Precise", "精确"),

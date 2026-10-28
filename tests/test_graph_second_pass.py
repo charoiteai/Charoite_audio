@@ -64,11 +64,18 @@ def test_flag_off_is_the_old_extract(model):
     assert model.reports == [(1, 3), (2, 3), (3, 3)]
 
 
-def test_default_is_off(model):
-    """Умолчание — выключено: +2–2,5 минуты модели на каждую встречу решает владелец, а не установка."""
+@pytest.mark.parametrize("cfg, calls", [
+    ({}, 3),
+    ({"llm": {"model": "qwen3.5:4b"}}, 3),
+    ({"llm": {"model": "qwen3.6:35b-mlx"}}, 3 + 5),
+    ({"llm": {"model": "qwen3.6:35b-mlx"}, "sufler": {"graph_second_pass": False}}, 3),
+])
+def test_default_follows_the_measured_model(model, cfg, calls):
+    """Без ключа — умолчание демона (№822): второй проход только на замеренной модели."""
     model.answers[1] = lambda n: _first()
-    g.extract({}, LONG)
-    assert len(model.calls) == 3
+    model.answers[2] = lambda n: {"решения": []}
+    g.extract(cfg, LONG)
+    assert len(model.calls) == calls
 
 
 def test_second_pass_appends_only_new_decisions_to_the_tail(model):
@@ -219,10 +226,11 @@ def test_short_tail_costs_no_model_call(model):
     assert len(model.calls) == 1 + 2
 
 
-@pytest.mark.parametrize("lang", ["en", "zh", "EN", "de", "kk", "en-US", "rus"])
+@pytest.mark.parametrize("lang", ["en", "zh", "EN", "de", "kk", "en-US", "ru-RU", "ru_RU", "rus"])
 def test_no_second_pass_outside_russian(model, lang):
     """Порог склейки мерен на русском: в zh основ нет, в en похожими делают служебные слова;
-    любой другой язык тоже без замера — белый список, а не «кроме en/zh» (n822-in1, DS C1)."""
+    любой другой язык тоже без замера — белый список, а не «кроме en/zh» (n822-in1, DS C1).
+    Регион к тегу — тоже другой язык: минутки и архив считают его не ru (финальный Opus №822, I3)."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
     data = g.extract({"sufler": {"graph_second_pass": True, "language": lang}}, LONG)
@@ -230,9 +238,8 @@ def test_no_second_pass_outside_russian(model, lang):
     assert data == _first()
 
 
-@pytest.mark.parametrize("lang", ["RU", "ru-RU", "ru_RU", " ru "])
+@pytest.mark.parametrize("lang", ["RU", " ru "])
 def test_russian_named_explicitly_keeps_second_pass(model, lang):
-    """Регион к тегу языка — тот же русский промпт, и второй проход с ним (n822-out1)."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
     data = g.extract({"sufler": {"graph_second_pass": True, "language": lang}}, LONG)
@@ -344,14 +351,14 @@ def test_first_pass_odd_shape_is_left_alone(model, odd):
 @pytest.mark.parametrize("cfg, lang", [
     ({}, "ru"), ({"sufler": None}, "ru"), ({"sufler": {}}, "ru"), ({"sufler": {"language": None}}, "ru"),
     ({"sufler": {"language": " ru "}}, "ru"), ({"sufler": {"language": " EN "}}, "en"),
-    ({"sufler": {"language": "zh"}}, "zh"), ({"sufler": {"language": "en-US"}}, "en"),
-    ({"sufler": {"language": "ru_RU"}}, "ru"), ({"sufler": {"language": "-"}}, "ru"),
+    ({"sufler": {"language": "zh"}}, "zh"), ({"sufler": {"language": "en-US"}}, "en-us"),
+    ({"sufler": {"language": "ru_RU"}}, "ru_ru"), ({"sufler": {"language": " "}}, "ru"),
 ])
 def test_language_is_read_like_the_prompt(cfg, lang):
     assert g._language(cfg) == lang
 
 
-@pytest.mark.parametrize("lang", [" ru ", None, ""])
+@pytest.mark.parametrize("lang", [" ru ", None, "", " "])
 def test_russian_by_default_keeps_second_pass(model, lang):
     """Пустой или неаккуратный ключ языка — промпт русский, значит и второй проход есть."""
     model.answers[1] = lambda n: _first()
@@ -472,11 +479,20 @@ def fake_llm(monkeypatch):
     return _FakeLLM
 
 
-@pytest.mark.parametrize("lang, english", [("en", True), ("ru", False)])
+@pytest.mark.parametrize("lang, english", [("en", True), ("ru", False), ("en-US", False)])
 def test_prompt_language_branch(fake_llm, lang, english):
     fake_llm.script = ['{"решения": []}']
     g._extract({"llm": {"model": "m"}, "sufler": {"language": lang}}, "реплика.")
     assert ("LANGUAGE: write every field VALUE in English" in fake_llm.systems[0]) is english
+
+
+def test_en_us_keeps_the_russian_prompt_and_one_pass(fake_llm):
+    """`en-US` — как у минуток и архива: русский промпт и без второго прохода, даже с явным
+    ключом (финальный Opus №822, I3)."""
+    fake_llm.script = ['{"решения": []}'] * 8
+    g.extract({"llm": {"model": "m"}, "sufler": {"graph_second_pass": True, "language": "en-US"}}, LONG)
+    assert len(fake_llm.systems) == 3
+    assert not any("LANGUAGE:" in s for s in fake_llm.systems)
 
 
 @pytest.mark.parametrize("error, stops", [

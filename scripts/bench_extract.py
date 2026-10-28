@@ -163,7 +163,8 @@ def main() -> None:
                     help="конкретные стенограммы вместо свежих")
     ap.add_argument("--second-pass", action="store_true",
                     help="мерить разбор со вторым проходом кусками 6000 (sufler.graph_second_pass); "
-                         "без ключа — один проход, как в цифрах пресетов")
+                         "без ключа — один проход, как в цифрах пресетов, даже на qwen3.6:35b-mlx, "
+                         "где демон включает второй проход по умолчанию")
     args = ap.parse_args()
 
     files = args.files or meetings(args.meetings)
@@ -172,7 +173,8 @@ def main() -> None:
         return
     cfg = gu.load_cfg()
     print(f"встреч: {len(files)}, моделей: {len(args.models)}, "
-          f"второй проход: {'включён (идёт только на ru и длинных встречах)' if args.second_pass else 'нет'}")
+          f"второй проход: {'включён (идёт только на ru и длинных встречах)' if args.second_pass else 'нет'}"
+          " (в демоне — по умолчанию на qwen3.6:35b-mlx и ru)")
     for f in files:
         print(f"  {f.stem} ({f.stat().st_size // 1000} тыс. знаков)")
 

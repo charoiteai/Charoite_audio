@@ -850,9 +850,8 @@ def check(name: str, root: pathlib.Path) -> int:
     return 1 if refusal else 0
 
 
-# Ключи, которые пишут кнопка Nemotron и посев пресета мастера (`ModelPresetPolicy.seed`,
-# №822), и их значения (`verify_config_edit`).
-_CONFIG_EDIT_VALUES = {"diarize_backend": ("nemotron", "sherpa"), "graph_second_pass": ("true", "false")}
+# Ключи, которые пишет кнопка Nemotron, и их значения (`verify_config_edit`).
+_CONFIG_EDIT_VALUES = {"diarize_backend": ("nemotron", "sherpa")}
 
 
 def _same(a: object, b: object) -> bool:
