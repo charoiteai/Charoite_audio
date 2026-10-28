@@ -10,8 +10,10 @@ import json
 import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import traceback
 
@@ -22,6 +24,8 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
+import exit_codes  # noqa: E402
+import machine_power  # noqa: E402
 import once  # noqa: E402
 import threads  # noqa: E402
 
@@ -67,6 +71,26 @@ import threads  # noqa: E402
 )
 
 
+def отказ_под_зажимом(config) -> None:
+    """Прогон под фоновым режимом процесса — `pytest.exit` кодом 17 с причиной.
+
+    Потолки времени набора (120 с на тест, 90 с у внутреннего pytest) рассчитаны
+    на обычные ядра; под `taskpolicy -c background` полный прогон шёл 24–41 мин
+    против 3 и давал 4–12 ложных падений таймаутами (№817). Только контроллер:
+    воркеры xdist зажим наследуют, ответ уже дан. Отдельной функцией — чтобы
+    решение судил юнит и на Linux CI, где настоящего `taskpolicy` нет (out1 DS-I3).
+    """
+    if hasattr(config, "workerinput"):
+        return
+    зажим = machine_power.background_throttle()
+    if зажим:
+        pytest.exit(f"прогон в фоновом режиме процесса — {зажим}. Потолки времени набора "
+                    "рассчитаны на обычные ядра: под `taskpolicy -c background` полный прогон "
+                    "в 7–13 раз дольше и краснеет таймаутами, а не дефектом (№817). "
+                    f"{machine_power.BACKGROUND_REMEDY}",
+                    returncode=exit_codes.EXIT_BACKGROUND_QOS)
+
+
 def pytest_configure(config):
     """Санитария окружения и публикация корня — одним осознанным действием.
 
@@ -81,6 +105,9 @@ def pytest_configure(config):
     `pytest_unconfigure`.
     """
     global КОРЕНЬ_СЕССИИ, ВНЕШНИЙ_КОРЕНЬ
+    # Фоновый режим процесса (№817) — первым, до снятия переменной и импорта
+    # реестра: отказ не платит холодным стартом и ничего не меняет в окружении.
+    отказ_под_зажимом(config)
     ВНЕШНИЙ_КОРЕНЬ = os.environ.pop("CHAROITE_ROOT", None)   # снимаем, но помним
     КОРЕНЬ_СЕССИИ = pathlib.Path(tempfile.mkdtemp(prefix="charoite-прогон-"))
     # `replace=True` закрывает ВТОРОЙ канал того же отказа: переменную мы
@@ -187,6 +214,45 @@ def не_временный_корень(корни, *, обязан_назва�
         return (f"корень {плохие[0]} не временный — продуктовый код писал бы туда "
                 "снимки, карантин, логи и отметки brain по настоящим встречам")
     return ""
+
+
+#: Потолок подпроцесса внутреннего pytest — ниже потолка pytest-timeout из
+#: `pyproject.toml` (120 с на тест): при равных потолках два сигнала гонятся, и
+#: исход — то «Failed: Timeout» внешнего прогона, то трейсбек `TimeoutExpired`
+#: внутреннего (№817, in1 S-I2). Свой отказ называет причину.
+ПОТОЛОК_ВНУТРЕННЕГО_С = 90
+
+
+@pytest.fixture
+def внутренний_pytest(tmp_path):
+    """Отдельный pytest-процесс над файлом-пробой — одна политика на все канарейки.
+
+    `body` — текст файла теста. `обвязка=True` поднимает в нём эту обвязку
+    плагином (`-p conftest`, `PYTHONPATH=tests`): проба лежит в `tmp_path`, и
+    `conftest.py` из `tests/` ей не предок — без плагина сторожа и гейты обвязки
+    не поднялись бы вовсе, и канарейка «зеленела» бы слепотой. `обвязка=False` —
+    гейт, живущий только в `pyproject.toml` (№420). `префикс` — команда перед
+    интерпретатором (`taskpolicy …`). `PYTEST_ADDOPTS` внешнего прогона внутрь
+    не едет: `-n` из него сделал бы пробу параллельной (in1 DS-M2)."""
+    root = pathlib.Path(__file__).resolve().parents[1]
+
+    def run(body: str, *, обвязка: bool, префикс=(), имя: str = "test_probe.py"):
+        probe = tmp_path / имя
+        probe.write_text(textwrap.dedent(body), encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
+        cmd = [*префикс, sys.executable, "-m", "pytest", "-q", "-c", str(root / "pyproject.toml")]
+        if обвязка:
+            cmd += ["-p", "conftest"]
+            env["PYTHONPATH"] = str(root / "tests")
+        try:
+            return subprocess.run([*cmd, str(probe)], cwd=root, capture_output=True, text=True,
+                                  check=False, timeout=ПОТОЛОК_ВНУТРЕННЕГО_С, env=env)
+        except subprocess.TimeoutExpired as e:
+            # вывод до таймаута — байты и в текстовом режиме (subprocess.run на POSIX)
+            хвост = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            pytest.fail(f"внутренний pytest не уложился в {ПОТОЛОК_ВНУТРЕННЕГО_С} с — машина "
+                        f"медленнее потолков набора; хвост вывода:\n{хвост[-2000:]}", pytrace=False)
+    return run
 
 
 #: Маркер теста, который называет корень данных сам: канон корней — его

@@ -188,8 +188,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # копию для мутантов он клонирует из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
-from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
+from exit_codes import (EXIT_BACKGROUND_QOS, EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL,  # noqa: E402
+                        EXIT_UNJUDGED, EXIT_UNMUTABLE)
 import live_gate  # noqa: E402
+import machine_power  # noqa: E402
 # `outcome` — по имени модуля, не `from …`: список читателей кодов в тестах
 # (`tests/test_exit_codes.py`) выведен из from-импортов EXIT_*, и лишнее имя
 # разошлось бы с ним. Слово исхода берём тем же классификатором, что и все.
@@ -1015,6 +1017,9 @@ BASE_RUN_FACTOR = 8
 MUTANT_BASE_MARGIN = 2
 
 PASSED, FAILED, TIMEOUT = "passed", "failed", "timeout"
+#: Прогон не судим: после непрошедшего прогона датчик родителя видит зажим —
+#: красный или потолок дал фоновый режим, а не код (out3 S-I1 = DS-I2, S-I2)
+REFUSED = "refused"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1146,7 +1151,13 @@ def timed_run(cwd: pathlib.Path, suite: tuple[str, ...], timeout: int, cap: floa
     `run_tests` — её подменяют тесты."""
     t0 = clock()
     r = run_tests(cwd, list(suite), timeout, cap)
-    return dataclasses.replace(r, seconds=clock() - t0)
+    r = dataclasses.replace(r, seconds=clock() - t0)
+    # Опрос до прогона не закрывает окно «опрос → запуск» и зажим посреди набора:
+    # непрошедший прогон сверяется с датчиком РОДИТЕЛЯ (ребёнок мутанта грузит
+    # мутированный датчик) — одна точка для базы и мутантов.
+    if r.status != PASSED and (зажим := machine_power.background_throttle()):
+        return dataclasses.replace(r, status=REFUSED, tail=f"фоновый режим процесса — {зажим}")
+    return r
 
 
 def fits(budget_s: float | None, started: float, need: float) -> bool:
@@ -1762,6 +1773,14 @@ def main(argv: list[str]) -> int:
     # или разбором — честный отказ, не тихая толкотня; (2) на время прогона
     # лежит logs/mutation.lock — ночь (wait_for_idle) видит нас и ждёт;
     # (3) началась живая встреча — прерываемся между мутантами.
+    # Фоновый режим процесса — не «занято», а «не те ядра»: набор под ним краснеет
+    # таймаутами (обвязка и сама откажет кодом 17), и база вышла бы красной с чужим
+    # диагнозом про .gitignore. `--force` зажим не снимает (№817, in1 DS-C2/DS-I1).
+    throttle = machine_power.background_throttle()
+    if throttle:
+        print(f"мутатор не стартует: процесс в фоновом режиме — {throttle}; потолки времени "
+              f"тестов рассчитаны на обычные ядра. {machine_power.BACKGROUND_REMEDY}")
+        return EXIT_BACKGROUND_QOS
     # Один вызов гварда старта на все роли — одиночный прогон, родитель `--jobs` и
     # его доли: другой мутатор помехой не считается (замок разделяемый, №444 B).
     if busy_guard(args):
@@ -1912,7 +1931,23 @@ def main(argv: list[str]) -> int:
                 print(f"⏹ бюджет — базовый прогон не уложится, мутанты не "
                       f"запускаются ({len(durations)}/{len(subsets)} наборов)")
                 break
-            results[ts] = r = timed_run(work, ts, args.timeout, cap)
+            # Зажим, наложенный во время базы, — до следующего набора (out2 S-I2):
+            # иначе его дочерний pytest отказал бы кодом 17 и база вышла бы
+            # «красной» с диагнозом про .gitignore.
+            if зажим := machine_power.background_throttle():
+                aborted = f"фоновый режим процесса — {зажим}"
+                print(f"⏹ {aborted} — базовый прогон прерван, мутанты не запускаются "
+                      f"({len(durations)}/{len(subsets)} наборов)")
+                break
+            r = timed_run(work, ts, args.timeout, cap)
+            # Дерево базы не мутировано: 17 ребёнка — его датчик видел зажим,
+            # даже если родитель к опросу уже свободен (out3 DS-I1)
+            if r.status == REFUSED or r.rc == EXIT_BACKGROUND_QOS:
+                aborted = r.tail if r.status == REFUSED else "фоновый режим процесса — отказ набора кодом 17"
+                print(f"⏹ {aborted} — базовый прогон прерван, мутанты не запускаются "
+                      f"({len(durations)}/{len(subsets)} наборов)")
+                break
+            results[ts] = r
             durations[ts] = r.seconds
             print(f"  {r.seconds:.0f} с · {r.status} · {' '.join(ts)}")
             save(BASE_RUNNING)
@@ -1935,6 +1970,14 @@ def main(argv: list[str]) -> int:
             cap = mutant_cap(args.timeout, durations[suite])
             if not admits(args.budget_s, started, durations[suite], cap, args.timeout):
                 aborted = "бюджет"
+            # Зажим, наложенный посреди прогона (`taskpolicy -p`), — тоже между
+            # мутантами и тоже мимо `--force`: дочерний pytest его наследует и
+            # отказывает кодом 17, а rc≠0 засчитался бы «убит» (out1 Haiku C1).
+            # Спрашивается датчик РОДИТЕЛЯ, а не код ребёнка: ребёнок грузит
+            # мутированный `machine_power`, и мутант датчика, отдавший «зажим»,
+            # честно убит, а не повод остановить прогон (out2 S-I1).
+            elif зажим := machine_power.background_throttle():
+                aborted = f"фоновый режим процесса — {зажим}"
             # Живой контур и ночь важнее метрики: началась запись или ночной
             # цикл — прерываемся между мутантами (круг-1, DS: координация
             # была однонаправленной — ночь ждала нас, мы ночь не видели).
@@ -1976,6 +2019,12 @@ def main(argv: list[str]) -> int:
                 r = timed_run(work, suite, args.timeout, cap)
             finally:
                 target.write_text(original, encoding="utf-8")
+            if r.status == REFUSED:
+                # не судим: ни в факты, ни в журнал — `--resume` пересудит его
+                aborted = r.tail
+                print(f"⏹ {aborted} — прерываюсь ({facts.tested}/{len(plan)} "
+                      f"мутантов проверено), прогон этого мутанта не засчитан")
+                break
             facts.tested += 1
             facts.critical_tested += mut.critical
             alive = r.status == PASSED

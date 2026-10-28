@@ -111,3 +111,44 @@ def test_не_macos_даёт_none_без_запуска(monkeypatch):
         raise AssertionError("pmset не зовут вне macOS")
 
     assert mp.read_low_power(run) is None
+
+
+class _Lib:
+    """Подставная libSystem: класс QoS и darwin-приоритет процесса."""
+
+    def __init__(self, qos, prio):
+        self.qos_class_self = lambda: qos
+        self.getpriority = lambda which, who: prio if which == mp.PRIO_DARWIN_PROCESS else 0
+
+
+@pytest.mark.parametrize("qos, prio, ждём", [
+    (0x21, 0, None),                                         # обычный режим
+    (0x11, 0, None),                                         # utility: замер 28.10 — не зажим
+    (0x19, 0, None),                                         # user-initiated
+    (0x09, 0, "QoS BACKGROUND (taskpolicy -c background)"),
+    (0x05, 0, "QoS MAINTENANCE (taskpolicy -c maintenance)"),
+    (0x21, 1, "darwin-фон (taskpolicy -b или setpriority PRIO_DARWIN_BG)"),       # ядро: 1 (опыт 28.10)
+    (0x21, -1, None),                                        # getpriority не прочитан
+    (0x09, 1, "QoS BACKGROUND (taskpolicy -c background)"),  # класс называется первым
+])
+def test_фоновый_режим_по_классу_и_приоритету(monkeypatch, qos, prio, ждём):
+    monkeypatch.setattr(mp.sys, "platform", "darwin")
+    assert mp.background_throttle(lambda path: _Lib(qos, prio)) == ждём
+
+
+def test_фоновый_режим_вне_macos_не_грузит_библиотеку(monkeypatch):
+    monkeypatch.setattr(mp.sys, "platform", "linux")
+
+    def load(path):
+        raise AssertionError("libSystem не грузят вне macOS")
+
+    assert mp.background_throttle(load) is None
+
+
+@pytest.mark.parametrize("load", [
+    lambda path: (_ for _ in ()).throw(OSError("нет библиотеки")),
+    lambda path: object(),                                   # нет нужных символов
+])
+def test_фоновый_режим_не_читается_даёт_none(monkeypatch, load):
+    monkeypatch.setattr(mp.sys, "platform", "darwin")
+    assert mp.background_throttle(load) is None

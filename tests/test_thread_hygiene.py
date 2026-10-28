@@ -1,36 +1,16 @@
 """Канарейка сторожа брошенных потоков (№415).
 
 Сторож живёт в `tests/conftest.py` и включается только вместе с обвязкой.
-Проба идёт в отдельном pytest-процессе: брошенный поток не должен отравить
-текущую сессию, а проверяем мы итоговый код выхода. Обвязка в тот процесс
-приезжает плагином (`-p conftest`, `PYTHONPATH=tests`): файл пробы лежит в
-`tmp_path`, и `conftest.py` из `tests/` ему не предок — без плагина сторож
-не поднялся бы вовсе, и канарейка «зеленела» бы слепотой.
+Проба идёт в отдельном pytest-процессе (фикстура `внутренний_pytest` с
+`обвязка=True`): брошенный поток не должен отравить текущую сессию, а
+проверяем мы итоговый код выхода.
 """
-import os
-import subprocess
-import sys
-import textwrap
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
-def _проба(tmp_path, body: str) -> subprocess.CompletedProcess:
-    probe = tmp_path / "test_probe.py"
-    probe.write_text(textwrap.dedent(body), encoding="utf-8")
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-c", str(ROOT / "pyproject.toml"),
-         "-p", "conftest", str(probe)],
-        cwd=ROOT, capture_output=True, text=True, check=False, timeout=120,
-        env={**os.environ, "PYTHONPATH": str(ROOT / "tests")},
-    )
-
-
-def test_брошенный_поток_без_detached_красит(tmp_path):
+def test_брошенный_поток_без_detached_красит(внутренний_pytest):
     """Поток продукта, оставленный тестом живым и не объявленный `detached`,
     обязан покрасить прогон — и назвать имя с ролью."""
-    result = _проба(tmp_path, """
+    result = внутренний_pytest("""
         import time
 
         import threads
@@ -38,7 +18,7 @@ def test_брошенный_поток_без_detached_красит(tmp_path):
 
         def test_abandoned():
             threads.spawn(lambda: time.sleep(30), name="canary-abandoned", role="console")
-    """)
+    """, обвязка=True)
     out = result.stdout + result.stderr
     assert result.returncode == 1, out
     assert "canary-abandoned" in out, out
@@ -46,10 +26,10 @@ def test_брошенный_поток_без_detached_красит(tmp_path):
     assert "detached" in out, out
 
 
-def test_поток_с_detached_остаётся_зелёным(tmp_path):
+def test_поток_с_detached_остаётся_зелёным(внутренний_pytest):
     """Тот же поток с названной причиной `detached` — законен: причина уже
     сказана в коде, и тест за него не отвечает."""
-    result = _проба(tmp_path, """
+    result = внутренний_pytest("""
         import time
 
         import threads
@@ -58,6 +38,6 @@ def test_поток_с_detached_остаётся_зелёным(tmp_path):
         def test_detached():
             threads.spawn(lambda: time.sleep(30), name="canary-detached", role="console",
                           detached="канарейка живёт до конца процесса")
-    """)
+    """, обвязка=True)
     out = result.stdout + result.stderr
     assert result.returncode == 0, out

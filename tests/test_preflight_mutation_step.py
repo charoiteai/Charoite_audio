@@ -13,6 +13,8 @@ import sys
 
 import pytest
 
+import exit_codes
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 MUTATOR = """import os, pathlib, sys
@@ -32,6 +34,14 @@ def tree(tmp_path):
     shutil.copy(ROOT / "scripts" / "preflight.sh", t / "scripts" / "preflight.sh")
     shutil.copy(ROOT / "src" / "exit_codes.py", t / "src" / "exit_codes.py")
     (t / "src" / "busy_signals.py").write_text("def machine_busy(root, **k):\n    return []\n")
+    # датчик: FAKE_THROTTLE — ответ с FAKE_THROTTLE_FROM-го опроса (счёт — файлом)
+    (t / "src" / "machine_power.py").write_text(
+        "import os, pathlib\nBACKGROUND_REMEDY = 'рецепт'\n"
+        "def background_throttle():\n"
+        "    n = pathlib.Path(os.environ['FAKE_ARGV'] + '.opros')\n"
+        "    k = int(n.read_text()) + 1 if n.exists() else 1\n"
+        "    n.write_text(str(k))\n"
+        "    return os.environ.get('FAKE_THROTTLE') if k >= int(os.environ.get('FAKE_THROTTLE_FROM', '1')) else None\n")
     (t / ".github" / "workflows" / "ci.yml").write_text("env:\n  RUFF_VERSION: '0.0.0'\n")
     for name in ("layout_map.py", "check_private_markers.py"):
         (t / "scripts" / name).write_text("")
@@ -84,3 +94,43 @@ def test_force_does_not_reach_the_mutator(tree, tmp_path):
     r, argv = _preflight(tree, tmp_path, 0, "ok", PREFLIGHT_FORCE="1")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "--range" in argv and "--force" not in argv
+
+
+@pytest.mark.parametrize("force", [{}, {"PREFLIGHT_FORCE": "1"}], ids=["без_force", "force"])
+def test_background_qos_refuses_before_the_steps(tree, tmp_path, force):
+    """Зажим процесса — отказ кодом 17 до шагов с причиной, а не FAIL pytest и
+    mutation от их кода 17 (№817, out1); `PREFLIGHT_FORCE` его не снимает."""
+    r, argv = _preflight(tree, tmp_path, 0, "ok", FAKE_THROTTLE="QoS BACKGROUND (taskpolicy -c background)", **force)
+    # канон, а не литерал: код в bash сверяется с exit_codes этим тестом (out2 DS-M1)
+    assert r.returncode == exit_codes.EXIT_BACKGROUND_QOS, r.stdout + r.stderr
+    assert "фоновом режиме: QoS BACKGROUND" in r.stdout and "рецепт" in r.stdout, r.stdout
+    assert "── 1." not in r.stdout, r.stdout                   # шаги не начинались (out2 DS-M3)
+    assert "FAIL" not in r.stdout and argv == "", r.stdout   # мутатор не запускался
+
+
+@pytest.mark.parametrize(("шаг", "skip"), [("2", "swift"), ("4", "pytest,swift")], ids=["pytest", "мутатор"])
+def test_background_qos_after_step_0_stops_before_the_heavy_step(tree, tmp_path, шаг, skip):
+    """Зажим наложен посреди preflight (`taskpolicy -p`): шаг 0 чист, перед тяжёлым
+    шагом датчик спрошен снова — отказ 17, а не FAIL шага (out2 DS C1, out3 DS-M3).
+    Последняя строка — машинный вердикт с отказом (out3 DS-M4)."""
+    r, argv = _preflight(tree, tmp_path, 17, "мутатор не стартует", FAKE_THROTTLE="QoS BACKGROUND",
+                         FAKE_THROTTLE_FROM="2", PREFLIGHT_SKIP=skip)
+    assert r.returncode == exit_codes.EXIT_BACKGROUND_QOS, r.stdout + r.stderr
+    assert f"── {шаг}." in r.stdout and "режим:" not in r.stdout and argv == "", r.stdout
+    assert r.stdout.rstrip().splitlines()[-1].endswith("отказ — фоновый режим процесса"), r.stdout
+
+
+def test_mutator_refusal_17_is_a_refusal_not_a_fail(tree, tmp_path):
+    """Зажим в окне между опросом шага 4 и стартом мутатора: его код 17 — отказ
+    preflight с причиной, а не «FAIL: mutation» (out3 S-M2 = H-M2)."""
+    r, argv = _preflight(tree, tmp_path, 17, "мутатор не стартует: процесс в фоновом режиме")
+    assert r.returncode == exit_codes.EXIT_BACKGROUND_QOS, r.stdout + r.stderr
+    assert "мутатор отказал кодом 17" in r.stdout and "FAIL" not in r.stdout and argv != "", r.stdout
+
+
+def test_unreadable_throttle_is_a_named_refusal(tree, tmp_path):
+    """Датчик не импортируется — отказ с причиной: сломанный датчик ≠ обычный режим."""
+    (tree / "src" / "machine_power.py").write_text("raise ImportError('нет')\n")
+    r, argv = _preflight(tree, tmp_path, 0, "ok")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "режим процесса не читается" in r.stdout and argv == ""
