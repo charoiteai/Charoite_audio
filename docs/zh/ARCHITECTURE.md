@@ -100,7 +100,7 @@ PortAudio 的麦克风。没有第三条路径：Core Audio tap 流已于 02.09 
   `llm_health.probe` 区分 `BUSY`，绝不在别人的生成过程中重启服务器。
 - **模型时间按调用方计量。** 同样的两个传输接缝（`llm._open_stream`、
   `llm._post_busy`）每个请求向 `logs/model_calls-YYYY-MM-DD.jsonl` 写一行
-  （`model_ledger`，№807）：调用方、方法、引擎、模型、结果、总耗时、首块耗时、
+  （`model_ledger`，№807）：调用方、方法、引擎、模型、结果（触及 token 上限时带 `cut: length`）、总耗时、首块耗时、
   “忙”等待秒数，以及引擎提供时服务器自己的数字（`prompt_eval_count`、
   `eval_count`、`total_duration`；Ollama 提供，mlx-server 和未设
   `stream_options` 的网关不提供——为 `null`）。调用对象在第一次尝试前创建，

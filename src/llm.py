@@ -25,7 +25,6 @@ mlx_lm.server эмбеддингов не отдаёт.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
@@ -469,6 +468,23 @@ DOC_STREAM_TIMEOUT = (10.0, 300.0)
 _LEDGER_SKIP = frozenset({__name__})
 
 
+class _LedgerScope:
+    """with-блок одного не-стрим POST: исход — по исключению блока (№807). Класс, а
+    не `@contextlib.contextmanager`: тело генератора идёт под кадром `contextlib`,
+    и журнал назвал бы потребителем его (выход n807-out1, DS C1, опыт:
+    `untagged:contextlib._GeneratorContextManager.__enter__`)."""
+
+    def __init__(self, call: model_ledger.Call) -> None:
+        self.call = call
+
+    def __enter__(self) -> model_ledger.Call:
+        return self.call
+
+    def __exit__(self, tp, e, tb) -> bool:
+        self.call.finish("ok" if e is None else _ledger_outcome(e))
+        return False
+
+
 def _ledger_outcome(e: BaseException) -> str:
     """Исход для журнала вызовов: журнал не вправе подменить исключение вызова
     своим (подменённый в тестах `requests` без `Timeout` и т. п.)."""
@@ -853,6 +869,7 @@ class LLM:
                     raise self._fail(r.status_code, str(data["error"]))
                 chunk = self._ndjson_chunk(r, data, line)
                 if chunk:
+                    self._ledger_first(r)
                     yield chunk
                 if data.get("done"):
                     self._ledger_note(r, data)
@@ -1080,16 +1097,19 @@ class LLM:
         return model_ledger.Call(self._root(), self._cfg, engine=self.engine, model=model,
                                  kind=kind, method=method, skip=_LEDGER_SKIP)
 
-    @contextlib.contextmanager
-    def _complete_call(self, model: str | None):
-        """Один не-стрим POST в журнале: исход — по исключению блока, тело — `note`."""
-        call = self._call("complete", model, "complete")
-        try:
-            yield call
-        except BaseException as e:
-            call.finish(_ledger_outcome(e))
-            raise
-        call.finish("ok")
+    def _complete_call(self, model: str | None) -> "_LedgerScope":
+        """Один не-стрим POST в журнале: исход — по исключению блока, тело — `note`.
+        `Call` рождается здесь, в кадре транспорта: потребитель по стеку — тот, кто
+        позвал `complete` (выход n807-out1, DS C1)."""
+        return _LedgerScope(self._call("complete", model, "complete"))
+
+    @staticmethod
+    def _ledger_first(r) -> None:
+        """Первый непустой кусок текста ответа — не первая строка протокола: ролевая
+        дельта SSE и пустые чанки рассуждения его не отмечают (выход n807-out1)."""
+        call = getattr(r, "call", None)
+        if isinstance(call, model_ledger.Call):
+            call.first()
 
     @staticmethod
     def _ledger_note(r, data) -> None:
@@ -1132,8 +1152,10 @@ class LLM:
                 if leave is not None:
                     leave(*exc)
             finally:
-                self._lease.__exit__(*exc)
-                self._finish(exc[1] if len(exc) > 1 else None)
+                try:
+                    self._lease.__exit__(*exc)
+                finally:
+                    self._finish(exc[1] if len(exc) > 1 else None)
 
         def _finish(self, err: BaseException | None) -> None:
             """Строка журнала — после снятия аренды (S-I5 входа №807). Потребитель
@@ -1149,16 +1171,16 @@ class LLM:
             for line in self._r.iter_lines(*a, **kw):
                 if LLM._is_payload(line):
                     self._lease.progress()
-                    if self.call is not None:
-                        self.call.first()
                 yield line
 
         def close(self) -> None:
             try:
                 self._r.close()
             finally:
-                self._lease.__exit__(None, None, None)
-                self._finish(None)
+                try:
+                    self._lease.__exit__(None, None, None)
+                finally:
+                    self._finish(None)
 
         def __getattr__(self, name: str):
             return getattr(self._r, name)
@@ -1271,6 +1293,7 @@ class LLM:
                     raise self._fail(r.status_code, str(data["error"]))
                 chunk = self._ndjson_chunk(r, data, line)
                 if chunk:
+                    self._ledger_first(r)
                     yield chunk
                 if data.get("done"):
                     self._ledger_note(r, data)
@@ -1401,7 +1424,7 @@ class LLM:
         active = first_token * ACTIVE_FACTOR if first_token else None
         started = time.monotonic()
         last_byte = started
-        usage: dict = {}        # `usage` шлюза, если пришлёт (mlx и облако без stream_options — нет)
+        usage: dict = {}        # `usage` и `finish_reason` шлюза — для журнала (mlx и облако без stream_options — без usage)
         with self._open_stream(url, payload, busy_wait, timeout=timeout, method=method) as r:
             # SSE: полезная нагрузка ТОЛЬКО в строках «data: …», терминатор
             # «data: [DONE]». Всё остальное пропускаем по спецификации: во
@@ -1434,7 +1457,10 @@ class LLM:
                 if isinstance(data, dict) and data.get("error"):
                     raise self._fail(r.status_code, str(data["error"]))
                 if isinstance(data, dict) and isinstance(data.get("usage"), dict):
-                    usage = {"usage": data["usage"]}
+                    usage["usage"] = data["usage"]
+                if isinstance(data, dict) and isinstance(data.get("choices"), list) and data["choices"] \
+                        and isinstance(data["choices"][0], dict) and data["choices"][0].get("finish_reason"):
+                    usage["finish_reason"] = data["choices"][0]["finish_reason"]
                 try:
                     chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
                              .get("content") or "")
@@ -1443,6 +1469,7 @@ class LLM:
                                      f"неожиданная форма SSE: {line[:120]!r}") from None
                 if chunk:
                     silence = active = None      # ответ пошёл — дедлайн снят
+                    self._ledger_first(r)
                     yield chunk
             if not done:
                 raise self._fail(r.status_code, "стрим оборван без завершения")
@@ -1614,8 +1641,8 @@ class LLM:
                 call.note(body)
         return ((body.get("message") or {}).get("content") or "").strip()
 
-    def _post_busy(self, url: str, payload: dict, timeout: float, busy_wait: float,
-                   call: model_ledger.Call | None = None):
+    def _post_busy(self, url: str, payload: dict, timeout: float, busy_wait: float, *,
+                   call: model_ledger.Call | None):
         """POST без стрима; «занято» (503/429) повторяем с паузой в бюджете busy_wait.
 
         Отказ соединения и таймаут наружу не глотаем — их различает
@@ -1638,8 +1665,8 @@ class LLM:
         raise RuntimeError("unreachable")  # pragma: no cover
 
     def _post_with_revive(self, url: str, payload: dict, timeout: float,
-                          revive: bool, busy_wait: float = 0.0,
-                          call: model_ledger.Call | None = None):
+                          revive: bool, busy_wait: float = 0.0, *,
+                          call: model_ledger.Call | None):
         """POST с одной попыткой поднять модель, вставшую посреди работы."""
         try:
             return self._post_busy(url, payload, timeout, busy_wait, call=call)
@@ -1648,10 +1675,10 @@ class LLM:
                 raise
             import llm_health
             print("llm: запрос к модели не прошёл — пробую оживить")
+            if call is not None:
+                call.revived = True      # одна строка: упавшая попытка и оживление (удачное или нет) — в ней
             if not llm_health.ensure_alive(self._cfg, lambda m: print(f"llm: {m}")):
                 raise
-            if call is not None:
-                call.revived = True      # одна строка: время упавшей попытки и оживления — в ней
             return self._post_busy(url, payload, timeout, busy_wait, call=call)
 
     def _checked_body(self, r) -> dict:

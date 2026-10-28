@@ -27,7 +27,6 @@
     "llm": [
       "llm",
       "model_lease",
-      "model_ledger",
       "llm_health"
     ],
     "graph": [
@@ -221,6 +220,10 @@
     "charoite_graph.notices": {
       "layer": "base",
       "why": "реестр «сказать один раз» на экземпляре для двери пакета, только stdlib; вторая реализация рядом с once до №524"
+    },
+    "model_ledger": {
+      "layer": "llm",
+      "why": "журнал вызовов модели по потребителям (№807): строку пишет транспорт llm.py из своих швов (_open_stream, _post_busy), метку потребителя ставят демон и разбор графа — слой транспорта, рядом с арендой model_lease; сам зовёт только base (charoite_paths, jsonl_log, once)."
     },
     "jsonl_log": {
       "layer": "base",

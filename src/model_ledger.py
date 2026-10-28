@@ -57,7 +57,7 @@ _consumer: contextvars.ContextVar[str | None] = contextvars.ContextVar("model_le
                                                                       default=None)
 _DAY_FILE = re.compile(r"^model_calls-(\d{4}-\d{2}-\d{2})\.jsonl$")
 _sweep_lock = threading.Lock()
-_swept: set[tuple[str, str]] = set()     # (корень, день) — уборка раз в день на процесс
+_swept: set[tuple[str, str, bool]] = set()     # (каталог, день, выключен) — уборка раз в день на процесс
 
 
 @contextlib.contextmanager
@@ -89,15 +89,19 @@ def _who(skip: frozenset[str]) -> tuple[str, str]:
     tag = _consumer.get()
     if tag:
         return tag, "tag"
-    f = sys._getframe(2)
-    while f is not None and f.f_globals.get("__name__") in skip:
-        f = f.f_back
-    return ("untagged:" + _frame_name(f) if f is not None else "untagged:?"), "stack"
+    try:
+        f = sys._getframe(2)
+        while f is not None and f.f_globals.get("__name__") in skip:
+            f = f.f_back
+        return ("untagged:" + _frame_name(f) if f is not None else "untagged:?"), "stack"
+    except Exception:  # noqa: BLE001 — конструктор строки журнала не вправе уронить вызов модели
+        return "untagged:?", "stack"
 
 
 def keep_days(cfg: dict | None) -> int:
     """Срок журнала из `llm.ledger_keep_days`; мусор в конфиге — умолчание, не отказ."""
-    raw = ((cfg or {}).get("llm") or {}).get("ledger_keep_days", KEEP_DAYS_DEFAULT)
+    section = cfg.get("llm") if isinstance(cfg, dict) else None
+    raw = section.get("ledger_keep_days", KEEP_DAYS_DEFAULT) if isinstance(section, dict) else KEEP_DAYS_DEFAULT
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
         return KEEP_DAYS_DEFAULT
     return max(0, int(raw))
@@ -140,6 +144,7 @@ class Call:
         self.server_s: float | None = None
         self.load_s: float | None = None
         self.revived = False
+        self.cut: str | None = None
         self._finished = False
 
     def _now(self) -> float:
@@ -164,6 +169,7 @@ class Call:
         self.out_tok = _count(body.get("eval_count", usage.get("completion_tokens")))
         self.server_s = _seconds_ns(body.get("total_duration"))
         self.load_s = _seconds_ns(body.get("load_duration"))
+        self.cut = _cut_reason(body)
 
     def record(self, outcome: str) -> dict:
         rec = {"ts": round(self.ts, 1), "proc": _proc(), "consumer": self.consumer,
@@ -175,6 +181,8 @@ class Call:
                "in_tok": self.in_tok, "out_tok": self.out_tok}
         if self.revived:
             rec["revived"] = True
+        if self.cut:
+            rec["cut"] = self.cut      # ответ упёрся в потолок токенов — «ok», но недописан
         return rec
 
     def finish(self, outcome: str) -> None:
@@ -182,9 +190,13 @@ class Call:
         if self._finished:
             return
         self._finished = True
-        if not self.keep:
-            return
         try:
+            if not self.keep:
+                # выключенный журнал не пишет и не оставляет прежних дней: иначе
+                # у них не осталось бы ни одного механизма удаления (выход n807-out1)
+                day = time.strftime("%Y-%m-%d", time.localtime(self.ts))
+                _sweep(charoite_paths.log_path(self.root, LEDGER_KIND, part=day).parent, 0, day)
+                return
             rec = self.record(outcome)
             day = time.strftime("%Y-%m-%d", time.localtime(self.ts))
             path = charoite_paths.log_path(self.root, LEDGER_KIND, part=day)
@@ -196,14 +208,25 @@ class Call:
                      "вызовы модели идут без учёта", stream=sys.stderr)
 
 
+def _cut_reason(body: dict) -> str | None:
+    """Почему генерация кончилась, если не сама: `done_reason` Ollama,
+    `finish_reason` OpenAI-совместимого ответа (у SSE его кладёт `_sse`)."""
+    reason = body.get("done_reason") or body.get("finish_reason")
+    choices = body.get("choices")
+    if not reason and isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+    return reason if reason == "length" else None
+
+
 def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
-    """Стереть дни старше срока — по дате в имени, раз в день на процесс."""
-    key = (str(logs), today)
+    """Стереть дни старше срока — по дате в имени, раз в день на процесс;
+    `keep == 0` — все дни."""
+    key = (str(logs), today, keep == 0)
     with _sweep_lock:
         if key in _swept:
             return
         _swept.add(key)
-    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - keep * 86400))
+    cutoff = "9999" if keep == 0 else time.strftime("%Y-%m-%d", time.localtime(time.time() - keep * 86400))
     try:
         names = os.listdir(logs)
     except OSError:

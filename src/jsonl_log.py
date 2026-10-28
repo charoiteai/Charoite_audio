@@ -30,7 +30,10 @@ def append_record(path: pathlib.Path, rec: dict, *, mode: int = 0o600) -> None:
         size = os.fstat(fd).st_size
         if size and os.pread(fd, 1, size - 1) != b"\n":
             line = "\n" + line
-        os.write(fd, line.encode("utf-8"))
+        data = line.encode("utf-8")
+        if os.write(fd, data) != len(data):
+            # короткая запись (диск кончился) без исключения — строка не легла
+            raise OSError(f"короткая запись в {path.name}")
     finally:
         os.close(fd)
 
@@ -41,7 +44,8 @@ def read_records(path: pathlib.Path, warn: Callable[[str], object] = print) -> l
     if not path.exists():
         return []
     out = []
-    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    # errors="replace": обрыв посреди многобайтного знака бьёт одну строку, а не весь файл
+    for i, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
         if not line.strip():
             continue
         try:

@@ -127,7 +127,7 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
 - **Model minutes are measured per consumer.** The same two transport seams
   (`llm._open_stream`, `llm._post_busy`) write one line per request to
   `logs/model_calls-YYYY-MM-DD.jsonl` (`model_ledger`, №807): consumer, method,
-  engine, model, outcome, wall/first-token/busy-queue seconds, and the server's
+  engine, model, outcome (`cut: length` when the token ceiling ended it), wall/first-text/busy-queue seconds, and the server's
   own numbers (`prompt_eval_count`, `eval_count`, `total_duration`) when the
   engine sends them (Ollama does; mlx-server and gateways without
   `stream_options` do not — `null`). The call object is born before the first

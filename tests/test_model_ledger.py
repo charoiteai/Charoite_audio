@@ -321,3 +321,92 @@ def test_write_cost_is_small(tmp_path):
     med = statistics.median(took)
     print(f"запись строки журнала: медиана {med * 1e6:.0f} мкс")
     assert med < 0.005
+
+
+def test_complete_without_label_names_the_caller(_сеть_закрыта):
+    """Не-стрим без метки — тот, кто позвал `complete`, а не кадр `contextlib`
+    (выход n807-out1, DS C1: прежде `untagged:contextlib._GeneratorContextManager.__enter__`)."""
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _body(
+        {"message": {"content": "ответ"}, **DONE})
+
+    def minutes_tool():
+        return c.complete("x", model="m1")
+
+    minutes_tool()
+    [rec] = _records()
+    assert rec["consumer"] == "untagged:test_model_ledger.minutes_tool" and rec["src"] == "stack"
+
+
+def test_first_chunk_is_text_not_protocol(_сеть_закрыта):
+    """Ролевая дельта SSE — строка протокола, не первый кусок ответа."""
+    c = llm.LLM(MLX)
+    lines = [b'data: {"choices": [{"delta": {"role": "assistant"}}]}', b"data: [DONE]"]
+    _сеть_закрыта[("POST", f"{c.base}/v1/chat/completions")] = lambda url, **k: _stream(lines)
+    assert "".join(c.stream("x")) == ""
+    [rec] = _records()
+    assert rec["first_s"] is None and rec["outcome"] == "ok"
+
+
+@pytest.mark.parametrize("engine", ["ollama", "mlx"])
+def test_answer_cut_by_the_token_ceiling_is_marked(_сеть_закрыта, engine):
+    """Упёрся в `num_predict` — «ok», но с `cut`: недописанный документ не равен полному."""
+    if engine == "ollama":
+        c = llm.LLM(LOCAL)
+        url, lines = f"{c.base}/api/chat", _ndjson("а", done={**DONE, "done_reason": "length"})
+    else:
+        c = llm.LLM(MLX)
+        url = f"{c.base}/v1/chat/completions"
+        lines = [b'data: {"choices": [{"delta": {"content": "a"}, "finish_reason": "length"}]}', b"data: [DONE]"]
+    _сеть_закрыта[("POST", url)] = lambda u, **k: _stream(lines)
+    "".join(c.stream("x", model="m1"))
+    [rec] = _records()
+    assert rec["outcome"] == "ok" and rec["cut"] == "length"
+
+
+def test_ledger_off_removes_earlier_days(_сеть_закрыта):
+    """Выключенный журнал не оставляет прежних дней без механизма удаления (выход n807-out1)."""
+    logs = _logs()
+    logs.mkdir(parents=True, exist_ok=True)
+    old = logs / f"model_calls-{time.strftime('%Y-%m-%d')}.jsonl"
+    old.write_text("{}\n", encoding="utf-8")
+    c = llm.LLM({**LOCAL, "llm": {**LOCAL["llm"], "ledger_keep_days": 0}})
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert list(logs.glob("model_calls-*")) == []
+
+
+def test_line_survives_a_failing_lease_release(_сеть_закрыта, monkeypatch):
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+
+    def отказ(self, *exc):
+        raise OSError("flock")
+
+    monkeypatch.setattr(llm.model_lease.Lease, "__exit__", отказ)
+    with pytest.raises(OSError):
+        "".join(c.stream("x", model="m1"))
+    assert len(_records()) == 1
+
+
+def test_short_write_is_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(jsonl_log.os, "write", lambda fd, data: len(data) - 1)
+    with pytest.raises(OSError):
+        jsonl_log.append_record(tmp_path / "j.jsonl", {"модель": "м"})
+
+
+def test_torn_multibyte_char_breaks_one_line_not_the_file(tmp_path):
+    path = tmp_path / "j.jsonl"
+    jsonl_log.append_record(path, {"модель": "первая"})
+    raw = json.dumps({"модель": "вторая"}, ensure_ascii=False).encode()
+    with open(path, "ab") as f:
+        f.write(raw[:12])                                       # обрыв посреди знака
+    jsonl_log.append_record(path, {"модель": "третья"})
+    warned = []
+    got = jsonl_log.read_records(path, warn=warned.append)
+    assert got == [{"модель": "первая"}, {"модель": "третья"}] and len(warned) == 1
+
+
+def test_keep_days_survives_a_broken_section():
+    assert model_ledger.keep_days({"llm": "строкой"}) == 35
+    assert model_ledger.keep_days(None) == 35
