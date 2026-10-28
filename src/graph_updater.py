@@ -289,7 +289,7 @@ def _extract_all(cfg: dict, transcript: str, project_rule: str = "") -> dict | N
             if len(transcript) <= CHUNK_CHARS:
                 if second:
                     _report(1, 1 + len(second))
-                data = _extract(cfg, transcript, project_rule)
+                data = _answer(cfg, transcript, project_rule)
                 done = 1
             else:
                 first = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
@@ -378,7 +378,7 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
             break
         _report(n, total)
         try:
-            got = _extract(cfg, part, project_rule, raise_http=True)
+            got = _answer(cfg, part, project_rule, raise_http=True)
         except requests.RequestException as e:
             # Модель не отвечает — следующий кусок ждал бы тот же таймаут
             # (выход n821-out2, Sonnet I2).
@@ -465,14 +465,16 @@ def _same_decision(a: set[str], b: set[str]) -> bool:
     return den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE
 
 
-# Числовая метка — токен с цифрой целиком, с датой и временем через точку, двоеточие или
-# дробь: «12.12», «11:00», «q3», «s3», «15го». Основы слов (`_stems`) такие метки теряют или
-# режут («q3» короче четырёх букв, «12.01» → 12 и 01), поэтому сторож чисел читает текст сам.
-_NUMBER_TOKEN = re.compile(r"[a-zа-я0-9]*[0-9][a-zа-я0-9]*(?:[.:/][0-9]+)*")
+# Число для сторожа склейки — цифры с датой и временем через точку, двоеточие или дробь:
+# «12.12», «11:00», а у меток — только цифровое ядро («q3» → 3, «15го» → 15, «2ТБ» → 2).
+# Основы слов (`_stems`) метки теряют или режут («q3» короче четырёх букв, «12.01» → 12 и 01),
+# поэтому сторож читает текст сам. Ядро без букв: «Q3» и «3 квартал», «2ТБ» и «2 ТБ» — одно
+# число (выход n824-out2, DS I1, Sonnet I4); числа словами и римские цифры сторож не видит.
+_NUMBER = re.compile(r"[0-9]+(?:[.:/][0-9]+)*")
 
 
 def _numbers(text: str) -> frozenset[str]:
-    return frozenset(_NUMBER_TOKEN.findall(str(text).lower().replace("ё", "е")))
+    return frozenset(_NUMBER.findall(str(text)))
 
 
 def _fingerprint(text: str) -> tuple[set[str], frozenset[str]]:
@@ -527,37 +529,32 @@ def _final_decisions(cfg: dict, data: dict | None) -> dict | None:
 
 def _merge_decisions(decisions: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
     """Склейка по всему списку: решение уходит, если раньше в списке уже есть то же
-    дело — дословно без регистра или по `_same_fingerprint`. Слот — первого вхождения:
+    дело — дословно без регистра или по `_same_fingerprint`. Остаётся первое вхождение:
     решения первого прохода стоят первыми, brain уносит первые шесть (`_meeting_facts`).
-    Текст в слоте — более подробный: основы позднего строго шире (и числа не уже) — он занимает слот.
-    Пары — (ушедший текст, оставшийся).
+    Пары — (ушедший текст, оставшийся). Подмена текста слота более подробным снята: с ней
+    слот поглощал осколки чужих дел и итог зависел от порядка (выход n824-out2, DS I2,
+    Sonnet I2); правило «какая формулировка выживает» — долг №615.
 
     Порог — тот же 0,7/3, что у склейки проходов: на шести встречах 28.10 он не склеил
     ни одной пары разных дел, а все пересказы внутри части он не ловит (5 из 25 лишних,
     остальное ниже порога)."""
     kept: list[str] = []
-    prints: list[tuple] = []
-    slot_of: dict[str, int] = {}
+    kept_keys: dict[str, str] = {}
+    kept_prints: list[tuple[tuple, str]] = []
     pairs: list[tuple[str, str]] = []
     for d in decisions:
         key = d.strip().casefold()
-        if key in slot_of:
-            pairs.append((d, kept[slot_of[key]]))
+        if key in kept_keys:
+            pairs.append((d, kept_keys[key]))
             continue
         mine = _fingerprint(d)
-        n = next((i for i, other in enumerate(prints) if _same_fingerprint(mine, other)), None) if mine[0] else None
-        if n is None:
-            slot_of[key] = len(kept)
-            kept.append(d)
-            prints.append(mine)
-        elif mine[0] > prints[n][0] and mine[1] >= prints[n][1]:
-            # Позже пришла та же мысль с подробностями — короткая формулировка уступает слот
-            # длинной, позиция прежняя: склейка не теряет сказанное (выход n824-out1, Sonnet I2).
-            pairs.append((kept[n], d))
-            kept[n], prints[n] = d, mine
-            slot_of[key] = n
-        else:
-            pairs.append((d, kept[n]))
+        other = next((text for fp, text in kept_prints if _same_fingerprint(mine, fp)), None) if mine[0] else None
+        if other is not None:
+            pairs.append((d, other))
+            continue
+        kept.append(d)
+        kept_keys[key] = d
+        kept_prints.append((mine, d))
     return kept, pairs
 
 
@@ -588,17 +585,16 @@ def _extract_long(cfg: dict, transcript: str, project_rule: str = "",
         _report(n, total or len(parts))
         if n > 1:
             _yield_to_live()
-        got = _extract(cfg, part, project_rule)
+        got = _answer(cfg, part, project_rule)
         if not got:
             print(f"граф: часть {n}/{len(parts)} не разобралась — продолжаю")
             continue
         for key, value in got.items():
             if isinstance(value, list):
-                have = merged.get(key)
-                if not isinstance(have, list):
-                    # Часть раньше дала здесь не список (null, строку): `extend` по нему ронял
-                    # весь разбор встречи (выход n824-out1, DS C2, Haiku C1).
-                    merged[key] = [have] if have else []
+                if not isinstance(merged.get(key), list):
+                    # Поля схемы уже в форме (`_answer`); ключ вне схемы, пришедший раньше
+                    # не списком, не роняет слияние (выход n824-out1, DS C2, Haiku C1).
+                    merged[key] = []
                 merged[key].extend(value)
             elif key not in merged or not merged[key]:
                 merged[key] = value          # название берём из первой удачной части
@@ -629,6 +625,43 @@ def _dedup(items: list) -> list:
             seen.add(key)
             out.append(item)
     return out
+
+
+# Форма ответа разбора по промпту `_extract`: какие поля строки, какие списки.
+_TEXT_FIELDS = ("название", "проект")
+_LIST_FIELDS = ("люди", "сущности", "решения", "связи", "темы", "ядра")
+
+
+def _answer(cfg: dict, transcript: str, project_rule: str = "", **kw) -> dict | None:
+    """Ответ модели на одну часть — уже в форме схемы. Единственный шов, где ответ
+    становится данными, для обоих проходов и встречи в одну часть: список в названии
+    ронял запись встречи (`.strip()` в main), строка или null рядом со списком другой
+    части — слияние частей (выходы n824-out1 и out2: DS C2, Haiku C1)."""
+    return _shaped(_extract(cfg, transcript, project_rule, **kw))
+
+
+def _shaped(got: dict | None) -> dict | None:
+    """Поля схемы — своего вида: строковое поле не строкой отбрасывается, списочное
+    строкой становится списком из неё, иным видом — пустым списком. Прочие ключи —
+    как пришли."""
+    if not isinstance(got, dict):
+        return got
+    for key in _TEXT_FIELDS:
+        if key in got and not isinstance(got[key], str):
+            if got[key] is not None:
+                print(f"граф: поле «{key}» — {type(got[key]).__name__}, а не строка — отброшено")
+            del got[key]
+    for key in _LIST_FIELDS:
+        value = got.get(key)
+        if key not in got or isinstance(value, list):
+            continue
+        if isinstance(value, str):
+            got[key] = [value] if value.strip() else []
+            continue
+        if value is not None:
+            print(f"граф: поле «{key}» — {type(value).__name__}, а не список — отброшено")
+        got[key] = []
+    return got
 
 
 def _extract(cfg: dict, transcript: str, project_rule: str = "",

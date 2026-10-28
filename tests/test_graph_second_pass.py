@@ -260,11 +260,12 @@ def test_russian_named_explicitly_keeps_second_pass(model, lang):
     assert data["решения"][-1] == "Новое решение по бюджету"
 
 
-def test_second_pass_string_instead_of_list_adds_nothing(model):
-    """Строка вместо списка дописала бы решения по букве."""
+def test_second_pass_string_instead_of_list_is_one_decision(model):
+    """Строка вместо списка — одно решение, а не буквы: форму ответа правит шов `_answer`
+    у обоих проходов одинаково (выход n824-out2, DS C1)."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": "Новое решение по бюджету"}
-    assert g.extract(ON, LONG) == _first()
+    assert g.extract(ON, LONG)["решения"][2:] == ["Новое решение по бюджету"]
 
 
 def test_junk_with_the_same_text_does_not_eat_the_decision(model):
@@ -352,15 +353,14 @@ def test_first_pass_string_is_written_as_list_even_without_additions(model):
 
 @pytest.mark.parametrize("odd", [{"текст": "решение"}, 5])
 def test_first_pass_odd_shape_becomes_an_empty_list(model, odd, capsys):
-    """Словарь или число вместо списка — не решения: второй проход модель зря не зовёт, на выходе
-    `extract` список пуст и об этом сказано в лог (вход n824-in1, DS C2)."""
+    """Словарь или число вместо списка — не решения: первый проход дал пустой список, второй
+    дописывает к нему, и об этом сказано в лог (вход n824-in1, DS C2; шов `_answer` — выход
+    n824-out2, DS C1)."""
     model.answers[1] = lambda n: _first(решения=odd)
     model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
     data = g.extract(ON, LONG)
-    assert data["решения"] == []
-    assert len(model.calls) == 3
-    assert model.reports[-1] == (8, 8)
-    assert f"решения — {type(odd).__name__}, а не список" in capsys.readouterr().out
+    assert data["решения"] == ["Новое решение по бюджету"]
+    assert f"«решения» — {type(odd).__name__}, а не список" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("cfg, lang", [
