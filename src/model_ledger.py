@@ -120,7 +120,10 @@ def switched_off(root: pathlib.Path) -> bool:
         if hit is not None and hit[0] == fp:
             return hit[1]
         off = _off(yaml.safe_load((root / "config" / "config.yaml").read_text(encoding="utf-8")))
-    except Exception:  # noqa: BLE001 — битый или невидимый конфиг не вправе уронить вызов модели
+    except Exception as exc:  # noqa: BLE001 — битый или невидимый конфиг не вправе уронить вызов модели
+        once.say(("model_ledger", f"switch:{type(exc).__name__}"),
+                 f"model_ledger: свой config.yaml не прочитан ({type(exc).__name__}) — журнал пишется",
+                 stream=sys.stderr)
         return False
     with _switch_lock:
         _switch[str(root)] = (fp, off)
@@ -132,7 +135,14 @@ def _off(cfg) -> bool:
     (выходы n807-out2…out4). Прочие значения ключа пока ничего не делают: срока нет."""
     section = cfg.get("llm") if isinstance(cfg, dict) else None
     raw = section.get("ledger_keep_days") if isinstance(section, dict) else None
-    return type(raw) is int and raw == 0
+    if type(raw) is int and raw == 0:
+        return True
+    if raw is not None or (isinstance(cfg, dict) and "ledger_keep_days" in cfg):
+        # владелец что-то написал, но не выключатель — сказать, а не молчать (выход n807-out8)
+        once.say(("model_ledger", f"switch:{type(raw).__name__}"),
+                 "model_ledger: llm.ledger_keep_days — не целое 0 или не под llm: — журнал пишется "
+                 "(срока хранения пока нет, выключает только 0)", stream=sys.stderr)
+    return False
 
 
 def _count(x) -> int | None:

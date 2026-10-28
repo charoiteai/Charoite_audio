@@ -338,6 +338,27 @@ def test_line_has_no_prompt_and_file_is_private(_сеть_закрыта):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_existing_open_logs_dir_is_closed_on_write(_сеть_закрыта):
+    """`logs/`, заведённый раньше с 0755, после строки журнала — 0700: `jsonl_log`
+    каталог не закрывает (выход n807-out3; тест — выход n807-out8)."""
+    _logs().mkdir(parents=True, exist_ok=True)
+    _logs().chmod(0o755)
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert len(_records()) == 1 and (_logs().stat().st_mode & 0o777) == 0o700
+
+
+def test_failing_secure_dir_does_not_break_the_call(_сеть_закрыта, monkeypatch, capsys):
+    monkeypatch.setattr(model_ledger.charoite_paths, "secure_dir",
+                        lambda p: (_ for _ in ()).throw(OSError("нет прав")))
+    monkeypatch.setattr(model_ledger.once, "_said", set())
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    assert "".join(c.stream("x", model="m1")) == "а"
+    assert capsys.readouterr().err.count("журнал вызовов модели не пишется") == 1
+
+
 def test_torn_line_is_not_glued_to_the_next(tmp_path):
     path = tmp_path / "logs" / "j.jsonl"
     path.parent.mkdir()
@@ -492,6 +513,39 @@ def test_switch_off_reaches_a_live_client(_сеть_закрыта):
     "".join(c.stream("x", model="m1"))
     assert len(_records()) == 1          # новой строки нет, прежняя цела
     assert cfg.exists()
+
+
+def test_switch_off_with_the_same_mtime_is_seen(_сеть_закрыта):
+    """`cp -p`, `touch -r`, восстановление из бэкапа: правка с прежним временем
+    доходит до живого клиента — отпечаток видит размер и inode (выход n807-out8)."""
+    _owner_config("llm: {}\n", stamp=1_000_000)
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    _owner_config("llm:\n  ledger_keep_days: 0\n", stamp=1_000_000)
+    "".join(c.stream("x", model="m1"))
+    assert len(_records()) == 1
+
+
+@pytest.mark.parametrize("text", ["llm:\n  ledger_keep_days: '0'\n", "llm:\n  ledger_keep_days: off\n",
+                                  "ledger_keep_days: 0\n", "llm: [не закрыт\n"])
+def test_switch_not_understood_is_said_once(_сеть_закрыта, text, monkeypatch, capsys):
+    monkeypatch.setattr(model_ledger.once, "_said", set())
+    _owner_config(text)
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    "".join(c.stream("x", model="m1"))
+    assert len(_records()) == 2
+    assert capsys.readouterr().err.count("журнал пишется") == 1
+
+
+def test_plain_config_says_nothing(_сеть_закрыта, monkeypatch, capsys):
+    monkeypatch.setattr(model_ledger.once, "_said", set())
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert capsys.readouterr().err == ""
 
 
 class _ReadTimeoutRaw(io.BytesIO):
