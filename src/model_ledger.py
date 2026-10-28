@@ -113,36 +113,43 @@ def switched_off(root: pathlib.Path) -> bool:
     вызова (финальный Opus, I1). Файла нет, он не читается или не понят —
     журнал пишет: строка — числа, а не слова, и ничего не стирает."""
     root = pathlib.Path(root)
-    try:    # целиком: сбой отпечатка или чтения стоил бы строки (выход n807-out5, DS M3)
+    try:    # сбой отпечатка стоил бы строки (выход n807-out5, DS M3)
         fp = config_loader.fingerprint(root)
-        with _switch_lock:
-            hit = _switch.get(str(root))
-        if hit is not None and hit[0] == fp:
-            return hit[1]
-        off = _off(yaml.safe_load((root / "config" / "config.yaml").read_text(encoding="utf-8")))
-    except Exception as exc:  # noqa: BLE001 — битый или невидимый конфиг не вправе уронить вызов модели
-        once.say(("model_ledger", f"switch:{type(exc).__name__}"),
-                 f"model_ledger: свой config.yaml не прочитан ({type(exc).__name__}) — журнал пишется",
+    except Exception as exc:  # noqa: BLE001 — сбой stat не вправе уронить вызов модели
+        once.say(("model_ledger", f"fingerprint:{type(exc).__name__}"),
+                 f"model_ledger: отпечаток конфига не снят ({type(exc).__name__}) — журнал пишется",
                  stream=sys.stderr)
         return False
+    with _switch_lock:
+        hit = _switch.get(str(root))
+    if hit is not None and hit[0] == fp:
+        return hit[1]
+    complaint = None
+    try:
+        off, complaint = _off(yaml.safe_load((root / "config" / "config.yaml").read_text(encoding="utf-8")))
+    except FileNotFoundError:   # своего файла нет (и битая ссылка) — штатно, молча (выход n807-out9)
+        off = False
+    except Exception as exc:  # noqa: BLE001 — битый конфиг не вправе уронить вызов модели
+        off, complaint = False, f"свой config.yaml не прочитан ({type(exc).__name__})"
+    if complaint:   # раз на правку файла: ключ — отпечаток, а не тип (выход n807-out9)
+        once.say(("model_ledger", ("switch", fp)), f"model_ledger: {complaint} — журнал пишется "
+                 "(срока хранения пока нет, выключает только целое 0 под llm:)", stream=sys.stderr)
     with _switch_lock:
         _switch[str(root)] = (fp, off)
     return off
 
 
-def _off(cfg) -> bool:
+def _off(cfg) -> tuple[bool, str | None]:
     """`llm.ledger_keep_days` — ровно целое `0`; `"0"`, `false`, `0.0` — не выключатель
-    (выходы n807-out2…out4). Прочие значения ключа пока ничего не делают: срока нет."""
+    (выходы n807-out2…out4). Прочие значения ключа пока ничего не делают: срока нет.
+    Второе — жалоба, если ключ написан, но не выключатель (выходы n807-out8, out9)."""
     section = cfg.get("llm") if isinstance(cfg, dict) else None
     raw = section.get("ledger_keep_days") if isinstance(section, dict) else None
     if type(raw) is int and raw == 0:
-        return True
-    if raw is not None or (isinstance(cfg, dict) and "ledger_keep_days" in cfg):
-        # владелец что-то написал, но не выключатель — сказать, а не молчать (выход n807-out8)
-        once.say(("model_ledger", f"switch:{type(raw).__name__}"),
-                 "model_ledger: llm.ledger_keep_days — не целое 0 или не под llm: — журнал пишется "
-                 "(срока хранения пока нет, выключает только 0)", stream=sys.stderr)
-    return False
+        return True, None
+    written = (isinstance(section, dict) and "ledger_keep_days" in section) or \
+        (isinstance(cfg, dict) and "ledger_keep_days" in cfg)
+    return False, ("llm.ledger_keep_days — не целое 0 или не под llm:" if written else None)
 
 
 def _count(x) -> int | None:

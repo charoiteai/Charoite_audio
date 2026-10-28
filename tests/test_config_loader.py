@@ -55,6 +55,20 @@ def test_fingerprint_sees_an_edit_with_the_same_mtime(tmp_path):
     assert fingerprint(tmp_path, code=tmp_path) != before
 
 
+def test_fingerprint_sees_a_same_length_edit_in_place(tmp_path):
+    """Тот же inode, та же длина, прежнее время — ловит только ctime (выход n807-out9)."""
+    own = _config_dir(tmp_path) / "config.yaml"
+    own.write_text("llm:\n  ledger_keep_days: 7\n", encoding="utf-8")
+    os.utime(own, (1_000_000, 1_000_000))
+    before = fingerprint(tmp_path, code=tmp_path)
+    ino = own.stat().st_ino
+    with open(own, "r+", encoding="utf-8") as f:
+        f.write("llm:\n  ledger_keep_days: 0\n")
+    os.utime(own, (1_000_000, 1_000_000))
+    assert (own.stat().st_ino, own.stat().st_mtime) == (ino, 1_000_000)
+    assert fingerprint(tmp_path, code=tmp_path) != before
+
+
 def test_user_config_wins_over_example(tmp_path):
     config = _config_dir(tmp_path)
     (config / "config.yaml").write_text("source: user\n", encoding="utf-8")

@@ -516,28 +516,49 @@ def test_switch_off_reaches_a_live_client(_сеть_закрыта):
 
 
 def test_switch_off_with_the_same_mtime_is_seen(_сеть_закрыта):
-    """`cp -p`, `touch -r`, восстановление из бэкапа: правка с прежним временем
-    доходит до живого клиента — отпечаток видит размер и inode (выход n807-out8)."""
-    _owner_config("llm: {}\n", stamp=1_000_000)
+    """`cp -p`, `touch -r`: правка той же длины на месте (тот же inode) с прежним
+    временем доходит до живого клиента — отпечаток видит ctime (выходы n807-out8, out9)."""
+    own = _owner_config("llm:\n  ledger_keep_days: 7\n", stamp=1_000_000)
+    ino, size = own.stat().st_ino, own.stat().st_size
     c = llm.LLM(LOCAL)
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
     "".join(c.stream("x", model="m1"))
     _owner_config("llm:\n  ledger_keep_days: 0\n", stamp=1_000_000)
+    assert (own.stat().st_ino, own.stat().st_size, own.stat().st_mtime) == (ino, size, 1_000_000)
     "".join(c.stream("x", model="m1"))
     assert len(_records()) == 1
 
 
 @pytest.mark.parametrize("text", ["llm:\n  ledger_keep_days: '0'\n", "llm:\n  ledger_keep_days: off\n",
-                                  "ledger_keep_days: 0\n", "llm: [не закрыт\n"])
-def test_switch_not_understood_is_said_once(_сеть_закрыта, text, monkeypatch, capsys):
+                                  "llm:\n  ledger_keep_days:\n", "ledger_keep_days: 0\n", "llm: [не закрыт\n"])
+def test_switch_not_understood_is_said_once_per_edit(_сеть_закрыта, text, monkeypatch, capsys):
+    """Строка — раз на правку файла, а не раз на тип значения на весь процесс (выход n807-out9)."""
     monkeypatch.setattr(model_ledger.once, "_said", set())
-    _owner_config(text)
+    _owner_config(text, stamp=1_000_000)
     c = llm.LLM(LOCAL)
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
     "".join(c.stream("x", model="m1"))
     "".join(c.stream("x", model="m1"))
-    assert len(_records()) == 2
+    model_ledger._switch.clear()         # кэш решения сброшен — говорит память once по отпечатку
+    "".join(c.stream("x", model="m1"))
     assert capsys.readouterr().err.count("журнал пишется") == 1
+    _owner_config("llm:\n  ledger_keep_days: 0\n", stamp=2_000_000)
+    "".join(c.stream("x", model="m1"))
+    _owner_config(text, stamp=3_000_000)  # та же ошибка после исправления — снова строка
+    "".join(c.stream("x", model="m1"))
+    assert capsys.readouterr().err.count("журнал пишется") == 1
+    assert len(_records()) == 4
+
+
+def test_missing_own_config_is_silent(_сеть_закрыта, monkeypatch, capsys):
+    """Своего config.yaml нет — штатная свежая установка: журнал пишет молча (выход n807-out9)."""
+    monkeypatch.setattr(model_ledger.once, "_said", set())
+    (charoite_paths.resolve_root(llm.__file__) / "config" / "config.yaml").unlink()
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    "".join(c.stream("x", model="m1"))
+    assert len(_records()) == 2 and capsys.readouterr().err == ""
 
 
 def test_plain_config_says_nothing(_сеть_закрыта, monkeypatch, capsys):
@@ -581,4 +602,5 @@ def test_failing_fingerprint_keeps_the_line(_сеть_закрыта, monkeypatc
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
     "".join(c.stream("x", model="m1"))
     assert len(_records()) == 1
-    assert "не пишется" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "не пишется" not in err and "отпечаток конфига не снят" in err   # файл не обвиняется (выход n807-out9)
