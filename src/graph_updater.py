@@ -93,7 +93,7 @@ CHUNK_OVERLAP = 1_000
 # вдвое мельче. Замер 27.10 (17 встреч, эталон ревизии): модель на одной нарезке
 # пропускает около трети решений, и повтор той же нарезки ловит в основном то же
 # самое (+9 п. п.), а другая нарезка — другое: 12000 ∪ 6000 дали 77–82 % покрытия
-# против 60–65 % у одного прохода, без роста брака.
+# против 57–65 % у одного прохода, без роста брака.
 CHUNK_CHARS_2 = 6_000
 CHUNK_OVERLAP_2 = 500
 # Склейка решений второго прохода с первым (№821): решение второго отбрасывается,
@@ -263,12 +263,13 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     # прохода, иначе человек увидел бы «3/3», а за ним снова «1/6».
     second = []
     if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2:
-        if _language(cfg) not in ("en", "zh"):          # то же правило, что выбирает промпт
+        if _language(cfg) == "ru":       # пустой ключ — тоже ru (_language); `ru-RU` — без замера
             second = _split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2, short_tail=False)
         else:
             # Порог склейки 0,7/3 мерен только на русских встречах: в китайском
             # основы слов не выделяются вовсе (склейка пропустила бы все повторы),
             # в английском похожими делают служебные слова (выход n821-out1, DS C1).
+            # Белый список, а не «кроме en/zh»: любой другой язык тоже без замера (n822-in1, DS C1).
             print(f"граф: второй проход: нет замера для языка {_language(cfg)!r} — только первый")
     try:
         if len(transcript) <= CHUNK_CHARS:
@@ -298,8 +299,9 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
 
 def _language(cfg: dict) -> str:
     """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`.
-    Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3)."""
-    return str((cfg.get("sufler") or {}).get("language") or "ru").strip().lower()
+    Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3). Чтение —
+    `install_profile.graph_language`, одно с умолчанием второго прохода (n822-out3, Sonnet M2)."""
+    return install_profile.graph_language(cfg)
 
 
 def _split(transcript: str, size: int, overlap: int, short_tail: bool = True) -> list[str]:

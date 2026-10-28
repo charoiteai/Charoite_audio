@@ -327,6 +327,10 @@ Swift 推理的 Core AI;说话人分离通过 ANE 管线。模型选择仍在配
 `model` 和 `small_model` 外，还写入 `think_model`（64 GB 上为主模型，更低为
 轻量模型）、`markup_model`（32/64 GB 上为主模型，8/16 GB 上为轻量模型）、
 `deja_vu` 与 `tier3`（仅 8 GB 上关闭），并在每个配置上写 `graph: true`。
+任何配置都不写入 `graph_second_pass`：第二轮解析仅在测量过的组合上默认开启——
+Ollama 上的 `qwen3.6:35b-mlx` 且 `language: ru`（决定覆盖率 57–65 % → 77–82 %，
+每场会议多 2–2.5 分钟模型时间）。由守护进程根据 `llm.model` 决定；您在配置中
+设置的 `graph_second_pass: true` 或 `false` 始终优先。
 
 **对话标注与轻量配置。** 在段落内部划分发言边界的回路要求逐字不改：校验会
 比对词序列，只要模型改动了任何一个字就丢弃该结果。4B 比 gemma 更常改词，

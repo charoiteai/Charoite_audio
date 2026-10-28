@@ -25,6 +25,7 @@ config.yaml строкой в кавычках (`graph: "false"`), и строг
 from __future__ import annotations
 
 import graphs
+import privacy
 
 _FALSE = {"false", "no", "off", "0", "нет", "выкл"}
 _TRUE = {"true", "yes", "on", "1", "да", "вкл"}
@@ -81,16 +82,49 @@ def graph_enabled(cfg: dict) -> bool:
     return flag(cfg, "graph", True)
 
 
+#: Модели, на которых второй проход замерен и включён по умолчанию (№822). Замер 27.10 — эталон из
+#: 17 встреч, только `qwen3.6:35b-mlx`: покрытие решений 57–65 % → 77–82 %, +130–145 с модели на
+#: встречу. На 27B и 4B польза не мерилась, а один проход там и так в 2–4 раза дольше (бенч 19.08:
+#: 224 и 113 с против 57 с), — модель сюда только после своего замера.
+SECOND_PASS_MEASURED_MODELS = frozenset({"qwen3.6:35b-mlx"})
+
+
 def graph_second_pass_enabled(cfg: dict) -> bool:
     """Второй проход разбора встречи кусками помельче (`sufler.graph_second_pass`, №821).
 
     Замер 27.10 на эталоне из 17 встреч: проход кусками 6000 знаков поверх боевого (12000) поднял
-    покрытие решений с 60–65 % до 77–82 % без роста брака ревизии, ценой +130–145 с модели на
-    встречу. Цена — время модели, а не память: две-три минуты на каждую встречу решает тот, чья
-    очередь разбора их выдержит. Умолчание — выключено, ключ ставит владелец; пресеты приложения
-    его пока не пишут (№822). Предикат — только флаг владельца: язык разбора (порог склейки мерен на
-    русском) и живую встречу решает graph_updater."""
-    return flag(cfg, "graph_second_pass", False)
+    покрытие решений с 57–65 % до 77–82 % без роста брака ревизии, ценой +130–145 с модели на
+    встречу. Цена — время модели, а не память: две-три минуты на каждую встречу.
+
+    Явный ключ владельца решает всегда (`true`/`false` и их строковые формы через `flag`); пустое
+    значение — «не задано», нераспознанное (`fasle`) — выключено, как до умолчания: опечатка в
+    `false` не должна включать дорогой проход (n822-out3, Haiku I1). Без ключа — умолчание здесь, в демоне, а не посев в файл
+    владельца (№822, финальный Opus): включено только там, где замерено, — локальная модель
+    `llm.model` из `SECOND_PASS_MEASURED_MODELS` на Ollama и язык разбора `ru` или пустой. На
+    mlx-server разбор идёт на `llm.mlx_model`, в облаке — на `llm.cloud_model`, а не на `llm.model`:
+    замера там нет, умолчание выключено.
+    Язык решает и graph_updater (порог склейки мерен на русском): явный `true` при en проход
+    всё равно не запустит."""
+    raw = _section(cfg).get("graph_second_pass")
+    if raw is not None and str(raw).strip():
+        return flag(cfg, "graph_second_pass", False)
+    llm_section = cfg.get("llm") if isinstance(cfg, dict) else None
+    model = llm_section.get("model") if isinstance(llm_section, dict) else None
+    if str(model or "").strip() not in SECOND_PASS_MEASURED_MODELS or graph_language(cfg) != "ru":
+        return False
+    # Тот же выбор движка, что у клиента: `cloud` без разрешения работает на Ollama (llm.LLM).
+    engine = privacy.llm_engine(cfg)
+    return engine == "ollama" or (engine == "cloud" and not privacy.cloud_engine_active(cfg))
+
+
+def graph_language(cfg: dict) -> str:
+    """Язык значений разбора встречи (`sufler.language`): точное значение, пустое — русский.
+
+    Одно чтение на промпт разбора (`graph_updater._language`) и умолчание второго прохода —
+    иначе умолчание включило бы проход, который разбор потом пропустит (n822-out3, Sonnet M2).
+    Регион к тегу не разбирается: `en-US` здесь не en — как у минуток и архива
+    (`meeting_archive._config_lang`, финальный Opus №822, I3). Единый разбор языка — долг №615."""
+    return str(_section(cfg).get("language") or "ru").strip().lower() or "ru"
 
 
 def deja_vu_enabled(cfg: dict) -> bool:

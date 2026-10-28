@@ -37,12 +37,50 @@ def test_default_is_everything_on():
     assert install_profile.tier3_enabled({}) is True
 
 
-def test_graph_second_pass_is_off_unless_the_owner_turns_it_on():
-    """Второй проход разбора (№821) — +2–2,5 минуты модели на встречу: умолчание — выключено."""
-    assert install_profile.graph_second_pass_enabled({}) is False
-    assert install_profile.graph_second_pass_enabled({"sufler": {"graph_second_pass": True}}) is True
-    assert install_profile.graph_second_pass_enabled({"sufler": {"graph_second_pass": "yes"}}) is True
-    assert install_profile.graph_second_pass_enabled({"sufler": {"graph_second_pass": "no"}}) is False
+# Модели пресетов приложения (`ModelPresetPolicy.swift`): «Полный», «Точный», «Лёгкий».
+_MLX, _27B, _4B = "qwen3.6:35b-mlx", "qwen3.8:27b-mlx", "qwen3.5:4b"
+_UNSET = object()
+
+
+@pytest.mark.parametrize("key", [True, False, "", " ", None, _UNSET, "yes", "off", "fasle"])
+@pytest.mark.parametrize("model", [_MLX, f" {_MLX} ", _27B, _4B])
+@pytest.mark.parametrize("lang", ["ru", "RU", " ru ", "en", "ru-RU", "", _UNSET])
+def test_graph_second_pass_default_lives_in_the_daemon(key, model, lang):
+    """Второй проход (№821): явный ключ владельца решает всегда, нераспознанный (опечатка в
+    `false`) — выключено (n822-out3, Haiku I1); без ключа (пусто, None) — включён только на
+    замеренной модели и русском или пустом языке (№822)."""
+    sufler = {}
+    if key is not _UNSET:
+        sufler["graph_second_pass"] = key
+    if lang is not _UNSET:
+        sufler["language"] = lang
+    cfg = {"llm": {"model": model}, "sufler": sufler}
+    explicit = {True: True, False: False, "yes": True, "off": False, "fasle": False}.get(key)
+    measured = model.strip() == _MLX and lang in ("ru", "RU", " ru ", "", _UNSET)
+    expected = explicit if explicit is not None else measured
+    assert install_profile.graph_second_pass_enabled(cfg) is expected
+
+
+@pytest.mark.parametrize("cfg", [
+    {}, {"llm": None}, {"llm": []}, {"llm": {}}, {"sufler": None}, None, [],
+    {"llm": {"model": _MLX, "engine": "mlx-server"}},
+    {"llm": {"model": _MLX, "engine": "cloud"}, "sufler": {"cloud_engine": True}},
+    {"llm": {"model": _MLX, "engine": " Cloud "}, "sufler": {"cloud_engine": True}},
+    {"llm": {"model": _4B, "engine": "bogus"}},          # модель не та — до движка не доходит
+    {"llm": {"model": _MLX}, "sufler": {"language": "ru-RU"}},
+])
+def test_graph_second_pass_default_off_without_a_measurement(cfg, monkeypatch):
+    """Нет модели, другой движок (mlx-server — `llm.mlx_model`, облако — `llm.cloud_model`) или
+    регион к тегу языка — замера нет, умолчание выключено; странная форма конфига — не падение."""
+    for name in install_profile.privacy.KILL_SWITCHES:      # рубильник облака вернул бы Ollama
+        monkeypatch.delenv(name, raising=False)
+    assert install_profile.graph_second_pass_enabled(cfg) is False
+
+
+def test_graph_second_pass_cloud_without_permission_runs_locally():
+    """`engine: cloud` без `sufler.cloud_engine` клиент гонит на Ollama — там замер есть."""
+    cfg = {"llm": {"model": _MLX, "engine": "cloud"}}
+    assert install_profile.graph_second_pass_enabled(cfg) is True
 
 
 def test_embedding_loops_have_their_own_switch():

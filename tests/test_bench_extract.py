@@ -101,3 +101,18 @@ def test_meeting_still_being_written_is_skipped(tmp_path, monkeypatch):
     charoite_paths.use_data_root(tmp_path, replace=True)
 
     assert be.meetings(10, now=live.stat().st_mtime + 60) == []
+
+
+def test_bench_does_not_inherit_the_owners_second_pass(tmp_path, monkeypatch):
+    """Цифры пресетов — один проход: флаг `graph_second_pass: true` в конфиге владельца не должен
+    молча удваивать колонку «сек»; второй проход — только явным `--second-pass` (n822-in1, I3)."""
+    seen = []
+    monkeypatch.setattr(be.gu, "extract",
+                        lambda cfg, text: seen.append(cfg["sufler"]["graph_second_pass"]) or {})
+    f = tmp_path / "m.md"
+    f.write_text(TRANSCRIPT, encoding="utf-8")
+    owner = {"llm": {"model": "x"}, "sufler": {"graph_second_pass": True, "language": "ru"}}
+    be.measure(owner, "m", f)
+    be.measure(owner, "m", f, second_pass=True)
+    assert seen == [False, True]
+    assert owner["sufler"]["graph_second_pass"] is True, "конфиг вызывающего не правится"

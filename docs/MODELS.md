@@ -421,7 +421,11 @@ The app's first-run wizard reads the machine's memory, recommends the row
 that fits with room to spare and applies it as a whole: besides `model` and
 `small_model` it writes `think_model` (main model on 64 GB, light below),
 `markup_model` (main on 32/64 GB, light on 8/16), `deja_vu` and `tier3` (off
-on 8 GB only) and `graph: true` on every profile.
+on 8 GB only) and `graph: true` on every profile. No profile writes
+`graph_second_pass`: the second extraction pass is on by default only where it was
+measured — `qwen3.6:35b-mlx` on Ollama with `language: ru` (decision coverage
+57–65 % → 77–82 %, +2–2.5 model minutes per meeting). The daemon decides this
+from `llm.model`; your own `graph_second_pass: true` or `false` always wins.
 
 **Dialogue markup and the light profiles.** The loop that splits a paragraph
 into replies needs verbatim output: validation compares the words and drops
