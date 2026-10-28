@@ -189,6 +189,7 @@ def test_chunk_numbers_are_pinned():
     first = g._split(LONG, g.CHUNK_CHARS, g.CHUNK_OVERLAP)
     second = g._split(LONG, g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2, short_tail=False)
     assert (g.CHUNK_CHARS_2, g.CHUNK_OVERLAP_2) == (6_000, 500)
+    assert g.SECOND_PASS_MIN_SHARED >= 1               # порог склейки не пускает пустое пересечение
     assert [len(p) for p in first] == [12_000, 12_000, 5_000]
     assert [len(p) for p in second] == [6_000, 6_000, 6_000, 6_000, 5_000]
     for parts, overlap in ((first, g.CHUNK_OVERLAP), (second, g.CHUNK_OVERLAP_2)):
@@ -388,17 +389,46 @@ def test_stems_are_pinned():
     """Основы — часть порога замера: префикс пять букв, слова от четырёх букв, ё = е, числа целиком."""
     assert g._stems("Отчёт по релизу сервиса, ещё раз 15") == {"отчет", "релиз", "серви", "15"}
     assert g._stems("план") == {"план"}                 # ровно четыре буквы — уже слово
+    assert g._stems("Да") == set()                      # короткое слово основы не даёт
+    assert g._stems("15 20 30") == {"15", "20", "30"}   # числа — основы при любой длине
 
 
-@pytest.mark.parametrize("a, b", [(set(), {"а1", "б2", "в3"}), ({"а1", "б2", "в3"}, set()), (set(), set())])
+_NO_STEMS = g._stems("Да")
+
+
+@pytest.mark.parametrize("a, b", [(_NO_STEMS, {"а1", "б2", "в3"}), ({"а1", "б2", "в3"}, _NO_STEMS),
+                                  (_NO_STEMS, _NO_STEMS)])
 def test_empty_stems_are_never_the_same_decision(a, b):
-    """Решение без основ («Да», цифры-мусор) ни с чем не склеивается и не делит на ноль."""
+    """Решение без основ (короткие слова без основ, «Да») ни с чем не склеивается и не делит на ноль."""
+    assert a == set() or b == set()
     assert g._same_decision(a, b) is False
+
+
+def test_empty_stems_do_not_divide_even_without_the_share_floor(monkeypatch):
+    """Делитель стережёт себя сам: и с порогом общих 0 пустое решение не склеивается и не делит на ноль."""
+    monkeypatch.setattr(g, "SECOND_PASS_MIN_SHARED", 0)
+    assert g._same_decision(set(), g._stems("бюджет релиза сервиса")) is False
+
+
+def test_second_pass_failure_outside_chunks_keeps_the_first(model, monkeypatch, capsys):
+    """Сбой добавки вне цикла кусков (склейка) не отнимает разбор первого прохода."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": ["Собрать стенд нагрузки к среде"]}
+
+    def broken(first, found):
+        raise ZeroDivisionError("division by zero")
+
+    monkeypatch.setattr(g, "_second_pass_decisions", broken)
+    data = g.extract(ON, LONG)
+    assert data["решения"] == _first()["решения"]
+    assert "второй проход упал (ZeroDivisionError" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("extra, second", [(0, False), (1, True)])
 def test_second_pass_starts_strictly_above_its_chunk(model, extra, second):
-    """Ровно CHUNK_CHARS_2 знаков — та же нарезка, что у первого прохода; на знак больше — уже две части."""
+    """Ровно CHUNK_CHARS_2 знаков: первый проход — один вызов (≤ CHUNK_CHARS), второго нет — один
+    кусок второго прохода ничего не добавил бы к разбору целиком. На знак больше: первый проход
+    по-прежнему один вызов, второй — два куска (начала 0 и 5500, хвост 501 > CHUNK_OVERLAP_2)."""
     model.n1 = 1
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": []}

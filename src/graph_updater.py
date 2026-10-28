@@ -287,7 +287,13 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         return None
     if not data or not second:
         return data
-    return _with_second_pass(cfg, data, second, project_rule, done)
+    try:
+        return _with_second_pass(cfg, data, second, project_rule, done)
+    except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
+        # Граница добавки целиком: сбой вне цикла кусков (склейка, разбор найденного)
+        # оставляет разбор первого (проверка правки по мутантам, Haiku M).
+        print(f"граф: второй проход упал ({type(e).__name__}: {e}) — остаётся разбор первого")
+        return data
 
 
 def _language(cfg: dict) -> str:
@@ -431,9 +437,11 @@ def _second_pass_decisions(first: list, second: list) -> list:
 
 
 def _same_decision(a: set[str], b: set[str]) -> bool:
-    # Пустой набор отсекает первое условие: общих 0 < SECOND_PASS_MIN_SHARED, до деления не доходит.
+    # Делитель стережёт себя сам: без стража деление держалось бы только на
+    # SECOND_PASS_MIN_SHARED >= 1 (проверка правки по мутантам, Sonnet/DS/Haiku M).
     shared = len(a & b)
-    return shared >= SECOND_PASS_MIN_SHARED and shared / min(len(a), len(b)) >= SECOND_PASS_MIN_SHARE
+    den = min(len(a), len(b))
+    return den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE
 
 
 def _live_now() -> bool:
