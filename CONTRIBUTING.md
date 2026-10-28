@@ -178,7 +178,10 @@ review gates, and who answers for what — is documented in
   times), so under any of the three the harness refuses the run before
   collection with exit code 17 (`EXIT_BACKGROUND_QOS`), and
   `scripts/mutate_check.py` and `scripts/preflight.sh` refuse to start the same
-  way (№817).
+  way (№817). preflight asks again before every heavy step and ends a refusal
+  with the last line `отказ — фоновый режим процесса` ("refused — background
+  process mode"); the mutator does not count a run that failed while the
+  process got throttled.
 - **No pattern blacklists.** Classification decisions go through the
   local model, not through hardcoded word lists — patterns rot, models
   understand context.

@@ -1606,8 +1606,9 @@ def test_запись_и_ночь_раньше_моделей_в_памяти(tm
 @pytest.mark.parametrize("force", [False, True])
 def test_зажим_посреди_прогона_прерывает_между_мутантами(tmp_path, monkeypatch, capsys, force):
     """Зажим наложен посреди прогона (out1 Haiku C1): датчик спрошен на старте
-    (свободно), перед набором базы и перед каждым мутантом — на третьем мутанте зажат. Два мутанта
-    проверены, третий не запускался; `--force` зажим не снимает."""
+    (свободно), перед набором базы, перед каждым мутантом и после каждого
+    убитого (out3) — перед третьим мутантом зажат. Два мутанта проверены,
+    третий не запускался; `--force` зажим не снимает."""
     import exit_codes
     import machine_power
     plan = _мутанты("scripts/mutate_check.py", 5)
@@ -1616,7 +1617,7 @@ def test_зажим_посреди_прогона_прерывает_между_
 
     def датчик():
         опросы.append(1)
-        return "QoS BACKGROUND (taskpolicy -c background)" if len(опросы) == 5 else None
+        return "QoS BACKGROUND (taskpolicy -c background)" if len(опросы) == 7 else None
     monkeypatch.setattr(machine_power, "background_throttle", датчик)
     argv = ["mutate_check.py", "--range", "HEAD", "--timeout", "100"] + (["--force"] if force else [])
     assert mc.main(argv) == exit_codes.EXIT_PARTIAL
@@ -1640,6 +1641,62 @@ def test_код_17_ребёнка_при_чистом_родителе_это_у
     assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100"]) == 0
     assert len(журнал) == 1 + 3, журнал
     assert "прерываюсь" not in capsys.readouterr().out
+
+
+def test_непрошедший_прогон_сверяется_с_датчиком_родителя(monkeypatch):
+    """`timed_run` — одна точка для базы и мутантов (out3 S-I1 = DS-I2, S-I2):
+    зелёный датчик не спрашивает; красный или потолок при зажатом родителе — не
+    судим; при свободном — как был."""
+    import machine_power
+    monkeypatch.setattr(mc, "clock", _Часы())
+    опросы = []
+
+    def прогон(исход):
+        monkeypatch.setattr(mc, "run_tests", lambda *a: исход)
+        return mc.timed_run(pathlib.Path("."), ("tests/t.py",), 10, 20)
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: опросы.append(1))
+    assert прогон(mc.RunResult(mc.PASSED)).status == mc.PASSED and not опросы
+    assert прогон(mc.RunResult(mc.FAILED, rc=17)).status == mc.FAILED and опросы
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: "darwin-фон")
+    for исход in (mc.RunResult(mc.FAILED, rc=17), mc.RunResult(mc.TIMEOUT)):
+        r = прогон(исход)
+        assert r.status == mc.REFUSED and r.tail == "фоновый режим процесса — darwin-фон"
+
+
+@pytest.mark.parametrize("исход", [(mc.FAILED, 17), (mc.TIMEOUT, 0)], ids=["код_17", "потолок"])
+def test_зажим_за_время_прогона_мутанта_не_засчитан(tmp_path, monkeypatch, capsys, исход):
+    """Зажим наложен в окне «опрос → запуск» или посреди набора: прогон второго
+    мутанта не засчитан ни «убит», ни в журнал, прогон прерван (out3 S-I1, S-I2)."""
+    import exit_codes
+    import machine_power
+    plan = _мутанты("scripts/mutate_check.py", 3)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 10})
+    прежний, зажат = mc.run_tests, []
+
+    def run_tests(cwd, targets, timeout, cap):
+        r = прежний(cwd, targets, timeout, cap)
+        if len(журнал) == 3:
+            зажат.append(1)
+            return mc.RunResult(исход[0], rc=исход[1])
+        return r
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: "QoS BACKGROUND" if зажат else None)
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100"]) == exit_codes.EXIT_PARTIAL
+    out = capsys.readouterr().out
+    assert "⏹ фоновый режим процесса — QoS BACKGROUND — прерываюсь (1/3" in out, out
+    assert "[2/3] убит" not in out and len(журнал) == 1 + 2
+
+
+def test_код_17_базы_это_отказ_даже_при_свободном_родителе(tmp_path, monkeypatch, capsys):
+    """Дерево базы не мутировано: 17 ребёнка — его датчик видел зажим. Не «БАЗА
+    КРАСНАЯ» с диагнозом про .gitignore (out3 DS-I1)."""
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 2)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 10})
+    monkeypatch.setattr(mc, "run_tests", lambda *a: mc.RunResult(mc.FAILED, rc=exit_codes.EXIT_BACKGROUND_QOS))
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100"]) == exit_codes.EXIT_UNJUDGED
+    out = capsys.readouterr().out
+    assert "отказ набора кодом 17 — базовый прогон прерван" in out and "БАЗА КРАСНАЯ" not in out, out
 
 
 def test_зажим_во_время_базы_не_красная_база(tmp_path, monkeypatch, capsys):

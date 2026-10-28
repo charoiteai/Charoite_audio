@@ -84,6 +84,8 @@ def test_гейт_стоит_первым_в_pytest_configure(monkeypatch):
     окружении. Поведением, а не порядком строк исходника (out2 S-M4, DS-M4, H-M1)."""
     monkeypatch.setattr(machine_power, "background_throttle", lambda: "QoS BACKGROUND (taskpolicy -c background)")
     monkeypatch.setenv("CHAROITE_ROOT", "/корень-владельца")
+    # регрессия не портит сессию воркера: побочный эффект после гейта — громкий отказ (out3 S-M3 = DS-M6)
+    monkeypatch.setattr(conftest.tempfile, "mkdtemp", lambda **k: pytest.fail("гейт ниже временного корня"))
     корень = conftest.КОРЕНЬ_СЕССИИ
     with pytest.raises(pytest.exit.Exception) as e:
         conftest.pytest_configure(types.SimpleNamespace())

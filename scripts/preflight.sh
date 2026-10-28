@@ -65,12 +65,17 @@ changed() { { git diff --name-only "$RANGE" -- "$@"; git status --porcelain --un
 # каждым тяжёлым шагом: зажим наследуется при запуске ребёнка, и наложенный
 # посреди preflight (`taskpolicy -p`) иначе дошёл бы до разбора шага (out2 DS C1).
 # PREFLIGHT_FORCE его не снимает: под зажимом набор откажет сам.
+# Отказ — состоянием итога, а не голым `exit` посреди шагов: последняя строка
+# остаётся машинным вердиктом, найденный раньше FAIL не теряется (out3 DS-M4 = H-I3).
+refuse() {
+  echo "preflight: процесс в фоновом режиме: $1"
+  printf '\n══ preflight за %s с: отказ — фоновый режим процесса%s\n' "$(( $(date +%s) - T0 ))" "${FAIL:+; уже FAIL:$FAIL}"
+  exit 17
+}
 throttle_gate() {
   throttle=$("$PY" -c "import sys; sys.path.insert(0, 'src'); import machine_power as m; t = m.background_throttle(); print(f'{t} — потолки времени набора рассчитаны на обычные ядра. {m.BACKGROUND_REMEDY}' if t else '')") \
     || { echo "preflight: режим процесса не читается — прогон не стартует"; exit 2; }
-  if [ -n "$throttle" ]; then
-    echo "preflight: процесс в фоновом режиме: $throttle"; exit 17
-  fi
+  [ -z "$throttle" ] || refuse "$throttle"
 }
 throttle_gate
 COMMON=$(git rev-parse --path-format=absolute --git-common-dir) || { echo "preflight: не git-репозиторий"; exit 2; }
@@ -123,6 +128,8 @@ if ! skipped pytest; then
     pytest_run; rc=$?
   fi
   tail -1 "$WORK/pytest.log"
+  # 17 — отказ обвязки: зажим наложен в окне между опросом и стартом набора
+  [ $rc -ne 17 ] || refuse "набор pytest отказал кодом 17 — зажим наложен после опроса"
   # упавшие — по именам: хвост «1 failed» без имени — не отчёт, а загадка
   [ $rc -eq 0 ] || grep -E "^(FAILED|ERROR) " "$WORK/pytest.log" | head -20 | sed 's/^/   /'
   verdict $rc pytest
@@ -133,6 +140,7 @@ if skipped swift; then :
 elif [ -z "$(changed app/ tests/fixtures/meeting_status_review.json)" ]; then
   echo "   – app/ и контракт статуса не тронуты"; SKIPPED="$SKIPPED swift(app/ и контракт статуса не тронуты)"
 else
+  throttle_gate
   # Линтер: его СОБСТВЕННЫЙ код возврата плюс отсутствие строк error — так же, как
   # в swift-tests.yml под `set -euo pipefail`. Раньше код глотался `;`, и краш или
   # битый конфиг давали зелёный шаг (круг 2 по №339, DS I2).
@@ -172,6 +180,7 @@ if ! skipped mutation; then
   # встрече и ночи между мутантами, а согласие было только на старт (№595, Haiku I-2)
   CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" > "$WORK/mutation.log" 2>&1; rc=$?
   tail -4 "$WORK/mutation.log" | sed 's/^/   /'
+  [ $rc -ne 17 ] || refuse "мутатор отказал кодом 17 — зажим наложен после опроса"
   # Мутатор отказал занятостью на старте — пропуск вслух, а не дефект. Тот же код 3
   # у невзятого замка (ФС без flock ожиданием не лечится) — провал. Различаем по
   # строке старта, пока у занятости нет своего кода (№575; №595, Sonnet I-1 = DS I1).

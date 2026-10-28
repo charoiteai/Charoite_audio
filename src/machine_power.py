@@ -100,14 +100,15 @@ def background_throttle(load=None) -> str | None:
     """
     if sys.platform != "darwin":
         return None
+    # ctypes — вне перехвата: без него сломан сам python, «свободно» тут врёт (out3 S-M4)
+    import ctypes
     try:
-        import ctypes
         lib = (load or ctypes.CDLL)(LIBSYSTEM)
         lib.qos_class_self.restype = ctypes.c_uint
         lib.getpriority.restype = ctypes.c_int
         qos = lib.qos_class_self()
         darwin_bg = lib.getpriority(PRIO_DARWIN_PROCESS, 0)
-    except (ImportError, OSError, AttributeError):
+    except (OSError, AttributeError):
         return None
     if qos in THROTTLED_QOS:
         return f"QoS {THROTTLED_QOS[qos]} (taskpolicy -c {THROTTLED_QOS[qos].lower()})"

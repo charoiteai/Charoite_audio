@@ -108,13 +108,24 @@ def test_background_qos_refuses_before_the_steps(tree, tmp_path, force):
     assert "FAIL" not in r.stdout and argv == "", r.stdout   # мутатор не запускался
 
 
-def test_background_qos_after_step_0_stops_before_the_mutator(tree, tmp_path):
-    """Зажим наложен посреди preflight (`taskpolicy -p`): шаг 0 чист, перед шагом 4
-    датчик спрошен снова — отказ 17, а не FAIL mutation от кода 17 мутатора (out2 DS C1)."""
+@pytest.mark.parametrize(("шаг", "skip"), [("2", "swift"), ("4", "pytest,swift")], ids=["pytest", "мутатор"])
+def test_background_qos_after_step_0_stops_before_the_heavy_step(tree, tmp_path, шаг, skip):
+    """Зажим наложен посреди preflight (`taskpolicy -p`): шаг 0 чист, перед тяжёлым
+    шагом датчик спрошен снова — отказ 17, а не FAIL шага (out2 DS C1, out3 DS-M3).
+    Последняя строка — машинный вердикт с отказом (out3 DS-M4)."""
     r, argv = _preflight(tree, tmp_path, 17, "мутатор не стартует", FAKE_THROTTLE="QoS BACKGROUND",
-                         FAKE_THROTTLE_FROM="2")
+                         FAKE_THROTTLE_FROM="2", PREFLIGHT_SKIP=skip)
     assert r.returncode == exit_codes.EXIT_BACKGROUND_QOS, r.stdout + r.stderr
-    assert "── 4." in r.stdout and "FAIL" not in r.stdout and argv == "", r.stdout
+    assert f"── {шаг}." in r.stdout and "режим:" not in r.stdout and argv == "", r.stdout
+    assert r.stdout.rstrip().splitlines()[-1].endswith("отказ — фоновый режим процесса"), r.stdout
+
+
+def test_mutator_refusal_17_is_a_refusal_not_a_fail(tree, tmp_path):
+    """Зажим в окне между опросом шага 4 и стартом мутатора: его код 17 — отказ
+    preflight с причиной, а не «FAIL: mutation» (out3 S-M2 = H-M2)."""
+    r, argv = _preflight(tree, tmp_path, 17, "мутатор не стартует: процесс в фоновом режиме")
+    assert r.returncode == exit_codes.EXIT_BACKGROUND_QOS, r.stdout + r.stderr
+    assert "мутатор отказал кодом 17" in r.stdout and "FAIL" not in r.stdout and argv != "", r.stdout
 
 
 def test_unreadable_throttle_is_a_named_refusal(tree, tmp_path):
