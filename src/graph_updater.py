@@ -299,11 +299,9 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
 
 def _language(cfg: dict) -> str:
     """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`.
-    Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3).
-    Точное значение без разбора тега: `en-US` здесь не en — как у минуток и архива
-    (`meeting_archive._config_lang`), иначе граф ушёл бы на английский при русских минутках
-    (финальный Opus №822, I3). Единый разбор языка — долг №615."""
-    return str((cfg.get("sufler") or {}).get("language") or "ru").strip().lower() or "ru"
+    Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3). Чтение —
+    `install_profile.graph_language`, одно с умолчанием второго прохода (n822-out3, Sonnet M2)."""
+    return install_profile.graph_language(cfg)
 
 
 def _split(transcript: str, size: int, overlap: int, short_tail: bool = True) -> list[str]:

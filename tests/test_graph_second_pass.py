@@ -240,6 +240,8 @@ def test_no_second_pass_outside_russian(model, lang):
 
 @pytest.mark.parametrize("lang", ["RU", " ru "])
 def test_russian_named_explicitly_keeps_second_pass(model, lang):
+    """Регистр и пробелы — тот же русский промпт, и второй проход с ним; регион к тегу (`ru-RU`)
+    — нет: минутки и архив его русским не разбирают (финальный Opus №822, I3)."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
     data = g.extract({"sufler": {"graph_second_pass": True, "language": lang}}, LONG)

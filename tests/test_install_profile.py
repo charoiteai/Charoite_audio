@@ -41,20 +41,22 @@ _MLX, _27B, _4B = "qwen3.6:35b-mlx", "qwen3.6:27b", "qwen3.5:4b"
 _UNSET = object()
 
 
-@pytest.mark.parametrize("key", [True, False, "", None, _UNSET, "yes", "off", "мусор"])
-@pytest.mark.parametrize("model", [_MLX, _27B, _4B])
-@pytest.mark.parametrize("lang", ["ru", "en", "", _UNSET])
+@pytest.mark.parametrize("key", [True, False, "", " ", None, _UNSET, "yes", "off", "fasle"])
+@pytest.mark.parametrize("model", [_MLX, f" {_MLX} ", _27B, _4B])
+@pytest.mark.parametrize("lang", ["ru", "RU", " ru ", "en", "ru-RU", "", _UNSET])
 def test_graph_second_pass_default_lives_in_the_daemon(key, model, lang):
-    """Второй проход (№821): явный ключ владельца решает всегда; без ключа (пусто, None, мусор —
-    тоже «не задан») — включён только на замеренной модели и русском или пустом языке (№822)."""
+    """Второй проход (№821): явный ключ владельца решает всегда, нераспознанный (опечатка в
+    `false`) — выключено (n822-out3, Haiku I1); без ключа (пусто, None) — включён только на
+    замеренной модели и русском или пустом языке (№822)."""
     sufler = {}
     if key is not _UNSET:
         sufler["graph_second_pass"] = key
     if lang is not _UNSET:
         sufler["language"] = lang
     cfg = {"llm": {"model": model}, "sufler": sufler}
-    explicit = {True: True, False: False, "yes": True, "off": False}.get(key)
-    expected = explicit if explicit is not None else (model == _MLX and lang in ("ru", "", _UNSET))
+    explicit = {True: True, False: False, "yes": True, "off": False, "fasle": False}.get(key)
+    measured = model.strip() == _MLX and lang in ("ru", "RU", " ru ", "", _UNSET)
+    expected = explicit if explicit is not None else measured
     assert install_profile.graph_second_pass_enabled(cfg) is expected
 
 
@@ -62,6 +64,8 @@ def test_graph_second_pass_default_lives_in_the_daemon(key, model, lang):
     {}, {"llm": None}, {"llm": []}, {"llm": {}}, {"sufler": None}, None, [],
     {"llm": {"model": _MLX, "engine": "mlx-server"}},
     {"llm": {"model": _MLX, "engine": "cloud"}, "sufler": {"cloud_engine": True}},
+    {"llm": {"model": _MLX, "engine": " Cloud "}, "sufler": {"cloud_engine": True}},
+    {"llm": {"model": _4B, "engine": "bogus"}},          # модель не та — до движка не доходит
     {"llm": {"model": _MLX}, "sufler": {"language": "ru-RU"}},
 ])
 def test_graph_second_pass_default_off_without_a_measurement(cfg, monkeypatch):

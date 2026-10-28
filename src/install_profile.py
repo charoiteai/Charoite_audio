@@ -96,25 +96,35 @@ def graph_second_pass_enabled(cfg: dict) -> bool:
     покрытие решений с 57–65 % до 77–82 % без роста брака ревизии, ценой +130–145 с модели на
     встречу. Цена — время модели, а не память: две-три минуты на каждую встречу.
 
-    Явный ключ владельца решает всегда (`true`/`false` и их строковые формы через `flag`; пустое
-    значение и мусор — «не задано»). Без ключа — умолчание здесь, в демоне, а не посев в файл
+    Явный ключ владельца решает всегда (`true`/`false` и их строковые формы через `flag`); пустое
+    значение — «не задано», нераспознанное (`fasle`) — выключено, как до умолчания: опечатка в
+    `false` не должна включать дорогой проход (n822-out3, Haiku I1). Без ключа — умолчание здесь, в демоне, а не посев в файл
     владельца (№822, финальный Opus): включено только там, где замерено, — локальная модель
     `llm.model` из `SECOND_PASS_MEASURED_MODELS` на Ollama и язык разбора `ru` или пустой. На
     mlx-server разбор идёт на `llm.mlx_model`, в облаке — на `llm.cloud_model`, а не на `llm.model`:
     замера там нет, умолчание выключено.
     Язык решает и graph_updater (порог склейки мерен на русском): явный `true` при en проход
     всё равно не запустит."""
-    value = flag(cfg, "graph_second_pass", None)
-    if value is not None:
-        return value
+    raw = _section(cfg).get("graph_second_pass")
+    if raw is not None and str(raw).strip():
+        return flag(cfg, "graph_second_pass", False)
     llm_section = cfg.get("llm") if isinstance(cfg, dict) else None
     model = llm_section.get("model") if isinstance(llm_section, dict) else None
-    language = str(_section(cfg).get("language") or "ru").strip().lower() or "ru"
-    if str(model or "").strip() not in SECOND_PASS_MEASURED_MODELS or language != "ru":
+    if str(model or "").strip() not in SECOND_PASS_MEASURED_MODELS or graph_language(cfg) != "ru":
         return False
     # Тот же выбор движка, что у клиента: `cloud` без разрешения работает на Ollama (llm.LLM).
     engine = privacy.llm_engine(cfg)
     return engine == "ollama" or (engine == "cloud" and not privacy.cloud_engine_active(cfg))
+
+
+def graph_language(cfg: dict) -> str:
+    """Язык значений разбора встречи (`sufler.language`): точное значение, пустое — русский.
+
+    Одно чтение на промпт разбора (`graph_updater._language`) и умолчание второго прохода —
+    иначе умолчание включило бы проход, который разбор потом пропустит (n822-out3, Sonnet M2).
+    Регион к тегу не разбирается: `en-US` здесь не en — как у минуток и архива
+    (`meeting_archive._config_lang`, финальный Opus №822, I3). Единый разбор языка — долг №615."""
+    return str(_section(cfg).get("language") or "ru").strip().lower() or "ru"
 
 
 def deja_vu_enabled(cfg: dict) -> bool:
