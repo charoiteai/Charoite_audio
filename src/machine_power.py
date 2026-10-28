@@ -36,7 +36,7 @@ THROTTLED_QOS = {0x09: "BACKGROUND", 0x05: "MAINTENANCE"}
 #: `PRIO_DARWIN_PROCESS` из `sys/resource.h`: 1 — процесс в darwin-фоне (`taskpolicy -b`).
 PRIO_DARWIN_PROCESS = 4
 #: Что делать человеку — одна фраза на обвязку pytest и мутатор.
-BACKGROUND_REMEDY = "Запусти без taskpolicy и не из фонового задания launchd."
+BACKGROUND_REMEDY = "Запусти без taskpolicy и без фонового приоритета процесса."
 LOW_POWER_MODE = 1
 TIMEOUT_S = 2.0
 
@@ -100,19 +100,19 @@ def background_throttle(load=None) -> str | None:
     """
     if sys.platform != "darwin":
         return None
-    import ctypes
     try:
+        import ctypes
         lib = (load or ctypes.CDLL)(LIBSYSTEM)
         lib.qos_class_self.restype = ctypes.c_uint
         lib.getpriority.restype = ctypes.c_int
         qos = lib.qos_class_self()
         darwin_bg = lib.getpriority(PRIO_DARWIN_PROCESS, 0)
-    except (OSError, AttributeError):
+    except (ImportError, OSError, AttributeError):
         return None
     if qos in THROTTLED_QOS:
         return f"QoS {THROTTLED_QOS[qos]} (taskpolicy -c {THROTTLED_QOS[qos].lower()})"
     # ядро отдаёт 1, и под `taskpolicy -b`, и после setpriority(PRIO_DARWIN_BG = 0x1000) —
     # опыт 28.10 (out1 DS-C1 отклонён); другого положительного значения не видели
     if darwin_bg == 1:
-        return "darwin-фон (taskpolicy -b или фоновое задание launchd)"
+        return "darwin-фон (taskpolicy -b или setpriority PRIO_DARWIN_BG)"
     return None

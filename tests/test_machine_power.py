@@ -127,7 +127,7 @@ class _Lib:
     (0x19, 0, None),                                         # user-initiated
     (0x09, 0, "QoS BACKGROUND (taskpolicy -c background)"),
     (0x05, 0, "QoS MAINTENANCE (taskpolicy -c maintenance)"),
-    (0x21, 1, "darwin-фон (taskpolicy -b или фоновое задание launchd)"),       # ядро: 1 (опыт 28.10)
+    (0x21, 1, "darwin-фон (taskpolicy -b или setpriority PRIO_DARWIN_BG)"),       # ядро: 1 (опыт 28.10)
     (0x21, -1, None),                                        # getpriority не прочитан
     (0x09, 1, "QoS BACKGROUND (taskpolicy -c background)"),  # класс называется первым
 ])

@@ -700,8 +700,11 @@ def _шард(directory: pathlib.Path, имя: str, k: int, n: int, m: int, p: i
 
 
 def _quiet_machine(monkeypatch):
+    """Оба датчика машины — тихие: исход теста не зависит от хоста (out2 H-M2)."""
     import busy_signals
+    import machine_power
     monkeypatch.setattr(busy_signals, "machine_busy", lambda *a, **kw: [])
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: None)
 
 
 def _range_as_given(monkeypatch):
@@ -1603,7 +1606,7 @@ def test_запись_и_ночь_раньше_моделей_в_памяти(tm
 @pytest.mark.parametrize("force", [False, True])
 def test_зажим_посреди_прогона_прерывает_между_мутантами(tmp_path, monkeypatch, capsys, force):
     """Зажим наложен посреди прогона (out1 Haiku C1): датчик спрошен на старте
-    (свободно), затем перед каждым мутантом — на третьем зажат. Два мутанта
+    (свободно), перед набором базы и перед каждым мутантом — на третьем мутанте зажат. Два мутанта
     проверены, третий не запускался; `--force` зажим не снимает."""
     import exit_codes
     import machine_power
@@ -1613,7 +1616,7 @@ def test_зажим_посреди_прогона_прерывает_между_
 
     def датчик():
         опросы.append(1)
-        return "QoS BACKGROUND (taskpolicy -c background)" if len(опросы) == 4 else None
+        return "QoS BACKGROUND (taskpolicy -c background)" if len(опросы) == 5 else None
     monkeypatch.setattr(machine_power, "background_throttle", датчик)
     argv = ["mutate_check.py", "--range", "HEAD", "--timeout", "100"] + (["--force"] if force else [])
     assert mc.main(argv) == exit_codes.EXIT_PARTIAL
@@ -1622,9 +1625,9 @@ def test_зажим_посреди_прогона_прерывает_между_
         in capsys.readouterr().out
 
 
-def test_отказ_набора_кодом_17_не_засчитан_убийством(tmp_path, monkeypatch, capsys):
-    """Дочерний pytest мутанта отказал кодом 17 (зажат он, а не родитель) — мутант
-    не «убит» и в журнал не идёт, прогон стоп (out1 Haiku C1)."""
+def test_код_17_ребёнка_при_чистом_родителе_это_убийство(tmp_path, monkeypatch, capsys):
+    """Мутант датчика вернул «зажим» — дочерний pytest отказал кодом 17, но
+    родитель не зажат: мутант честно убит, прогон идёт дальше (out2 S-I1)."""
     import exit_codes
     plan = _мутанты("scripts/mutate_check.py", 3)
     журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 10})
@@ -1634,11 +1637,28 @@ def test_отказ_набора_кодом_17_не_засчитан_убийс�
         r = прежний(cwd, targets, timeout, cap)
         return mc.RunResult(mc.FAILED, rc=exit_codes.EXIT_BACKGROUND_QOS) if len(журнал) == 3 else r
     monkeypatch.setattr(mc, "run_tests", run_tests)
-    отчёт = tmp_path / "отчёт.txt"
-    assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100",
-                    "--report", str(отчёт)]) == exit_codes.EXIT_PARTIAL
-    assert "⏹ фоновый режим процесса (отказ набора, код 17) — прерываюсь (1/3" in capsys.readouterr().out
-    assert отчёт.read_text(encoding="utf-8").startswith("Проверено мутантов: 1 из 3"), отчёт.read_text(encoding="utf-8")
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100"]) == 0
+    assert len(журнал) == 1 + 3, журнал
+    assert "прерываюсь" not in capsys.readouterr().out
+
+
+def test_зажим_во_время_базы_не_красная_база(tmp_path, monkeypatch, capsys):
+    """Зажим наложен во время базы (out2 S-I2): перед следующим набором базы датчик
+    родителя — прерывание с причиной, а не «база красная» про .gitignore."""
+    import exit_codes
+    import machine_power
+    plan = _мутанты("scripts/mutate_check.py", 2) + _мутанты("scripts/layout_map.py", 1)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 10, "tests/test_layout_map.py": 10})
+    опросы = []
+
+    def датчик():
+        опросы.append(1)
+        return "darwin-фон (taskpolicy -b или setpriority PRIO_DARWIN_BG)" if len(опросы) == 3 else None
+    monkeypatch.setattr(machine_power, "background_throttle", датчик)
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100"]) == exit_codes.EXIT_UNJUDGED
+    assert len(журнал) == 1, журнал                  # один набор базы, мутантов нет
+    out = capsys.readouterr().out
+    assert "⏹ фоновый режим процесса — darwin-фон" in out and "БАЗА КРАСНАЯ" not in out, out
 
 
 def test_оценка_мутанта_это_замер_его_набора(tmp_path, monkeypatch):

@@ -13,6 +13,8 @@ import sys
 
 import pytest
 
+import exit_codes
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 MUTATOR = """import os, pathlib, sys
@@ -32,8 +34,14 @@ def tree(tmp_path):
     shutil.copy(ROOT / "scripts" / "preflight.sh", t / "scripts" / "preflight.sh")
     shutil.copy(ROOT / "src" / "exit_codes.py", t / "src" / "exit_codes.py")
     (t / "src" / "busy_signals.py").write_text("def machine_busy(root, **k):\n    return []\n")
+    # датчик: FAKE_THROTTLE — ответ с FAKE_THROTTLE_FROM-го опроса (счёт — файлом)
     (t / "src" / "machine_power.py").write_text(
-        "import os\ndef background_throttle():\n    return os.environ.get('FAKE_THROTTLE') or None\n")
+        "import os, pathlib\nBACKGROUND_REMEDY = 'рецепт'\n"
+        "def background_throttle():\n"
+        "    n = pathlib.Path(os.environ['FAKE_ARGV'] + '.opros')\n"
+        "    k = int(n.read_text()) + 1 if n.exists() else 1\n"
+        "    n.write_text(str(k))\n"
+        "    return os.environ.get('FAKE_THROTTLE') if k >= int(os.environ.get('FAKE_THROTTLE_FROM', '1')) else None\n")
     (t / ".github" / "workflows" / "ci.yml").write_text("env:\n  RUFF_VERSION: '0.0.0'\n")
     for name in ("layout_map.py", "check_private_markers.py"):
         (t / "scripts" / name).write_text("")
@@ -93,9 +101,20 @@ def test_background_qos_refuses_before_the_steps(tree, tmp_path, force):
     """Зажим процесса — отказ кодом 17 до шагов с причиной, а не FAIL pytest и
     mutation от их кода 17 (№817, out1); `PREFLIGHT_FORCE` его не снимает."""
     r, argv = _preflight(tree, tmp_path, 0, "ok", FAKE_THROTTLE="QoS BACKGROUND (taskpolicy -c background)", **force)
-    assert r.returncode == 17, r.stdout + r.stderr
-    assert "фоновом режиме (QoS BACKGROUND" in r.stdout and "FAIL" not in r.stdout, r.stdout
-    assert argv == ""                       # мутатор не запускался
+    # канон, а не литерал: код в bash сверяется с exit_codes этим тестом (out2 DS-M1)
+    assert r.returncode == exit_codes.EXIT_BACKGROUND_QOS, r.stdout + r.stderr
+    assert "фоновом режиме: QoS BACKGROUND" in r.stdout and "рецепт" in r.stdout, r.stdout
+    assert "── 1." not in r.stdout, r.stdout                   # шаги не начинались (out2 DS-M3)
+    assert "FAIL" not in r.stdout and argv == "", r.stdout   # мутатор не запускался
+
+
+def test_background_qos_after_step_0_stops_before_the_mutator(tree, tmp_path):
+    """Зажим наложен посреди preflight (`taskpolicy -p`): шаг 0 чист, перед шагом 4
+    датчик спрошен снова — отказ 17, а не FAIL mutation от кода 17 мутатора (out2 DS C1)."""
+    r, argv = _preflight(tree, tmp_path, 17, "мутатор не стартует", FAKE_THROTTLE="QoS BACKGROUND",
+                         FAKE_THROTTLE_FROM="2")
+    assert r.returncode == exit_codes.EXIT_BACKGROUND_QOS, r.stdout + r.stderr
+    assert "── 4." in r.stdout and "FAIL" not in r.stdout and argv == "", r.stdout
 
 
 def test_unreadable_throttle_is_a_named_refusal(tree, tmp_path):

@@ -1922,6 +1922,14 @@ def main(argv: list[str]) -> int:
                 print(f"⏹ бюджет — базовый прогон не уложится, мутанты не "
                       f"запускаются ({len(durations)}/{len(subsets)} наборов)")
                 break
+            # Зажим, наложенный во время базы, — до следующего набора (out2 S-I2):
+            # иначе его дочерний pytest отказал бы кодом 17 и база вышла бы
+            # «красной» с диагнозом про .gitignore.
+            if зажим := machine_power.background_throttle():
+                aborted = f"фоновый режим процесса — {зажим}"
+                print(f"⏹ {aborted} — базовый прогон прерван, мутанты не запускаются "
+                      f"({len(durations)}/{len(subsets)} наборов)")
+                break
             results[ts] = r = timed_run(work, ts, args.timeout, cap)
             durations[ts] = r.seconds
             print(f"  {r.seconds:.0f} с · {r.status} · {' '.join(ts)}")
@@ -1948,6 +1956,9 @@ def main(argv: list[str]) -> int:
             # Зажим, наложенный посреди прогона (`taskpolicy -p`), — тоже между
             # мутантами и тоже мимо `--force`: дочерний pytest его наследует и
             # отказывает кодом 17, а rc≠0 засчитался бы «убит» (out1 Haiku C1).
+            # Спрашивается датчик РОДИТЕЛЯ, а не код ребёнка: ребёнок грузит
+            # мутированный `machine_power`, и мутант датчика, отдавший «зажим»,
+            # честно убит, а не повод остановить прогон (out2 S-I1).
             elif зажим := machine_power.background_throttle():
                 aborted = f"фоновый режим процесса — {зажим}"
             # Живой контур и ночь важнее метрики: началась запись или ночной
@@ -1991,12 +2002,6 @@ def main(argv: list[str]) -> int:
                 r = timed_run(work, suite, args.timeout, cap)
             finally:
                 target.write_text(original, encoding="utf-8")
-            if r.rc == EXIT_BACKGROUND_QOS:
-                # Отказ обвязки — не вердикт мутанту: не судился, прогон стоп
-                aborted = "фоновый режим процесса (отказ набора, код 17)"
-                print(f"⏹ {aborted} — прерываюсь ({facts.tested}/{len(plan)} "
-                      "проверено, остальное не судилось)")
-                break
             facts.tested += 1
             facts.critical_tested += mut.critical
             alive = r.status == PASSED

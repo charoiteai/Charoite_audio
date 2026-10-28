@@ -58,21 +58,27 @@ changed() { { git diff --name-only "$RANGE" -- "$@"; git status --porcelain --un
 # перед КАЖДЫМ прогоном» держит только изнутри прогона: 22.09 полный pytest и
 # мутатор ушли поверх встречи, начавшейся через пять минут после проверки.
 # Корень данных — основной checkout владельца, и из worktree тоже.
+# Зажим процесса (`taskpolicy -c background`, `-b`) — тот же отказ, что у обвязки
+# pytest и мутатора, но здесь, до шагов: иначе их код 17 читался бы как FAIL
+# pytest и mutation при нуле упавших тестов (№817, out1: S-I1 = DS-I2 = H-I1).
+# Первым, раньше занятости, — порядок мутатора (out2 S-M1); и снова перед
+# каждым тяжёлым шагом: зажим наследуется при запуске ребёнка, и наложенный
+# посреди preflight (`taskpolicy -p`) иначе дошёл бы до разбора шага (out2 DS C1).
+# PREFLIGHT_FORCE его не снимает: под зажимом набор откажет сам.
+throttle_gate() {
+  throttle=$("$PY" -c "import sys; sys.path.insert(0, 'src'); import machine_power as m; t = m.background_throttle(); print(f'{t} — потолки времени набора рассчитаны на обычные ядра. {m.BACKGROUND_REMEDY}' if t else '')") \
+    || { echo "preflight: режим процесса не читается — прогон не стартует"; exit 2; }
+  if [ -n "$throttle" ]; then
+    echo "preflight: процесс в фоновом режиме: $throttle"; exit 17
+  fi
+}
+throttle_gate
 COMMON=$(git rev-parse --path-format=absolute --git-common-dir) || { echo "preflight: не git-репозиторий"; exit 2; }
 DATA_ROOT="${CHAROITE_ROOT:-$(dirname "$COMMON")}"
 busy=$("$PY" -c "import sys, pathlib; sys.path.insert(0, 'src'); import busy_signals; print(', '.join(busy_signals.machine_busy(pathlib.Path(sys.argv[1]))))" "$DATA_ROOT") \
   || { echo "preflight: сигналы занятости не читаются — прогон не стартует (сломанный сигнал ≠ свободная машина)"; exit 3; }
 if [ -n "$busy" ] && [ -z "${PREFLIGHT_FORCE:-}" ]; then
   echo "preflight: машина занята ($busy) — тяжёлые шаги отложены; PREFLIGHT_FORCE=1 только с чужого согласия"; exit 3
-fi
-# Зажим процесса (`taskpolicy -c background`, `-b`, фоновое задание launchd) — тот же
-# отказ, что у обвязки pytest и мутатора, но здесь, до шагов: иначе их код 17 читался
-# бы как FAIL pytest и mutation при нуле упавших тестов (№817, out1: S-I1 = DS-I2 = H-I1).
-# PREFLIGHT_FORCE его не снимает: под зажимом набор откажет сам.
-throttle=$("$PY" -c "import sys; sys.path.insert(0, 'src'); import machine_power; print(machine_power.background_throttle() or '')") \
-  || { echo "preflight: режим процесса не читается — прогон не стартует"; exit 2; }
-if [ -n "$throttle" ]; then
-  echo "preflight: процесс в фоновом режиме ($throttle) — потолки времени набора рассчитаны на обычные ядра; запусти без зажима"; exit 17
 fi
 [ -z "$(git status --porcelain)" ] || echo "   ! рабочее дерево не чистое: шаг 4 (мутатор) судит HEAD, незакоммиченного не видит"
 
@@ -103,6 +109,7 @@ fi
 
 step "2. pytest (полный набор — включая контракты точек входа)"
 if ! skipped pytest; then
+  throttle_gate
   # Несколько процессов, если xdist стоит (№453): тот же режим, что у CI. Нет —
   # набор идёт последовательно целиком, это не пропуск и в итог не попадает.
   # Функция вместо массива аргументов: /bin/bash 3.2 и `set -u` (шапка).
@@ -158,6 +165,7 @@ fi
 
 step "4. мутация изменённых строк ($RANGE)"
 if ! skipped mutation; then
+  throttle_gate
   # корень данных владельца — мутатору явно: сам он берёт корень от своего файла
   # и в worktree не видит лока живой встречи (№339, DS I9 = GLM I1)
   # PREFLIGHT_FORCE мутатору не передаётся: его `--force` снимает и уступку

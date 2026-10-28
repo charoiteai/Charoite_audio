@@ -79,11 +79,16 @@ def test_воркер_xdist_датчик_не_спрашивает(monkeypatch):
     assert conftest.отказ_под_зажимом(types.SimpleNamespace(workerinput={})) is None
 
 
-def test_гейт_стоит_первым_в_pytest_configure():
-    """До снятия `CHAROITE_ROOT` и временного корня: отказ ничего не меняет в окружении."""
-    import inspect
-    тело = inspect.getsource(conftest.pytest_configure)
-    assert тело.index("отказ_под_зажимом(config)") < тело.index("CHAROITE_ROOT\", None)")
+def test_гейт_стоит_первым_в_pytest_configure(monkeypatch):
+    """До снятия `CHAROITE_ROOT` и временного корня: отказ ничего не меняет в
+    окружении. Поведением, а не порядком строк исходника (out2 S-M4, DS-M4, H-M1)."""
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: "QoS BACKGROUND (taskpolicy -c background)")
+    monkeypatch.setenv("CHAROITE_ROOT", "/корень-владельца")
+    корень = conftest.КОРЕНЬ_СЕССИИ
+    with pytest.raises(pytest.exit.Exception) as e:
+        conftest.pytest_configure(types.SimpleNamespace())
+    assert e.value.returncode == exit_codes.EXIT_BACKGROUND_QOS
+    assert os.environ["CHAROITE_ROOT"] == "/корень-владельца" and conftest.КОРЕНЬ_СЕССИИ is корень
 
 
 def test_потолок_внутреннего_pytest_ниже_внешнего():
