@@ -27,6 +27,7 @@
     "llm": [
       "llm",
       "model_lease",
+      "model_ledger",
       "llm_health"
     ],
     "graph": [
@@ -220,6 +221,10 @@
     "charoite_graph.notices": {
       "layer": "base",
       "why": "реестр «сказать один раз» на экземпляре для двери пакета, только stdlib; вторая реализация рядом с once до №524"
+    },
+    "jsonl_log": {
+      "layer": "base",
+      "why": "дописываемый журнал JSON-строк в logs/ с починкой оборванной строки (№807): писатель и читатель одни на проект — журнал вызовов модели (model_ledger, llm) и база бенча памяти (scripts/memory_bench). Только stdlib; в llm он закрыл бы журнал бенчу от слоёв ниже"
     },
     "once": {
       "layer": "base",

@@ -124,6 +124,22 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
   the server under someone else's generation.
+- **Model minutes are measured per consumer.** The same two transport seams
+  (`llm._open_stream`, `llm._post_busy`) write one line per request to
+  `logs/model_calls-YYYY-MM-DD.jsonl` (`model_ledger`, №807): consumer, method,
+  engine, model, outcome, wall/first-token/busy-queue seconds, and the server's
+  own numbers (`prompt_eval_count`, `eval_count`, `total_duration`) when the
+  engine sends them (Ollama does; mlx-server and gateways without
+  `stream_options` do not — `null`). The call object is born before the first
+  attempt, so a refusal before 200 is a line too, and is written once, after
+  the lease is released. The consumer is an explicit label
+  (`model_ledger.consumer(...)`) where the stack lies — the daemon's shared
+  `_collect`, the two graph passes, the debrief; elsewhere the first frame
+  outside `llm.py`, marked `untagged:`. The ledger keeps its own term by the
+  date in the file name (`llm.ledger_keep_days`, 35; `0` = off): the shared
+  `logs/` retention judges by mtime and the audio term and would wipe it.
+  Outside the ledger by design: one-token health probes, the hold tick, the
+  embedder and the Swift app's own chat requests.
 - **Our own generation in flight is a fact, not a guess.** For the duration of
   every request to the local model the transport (`llm._open_stream`,
   `llm._post_busy`) holds a lease file `data/llm_inflight/<pid>-<id>.json`

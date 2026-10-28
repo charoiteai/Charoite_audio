@@ -109,7 +109,8 @@ def _kind(entry: cp.LogKind) -> str:
 
 # Имена, которые живут в logs/ рядом с журналами и под ретеншн попадать не должны.
 NOT_SWEPT = ["graph_doctor.json", "graph_feed.json", "graph_feed_base.json", "daemon.lock", "rebuild.lock", "mutation.lock",
-             "nightly.json", f"rebuild-{STEM}.pid", "lexicon_candidates.md"]
+             "nightly.json", f"rebuild-{STEM}.pid", "lexicon_candidates.md",
+             "model_calls-2026-09-29.jsonl"]   # журнал вызовов модели убирает сам по дате в имени (№807)
 
 
 def _names(entry: cp.LogKind) -> list[str]:

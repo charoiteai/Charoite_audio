@@ -1,0 +1,214 @@
+"""Журнал вызовов модели по потребителям (№807): кто сколько минут занял модель.
+
+До №807 время модели знали только у подсказок (`daemon._telemetry`, `model_ms`);
+живые минутки, тезисы, разбор графа, досье считались оценкой по константам
+(№806: «25–30 мин модели на час встречи» — оценка). Решения №808 и №809 ждут
+замера, а не оценки.
+
+Одна строка на один запрос к модели: объект `Call` рождается в транспорте
+`llm.py` ДО первой попытки (иначе отказ до ответа 200 — очередь, отказ
+соединения — строки не оставлял бы, входной круг DS C1), копит паузы «занято»,
+получает тело ответа через `note()` и пишется ровно один раз в `finish()`
+(`close` и `__exit__` стрима зовут его оба — DS M1). Токены и время сервера —
+из тела Ollama (`prompt_eval_count`, `eval_count`, `total_duration`,
+`load_duration`) или `usage` OpenAI-совместимого ответа; у стримов mlx-server и
+облака `usage` не приходит — там `null` (S-M2).
+
+Потребитель — явная метка `consumer(...)` у того, кто выбирает работу (у демона
+— общий помощник `_collect`, у графа — второй проход). Без метки — имя первого
+кадра стека вне транспорта с пометкой `untagged:`: дыры видны, а не подменены
+(входной круг S-I1, DS C3). Кадр не хранится — только строка имени (DS M2).
+Имя метода (`hint`, `minutes`, …) обёртка передаёт явно: к первому `next()`
+стрима её кадра на стеке уже нет (DS C4).
+
+В строке нет ни текста промпта, ни ответа, ни текста ошибки, ни пути встречи —
+только имена кода, модель, числа и вид исхода. Файл на день
+`logs/model_calls-ГГГГ-ММ-ДД.jsonl`; срок — `llm.ledger_keep_days` (умолчание
+35 — окно месячного решения №809, `0` выключает журнал), уборка по дате в имени
+у писателя: общий ретеншн `logs/` судит по mtime файла и сроку записи звука, он
+стёр бы журнал через двое суток простоя (входной круг S-C1, DS I1). Запись —
+после снятия аренды, ошибка записи глотается одной строкой на процесс: вызов
+модели важнее своего журнала.
+
+Вне журнала сознательно: пробы `llm_health` (один токен), удержание модели
+`_hold_tick` (без генерации), дверь векторов и приложение Swift — их запросы
+идут мимо транспорта `llm.py` (сверка n807-in1, Haiku C1 понижен).
+"""
+from __future__ import annotations
+
+import contextlib
+import contextvars
+import math
+import os
+import pathlib
+import re
+import sys
+import threading
+import time
+
+import charoite_paths
+import jsonl_log
+import once
+
+LEDGER_KIND = "model_calls"
+KEEP_DAYS_DEFAULT = 35
+
+_consumer: contextvars.ContextVar[str | None] = contextvars.ContextVar("model_ledger_consumer",
+                                                                      default=None)
+_DAY_FILE = re.compile(r"^model_calls-(\d{4}-\d{2}-\d{2})\.jsonl$")
+_sweep_lock = threading.Lock()
+_swept: set[tuple[str, str]] = set()     # (корень, день) — уборка раз в день на процесс
+
+
+@contextlib.contextmanager
+def consumer(name: str):
+    """Метка потребителя для вызовов модели внутри блока (и в стримах, которые
+    в нём читаются). Нить её не наследует: ставить внутри функции нити."""
+    token = _consumer.set(name)
+    try:
+        yield
+    finally:
+        _consumer.reset(token)
+
+
+def caller_name(depth: int = 1) -> str:
+    """`модуль.функция` кадра на `depth` выше вызывающего — метка для помощника,
+    который сам ничего не выбирает (общий `_collect` демона)."""
+    return _frame_name(sys._getframe(depth + 1))
+
+
+def _frame_name(f) -> str:
+    qual = f.f_code.co_qualname.rsplit("<locals>.", 1)[-1]
+    mod = f.f_globals.get("__name__", "?")
+    if mod == "__main__":                 # скрипт (`graph_updater.py` из конвейера) — по имени файла
+        mod = pathlib.Path(f.f_code.co_filename).stem
+    return f"{mod}.{qual}"
+
+
+def _who(skip: frozenset[str]) -> tuple[str, str]:
+    tag = _consumer.get()
+    if tag:
+        return tag, "tag"
+    f = sys._getframe(2)
+    while f is not None and f.f_code.co_filename in skip:
+        f = f.f_back
+    return ("untagged:" + _frame_name(f) if f is not None else "untagged:?"), "stack"
+
+
+def keep_days(cfg: dict | None) -> int:
+    """Срок журнала из `llm.ledger_keep_days`; мусор в конфиге — умолчание, не отказ."""
+    raw = ((cfg or {}).get("llm") or {}).get("ledger_keep_days", KEEP_DAYS_DEFAULT)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+        return KEEP_DAYS_DEFAULT
+    return max(0, int(raw))
+
+
+def _count(x) -> int | None:
+    """Целое неотрицательное число из чужого тела, иначе None."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0:
+        return None
+    return int(x)
+
+
+def _seconds_ns(x) -> float | None:
+    n = _count(x)
+    return None if n is None else round(n / 1e9, 3)
+
+
+def _proc() -> str:
+    name = os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else "?"
+    return name[:-3] if name.endswith(".py") else name
+
+
+class Call:
+    """Один запрос к модели — от первой попытки до конца ответа или отказа."""
+
+    def __init__(self, root: pathlib.Path, cfg: dict | None, *, engine: str, model: str | None,
+                 kind: str, method: str, skip: frozenset[str]) -> None:
+        self.root = pathlib.Path(root)
+        self.keep = keep_days(cfg)
+        self.ts = time.time()
+        self.t0 = time.monotonic()
+        self.consumer, self.source = _who(skip)
+        self.engine, self.model, self.kind, self.method = engine, model, kind, method
+        self.queue_s = 0.0
+        self.first_s: float | None = None
+        self.done_s: float | None = None
+        self.in_tok: int | None = None
+        self.out_tok: int | None = None
+        self.server_s: float | None = None
+        self.load_s: float | None = None
+        self.revived = False
+        self._finished = False
+
+    def _now(self) -> float:
+        return round(time.monotonic() - self.t0, 3)
+
+    def busy(self, seconds: float) -> None:
+        """Пауза «занято» (503/429, отказ соединения) перед следующей попыткой."""
+        self.queue_s += seconds
+
+    def first(self) -> None:
+        """Пришёл первый содержательный кусок ответа."""
+        if self.first_s is None:
+            self.first_s = self._now()
+
+    def note(self, body) -> None:
+        """Конец ответа: тело не-стрима или последняя строка стрима."""
+        self.done_s = self._now()
+        if not isinstance(body, dict):
+            return
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        self.in_tok = _count(body.get("prompt_eval_count", usage.get("prompt_tokens")))
+        self.out_tok = _count(body.get("eval_count", usage.get("completion_tokens")))
+        self.server_s = _seconds_ns(body.get("total_duration"))
+        self.load_s = _seconds_ns(body.get("load_duration"))
+
+    def record(self, outcome: str) -> dict:
+        rec = {"ts": round(self.ts, 1), "proc": _proc(), "consumer": self.consumer,
+               "src": self.source, "method": self.method, "engine": self.engine,
+               "model": self.model, "kind": self.kind, "outcome": outcome,
+               "wall_s": self.done_s if self.done_s is not None else self._now(),
+               "first_s": self.first_s, "queue_s": round(self.queue_s, 3),
+               "server_s": self.server_s, "load_s": self.load_s,
+               "in_tok": self.in_tok, "out_tok": self.out_tok}
+        if self.revived:
+            rec["revived"] = True
+        return rec
+
+    def finish(self, outcome: str) -> None:
+        """Записать строку — один раз; ошибка записи вызов модели не роняет."""
+        if self._finished:
+            return
+        self._finished = True
+        if not self.keep:
+            return
+        try:
+            rec = self.record(outcome)
+            day = time.strftime("%Y-%m-%d", time.localtime(self.ts))
+            path = charoite_paths.log_path(self.root, LEDGER_KIND, part=day)
+            jsonl_log.append_record(path, rec)
+            _sweep(path.parent, self.keep, day)
+        except Exception as exc:  # noqa: BLE001 — журнал не вправе уронить генерацию
+            once.say(("model_ledger", type(exc).__name__),
+                     f"model_ledger: журнал вызовов модели не пишется ({type(exc).__name__}) — "
+                     "вызовы модели идут без учёта", stream=sys.stderr)
+
+
+def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
+    """Стереть дни старше срока — по дате в имени, раз в день на процесс."""
+    key = (str(logs), today)
+    with _sweep_lock:
+        if key in _swept:
+            return
+        _swept.add(key)
+    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - keep * 86400))
+    try:
+        names = os.listdir(logs)
+    except OSError:
+        return
+    for name in names:
+        m = _DAY_FILE.match(name)
+        if m and m.group(1) < cutoff:
+            with contextlib.suppress(OSError):
+                (logs / name).unlink()

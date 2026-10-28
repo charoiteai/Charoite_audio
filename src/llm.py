@@ -25,6 +25,7 @@ mlx_lm.server эмбеддингов не отдаёт.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -42,6 +43,7 @@ import charoite_paths
 import live_gate
 import charoite_graph.embed_door as embed_door   # без ребра на узел пакета (слой graph)
 import model_lease
+import model_ledger
 import once
 import privacy
 import threads
@@ -463,6 +465,8 @@ STREAM_TIMEOUT = (10.0, 120.0)
 #: модели или медленной машине молчит дольше двух минут — им прежний потолок
 #: (DS r1 критика / GLM r1 M5 по #558).
 DOC_STREAM_TIMEOUT = (10.0, 300.0)
+#: Кадры этого модуля журнал вызовов пропускает, ища потребителя по стеку (№807).
+_LEDGER_SKIP = frozenset({__file__})
 
 # Оговорка о неполной записи — факт о ЗАПИСИ, не речь: блок снаружи тегов
 # стенограммы, ПОСЛЕ свёртки `_fit` и любой обрезки (иначе уедет в сводку
@@ -770,7 +774,11 @@ class LLM:
                think: bool = False, num_predict: int | None = None,
                temperature: float | None = None,
                busy_wait: float = BUSY_WAIT_LIVE,
-               timeout: tuple[float, float] = STREAM_TIMEOUT) -> Iterator[str]:
+               timeout: tuple[float, float] = STREAM_TIMEOUT,
+               _method: str = "stream") -> Iterator[str]:
+        # `_method` — имя обёртки для журнала вызовов (№807): к первому next()
+        # её кадра на стеке уже нет.
+        #
         # think=False КРИТИЧЕН для live-контуров: дефолтный thinking у gemma4
         # молча съедает ~10с до первого слова (замер 17.07: TTFT 10.4с → 0.5с).
         # think=True в живом контуре не используется (deep_loop удалён 26.08).
@@ -799,12 +807,14 @@ class LLM:
             yield from self._stream_mlx(messages, think=think,
                                         num_predict=num_predict,
                                         temperature=temperature,
-                                        busy_wait=busy_wait, timeout=timeout)
+                                        busy_wait=busy_wait, timeout=timeout,
+                                        method=_method)
             return
         if self.cloud_ready:
             yield from self._stream_cloud(messages, num_predict=num_predict,
                                           temperature=temperature,
-                                          busy_wait=busy_wait, timeout=timeout)
+                                          busy_wait=busy_wait, timeout=timeout,
+                                          method=_method)
             return
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
@@ -821,7 +831,7 @@ class LLM:
             "options": options,
         }
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
-                               timeout=timeout) as r:
+                               timeout=timeout, method=_method) as r:
             done = False
             for line in r.iter_lines():
                 if not line:
@@ -836,6 +846,7 @@ class LLM:
                 if chunk:
                     yield chunk
                 if data.get("done"):
+                    self._ledger_note(r, data)
                     done = True
                     break
             if not done:
@@ -1054,6 +1065,31 @@ class LLM:
         return model_lease.Lease(self._root(), server=self.base, engine=self.engine,
                                  kind=kind, read_timeout=read)
 
+    def _call(self, kind: str, model: str | None, method: str) -> model_ledger.Call:
+        """Строка журнала вызовов (№807) — заводится ДО первой попытки: отказ до
+        ответа 200 тоже стоил времени и тоже пишется."""
+        return model_ledger.Call(self._root(), self._cfg, engine=self.engine, model=model,
+                                 kind=kind, method=method, skip=_LEDGER_SKIP)
+
+    @contextlib.contextmanager
+    def _complete_call(self, model: str | None):
+        """Один не-стрим POST в журнале: исход — по исключению блока, тело — `note`."""
+        call = self._call("complete", model, "complete")
+        try:
+            yield call
+        except BaseException as e:
+            call.finish(failure_kind(e))
+            raise
+        call.finish("ok")
+
+    @staticmethod
+    def _ledger_note(r, data) -> None:
+        """Последняя строка стрима — в журнал вызова, если ответ его везёт (подставные
+        ответы тестов — без журнала)."""
+        call = getattr(r, "call", None)
+        if isinstance(call, model_ledger.Call):
+            call.note(data)
+
     @staticmethod
     def _is_payload(line: bytes) -> bool:
         """Строка стрима, которая считается прогрессом генерации: NDJSON-объект
@@ -1071,8 +1107,9 @@ class LLM:
         """Стримовый ответ с арендой: байты катят deadline, выход из with —
         снимает аренду вместе с закрытием ответа. Всё остальное — у ответа."""
 
-        def __init__(self, r, lease: model_lease.Lease) -> None:
-            self._r, self._lease = r, lease
+        def __init__(self, r, lease: model_lease.Lease,
+                     call: model_ledger.Call | None = None) -> None:
+            self._r, self._lease, self.call = r, lease, call
 
         def __enter__(self):
             enter = getattr(self._r, "__enter__", None)
@@ -1087,11 +1124,24 @@ class LLM:
                     leave(*exc)
             finally:
                 self._lease.__exit__(*exc)
+                self._finish(exc[1] if len(exc) > 1 else None)
+
+        def _finish(self, err: BaseException | None) -> None:
+            """Строка журнала — после снятия аренды (S-I5 входа №807). Потребитель
+            бросил стрим до конца (GeneratorExit, break) — «closed», не отказ."""
+            if self.call is None:
+                return
+            if err is None or isinstance(err, GeneratorExit):
+                self.call.finish("ok" if self.call.done_s is not None else "closed")
+            else:
+                self.call.finish(failure_kind(err))
 
         def iter_lines(self, *a, **kw):
             for line in self._r.iter_lines(*a, **kw):
                 if LLM._is_payload(line):
                     self._lease.progress()
+                    if self.call is not None:
+                        self.call.first()
                 yield line
 
         def close(self) -> None:
@@ -1099,39 +1149,49 @@ class LLM:
                 self._r.close()
             finally:
                 self._lease.__exit__(None, None, None)
+                self._finish(None)
 
         def __getattr__(self, name: str):
             return getattr(self._r, name)
 
     def _open_stream(self, url: str, payload: dict, busy_wait: float,
-                     timeout: float | tuple = 300):
+                     timeout: float | tuple = 300, *, method: str = "stream"):
         """POST со стримом; занятый сервер (503/429, отказ соединения) —
         повторяем с растущей паузой, пока не выйдем за busy_wait. Аренда
         модели берётся, когда сервер ПРИНЯЛ запрос (200) — очередь за занятым
         сервером аренду не держит: она самозалечивается ретраями, а на
-        висящем сервере держала бы перезапуск навсегда."""
+        висящем сервере держала бы перезапуск навсегда. Строка журнала
+        вызовов (№807) — с первой попытки: отказ до 200 пишется здесь, принятый
+        стрим закрывает её сам."""
+        call = self._call("stream", payload.get("model"), method)
         deadline = time.monotonic() + max(0.0, busy_wait)
-        for n, delay in enumerate(BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000):
-            try:
-                r = requests.post(url, json=payload, stream=True, timeout=timeout,
-                                  **self._auth(), **privacy.proxies_for(url))
-            except requests.ConnectionError:
-                if time.monotonic() + delay > deadline:
-                    raise
-                time.sleep(delay)
-                continue
-            if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
-                r.close()
-                time.sleep(delay)
-                continue
-            if r.status_code != 200:
-                # закрыть до raise: with-блок вызывающего сюда не дойдёт, а
-                # ответ открыт как стрим; ошибка — в контракте модуля LLMHTTPError
-                detail = r.text[:500]
-                r.close()
-                raise self._fail(r.status_code, detail)
-            return self._LeasedStream(r, self._lease("stream", timeout).__enter__())
-        raise RuntimeError("unreachable")  # pragma: no cover
+        try:
+            for n, delay in enumerate(BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000):
+                try:
+                    r = requests.post(url, json=payload, stream=True, timeout=timeout,
+                                      **self._auth(), **privacy.proxies_for(url))
+                except requests.ConnectionError:
+                    if time.monotonic() + delay > deadline:
+                        raise
+                    call.busy(delay)
+                    time.sleep(delay)
+                    continue
+                if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
+                    r.close()
+                    call.busy(delay)
+                    time.sleep(delay)
+                    continue
+                if r.status_code != 200:
+                    # закрыть до raise: with-блок вызывающего сюда не дойдёт, а
+                    # ответ открыт как стрим; ошибка — в контракте модуля LLMHTTPError
+                    detail = r.text[:500]
+                    r.close()
+                    raise self._fail(r.status_code, detail)
+                return self._LeasedStream(r, self._lease("stream", timeout).__enter__(), call)
+            raise RuntimeError("unreachable")  # pragma: no cover
+        except BaseException as e:
+            call.finish(failure_kind(e))
+            raise
 
     def _mlx_payload(self, messages: list[dict], *, think: bool | None,
                      num_predict: int | None, temperature: float | None,
@@ -1163,7 +1223,8 @@ class LLM:
     def stream_messages(self, messages: list[dict], *, num_predict: int | None = None,
                         temperature: float | None = None,
                         busy_wait: float = BUSY_WAIT_LIVE,
-                        timeout: tuple[float, float] = STREAM_TIMEOUT) -> Iterator[str]:
+                        timeout: tuple[float, float] = STREAM_TIMEOUT,
+                        _method: str = "stream_messages") -> Iterator[str]:
         """Стрим по готовым messages — путь для локального запаса облака.
 
         stream() собирает messages из prompt+system; здесь они уже собраны,
@@ -1174,12 +1235,13 @@ class LLM:
             # самом облачном клиенте — значит собрать ollama-протокол и
             # отправить его шлюзу (круг-1 DS, Minor).
             yield from self._stream_cloud(messages, num_predict=num_predict,
-                                          temperature=temperature, busy_wait=busy_wait)
+                                          temperature=temperature, busy_wait=busy_wait,
+                                          method=_method)
             return
         if self.engine == "mlx-server":
             yield from self._stream_mlx(messages, think=False, num_predict=num_predict,
                                         temperature=temperature, busy_wait=busy_wait,
-                                        timeout=timeout)
+                                        timeout=timeout, method=_method)
             return
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
@@ -1191,7 +1253,7 @@ class LLM:
                    "stream": True, "think": False, "keep_alive": self._chat_keep_alive(),
                    "options": options}
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
-                               timeout=timeout) as r:
+                               timeout=timeout, method=_method) as r:
             for line in r.iter_lines():
                 if not line:
                     continue
@@ -1202,6 +1264,7 @@ class LLM:
                 if chunk:
                     yield chunk
                 if data.get("done"):
+                    self._ledger_note(r, data)
                     return
             raise self._fail(r.status_code, "стрим оборван без завершения")
 
@@ -1227,7 +1290,8 @@ class LLM:
 
     def _stream_cloud(self, messages: list[dict], *, num_predict: int | None,
                       temperature: float | None, busy_wait: float,
-                      timeout: float | tuple = CLOUD_TIMEOUT) -> Iterator[str]:
+                      timeout: float | tuple = CLOUD_TIMEOUT,
+                      method: str = "stream") -> Iterator[str]:
         """Стрим облачного шлюза с падением обратно на локальную модель.
 
         Фолбэк разрешён СТРОГО до первого отданного токена: подсказка,
@@ -1254,7 +1318,7 @@ class LLM:
         try:
             for chunk in self._sse(f"{self.base}/chat/completions", payload, wait,
                                    timeout=(CLOUD_TIMEOUT[0], max(CLOUD_TIMEOUT[1], read)),
-                                   first_token=CLOUD_FIRST_TOKEN):
+                                   first_token=CLOUD_FIRST_TOKEN, method=method):
                 emitted = True
                 yield chunk
             return
@@ -1293,23 +1357,25 @@ class LLM:
                      keep_alive=self._keep_alive)
         yield from local.stream_messages(messages, num_predict=num_predict,
                                          temperature=temperature,
-                                         busy_wait=busy_wait)
+                                         busy_wait=busy_wait, _method=method)
 
     def _stream_mlx(self, messages: list[dict], *, think: bool | None,
                     num_predict: int | None,
                     temperature: float | None,
                     busy_wait: float = BUSY_WAIT_LIVE,
-                    timeout: tuple[float, float] = STREAM_TIMEOUT) -> Iterator[str]:
+                    timeout: tuple[float, float] = STREAM_TIMEOUT,
+                    method: str = "stream") -> Iterator[str]:
         payload = self._mlx_payload(messages, think=think, num_predict=num_predict,
                                     temperature=temperature, stream=True)
         # тот же потолок, что у Ollama-стрима: mlx-server держал hint_lock 300 с
         # на молчащей генерации (GLM r1 M2 по #558)
         yield from self._sse(f"{self.base}/v1/chat/completions", payload, busy_wait,
-                             timeout=timeout)
+                             timeout=timeout, method=method)
 
     def _sse(self, url: str, payload: dict, busy_wait: float,
              timeout: float | tuple = 300,
-             first_token: float | None = None) -> Iterator[str]:
+             first_token: float | None = None,
+             method: str = "stream") -> Iterator[str]:
         """Разбор SSE-ответа OpenAI-совместимого сервера. Общий для mlx и облака.
 
         `first_token` — сколько ждём ПЕРВЫЙ содержательный чанк. Проверять это
@@ -1326,7 +1392,8 @@ class LLM:
         active = first_token * ACTIVE_FACTOR if first_token else None
         started = time.monotonic()
         last_byte = started
-        with self._open_stream(url, payload, busy_wait, timeout=timeout) as r:
+        usage: dict = {}        # `usage` шлюза, если пришлёт (mlx и облако без stream_options — нет)
+        with self._open_stream(url, payload, busy_wait, timeout=timeout, method=method) as r:
             # SSE: полезная нагрузка ТОЛЬКО в строках «data: …», терминатор
             # «data: [DONE]». Всё остальное пропускаем по спецификации: во
             # время префилла сервер шлёт keepalive-комментарии «: keepalive
@@ -1351,11 +1418,14 @@ class LLM:
                 if not line:
                     continue        # пустое поле data: — keepalive у части шлюзов (круг-1 по #562)
                 if line.strip() == b"[DONE]":
+                    self._ledger_note(r, usage)
                     done = True
                     break
                 data = self._json_line(r, line)
                 if isinstance(data, dict) and data.get("error"):
                     raise self._fail(r.status_code, str(data["error"]))
+                if isinstance(data, dict) and isinstance(data.get("usage"), dict):
+                    usage = {"usage": data["usage"]}
                 try:
                     chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
                              .get("content") or "")
@@ -1437,11 +1507,13 @@ class LLM:
                 # вызовы (минутки timeout=600, разбор графа) резались 45 с и молча уходили
                 # на локальную модель; CLOUD_TIMEOUT целиком — только для стрима подсказок
                 # (аудит 13.09, DS I1)
-                r = self._post_busy(f"{self.base}/chat/completions", payload,
-                                    (CLOUD_TIMEOUT[0], max(CLOUD_TIMEOUT[1], float(timeout))),
-                                    wait)
-                body = self._checked_body(r)
-                msg = ((body.get("choices") or [{}])[0].get("message") or {})
+                with self._complete_call(self.cloud_model) as call:
+                    r = self._post_busy(f"{self.base}/chat/completions", payload,
+                                        (CLOUD_TIMEOUT[0], max(CLOUD_TIMEOUT[1], float(timeout))),
+                                        wait, call=call)
+                    body = self._checked_body(r)
+                    call.note(body)
+                    msg = ((body.get("choices") or [{}])[0].get("message") or {})
                 return (msg.get("content") or "").strip()
             except (LLMHTTPError, requests.RequestException, ValueError,
                     KeyError, IndexError, AttributeError, TypeError) as e:
@@ -1474,10 +1546,12 @@ class LLM:
             payload = self._mlx_payload(messages, think=think,
                                         num_predict=num_predict,
                                         temperature=temperature, stream=False)
-            r = self._post_with_revive(f"{self.base}/v1/chat/completions",
-                                       payload, timeout, revive, busy_wait)
-            body = self._checked_body(r)
-            msg = ((body.get("choices") or [{}])[0].get("message") or {})
+            with self._complete_call(self.mlx_model) as call:
+                r = self._post_with_revive(f"{self.base}/v1/chat/completions",
+                                           payload, timeout, revive, busy_wait, call=call)
+                body = self._checked_body(r)
+                call.note(body)
+                msg = ((body.get("choices") or [{}])[0].get("message") or {})
             return (msg.get("content") or "").strip()
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
@@ -1504,9 +1578,14 @@ class LLM:
         sends_format = json_format and _strict_json_known(strict_key) is None
         if sends_format:
             payload["format"] = "json"
-        r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive, busy_wait)
+        # строка журнала (№807) — на каждый POST: отказ строгого JSON и повтор
+        # без format — две строки, обе стоили времени модели
         try:
-            body = self._checked_body(r)
+            with self._complete_call(sent) as call:
+                r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive,
+                                           busy_wait, call=call)
+                body = self._checked_body(r)
+                call.note(body)
             if sends_format:
                 _strict_json_restored(strict_key)
         except LLMHTTPError as e:
@@ -1519,11 +1598,15 @@ class LLM:
             _strict_json_record(strict_key, reason)
             _strict_json_announce(strict_key, sent, self.base, reason)
             del payload["format"]
-            r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive, busy_wait)
-            body = self._checked_body(r)
+            with self._complete_call(sent) as call:
+                r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive,
+                                           busy_wait, call=call)
+                body = self._checked_body(r)
+                call.note(body)
         return ((body.get("message") or {}).get("content") or "").strip()
 
-    def _post_busy(self, url: str, payload: dict, timeout: float, busy_wait: float):
+    def _post_busy(self, url: str, payload: dict, timeout: float, busy_wait: float,
+                   call: model_ledger.Call | None = None):
         """POST без стрима; «занято» (503/429) повторяем с паузой в бюджете busy_wait.
 
         Отказ соединения и таймаут наружу не глотаем — их различает
@@ -1538,16 +1621,19 @@ class LLM:
                                   **privacy.proxies_for(url))
             if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
                 r.close()          # соединение не держим до GC на каждой паузе (GLM M2), как в _open_stream
+                if call is not None:
+                    call.busy(delay)
                 time.sleep(delay)
                 continue
             return r
         raise RuntimeError("unreachable")  # pragma: no cover
 
     def _post_with_revive(self, url: str, payload: dict, timeout: float,
-                          revive: bool, busy_wait: float = 0.0):
+                          revive: bool, busy_wait: float = 0.0,
+                          call: model_ledger.Call | None = None):
         """POST с одной попыткой поднять модель, вставшую посреди работы."""
         try:
-            return self._post_busy(url, payload, timeout, busy_wait)
+            return self._post_busy(url, payload, timeout, busy_wait, call=call)
         except requests.RequestException:
             if not revive:
                 raise
@@ -1555,7 +1641,9 @@ class LLM:
             print("llm: запрос к модели не прошёл — пробую оживить")
             if not llm_health.ensure_alive(self._cfg, lambda m: print(f"llm: {m}")):
                 raise
-            return self._post_busy(url, payload, timeout, busy_wait)
+            if call is not None:
+                call.revived = True      # одна строка: время упавшей попытки и оживления — в ней
+            return self._post_busy(url, payload, timeout, busy_wait, call=call)
 
     def _checked_body(self, r) -> dict:
         """Тело ответа или LLMHTTPError — общая часть всех движков.
@@ -1688,6 +1776,7 @@ class LLM:
             + f"<свежий разговор>\n{transcript_tail}\n</свежий разговор>\n\n"
             + self.THREAD_FORMAT.get(self.lang, self.THREAD_FORMAT["en"]),
             model=model,
+            _method="thread",
         )
 
     def hint(self, transcript_tail: str, model: str | None = None) -> Iterator[str]:
@@ -1696,6 +1785,7 @@ class LLM:
             f"{transcript_tail}\n\n"
             + self.HINT_FORMAT.get(self.lang, self.HINT_FORMAT["en"]),
             model=model,
+            _method="hint",
         )
 
     def instant(self, tail: str, model: str | None = None,
@@ -1752,6 +1842,7 @@ class LLM:
             )),
             # полный ответ за ~3с вместо 5-7с: глубокую версию параллельно даёт облако
             num_predict=180,
+            _method="instant",
         )
 
     # Единый стиль всех документов встреч: plain-md читается без рендера.
@@ -1789,6 +1880,7 @@ class LLM:
                 num_predict=320,
                 temperature=0.0,
                 busy_wait=busy_wait,
+                _method="summary",
             )
         if self.lang == "en":
             return self._doc_stream(
@@ -1801,6 +1893,7 @@ class LLM:
                 num_predict=320,
                 temperature=0.0,
                 busy_wait=busy_wait,
+                _method="summary",
             )
         return self._doc_stream(
             f"Стенограмма встречи:\n\n{transcript}\n\n"
@@ -1811,6 +1904,7 @@ class LLM:
             system="Ты сжимаешь стенограммы рабочих встреч в чёткий протокол. Без воды. " + self.STYLE,
             num_predict=320,
             temperature=0.0,  # см. minutes(): документ — не творческая задача
+            _method="summary",
         )
 
     def _doc_stream(self, *args, **kwargs) -> Iterator[str]:
@@ -1923,6 +2017,7 @@ class LLM:
                 system="你是会议记录员。准确、简练的中文会议纪要。" + self.STYLE_ZH,
                 num_predict=420,
                 temperature=0.0,
+                _method="minutes",
             )
         if self.lang == "en":
             return self._doc_stream(
@@ -1948,6 +2043,7 @@ class LLM:
                 system="You are the meeting secretary. Precise, dry minutes in English. " + self.STYLE_EN,
                 num_predict=420,
                 temperature=0.0,
+                _method="minutes",
             )
         return self._doc_stream(
             # Данные отделены тегами от инструкций, правила — позитивные
@@ -1989,4 +2085,5 @@ class LLM:
             # останется стабильной — на это работает сверка в
             # fact_check, а не температура.
             temperature=0.0,
+            _method="minutes",
         )

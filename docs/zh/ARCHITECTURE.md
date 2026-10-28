@@ -98,6 +98,18 @@ PortAudio 的麦克风。没有第三条路径：Core Audio tap 流已于 02.09 
 - **忙碌 ≠ 挂掉。** `llm.stream`/`complete` 在调用方的预算内以递增的
   间隔重试 `503/429/502`（实时循环最多 30 秒，图谱抽取最多 10 分钟）；
   `llm_health.probe` 区分 `BUSY`，绝不在别人的生成过程中重启服务器。
+- **模型时间按调用方计量。** 同样的两个传输接缝（`llm._open_stream`、
+  `llm._post_busy`）每个请求向 `logs/model_calls-YYYY-MM-DD.jsonl` 写一行
+  （`model_ledger`，№807）：调用方、方法、引擎、模型、结果、总耗时、首块耗时、
+  “忙”等待秒数，以及引擎提供时服务器自己的数字（`prompt_eval_count`、
+  `eval_count`、`total_duration`；Ollama 提供，mlx-server 和未设
+  `stream_options` 的网关不提供——为 `null`）。调用对象在第一次尝试前创建，
+  所以 200 之前的拒绝也有一行，且只在释放租约后写一次。调用方在栈信息不可靠处
+  用显式标签（`model_ledger.consumer(...)`）：守护进程共用的 `_collect`、图谱的
+  两轮解析、会后复盘；其他地方取 `llm.py` 之外的第一个栈帧，标为 `untagged:`。
+  日志按文件名中的日期自行清理（`llm.ledger_keep_days`，35；`0` 为关闭）：
+  `logs/` 的通用清理按 mtime 和录音期限判断，会把它删掉。有意不计入：单 token
+  健康探测、模型保活、向量模型以及 Swift 应用自己的聊天请求。
 - **自己的生成正在进行——是事实，不是猜测。** 每次向本地模型发请求期间，
   传输层（`llm._open_stream`、`llm._post_busy`）都持有一个 `flock` 锁定的
   租约文件 `data/llm_inflight/<pid>-<id>.json`（`model_lease`）：进程一死，

@@ -797,7 +797,7 @@ def test_cloud_complete_honours_the_callers_read_timeout(monkeypatch):
     inst.cloud_ready = True
     seen = {}
 
-    def post_busy(url, payload, timeout, wait):
+    def post_busy(url, payload, timeout, wait, **kw):
         seen["timeout"] = timeout
         return _Resp({"choices": [{"message": {"content": "ок"}}]})
 
@@ -826,7 +826,7 @@ def test_cloud_stream_honours_the_callers_read_timeout(monkeypatch):
     inst.cloud_ready = True
     seen = {}
 
-    def sse(url, payload, wait, timeout=None, first_token=None):
+    def sse(url, payload, wait, timeout=None, first_token=None, **kw):
         seen["timeout"] = timeout
         yield "ок"
 
@@ -1736,7 +1736,7 @@ def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock
     class _Stop(Exception):
         pass
 
-    def capture(self, url, payload, busy_wait, timeout=None):
+    def capture(self, url, payload, busy_wait, timeout=None, **kw):
         sent.append(payload["keep_alive"])
         raise _Stop
 

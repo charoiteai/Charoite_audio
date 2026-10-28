@@ -29,6 +29,7 @@ import privacy  # noqa: E402
 import live_sidecar  # noqa: E402
 import channel_trace  # noqa: E402
 import meeting_source  # noqa: E402
+import model_ledger  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 import llm  # noqa: E402
 import nli  # noqa: E402
@@ -271,17 +272,20 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             # в английском похожими делают служебные слова (выход n821-out1, DS C1).
             # Белый список, а не «кроме en/zh»: любой другой язык тоже без замера (n822-in1, DS C1).
             print(f"граф: второй проход: нет замера для языка {_language(cfg)!r} — только первый")
+    # Оба прохода зовут модель через один `_extract`: по стеку журнал вызовов
+    # их не различит, метка — здесь (№807).
     try:
-        if len(transcript) <= CHUNK_CHARS:
-            if second:
-                _report(1, 1 + len(second))
-            data = _extract(cfg, transcript, project_rule)
-            done = 1
-        else:
-            first = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
-            data = _extract_long(cfg, transcript, project_rule,
-                                 total=len(first) + len(second) if second else None)
-            done = len(first)
+        with model_ledger.consumer("graph_updater.first_pass"):
+            if len(transcript) <= CHUNK_CHARS:
+                if second:
+                    _report(1, 1 + len(second))
+                data = _extract(cfg, transcript, project_rule)
+                done = 1
+            else:
+                first = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
+                data = _extract_long(cfg, transcript, project_rule,
+                                     total=len(first) + len(second) if second else None)
+                done = len(first)
     except requests.RequestException as e:
         print(f"граф: модель недоступна ({type(e).__name__}: {e}) — "
               f"встреча сохранена, граф не обновлён")
@@ -289,7 +293,8 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     if not data or not second:
         return data
     try:
-        return _with_second_pass(cfg, data, second, project_rule, done)
+        with model_ledger.consumer("graph_updater.second_pass"):
+            return _with_second_pass(cfg, data, second, project_rule, done)
     except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
         # Граница добавки целиком: сбой вне цикла кусков (склейка, разбор найденного)
         # оставляет разбор первого (проверка правки по мутантам, Haiku M).
@@ -3523,35 +3528,36 @@ def main():
         # Порядок блоков: речь (окно от КОНЦА РЕЧИ, не файла) → живые тезисы
         # контура отдельным блоком (мысли модели, не речь; DS: 📌 КТ разбору
         # полезны) → минутки → оговорка о записи после всех обрезок (№317)
-        debrief = llm_client.complete(
-            (f"Память прошлых встреч (граф) — ТОЛЬКО для узнавания имён, систем и "
-             f"терминов, НЕ источник задач и рекомендаций:\n{gctx}\n\n" if gctx else "")
-            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(source.speech, limit=speech_limit)}\n\n"
-            + cothinking_block
-            + minutes_block
-            + llm_client.recording_block(source.recording_note)
-            + "Составь разбор строго по разделам:\n"
-            "# Разбор встречи\n"
-            "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
-            "## Задачи\n(список «- **Кто** — что — срок»; только то, что прозвучало на этой встрече)\n"
-            "## Возможные решения открытых вопросов\n(варианты с плюсами/минусами, кратко)\n"
-            "## Рекомендации: что проработать до следующей встречи\n(конкретные шаги по вопросам ЭТОЙ встречи)",
-            system=(
-                # позитивные формулировки вместо «не выдумывай / БЕЗ таблиц»:
-                # локальная модель следует им заметно точнее
-                "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
-                "Опирайся строго на стенограмму этой встречи; память прошлых встреч "
-                "нужна только чтобы правильно называть людей, системы и термины. "
-                "Задачи, решения и рекомендации бери из того, что прозвучало сегодня; "
-                "в разделах решений и рекомендаций помечай свои варианты словом "
-                "«предложение». Оформляй всё списками «- …» с жирным ключом в начале "
-                "пункта: так документ читается в любом plain-тексте."
-            ),
-            model=cfg["llm"]["model"],
-            think=None,  # умолчание модели, как было до рефакторинга
-            num_ctx=8192,  # без него qwen3.6 на 262144 → раздутый KV-кэш
-            timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
-        )
+        with model_ledger.consumer("graph_updater.debrief"):
+            debrief = llm_client.complete(
+                (f"Память прошлых встреч (граф) — ТОЛЬКО для узнавания имён, систем и "
+                 f"терминов, НЕ источник задач и рекомендаций:\n{gctx}\n\n" if gctx else "")
+                + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(source.speech, limit=speech_limit)}\n\n"
+                + cothinking_block
+                + minutes_block
+                + llm_client.recording_block(source.recording_note)
+                + "Составь разбор строго по разделам:\n"
+                "# Разбор встречи\n"
+                "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
+                "## Задачи\n(список «- **Кто** — что — срок»; только то, что прозвучало на этой встрече)\n"
+                "## Возможные решения открытых вопросов\n(варианты с плюсами/минусами, кратко)\n"
+                "## Рекомендации: что проработать до следующей встречи\n(конкретные шаги по вопросам ЭТОЙ встречи)",
+                system=(
+                    # позитивные формулировки вместо «не выдумывай / БЕЗ таблиц»:
+                    # локальная модель следует им заметно точнее
+                    "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
+                    "Опирайся строго на стенограмму этой встречи; память прошлых встреч "
+                    "нужна только чтобы правильно называть людей, системы и термины. "
+                    "Задачи, решения и рекомендации бери из того, что прозвучало сегодня; "
+                    "в разделах решений и рекомендаций помечай свои варианты словом "
+                    "«предложение». Оформляй всё списками «- …» с жирным ключом в начале "
+                    "пункта: так документ читается в любом plain-тексте."
+                ),
+                model=cfg["llm"]["model"],
+                think=None,  # умолчание модели, как было до рефакторинга
+                num_ctx=8192,  # без него qwen3.6 на 262144 → раздутый KV-кэш
+                timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
+            )
         if debrief.strip():
             # строка о неполной записи — механически, как у минуток и ретро-разбора:
             # упомянула ли модель пропуск — непроверяемо (Important GLM выходного круга)

@@ -32,7 +32,7 @@ def _prompt(lang: str = "ru") -> str:
     llm = _llm(lang)
     captured: dict = {}
 
-    def fake_stream(prompt, model=None, system=None):
+    def fake_stream(prompt, model=None, system=None, **kw):
         captured["prompt"] = prompt
         return iter(())
 
@@ -78,7 +78,7 @@ def test_names_and_versions_stay_as_they_sounded():
 def test_transcript_tail_reaches_the_model():
     llm = _llm()
     captured: dict = {}
-    llm.stream = lambda prompt, model=None, system=None: (captured.update(p=prompt), iter(()))[1]
+    llm.stream = lambda prompt, model=None, system=None, **kw: (captured.update(p=prompt), iter(()))[1]
     list(llm.hint("Коля: партиция не нарезалась"))
     assert "Коля: партиция не нарезалась" in captured["p"]
 
@@ -109,7 +109,7 @@ def test_format_does_not_live_in_the_user_config():
 def _thread_prompt(so_far: str = "", lang: str = "ru") -> str:
     llm = _llm(lang)
     captured: dict = {}
-    llm.stream = lambda prompt, model=None, system=None: (
+    llm.stream = lambda prompt, model=None, system=None, **kw: (
         captured.update(p=prompt), iter(()))[1]
     list(llm.thread("…свежий кусок разговора…", so_far))
     return captured["p"]
