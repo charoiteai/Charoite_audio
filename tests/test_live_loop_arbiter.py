@@ -67,7 +67,7 @@ def test_stream_read_timeout_is_two_minutes_for_live_and_five_for_documents():
     llm = (pathlib.Path(__file__).resolve().parent.parent / "src" / "llm.py").read_text(encoding="utf-8")
     assert "STREAM_TIMEOUT = (10.0, 120.0)" in llm and "DOC_STREAM_TIMEOUT = (10.0, 300.0)" in llm
     # оба Ollama-стрима и mlx-путь берут потолок параметром (GLM r1 M2/M4 по #558)
-    chat = 'with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,\n                               timeout=timeout) as r:'
+    chat = 'with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,\n                               timeout=timeout, method=_method) as r:'
     assert llm.count(chat) == 2, "оба Ollama-стрима (stream, stream_messages) берут потолок параметром"
     mlx = llm[llm.index("    def _stream_mlx("):llm.index("    def _sse(")]
     assert "timeout=timeout" in mlx
