@@ -48,7 +48,7 @@
 - `nemotron_shadow_replay.py` 与 `nemotron_shadow_check.py` —— 无需通话即可得到 Nemotron 实时流（#478 B）的数据：回放脚本把会议录音送入真实的音频中枢、声纹跟踪器和 Nemotron 影子，输出到新的缓存目录（日志、跟踪器决策、墙钟见证）；核对脚本将影子日志与最终分离结果比对——标签延迟、“槽位 × 说话人”矩阵、与最终标注的一致度。只有数字：没有音频、没有文本，不写入数据根目录；输出只进入回放缓存目录，会议录音不存在后（保留期、“遗忘”），下次回放会删除该会议的目录；核对脚本把最终标签改名为 `f0..fN`。
 - `stt_bench.py` — 识别的 CER：识别错误的字符占比。`--compare` 用同一批合成语句把 SenseVoice 与 Whisper 跑一遍对比。与说话人分离同样的提醒：合成语音比真实语音干净，这是下限而非基准。
 - `bench_models.py` — 用我们自己的负载而非合成 tok/s 比较 Ollama 模型：短提示、中等抽取、真实长逐字稿，测首个 token 时间与总时间，冷启动的首次运行单独显示。
-- `bench_extract.py` — 比较模型的会议分析质量而非速度：同一个 `graph_updater.extract`、同一批逐字稿（最近 3 场、`--meetings N` 或 `--files`），检查那些悄悄出错的地方——逐字稿中不存在的引文、不存在的 HH:MM 时间、抽取了多少、JSON 能否解析。原始回答写入 `logs/bench_extract/`，供人阅读。
+- `bench_extract.py` — 比较模型的会议分析质量而非速度：同一个 `graph_updater.extract`、同一批逐字稿（最近 3 场、`--meetings N` 或 `--files`），检查那些悄悄出错的地方——逐字稿中不存在的引文、不存在的 HH:MM 时间、抽取了多少、JSON 能否解析。原始回答写入 `logs/bench_extract/`，供人阅读。第二轮解析（`sufler.graph_second_pass`）由基准自行设定，不取自您的配置：默认单轮，与预设数字一致；`--second-pass` 测量两轮（12000 与 6000 分块）。
 - `gate_bench.py` — 测量决策闸门（`src/decision_gate.py`）：在每个置信阈值下，它能省掉多少次空的模型调用、会丢掉多少真实问题。`harvest` 从逐字稿收集候选供手工标注，`eval` 在已标注的 JSONL 上评分，`shadow` 读取守护进程日志中的闸门影子记录（`sufler.decision_gate_shadow: true`）。
 
 驱动模型的基准需要空闲的机器：实时会议期间测到的是排队，而不是模型。

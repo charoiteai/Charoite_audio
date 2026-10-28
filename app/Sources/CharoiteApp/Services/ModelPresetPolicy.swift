@@ -79,6 +79,26 @@ struct ModelPreset: Identifiable, Equatable {
          // честно сказано, что там разметка срабатывает реже.
          ("markup_model", markupModel)]
     }
+
+    /// Ключи, которые профиль только СЕЕТ: пишет, если в конфиге их ещё нет.
+    ///
+    /// Второй проход разбора (`sufler.graph_second_pass`, №821) стоит времени
+    /// модели на каждую встречу, и это решение владельца очереди разбора, а не
+    /// свойство машины. Замер 27.10 (+145 с на встречу, покрытие решений
+    /// 57–65 → 77–82 %) — только на qwen3.6:35b-mlx, поэтому сеет его один
+    /// «Полный»; у 27B и 4B польза не мерилась, а цена ×2–4 (№822). Ручное
+    /// значение — и true, и false — пресет не трогает: в отличие от configFlags,
+    /// где «Записать» намеренно переписывает контуры под машину (сверка n822-in1).
+    var seededFlags: [(key: String, value: String)] {
+        id == "full" ? [("graph_second_pass", "true")] : []
+    }
+
+    /// Всё, что «Записать в конфиг» кладёт помимо моделей: configFlags целиком
+    /// и посеянные ключи, которых в конфиге нет (`current` — чтение конфига,
+    /// nil — ключа нет или он пустой).
+    func flagsToWrite(current: (String) -> String?) -> [(key: String, value: String)] {
+        configFlags + seededFlags.filter { current($0.key) == nil }
+    }
 }
 
 enum ModelPresetPolicy {
@@ -114,9 +134,9 @@ enum ModelPresetPolicy {
             smallModel: "qwen3.5:4b",
             needsGB: 64,
             graph: true, dejaVu: true,
-            note: L.t("Наш рабочий набор: 42 решения и 39 ядер на встречу, медиана разбора 57 с.",
-                      "Our working set: 42 decisions and 39 cores per meeting, 57 s median.",
-                      "我们的日常配置：每场会议 42 条决定、39 个核心，解析中位数 57 秒。")),
+            note: L.t("Наш рабочий набор: 42 решения и 39 ядер на встречу, медиана разбора 57 с. На русских встречах включает второй проход разбора: больше решений, +2–2,5 мин на встречу.",
+                      "Our working set: 42 decisions and 39 cores per meeting, 57 s median. On Russian-language meetings it turns on a second extraction pass: more decisions, +2–2.5 min per meeting.",
+                      "我们的日常配置：每场会议 42 条决定、39 个核心，解析中位数 57 秒。俄语会议会开启第二轮解析：决定更多，每场会议多 2–2.5 分钟。")),
         ModelPreset(
             id: "precise",
             title: L.t("Точный", "Precise", "精确"),

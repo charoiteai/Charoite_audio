@@ -31,6 +31,13 @@ UNDOCUMENTED_ON_PURPOSE = {
     # llm.model. Ключ-дубль: пока не решено, оставлять его или свести к
     # llm.model, рекламировать в примере нечего
     "model",
+    # внешняя память: строка в примере закомментирована намеренно — явный
+    # ключ включает сообщения о выключенной памяти тем, у кого её нет
+    "brain",
+    # второй проход разбора: в примере закомментирован с ценой и замером —
+    # явный ключ значил бы «включено» или «выключено владельцем», а мастер
+    # сеет его только туда, где ключа нет (№822)
+    "graph_second_pass",
 }
 
 # Все формы чтения sufler.*, живущие в src/. Кавычки — любые: cfg['sufler']
@@ -46,6 +53,9 @@ READ_PATTERNS = (
     re.compile(rf"\.get\({Q}sufler{Q},\s*\{{\}}\)\.get\(\s*{Q}([a-z0-9_]+){Q}"),
     # cfg["sufler"]["key"] — прямое индексирование, падает на отсутствии ключа
     re.compile(rf"\[{Q}sufler{Q}\]\[\s*{Q}([a-z0-9_]+){Q}\s*\]"),
+    # install_profile.flag(cfg, "key", default) — флаги секции читаются аргументом,
+    # и без этой формы graph, deja_vu, tier3, brain, graph_second_pass гейт не видел (n822-in1, DS I2)
+    re.compile(rf"\bflag\(\s*cfg\s*,\s*{Q}([a-z0-9_]+){Q}"),
 )
 
 
@@ -140,6 +150,18 @@ def test_every_key_the_code_reads_is_documented():
         "код читает ключи, которых нет в config.example.yaml: "
         + ", ".join(f"sufler.{k}" for k in missing)
         + " — опишите их в примере или внесите в UNDOCUMENTED_ON_PURPOSE с причиной")
+
+
+def test_every_key_the_app_presets_write_is_read_by_code():
+    """Мастер приложения пишет ключи пресета строками в Swift — опечатка там прошла бы и Swift-тесты
+    (они сверяют значения), и pytest: «сохранено», а демон ключ не читает (n822-in1, DS I2)."""
+    swift = (REPO / "app" / "Sources" / "CharoiteApp" / "Services" / "ModelPresetPolicy.swift").read_text(
+        encoding="utf-8")
+    body = swift[swift.index("var configFlags"):swift.index("enum ModelPresetPolicy")]
+    written = set(re.findall(r'\(\s*"([a-z0-9_]+)"\s*,', body))
+    assert {"graph", "deja_vu", "tier3", "graph_second_pass"} <= written, written
+    unread = sorted(written - _keys_read_by_code())
+    assert not unread, f"пресет пишет ключи, которых код не читает: {unread}"
 
 
 def test_ci_checks_the_same_required_keys():

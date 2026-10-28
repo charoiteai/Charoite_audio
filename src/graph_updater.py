@@ -263,12 +263,13 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     # прохода, иначе человек увидел бы «3/3», а за ним снова «1/6».
     second = []
     if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2:
-        if _language(cfg) not in ("en", "zh"):          # то же правило, что выбирает промпт
+        if _language(cfg) == "ru":                      # пустой ключ — тоже ru (_language)
             second = _split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2, short_tail=False)
         else:
             # Порог склейки 0,7/3 мерен только на русских встречах: в китайском
             # основы слов не выделяются вовсе (склейка пропустила бы все повторы),
             # в английском похожими делают служебные слова (выход n821-out1, DS C1).
+            # Белый список, а не «кроме en/zh»: любой другой язык тоже без замера (n822-in1, DS C1).
             print(f"граф: второй проход: нет замера для языка {_language(cfg)!r} — только первый")
     try:
         if len(transcript) <= CHUNK_CHARS:

@@ -100,9 +100,12 @@ def time_hits(data: dict, transcript: str) -> tuple[int, int]:
     return sum(1 for s in stamps if s in transcript), len(stamps)
 
 
-def measure(cfg: dict, model: str, path: pathlib.Path) -> dict:
+def measure(cfg: dict, model: str, path: pathlib.Path, second_pass: bool = False) -> dict:
     text = path.read_text(encoding="utf-8")
-    cfg = {**cfg, "llm": {**cfg["llm"], "model": model}}
+    # Второй проход — явным ключом бенча, а не флагом из конфига владельца: иначе на машине с
+    # `graph_second_pass: true` колонка «сек» молча мерила бы пару проходов (n822-in1, I3).
+    cfg = {**cfg, "llm": {**cfg["llm"], "model": model},
+           "sufler": {**(cfg.get("sufler") or {}), "graph_second_pass": second_pass}}
     started = time.time()
     data = gu.extract(cfg, text)
     took = time.time() - started
@@ -158,6 +161,9 @@ def main() -> None:
                     help="сколько свежих встреч взять (по умолчанию 3)")
     ap.add_argument("--files", nargs="*", type=pathlib.Path,
                     help="конкретные стенограммы вместо свежих")
+    ap.add_argument("--second-pass", action="store_true",
+                    help="мерить разбор со вторым проходом кусками 6000 (sufler.graph_second_pass); "
+                         "без ключа — один проход, как в цифрах пресетов")
     args = ap.parse_args()
 
     files = args.files or meetings(args.meetings)
@@ -165,7 +171,8 @@ def main() -> None:
         print("нет стенограмм для замера")
         return
     cfg = gu.load_cfg()
-    print(f"встреч: {len(files)}, моделей: {len(args.models)}")
+    print(f"встреч: {len(files)}, моделей: {len(args.models)}, "
+          f"второй проход: {'да' if args.second_pass else 'нет'}")
     for f in files:
         print(f"  {f.stem} ({f.stat().st_size // 1000} тыс. знаков)")
 
@@ -177,7 +184,7 @@ def main() -> None:
     for model in args.models:
         for f in files:
             print(f"… {model} на {f.stem}", flush=True)
-            r = measure(cfg, model, f)
+            r = measure(cfg, model, f, args.second_pass)
             answer = r.pop("ответ", None)
             if answer is not None:
                 # Сырые ответы рядом: полноту решений и попадание в поручения

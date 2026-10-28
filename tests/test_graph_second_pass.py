@@ -219,9 +219,10 @@ def test_short_tail_costs_no_model_call(model):
     assert len(model.calls) == 1 + 2
 
 
-@pytest.mark.parametrize("lang", ["en", "zh", "EN"])
+@pytest.mark.parametrize("lang", ["en", "zh", "EN", "de", "kk"])
 def test_no_second_pass_outside_russian(model, lang):
-    """Порог склейки мерен на русском: в zh основ нет, в en похожими делают служебные слова."""
+    """Порог склейки мерен на русском: в zh основ нет, в en похожими делают служебные слова;
+    любой другой язык тоже без замера — белый список, а не «кроме en/zh» (n822-in1, DS C1)."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
     data = g.extract({"sufler": {"graph_second_pass": True, "language": lang}}, LONG)

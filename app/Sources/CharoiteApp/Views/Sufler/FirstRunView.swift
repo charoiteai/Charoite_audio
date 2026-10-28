@@ -248,9 +248,13 @@ struct FirstRunView: View {
         // машина тянет (граф, дежавю, ревизия ядер, модель тезисов). Пишем
         // одной операцией: по ключу за раз конфиг оставался наполовину новым,
         // наполовину старым, и это ничем себя не выдавало.
+        // Посеянные ключи (второй проход разбора) — только если их в конфиге
+        // нет: ручное значение владельца пресет не трогает (сверка n822-in1).
+        // Мастер показывается раз на устройство (`seen`), так что ручное
+        // значение встретится здесь только в перенесённом конфиге.
         let saved = AppSettings.setConfigValues(
             [("model", preset.model), ("small_model", preset.smallModel)]
-            + preset.configFlags)
+            + preset.flagsToWrite(current: { AppSettings.configValue($0) }))
         if !saved {
             presetSaveFailed = true
             return

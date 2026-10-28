@@ -128,6 +128,12 @@ sufler:
   # so by default a human runs it: scripts/tier3_cores.py --apply.
   # true merges only high-confidence pairs.
   tier3_auto_apply: false
+  # Second extraction pass in smaller chunks (6000 characters instead of 12000): measured on
+  # 27.10, decision coverage 77–82 % vs 60–65 % with one pass, at +2–2.5 model minutes per
+  # meeting. Off by default. Works only with language: ru (other languages are skipped) — the
+  # decision-merge threshold was measured on Russian meetings. The app's "Full" preset sets
+  # true if the key is absent; your own value is left alone.
+  # graph_second_pass: true
   # Link byte-identical copies of meeting documents (the original under
   # "Документация", the copy under "Встречи-архив" for Finder) with hard
   # links: disk space and iCloud sync stop doubling, both paths keep
