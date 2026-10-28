@@ -2,7 +2,7 @@
 
 Модель на одной нарезке пропускает около трети решений, а другая нарезка той же
 стенограммы ловит другое: на замере 27.10 (17 встреч) 12000 ∪ 6000 дали 77–82 %
-покрытия против 60–65 % у одного прохода. Тесты держат то, что сломало бы граф
+покрытия против 57–65 % у одного прохода. Тесты держат то, что сломало бы граф
 владельца молча: порядок решений (brain берёт первые шесть), канал второго
 прохода (только решения), склейку, которая не теряет разные решения, и то, что
 сбой добавки не отнимает готовый первый проход.
@@ -219,7 +219,7 @@ def test_short_tail_costs_no_model_call(model):
     assert len(model.calls) == 1 + 2
 
 
-@pytest.mark.parametrize("lang", ["en", "zh", "EN", "de", "kk"])
+@pytest.mark.parametrize("lang", ["en", "zh", "EN", "de", "kk", "en-US", "rus"])
 def test_no_second_pass_outside_russian(model, lang):
     """Порог склейки мерен на русском: в zh основ нет, в en похожими делают служебные слова;
     любой другой язык тоже без замера — белый список, а не «кроме en/zh» (n822-in1, DS C1)."""
@@ -230,10 +230,12 @@ def test_no_second_pass_outside_russian(model, lang):
     assert data == _first()
 
 
-def test_russian_named_explicitly_keeps_second_pass(model):
+@pytest.mark.parametrize("lang", ["RU", "ru-RU", "ru_RU", " ru "])
+def test_russian_named_explicitly_keeps_second_pass(model, lang):
+    """Регион к тегу языка — тот же русский промпт, и второй проход с ним (n822-out1)."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
-    data = g.extract({"sufler": {"graph_second_pass": True, "language": "RU"}}, LONG)
+    data = g.extract({"sufler": {"graph_second_pass": True, "language": lang}}, LONG)
     assert len(model.calls) == 3 + 5
     assert data["решения"][-1] == "Новое решение по бюджету"
 

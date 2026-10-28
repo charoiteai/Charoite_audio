@@ -172,7 +172,7 @@ def main() -> None:
         return
     cfg = gu.load_cfg()
     print(f"встреч: {len(files)}, моделей: {len(args.models)}, "
-          f"второй проход: {'да' if args.second_pass else 'нет'}")
+          f"второй проход: {'включён (идёт только на ru и длинных встречах)' if args.second_pass else 'нет'}")
     for f in files:
         print(f"  {f.stem} ({f.stat().st_size // 1000} тыс. знаков)")
 

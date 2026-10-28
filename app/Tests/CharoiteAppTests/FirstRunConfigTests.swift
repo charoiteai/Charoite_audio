@@ -122,4 +122,26 @@ final class FirstRunConfigTests: XCTestCase {
             body.contains("configSaved = true\n"),
             "configSaved выставляется безусловно — это и есть починенный дефект")
     }
+    /// Посев второго прохода (№822) — условной записью под оракулом PyYAML, а не
+    /// общей `setConfigValues`: та дописывает дубль поверх ручного значения в форме,
+    /// которой не видит построчный разбор (круг n822-out1). Вью не тестируется —
+    /// проводку держит этот сторож, логику — `PresetSeedTests`.
+    func testPresetSeedGoesThroughConditionalWrite() throws {
+        let view = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CharoiteApp/Views/Sufler/FirstRunView.swift")
+        let text = try String(contentsOf: view, encoding: .utf8)
+        guard let start = text.range(of: "private func applyPreset()"),
+              let end = text.range(of: "private var configPanel", range: start.upperBound..<text.endIndex) else {
+            return XCTFail("applyPreset не найден — тест устарел вместе с экраном")
+        }
+        let body = String(text[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("seedWrites(wroteHere: seededHere)"), "план посева не строится")
+        XCTAssertTrue(body.contains("ModelPresetPolicy.seed("), "посев не идёт условной записью")
+        XCTAssertTrue(body.contains("seededHere = result.wroteHere"), "мастер забывает свой посев — откат не сработает")
+        XCTAssertTrue(body.contains("seedFailure = result.failure"), "отказ посева не показан человеку")
+        XCTAssertFalse(body.contains("seededFlags"), "посеянные ключи в общей записи — снова мимо оракула")
+    }
 }

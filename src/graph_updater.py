@@ -93,7 +93,7 @@ CHUNK_OVERLAP = 1_000
 # вдвое мельче. Замер 27.10 (17 встреч, эталон ревизии): модель на одной нарезке
 # пропускает около трети решений, и повтор той же нарезки ловит в основном то же
 # самое (+9 п. п.), а другая нарезка — другое: 12000 ∪ 6000 дали 77–82 % покрытия
-# против 60–65 % у одного прохода, без роста брака.
+# против 57–65 % у одного прохода, без роста брака.
 CHUNK_CHARS_2 = 6_000
 CHUNK_OVERLAP_2 = 500
 # Склейка решений второго прохода с первым (№821): решение второго отбрасывается,
@@ -263,7 +263,8 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     # прохода, иначе человек увидел бы «3/3», а за ним снова «1/6».
     second = []
     if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2:
-        if _language(cfg) == "ru":                      # пустой ключ — тоже ru (_language)
+        # Пустой ключ — тоже ru (_language); `ru-RU`, `ru_RU` — по основному тегу (n822-out1).
+        if _language(cfg).replace("_", "-").split("-")[0] == "ru":
             second = _split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2, short_tail=False)
         else:
             # Порог склейки 0,7/3 мерен только на русских встречах: в китайском

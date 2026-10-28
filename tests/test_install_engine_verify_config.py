@@ -204,3 +204,18 @@ def test_cli_recursive_alias_refused(tmp_path):
     old = "a: &a [*a]\nsufler:\n  diarize_backend: sherpa\n"
     r = _run(json.dumps(_payload(old, old.replace("sherpa", '"nemotron"'), "sherpa")), tmp_path)
     assert r.returncode == 1 and r.stdout.startswith("отказ: проверка упала"), (r.stdout, r.stderr)
+
+
+def test_preset_seed_of_second_pass():
+    """Посев мастера (№822): ключа нет — дописан; ручное значение, которого не увидел
+    построчный разбор (ключ в кавычках, `key :`), — отказ; иных значений посев не пишет."""
+    def seed(old, new, expected=None, value="true"):
+        return ie.verify_config_edit({"old": old, "new": new, "key": "graph_second_pass",
+                                      "expected": expected, "value": value})
+    assert seed("sufler:\n  graph: true\n", 'sufler:\n  graph: true\n  graph_second_pass: "true"\n') is None
+    assert seed('sufler:\n  graph_second_pass: "true"\n', 'sufler:\n  graph_second_pass: "false"\n',
+                expected="true", value="false") is None
+    for owner in ('"graph_second_pass": false', "graph_second_pass : false"):
+        old = f"sufler:\n  {owner}\n"
+        assert seed(old, old + '  graph_second_pass: "true"\n') is not None, owner
+    assert seed("sufler:\n  a: 1\n", 'sufler:\n  a: 1\n  graph_second_pass: "yes"\n', value="yes") is not None

@@ -30,6 +30,10 @@ struct FirstRunView: View {
     @State private var graphPath = AppSettings.configValue("graph_dir") ?? ""
     @State private var configSaved = false
     @State private var presetSaveFailed = false
+    /// Что мастер сам посеял в этом показе (`ModelPreset.seedWrites`).
+    @State private var seededHere: [String: String] = [:]
+    @State private var seeding = false
+    @State private var seedFailure: String?
     /// Текст отказа записи конфига; nil — отказа не было.
     @State private var configSaveFailure: String?
     /// Выбранный набор моделей. По умолчанию — тот, что уже в конфиге, а
@@ -210,7 +214,8 @@ struct FirstRunView: View {
                     applyPreset()
                 }
                 .charoite(.regular, .m)
-                .disabled(pulls.isPulling(selectedPreset.model)
+                .disabled(seeding
+                          || pulls.isPulling(selectedPreset.model)
                           || pulls.isPulling(selectedPreset.smallModel))
                 if presetSaveFailed {
                     Text(L.t("Не удалось записать пресет в config.yaml — проверьте путь установки",
@@ -228,6 +233,9 @@ struct FirstRunView: View {
                         }
                     }
                 }
+            }
+            if let seedFailure {
+                Text(seedFailure).font(.caption).foregroundStyle(.red).lineLimit(2)
             }
             if let err = selectedPreset.models.compactMap({ pulls.failed[$0] }).first {
                 Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
@@ -248,13 +256,12 @@ struct FirstRunView: View {
         // машина тянет (граф, дежавю, ревизия ядер, модель тезисов). Пишем
         // одной операцией: по ключу за раз конфиг оставался наполовину новым,
         // наполовину старым, и это ничем себя не выдавало.
-        // Посеянные ключи (второй проход разбора) — только если их в конфиге
-        // нет: ручное значение владельца пресет не трогает (сверка n822-in1).
-        // Мастер показывается раз на устройство (`seen`), так что ручное
-        // значение встретится здесь только в перенесённом конфиге.
+        // Посеянные ключи (второй проход разбора) — отдельной условной записью
+        // после основной: та создаёт config.yaml на свежей машине, а посев
+        // пишет, только если ключа нет, и сверяется PyYAML (сверка n822-out1).
+        // Ручное значение владельца пресет не трогает.
         let saved = AppSettings.setConfigValues(
-            [("model", preset.model), ("small_model", preset.smallModel)]
-            + preset.flagsToWrite(current: { AppSettings.configValue($0) }))
+            [("model", preset.model), ("small_model", preset.smallModel)] + preset.configFlags)
         if !saved {
             presetSaveFailed = true
             return
@@ -262,6 +269,16 @@ struct FirstRunView: View {
         presetSaveFailed = false
         for model in preset.models { pulls.pull(model) }
         readiness.refresh(force: true)
+        seedFailure = nil
+        let writes = preset.seedWrites(wroteHere: seededHere)
+        guard !writes.isEmpty else { return }
+        seeding = true
+        Task { @MainActor in
+            let result = await ModelPresetPolicy.seed(writes, wroteHere: seededHere, root: AppSettings.charoiteRoot)
+            seededHere = result.wroteHere
+            seedFailure = result.failure
+            seeding = false
+        }
     }
 
     /// Имя и папка графа — то, что раньше правили в YAML руками.

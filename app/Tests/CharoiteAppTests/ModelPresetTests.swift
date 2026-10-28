@@ -107,42 +107,28 @@ final class ModelPresetTests: XCTestCase {
     }
 
     /// Второй проход разбора (№821) мерен только на модели «Полного»: его
-    /// сеет один «Полный», и только туда, где ключа ещё нет. Ручное значение
-    /// владельца — и true, и false — «Записать» не трогает (№822, сверка n822-in1).
-    func testВторойПроходСеетТолькоПолныйИНеПоверхРучного() {
-        let none: (String) -> String? = { _ in nil }
+    /// сеет один «Полный», условной записью «ключа нет» (№822, сверки n822-in1, out1).
+    func testВторойПроходСеетТолькоПолный() {
+        XCTAssertEqual(ModelPresetPolicy.seededKeys, ["graph_second_pass"])
         for preset in ModelPresetPolicy.all {
-            let flags = Dictionary(uniqueKeysWithValues:
-                preset.flagsToWrite(current: none).map { ($0.key, $0.value) })
-            XCTAssertEqual(flags["graph_second_pass"], preset.id == "full" ? "true" : nil, preset.id)
-            XCTAssertFalse(preset.configFlags.contains { $0.key == "graph_second_pass" },
+            XCTAssertEqual(preset.seedWrites(wroteHere: [:]),
+                           preset.id == "full" ? [.init(key: "graph_second_pass", expected: nil, value: "true")] : [],
+                           preset.id)
+            XCTAssertFalse(preset.configFlags.contains { ModelPresetPolicy.seededKeys.contains($0.key) },
                            "\(preset.id): не флаг машины — иначе смена пресета затрёт выбор владельца")
-        }
-        let full = ModelPresetPolicy.recommended(forGB: 64)
-        for manual in ["true", "false", "нет"] {
-            let flags = full.flagsToWrite(current: { $0 == "graph_second_pass" ? manual : nil })
-            XCTAssertFalse(flags.contains { $0.key == "graph_second_pass" }, manual)
-            XCTAssertEqual(flags.count, full.configFlags.count, "контуры машины пишутся как прежде")
         }
     }
 
-    /// Свежая установка: ключ в шаблоне закомментирован, `parseValue` его не
-    /// видит — значит «Полный» посеет true, и строка ляжет в секцию sufler.
-    func testНаШаблонеВторойПроходЛожитсяВСекциюSufler() {
-        let template = "sufler:\n  graph: true\n  # graph_second_pass: true\n  graph_dir: \"\"\nlog:\n  level: info\n"
-        XCTAssertNil(AppSettings.parseValue("graph_second_pass", in: template))
-        let flags = ModelPresetPolicy.recommended(forGB: 64)
-            .flagsToWrite(current: { AppSettings.parseValue($0, in: template) })
-        var text = template
-        for pair in flags where pair.key == "graph_second_pass" {
-            text = AppSettings.replacing(pair.key, with: pair.value, in: text)
-        }
-        XCTAssertEqual(AppSettings.parseValue("graph_second_pass", in: text), "true")
-        let lines = text.components(separatedBy: "\n")
-        let at = lines.firstIndex(of: "  graph_second_pass: \"true\"")
-        let log = lines.firstIndex(of: "log:")
-        XCTAssertNotNil(at)
-        XCTAssertLessThan(at ?? .max, log ?? 0, "ключ — внутри sufler, до следующей секции")
+    /// «Полный», потом «Лёгкий» в том же показе мастера: свой посев откатывается,
+    /// повторный «Полный» возвращает его; повтор того же пресета ничего не пишет.
+    func testСменаПресетаОткатываетТолькоСвойПосев() {
+        let full = ModelPresetPolicy.recommended(forGB: 64)
+        let light = ModelPresetPolicy.all.first { $0.id == "light" }!
+        let k = "graph_second_pass"
+        XCTAssertEqual(light.seedWrites(wroteHere: [k: "true"]), [.init(key: k, expected: "true", value: "false")])
+        XCTAssertEqual(full.seedWrites(wroteHere: [k: "false"]), [.init(key: k, expected: "false", value: "true")])
+        XCTAssertEqual(full.seedWrites(wroteHere: [k: "true"]), [])
+        XCTAssertEqual(light.seedWrites(wroteHere: [:]), [], "не сеяли — «Лёгкий» ключ не трогает")
     }
 
     func testТяжёлыеПрофилиНичегоНеОтключают() {

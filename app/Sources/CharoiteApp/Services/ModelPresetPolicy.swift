@@ -93,15 +93,62 @@ struct ModelPreset: Identifiable, Equatable {
         id == "full" ? [("graph_second_pass", "true")] : []
     }
 
-    /// Всё, что «Записать в конфиг» кладёт помимо моделей: configFlags целиком
-    /// и посеянные ключи, которых в конфиге нет (`current` — чтение конфига,
-    /// nil — ключа нет или он пустой).
-    func flagsToWrite(current: (String) -> String?) -> [(key: String, value: String)] {
-        configFlags + seededFlags.filter { current($0.key) == nil }
+    /// Условная запись посеянного ключа: `value`, только если в конфиге всё ещё
+    /// `expected` (`nil` — ключа нет или он пуст).
+    struct SeedWrite: Equatable {
+        let key: String
+        let expected: String?
+        let value: String
+    }
+
+    /// План посева для «Записать в конфиг». `wroteHere` — что мастер сам
+    /// посеял в этом показе: «Полный», потом «Лёгкий» откатывает свой же посев
+    /// в "false", а значение владельца (ключ был до мастера) не трогает никто —
+    /// условие `expected` проверяет `setConfigValueIfUnchanged` под оракулом
+    /// PyYAML (сверка n822-out1). Посеянные ключи — булевы, откат — "false".
+    func seedWrites(wroteHere: [String: String]) -> [SeedWrite] {
+        let mine = Dictionary(seededFlags.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        return ModelPresetPolicy.seededKeys.compactMap { key in
+            let expected = wroteHere[key]
+            guard let target = mine[key] ?? (expected == nil ? nil : "false"),
+                  target != expected else { return nil }
+            return SeedWrite(key: key, expected: expected, value: target)
+        }
     }
 }
 
 enum ModelPresetPolicy {
+    /// Все ключи, которые сеет хоть один профиль.
+    static var seededKeys: [String] {
+        Array(Set(all.flatMap { $0.seededFlags.map(\.key) })).sorted()
+    }
+
+    /// Посеять ключи по плану `seedWrites` — тем же путём, что кнопка Nemotron
+    /// (`setConfigValueIfUnchanged`: построчная правка секции sufler, сверка
+    /// PyYAML, CAS по байтам). Построчное «ключа нет» расходилось с PyYAML на
+    /// ключе в кавычках, `key :`, втором блоке `sufler :` — посев дописывал
+    /// дубль поверх ручного false (круг n822-out1, DS C1, Haiku C1).
+    /// Возвращает, что мастер посеял, и причину отказа человеку.
+    @MainActor
+    static func seed(_ writes: [ModelPreset.SeedWrite], wroteHere: [String: String],
+                     root: URL) async -> (wroteHere: [String: String], failure: String?) {
+        var wrote = wroteHere
+        var failure: String?
+        for w in writes {
+            switch await AppSettings.setConfigValueIfUnchanged(w.key, expected: w.expected,
+                                                               value: w.value, root: root) {
+            case .written:
+                wrote[w.key] = w.value
+            case .changed:
+                // Значение теперь не наше: владелец поправил файл — не трогаем и не откатываем.
+                wrote[w.key] = nil
+            case .failed(let reason):
+                failure = reason
+            }
+        }
+        return (wrote, failure)
+    }
+
 
     /// Все варианты, от тяжёлого к лёгкому.
     ///
