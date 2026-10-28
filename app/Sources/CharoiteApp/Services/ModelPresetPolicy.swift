@@ -116,9 +116,9 @@ enum ModelPresetPolicy {
             graph: true, dejaVu: true,
             // Умолчание второго прохода живёт в демоне (`install_profile.graph_second_pass_enabled`,
             // №822): пресет ключ не пишет, заметка только называет цену.
-            note: L.t("Наш рабочий набор: 42 решения и 39 ядер на встречу, медиана разбора 57 с. На русских встречах с этой моделью по умолчанию идёт второй проход разбора, если он не выключен в config.yaml: больше решений, +2–2,5 мин на встречу.",
-                      "Our working set: 42 decisions and 39 cores per meeting, 57 s median. On Russian-language meetings this model runs a second extraction pass by default unless it is turned off in config.yaml: more decisions, +2–2.5 min per meeting.",
-                      "我们的日常配置：每场会议 42 条决定、39 个核心，解析中位数 57 秒。俄语会议上该模型默认进行第二轮解析（除非在 config.yaml 中关闭）：决定更多，每场会议多 2–2.5 分钟。")),
+            note: L.t("Наш рабочий набор: 42 решения и 39 ядер на встречу, медиана разбора 57 с. На русских встречах с этой моделью на Ollama по умолчанию идёт второй проход разбора, если он не выключен в config.yaml: больше решений, +2–2,5 мин на встречу.",
+                      "Our working set: 42 decisions and 39 cores per meeting, 57 s median. On Russian-language meetings this model on Ollama runs a second extraction pass by default unless it is turned off in config.yaml: more decisions, +2–2.5 min per meeting.",
+                      "我们的日常配置：每场会议 42 条决定、39 个核心，解析中位数 57 秒。俄语会议上该模型（Ollama）默认进行第二轮解析（除非在 config.yaml 中关闭）：决定更多，每场会议多 2–2.5 分钟。")),
         ModelPreset(
             id: "precise",
             title: L.t("Точный", "Precise", "精确"),

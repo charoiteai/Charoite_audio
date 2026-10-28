@@ -37,7 +37,8 @@ def test_default_is_everything_on():
     assert install_profile.tier3_enabled({}) is True
 
 
-_MLX, _27B, _4B = "qwen3.6:35b-mlx", "qwen3.6:27b", "qwen3.5:4b"
+# Модели пресетов приложения (`ModelPresetPolicy.swift`): «Полный», «Точный», «Лёгкий».
+_MLX, _27B, _4B = "qwen3.6:35b-mlx", "qwen3.8:27b-mlx", "qwen3.5:4b"
 _UNSET = object()
 
 
