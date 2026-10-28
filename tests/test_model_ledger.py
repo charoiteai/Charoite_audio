@@ -39,7 +39,8 @@ DONE = {"done": True, "prompt_eval_count": 120, "eval_count": 7,
 def _чистый_учёт(monkeypatch, tmp_path):
     # свой config.yaml корня теста: иначе срок пришёл бы из примера поставки в корне
     # кода — скрытый участник прогона (выход n807-out5, Haiku M2 = DS M2)
-    assert charoite_paths.resolve_root(llm.__file__) == tmp_path / "данные"
+    if charoite_paths.resolve_root(llm.__file__) != tmp_path / "данные":   # до записи config.yaml (выход n807-out6, DS I4)
+        pytest.fail("корень данных теста не tmp_path — config.yaml не пишу")
     _owner_config("llm: {}\n")
     model_ledger._swept.clear()
     model_ledger._terms.clear()
@@ -331,8 +332,15 @@ def test_torn_line_is_not_glued_to_the_next(tmp_path):
     assert len(warned) == 1
 
 
-def test_write_cost_is_small(tmp_path):
-    """Запись идёт в нити вызова после снятия аренды (вход S-I5): замер цены."""
+@pytest.mark.parametrize("term", [35, 0])
+def test_write_cost_is_small(tmp_path, term):
+    """Запись идёт в нити вызова после снятия аренды (вход S-I5): замер цены. При `0`
+    уборка идёт на каждом вызове — `listdir` каталога с 500 чужими именами (выход n807-out6, DS I8)."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(f"llm:\n  ledger_keep_days: {term}\n")
+    (tmp_path / "logs").mkdir()
+    for i in range(500):
+        (tmp_path / "logs" / f"чужое-{i}.log").write_text("")
     call = model_ledger.Call(tmp_path, engine="ollama", model="m1", kind="stream",
                              method="hint", skip=frozenset())
     took = []
@@ -433,15 +441,18 @@ def test_torn_multibyte_char_breaks_one_line_not_the_file(tmp_path):
     assert got == [{"модель": "первая"}, {"модель": "третья"}] and len(warned) == 1
 
 
-@pytest.mark.parametrize("doc", [None, "строкой", ["a"], {"llm": "строкой"}, {"llm": None}])
+@pytest.mark.parametrize("doc", [None, "строкой", ["a"], {"llm": "строкой"}, {"llm": [1]},
+                                 {"ledger_keep_days": 400}, {"ledger_keep_days": 400, "llm": {}}])
 def test_keep_days_of_a_config_not_understood_is_unknown(doc):
     """Пустой файл, не словарь, `llm:` без словаря — «не поняли», а не 35 (выход n807-out5)."""
     assert model_ledger.keep_days(doc) is None
 
 
 def test_missing_key_is_the_default():
+    """`llm:` без значения — пустой раздел, как у остального продукта (выход n807-out6, DS I2)."""
     assert model_ledger.keep_days({}) == 35
     assert model_ledger.keep_days({"llm": {}}) == 35
+    assert model_ledger.keep_days({"llm": None}) == 35
 
 
 def test_warmup_is_its_own_consumer(_сеть_закрыта):
@@ -561,7 +572,7 @@ def test_unread_config_writes_but_does_not_sweep(_сеть_закрыта, capsy
     "".join(c.stream("x", model="m1"))
     "".join(c.stream("x", model="m1"))
     assert old.exists() and len(_records()) == 2
-    assert capsys.readouterr().err.count("конфиг не прочитан") == 1
+    assert capsys.readouterr().err.count("config.yaml не прочитан") == 1
 
 
 def test_name_with_a_newline_is_not_ours(tmp_path):
@@ -596,7 +607,7 @@ def test_read_timeout_mid_stream_is_a_timeout(_сеть_закрыта):
     assert rec["outcome"] == "timeout" and rec["first_s"] is not None
 
 
-@pytest.mark.parametrize("text", ["", "llm:\n", "- a\n", "llm: строкой\n",
+@pytest.mark.parametrize("text", ["", "- a\n", "llm: строкой\n", "ledger_keep_days: 400\n",
                                   "llm:\n  ledger_keep_days: много\n"])
 def test_config_not_understood_sweeps_nothing(_сеть_закрыта, text, capsys, monkeypatch):
     """Обнулённый или непонятый config.yaml — не «владелец сказал 35»: строка пишется,
@@ -648,3 +659,36 @@ def test_failing_fingerprint_keeps_the_line(_сеть_закрыта, monkeypatc
     "".join(c.stream("x", model="m1"))
     assert len(_records()) == 1
     assert "не пишется" not in capsys.readouterr().err
+
+
+def _own_config_unseen(how: str) -> None:
+    own = charoite_paths.resolve_root(llm.__file__) / "config" / "config.yaml"
+    if how == "нет":
+        own.unlink()
+    elif how == "битая ссылка":
+        own.unlink()
+        own.symlink_to(own.parent / "нет-такого.yaml")
+    elif how == "нет прав":
+        own.parent.chmod(0)
+
+
+@pytest.mark.parametrize("how", ["нет", "битая ссылка", "нет прав"])
+def test_unseen_own_config_never_lends_the_example_term(_сеть_закрыта, how):
+    """Своего config.yaml не видно — загрузчик взял бы пример поставки с его 35;
+    пример не слово владельца: строка пишется, 60-дневный файл жив (выход n807-out6,
+    DS C1 = Haiku C1). Срок владельца 400 — сначала виден, потом пропадает."""
+    _owner_config("llm:\n  ledger_keep_days: 400\n")
+    kept = _logs() / f"model_calls-{_day(60)}.jsonl"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text("")
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    model_ledger._swept.clear()          # следующий день процесса — уборка снова
+    config_dir = charoite_paths.resolve_root(llm.__file__) / "config"
+    try:
+        _own_config_unseen(how)
+        "".join(c.stream("x", model="m1"))
+    finally:
+        config_dir.chmod(0o755)
+    assert kept.exists() and len(_records()) == 2

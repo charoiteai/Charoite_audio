@@ -48,6 +48,8 @@ import sys
 import threading
 import time
 
+import yaml
+
 import charoite_paths
 import config_loader
 import jsonl_log
@@ -111,19 +113,27 @@ def term(root: pathlib.Path) -> int | None:
     словарь, который процесс собрал сам (`scripts/runtime_profile.py`) или
     прочёл на старте (демон), срок владельца не сокращает и журнал не
     выключает; правка `config.yaml` действует у живого демона со следующего
-    вызова (финальный Opus, I1). None — конфиг не прочитан: строка пишется,
-    но ничего не стирается — срок владельца неизвестен."""
+    вызова (финальный Opus, I1).
+
+    Стирать вправе только СВОЙ `config/config.yaml` корня. Пример поставки,
+    который загрузчик берёт, когда своего не видно (нет, битая ссылка, нет
+    прав на каталог, заглушка iCloud), — не слово владельца: его 35 стёрли бы
+    дни, которые владелец велел хранить (выход n807-out6, DS C1 = Haiku C1).
+    Поэтому файл читается здесь напрямую, а не через выбор загрузчика: «пропал
+    между выбором и чтением» — исключение, а не пример. None — своего файла нет,
+    он не читается или не понят: строка пишется, ничего не стирается."""
     root = pathlib.Path(root)
+    own = root / "config" / "config.yaml"
     try:    # целиком: исключение отпечатка иначе стоило бы строки, а не уборки (выход n807-out5, DS M3)
         fp = config_loader.fingerprint(root)
         with _term_lock:
             hit = _terms.get(str(root))
         if hit is not None and hit[0] == fp:
             return hit[1]
-        n = keep_days(config_loader.load_user_or_example(root))
-    except Exception as exc:  # noqa: BLE001 — битый конфиг не вправе уронить вызов модели
-        once.say(("model_ledger", "term", type(exc).__name__),
-                 f"model_ledger: конфиг не прочитан ({type(exc).__name__}) — журнал пишется, "
+        n = keep_days(yaml.safe_load(own.read_text(encoding="utf-8")))
+    except Exception as exc:  # noqa: BLE001 — битый или невидимый конфиг не вправе уронить вызов модели
+        once.say(("model_ledger", f"term:{type(exc).__name__}"),
+                 f"model_ledger: свой config.yaml не прочитан ({type(exc).__name__}) — журнал пишется, "
                  "прежние дни не стираются", stream=sys.stderr)
         return None
     with _term_lock:
@@ -134,15 +144,22 @@ def term(root: pathlib.Path) -> int | None:
 def keep_days(cfg) -> int | None:
     """Срок журнала из разобранного конфига: число дней, `0` — выключен, None — не понят.
 
-    Умолчание 35 — только когда конфиг понят, а ключа в нём нет. Пустой файл
-    (`None`), не словарь, `llm:` не словарём, мусор в значении — «владельца не
-    поняли»: строка пишется, прежние дни не стираются (выход n807-out5, три
-    головы). Выключает (и стирает прежние дни) только целое `0`: `"0"`, `false`,
-    `0.0`, `-1`, `0.5` — не «выключить» (выходы n807-out2…out4)."""
-    if not isinstance(cfg, dict) or not isinstance(cfg.get("llm", {}), dict):
+    Умолчание 35 — только когда конфиг понят, а ключа в нём нет; `llm:` без
+    значения — пустой раздел, как у остального продукта (выход n807-out6, DS I2).
+    Пустой файл (`None`), не словарь, `llm` не словарём, ключ не под `llm:`
+    (сбитый отступ), мусор в значении — «владельца не поняли»: строка пишется,
+    прежние дни не стираются (выходы n807-out5, out6). Выключает (и стирает
+    прежние дни) только целое `0`: `"0"`, `false`, `0.0`, `-1`, `0.5` — не
+    «выключить» (выходы n807-out2…out4)."""
+    section = cfg.get("llm") if isinstance(cfg, dict) else None
+    section = {} if section is None else section
+    if not isinstance(cfg, dict) or not isinstance(section, dict):
         _not_understood("конфиг не словарь" if not isinstance(cfg, dict) else "llm не словарь")
         return None
-    raw = cfg.get("llm", {}).get("ledger_keep_days", KEEP_DAYS_DEFAULT)
+    if "ledger_keep_days" in cfg:
+        _not_understood("ledger_keep_days вне раздела llm")
+        return None
+    raw = section.get("ledger_keep_days", KEEP_DAYS_DEFAULT)
     n = _count(raw)
     if n is None or n != raw or (n == 0 and not isinstance(raw, int)):   # 0.0 — не выключатель (выход n807-out4)
         _not_understood(f"llm.ledger_keep_days ({type(raw).__name__})")
@@ -151,7 +168,7 @@ def keep_days(cfg) -> int | None:
 
 
 def _not_understood(what: str) -> None:
-    once.say(("model_ledger", "keep_days", what),
+    once.say(("model_ledger", f"keep_days:{what}"),
              f"model_ledger: {what} не понят — журнал пишется, прежние дни не стираются; "
              "выключает только число 0", stream=sys.stderr)
 
