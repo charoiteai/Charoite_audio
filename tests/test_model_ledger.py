@@ -438,4 +438,26 @@ def test_huge_server_numbers_do_not_break_the_answer(_сеть_закрыта):
     with model_ledger.consumer("тест"):
         assert "".join(c.stream("ВОПРОС", model="m1")) == "а"
     [rec] = _records()
-    assert rec["outcome"] == "ok" and rec["server_s"] is None and rec["out_tok"] == 7
+    assert rec["outcome"] == "ok" and rec["server_s"] is None and rec["in_tok"] is None
+    assert rec["out_tok"] == 7
+
+
+def test_warmup_at_start_applies_the_term(_сеть_закрыта):
+    """Срок и выключение действуют с прогрева на старте демона и консоли,
+    а не с первой подсказки встречи (выход n807-out3, Haiku I1)."""
+    old = _logs() / "model_calls-2000-01-01.jsonl"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("{}\n")
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("готов"))
+    c.warmup()
+    assert not old.exists()
+    assert (_logs().stat().st_mode & 0o777) == 0o700
+
+
+@pytest.mark.parametrize("raw", ["0", False, -1, 0.5])
+def test_unreadable_term_is_said_once(raw, capsys, monkeypatch):
+    monkeypatch.setattr(model_ledger.once, "_said", set())
+    assert model_ledger.keep_days({"llm": {"ledger_keep_days": raw}}) == 35
+    assert model_ledger.keep_days({"llm": {"ledger_keep_days": raw}}) == 35
+    assert capsys.readouterr().err.count("ledger_keep_days не понят") == 1

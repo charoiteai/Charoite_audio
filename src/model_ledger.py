@@ -108,6 +108,11 @@ def keep_days(cfg: dict | None) -> int:
     raw = section.get("ledger_keep_days", KEEP_DAYS_DEFAULT) if isinstance(section, dict) else KEEP_DAYS_DEFAULT
     n = _count(raw)
     if n is None or n != raw:
+        # «0» строкой или false — не выключатель: молча включённый журнал
+        # человек считал бы выключенным (выход n807-out3)
+        once.say(("model_ledger", "keep_days"),
+                 f"model_ledger: llm.ledger_keep_days не понят ({type(raw).__name__}) — "
+                 f"срок {KEEP_DAYS_DEFAULT} дней; выключает только число 0", stream=sys.stderr)
         return KEEP_DAYS_DEFAULT
     return min(n, KEEP_DAYS_MAX)
 
@@ -120,6 +125,12 @@ def _count(x) -> int | None:
     if isinstance(x, float) and not math.isfinite(x):
         return None
     return int(x) if x >= 0 else None
+
+
+def _tokens(x) -> int | None:
+    """Число токенов; больше триллиона — мусор шлюза, не строка в 4 КБ."""
+    n = _count(x)
+    return None if n is None or n > 10**12 else n
 
 
 def _seconds_ns(x) -> float | None:
@@ -175,8 +186,8 @@ class Call:
         if not isinstance(body, dict):
             return
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-        self.in_tok = _count(body.get("prompt_eval_count", usage.get("prompt_tokens")))
-        self.out_tok = _count(body.get("eval_count", usage.get("completion_tokens")))
+        self.in_tok = _tokens(body.get("prompt_eval_count", usage.get("prompt_tokens")))
+        self.out_tok = _tokens(body.get("eval_count", usage.get("completion_tokens")))
         self.server_s = _seconds_ns(body.get("total_duration"))
         self.load_s = _seconds_ns(body.get("load_duration"))
         self.cut = _cut_reason(body)
@@ -236,6 +247,8 @@ def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
         if key in _swept:
             return
         _swept.add(key)
+    if keep:    # jsonl_log (base) создаёт каталог без 0700; выключенный журнал каталог не заводит (выход n807-out3)
+        charoite_paths.secure_dir(logs)
     cutoff = "9999" if keep == 0 else time.strftime("%Y-%m-%d", time.localtime(time.time() - keep * 86400))
     try:
         names = os.listdir(logs)
