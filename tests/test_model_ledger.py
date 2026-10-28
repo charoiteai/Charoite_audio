@@ -16,6 +16,7 @@ import time
 
 import pytest
 import requests
+import urllib3
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -37,15 +38,31 @@ DONE = {"done": True, "prompt_eval_count": 120, "eval_count": 7,
 @pytest.fixture(autouse=True)
 def _чистый_учёт(monkeypatch):
     model_ledger._swept.clear()
+    model_ledger._terms.clear()
     llm._strict_json_clear()
     monkeypatch.setattr(llm.time, "sleep", lambda s: None)   # паузы «занято» — без ожидания
     yield
     model_ledger._swept.clear()
+    model_ledger._terms.clear()
     llm._strict_json_clear()
 
 
 def _logs() -> pathlib.Path:
     return charoite_paths.resolve_root(llm.__file__) / "logs"
+
+
+def _owner_config(text: str, stamp: float | None = None) -> pathlib.Path:
+    """`config.yaml` корня данных теста (`tmp_path/данные`): срок журнала — только отсюда."""
+    p = charoite_paths.resolve_root(llm.__file__) / "config" / "config.yaml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    if stamp is not None:
+        os.utime(p, (stamp, stamp))
+    return p
+
+
+def _day(days_ago: int) -> str:
+    return time.strftime("%Y-%m-%d", time.localtime(time.time() - days_ago * 86400))
 
 
 def _records() -> list[dict]:
@@ -241,8 +258,9 @@ def test_sse_usage_is_counted_when_sent(_сеть_закрыта):
 
 
 def test_keep_zero_turns_the_ledger_off(_сеть_закрыта):
-    cfg = {**LOCAL, "llm": {**LOCAL["llm"], "ledger_keep_days": 0}}
-    c = llm.LLM(cfg)
+    """`0` в config.yaml корня выключает журнал, хотя в словаре клиента ключа нет."""
+    _owner_config("llm:\n  ledger_keep_days: 0\n")
+    c = llm.LLM(LOCAL)
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
     "".join(c.stream("x", model="m1"))
     assert list(_logs().glob("model_calls-*")) == []
@@ -311,7 +329,7 @@ def test_torn_line_is_not_glued_to_the_next(tmp_path):
 
 def test_write_cost_is_small(tmp_path):
     """Запись идёт в нити вызова после снятия аренды (вход S-I5): замер цены."""
-    call = model_ledger.Call(tmp_path, LOCAL, engine="ollama", model="m1", kind="stream",
+    call = model_ledger.Call(tmp_path, engine="ollama", model="m1", kind="stream",
                              method="hint", skip=frozenset())
     took = []
     for _ in range(200):
@@ -371,7 +389,8 @@ def test_ledger_off_removes_earlier_days(_сеть_закрыта):
     logs.mkdir(parents=True, exist_ok=True)
     old = logs / f"model_calls-{time.strftime('%Y-%m-%d')}.jsonl"
     old.write_text("{}\n", encoding="utf-8")
-    c = llm.LLM({**LOCAL, "llm": {**LOCAL["llm"], "ledger_keep_days": 0}})
+    _owner_config("llm:\n  ledger_keep_days: 0\n")
+    c = llm.LLM(LOCAL)
     _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
     "".join(c.stream("x", model="m1"))
     assert list(logs.glob("model_calls-*")) == []
@@ -477,3 +496,80 @@ def test_sweep_survives_a_failed_chmod(tmp_path, monkeypatch):
                         lambda p: (_ for _ in ()).throw(OSError("нет прав")))
     model_ledger._sweep(tmp_path, 35, "2026-10-28")
     assert not old.exists()
+
+
+def test_owner_term_beats_the_callers_config(_сеть_закрыта):
+    """Словарь, собранный процессом руками (`scripts/runtime_profile.py`), срок
+    владельца не сокращает: 400 в config.yaml — файл 60-дневной давности жив
+    (финальный Opus, I1)."""
+    _owner_config("llm:\n  ledger_keep_days: 400\n")
+    old = _logs() / f"model_calls-{_day(60)}.jsonl"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("{}\n")
+    c = llm.LLM({**LOCAL, "llm": {**LOCAL["llm"], "ledger_keep_days": 1}})   # срок вызывающего — не довод
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert old.exists()
+    assert len(_records()) == 2          # пустая строка старого файла и строка этого вызова
+
+
+def test_switch_off_reaches_a_live_client(_сеть_закрыта):
+    """Правка config.yaml действует у живого клиента со следующего вызова —
+    демону не нужен перезапуск (кэш по отпечатку конфига)."""
+    cfg = _owner_config("llm:\n  ledger_keep_days: 35\n", stamp=1_000_000)
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    assert len(_records()) == 1
+    _owner_config("llm:\n  ledger_keep_days: 0\n", stamp=2_000_000)
+    "".join(c.stream("x", model="m1"))
+    assert list(_logs().glob("model_calls-*")) == []
+    assert cfg.exists()
+
+
+def test_unread_config_writes_but_does_not_sweep(_сеть_закрыта, capsys, monkeypatch):
+    """Конфиг корня не разобран — срок владельца неизвестен: строка пишется,
+    прежние дни не стираются, причина — одной строкой."""
+    monkeypatch.setattr(model_ledger.once, "_said", set())
+    _owner_config("llm: [не закрыт\n")
+    old = _logs() / "model_calls-2000-01-01.jsonl"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("")
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("а"))
+    "".join(c.stream("x", model="m1"))
+    "".join(c.stream("x", model="m1"))
+    assert old.exists() and len(_records()) == 2
+    assert capsys.readouterr().err.count("конфиг не прочитан") == 1
+
+
+def test_name_with_a_newline_is_not_ours(tmp_path):
+    """`$` совпадал перед завершающим `\\n` — чужой файл стирался (финальный Opus, M1)."""
+    odd = tmp_path / "model_calls-2000-01-01.jsonl\n"
+    odd.write_text("")
+    model_ledger._sweep(tmp_path, 35, "2026-10-28")
+    assert odd.exists()
+
+
+class _ReadTimeoutRaw(io.BytesIO):
+    """`raw` urllib3: первая строка ответа, потом сервер молчит дольше таймаута чтения."""
+
+    def stream(self, amt=None, decode_content=None):
+        yield _ndjson("а", done=None)[0] + b"\n"
+        raise urllib3.exceptions.ReadTimeoutError(None, "/api/chat", "Read timed out.")
+
+
+def test_read_timeout_mid_stream_is_a_timeout(_сеть_закрыта):
+    """`requests` заворачивает таймаут чтения в `ConnectionError` — в журнале это
+    `timeout`, а не «недоступен» (финальный Opus, M2)."""
+    def answer(url, **k):
+        r = requests.Response()
+        r.status_code = 200
+        r.raw = _ReadTimeoutRaw()
+        return r
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = answer
+    with pytest.raises(Exception):
+        "".join(c.stream("x", model="m1"))
+    [rec] = _records()
+    assert rec["outcome"] == "timeout" and rec["first_s"] is not None

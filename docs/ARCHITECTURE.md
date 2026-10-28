@@ -138,7 +138,7 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   `_collect`, the two graph passes; elsewhere (the debrief is
   `untagged:graph_updater.main`, its only direct model call) the first frame
   outside `llm.py`, marked `untagged:`. The ledger keeps its own term by the
-  date in the file name (`llm.ledger_keep_days`, 35; exactly `0` = off and deletes earlier days, a negative or fractional value = 35): the shared
+  date in the file name (`llm.ledger_keep_days`, 35; exactly `0` = off and deletes earlier days, a negative or fractional value = 35), read only from `config.yaml` of the data root the files live in — a config the caller built itself cannot shorten it, and an edit reaches a running daemon on its next call: the shared
   `logs/` retention judges by mtime and the audio term and would wipe it.
   Outside the ledger by design: one-token health probes, the hold tick, the
   embedder and the Swift app's own chat requests. `wall_s` starts at the first

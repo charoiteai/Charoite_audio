@@ -23,8 +23,10 @@
 
 В строке нет ни текста промпта, ни ответа, ни текста ошибки, ни пути встречи —
 только имена кода, модель, числа и вид исхода. Файл на день
-`logs/model_calls-ГГГГ-ММ-ДД.jsonl`; срок — `llm.ledger_keep_days` (умолчание
-35 — окно месячного решения №809, `0` выключает журнал), уборка по дате в имени
+`logs/model_calls-ГГГГ-ММ-ДД.jsonl`; срок — `llm.ledger_keep_days` из конфига
+КОРНЯ, где лежат файлы (умолчание 35 — окно месячного решения №809, `0`
+выключает журнал): конфиг в аргументе `LLM` сроком владельца не распоряжается
+(финальный Opus, I1), уборка по дате в имени
 у писателя: общий ретеншн `logs/` судит по mtime файла и сроку записи звука, он
 стёр бы журнал через двое суток простоя (входной круг S-C1, DS I1). Запись —
 после снятия аренды, ошибка записи глотается одной строкой на процесс: вызов
@@ -47,6 +49,7 @@ import threading
 import time
 
 import charoite_paths
+import config_loader
 import jsonl_log
 import once
 
@@ -56,9 +59,11 @@ KEEP_DAYS_MAX = 36500           # дальше срок уводит дату о
 
 _consumer: contextvars.ContextVar[str | None] = contextvars.ContextVar("model_ledger_consumer",
                                                                       default=None)
-_DAY_FILE = re.compile(r"^model_calls-(\d{4}-\d{2}-\d{2})\.jsonl$")
+_DAY_FILE = re.compile(r"model_calls-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl")   # fullmatch: `$` пропускал имя с `\n` (Opus M1)
 _sweep_lock = threading.Lock()
-_swept: set[tuple[str, str, bool]] = set()     # (каталог, день, выключен) — уборка раз в день на процесс
+_swept: set[tuple[str, str, int]] = set()     # (каталог, день, срок) — уборка раз в день на процесс и срок
+_term_lock = threading.Lock()
+_terms: dict[str, tuple[tuple, int | None]] = {}   # корень → (отпечаток конфига, срок)
 
 
 @contextlib.contextmanager
@@ -97,6 +102,33 @@ def _who(skip: frozenset[str]) -> tuple[str, str]:
         return ("untagged:" + _frame_name(f) if f is not None else "untagged:?"), "stack"
     except Exception:  # noqa: BLE001 — конструктор строки журнала не вправе уронить вызов модели
         return "untagged:?", "stack"
+
+
+def term(root: pathlib.Path) -> int | None:
+    """Срок журнала корня `root` — из его конфига на диске, с кэшем по отпечатку.
+
+    Что писать и что стирать в `logs/` корня, решает только конфиг этого корня:
+    словарь, который процесс собрал сам (`scripts/runtime_profile.py`) или
+    прочёл на старте (демон), срок владельца не сокращает и журнал не
+    выключает; правка `config.yaml` действует у живого демона со следующего
+    вызова (финальный Opus, I1). None — конфиг не прочитан: строка пишется,
+    но ничего не стирается — срок владельца неизвестен."""
+    root = pathlib.Path(root)
+    fp = config_loader.fingerprint(root)
+    with _term_lock:
+        hit = _terms.get(str(root))
+    if hit is not None and hit[0] == fp:
+        return hit[1]
+    try:
+        n: int | None = keep_days(config_loader.load_user_or_example(root))
+    except Exception as exc:  # noqa: BLE001 — битый конфиг не вправе уронить вызов модели
+        once.say(("model_ledger", "term", type(exc).__name__),
+                 f"model_ledger: конфиг не прочитан ({type(exc).__name__}) — журнал пишется, "
+                 "прежние дни не стираются", stream=sys.stderr)
+        n = None
+    with _term_lock:
+        _terms[str(root)] = (fp, n)
+    return n
 
 
 def keep_days(cfg: dict | None) -> int:
@@ -149,10 +181,9 @@ class Call:
     """Один запрос к модели — от первой попытки до конца ответа или отказа.
     `skip` — имена модулей транспорта, чьи кадры потребителем не считаются."""
 
-    def __init__(self, root: pathlib.Path, cfg: dict | None, *, engine: str, model: str | None,
+    def __init__(self, root: pathlib.Path, *, engine: str, model: str | None,
                  kind: str, method: str, skip: frozenset[str]) -> None:
         self.root = pathlib.Path(root)
-        self.keep = keep_days(cfg)
         self.ts = time.time()
         self.t0 = time.monotonic()
         self.consumer, self.source = _who(skip)
@@ -212,17 +243,17 @@ class Call:
             return
         self._finished = True
         try:
-            if not self.keep:
-                # выключенный журнал не пишет и не оставляет прежних дней: иначе
-                # у них не осталось бы ни одного механизма удаления (выход n807-out1)
-                day = time.strftime("%Y-%m-%d", time.localtime(self.ts))
-                _sweep(charoite_paths.log_path(self.root, LEDGER_KIND, part=day).parent, 0, day)
-                return
-            rec = self.record(outcome)
+            keep = term(self.root)
             day = time.strftime("%Y-%m-%d", time.localtime(self.ts))
             path = charoite_paths.log_path(self.root, LEDGER_KIND, part=day)
-            jsonl_log.append_record(path, rec)
-            _sweep(path.parent, self.keep, day)
+            if keep == 0:
+                # выключенный журнал не пишет и не оставляет прежних дней: иначе
+                # у них не осталось бы ни одного механизма удаления (выход n807-out1)
+                _sweep(path.parent, 0, day)
+                return
+            jsonl_log.append_record(path, self.record(outcome))
+            if keep is not None:
+                _sweep(path.parent, keep, day)
         except Exception as exc:  # noqa: BLE001 — журнал не вправе уронить генерацию
             once.say(("model_ledger", type(exc).__name__),
                      f"model_ledger: журнал вызовов модели не пишется ({type(exc).__name__}) — "
@@ -242,7 +273,7 @@ def _cut_reason(body: dict) -> str | None:
 def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
     """Стереть дни старше срока — по дате в имени, раз в день на процесс;
     `keep == 0` — все дни."""
-    key = (str(logs), today, keep == 0)
+    key = (str(logs), today, keep)   # новый срок с диска — новая уборка в тот же день
     with _sweep_lock:
         if key in _swept:
             return
@@ -256,7 +287,7 @@ def _sweep(logs: pathlib.Path, keep: int, today: str) -> None:
     except OSError:
         return
     for name in names:
-        m = _DAY_FILE.match(name)
+        m = _DAY_FILE.fullmatch(name)
         if m and m.group(1) < cutoff:
             with contextlib.suppress(OSError):
                 (logs / name).unlink()

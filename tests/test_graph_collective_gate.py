@@ -594,7 +594,7 @@ def test_the_debrief_is_the_one_model_call_named_by_main(tmp_path, monkeypatch):
 
         def complete(self, prompt, **kw):
             # кадры транспорта (`llm`) и этой заглушки журнал пропускает так же
-            call = model_ledger.Call(tmp_path, {}, engine="t", model="m", kind="complete",
+            call = model_ledger.Call(tmp_path, engine="t", model="m", kind="complete",
                                      method="complete", skip=frozenset({"llm", __name__}))
             seen.append((call.consumer, call.source))
             return ""

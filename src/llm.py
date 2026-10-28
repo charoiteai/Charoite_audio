@@ -487,8 +487,16 @@ class _LedgerScope:
 
 def _ledger_outcome(e: BaseException) -> str:
     """Исход для журнала вызовов: журнал не вправе подменить исключение вызова
-    своим (подменённый в тестах `requests` без `Timeout` и т. п.)."""
+    своим (подменённый в тестах `requests` без `Timeout` и т. п.).
+
+    Таймаут чтения посреди стрима `requests` отдаёт как `ConnectionError` с
+    `ReadTimeoutError` urllib3 внутри — для журнала это `timeout`, а не «сервер
+    недоступен» (финальный Opus, M2). Только здесь: `failure_kind` решает ещё
+    повторы и фразы демона — его правка отдельно (№823)."""
     try:
+        if isinstance(e, requests.ConnectionError) and any(
+                type(a).__name__ == "ReadTimeoutError" for a in e.args):
+            return "timeout"
         return failure_kind(e)
     except Exception:  # noqa: BLE001
         return "other"
@@ -1094,7 +1102,7 @@ class LLM:
     def _call(self, kind: str, model: str | None, method: str) -> model_ledger.Call:
         """Строка журнала вызовов (№807) — заводится ДО первой попытки: отказ до
         ответа 200 тоже стоил времени и тоже пишется."""
-        return model_ledger.Call(self._root(), self._cfg, engine=self.engine, model=model,
+        return model_ledger.Call(self._root(), engine=self.engine, model=model,
                                  kind=kind, method=method, skip=_LEDGER_SKIP)
 
     def _complete_call(self, model: str | None) -> "_LedgerScope":
