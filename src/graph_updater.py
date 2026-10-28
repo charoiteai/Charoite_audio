@@ -445,13 +445,13 @@ def _second_pass_decisions(first: list, second: list) -> list:
     # не должен глушить настоящее решение второго (финальный Opus, M1).
     first = [d for d in first if isinstance(d, str)]
     seen = {d.strip().casefold() for d in first}
-    first_stems = [_stems(d) for d in first]
+    first_prints = [_fingerprint(d) for d in first]
     added = []
     for d in second:
         if not isinstance(d, str) or not d.strip() or d.strip().casefold() in seen:
             continue
-        mine = _stems(d)
-        if mine and any(_same_decision(mine, other) for other in first_stems):
+        mine = _fingerprint(d)
+        if mine[0] and any(_same_fingerprint(mine, other) for other in first_prints):
             continue
         added.append(d)
     return added
@@ -462,14 +462,31 @@ def _same_decision(a: set[str], b: set[str]) -> bool:
     # SECOND_PASS_MIN_SHARED >= 1 (проверка правки по мутантам, Sonnet/DS/Haiku M).
     shared = len(a & b)
     den = min(len(a), len(b))
-    if not (den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE):
-        return False
-    # Разные числа — разные дела («стенд 1» и «стенд 2», «к 15-му» и «к 22-му»), даже когда
-    # остальные слова общие; число только с одной стороны — уточнение того же дела. Замер 28.10
-    # и эталон №800: все склейки с числами — одно дело, у каждой числа одной стороны входят в
-    # числа другой; сторож снимает только чужие числа (№824, тест `test_graph_second_pass`).
-    nums_a, nums_b = {w for w in a if w.isdigit()}, {w for w in b if w.isdigit()}
-    return nums_a <= nums_b or nums_b <= nums_a
+    return den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE
+
+
+# Числовая метка — токен с цифрой целиком, с датой и временем через точку, двоеточие или
+# дробь: «12.12», «11:00», «q3», «s3», «15го». Основы слов (`_stems`) такие метки теряют или
+# режут («q3» короче четырёх букв, «12.01» → 12 и 01), поэтому сторож чисел читает текст сам.
+_NUMBER_TOKEN = re.compile(r"[a-zа-я0-9]*[0-9][a-zа-я0-9]*(?:[.:/][0-9]+)*")
+
+
+def _numbers(text: str) -> frozenset[str]:
+    return frozenset(_NUMBER_TOKEN.findall(str(text).lower().replace("ё", "е")))
+
+
+def _fingerprint(text: str) -> tuple[set[str], frozenset[str]]:
+    """Отпечаток решения для склейки: основы слов (порог) и числовые метки (сторож)."""
+    return _stems(text), _numbers(text)
+
+
+def _same_fingerprint(a: tuple, b: tuple) -> bool:
+    """Одно ли дело: порог по основам, и числа не спорят. Разные числа — разные дела («стенд 1»
+    и «стенд 2», «за Q3» и «за Q4», «на 12.12» и «на 12.01»), даже когда остальные слова общие;
+    число только с одной стороны — уточнение того же дела. Замер 28.10 и эталон №800: все
+    склейки с числами — одно дело, числа одной стороны входят в числа другой (№824, выход
+    n824-out1: DS C1, Sonnet I1)."""
+    return _same_decision(a[0], b[0]) and (a[1] <= b[1] or b[1] <= a[1])
 
 
 def _final_decisions(cfg: dict, data: dict | None) -> dict | None:
@@ -510,29 +527,37 @@ def _final_decisions(cfg: dict, data: dict | None) -> dict | None:
 
 def _merge_decisions(decisions: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
     """Склейка по всему списку: решение уходит, если раньше в списке уже есть то же
-    дело — дословно без регистра или по `_same_decision`. Остаётся первое вхождение:
+    дело — дословно без регистра или по `_same_fingerprint`. Слот — первого вхождения:
     решения первого прохода стоят первыми, brain уносит первые шесть (`_meeting_facts`).
+    Текст в слоте — более подробный: основы позднего строго шире (и числа не уже) — он занимает слот.
+    Пары — (ушедший текст, оставшийся).
 
     Порог — тот же 0,7/3, что у склейки проходов: на шести встречах 28.10 он не склеил
     ни одной пары разных дел, а все пересказы внутри части он не ловит (5 из 25 лишних,
     остальное ниже порога)."""
     kept: list[str] = []
-    kept_keys: dict[str, str] = {}
-    kept_stems: list[tuple[set[str], str]] = []
+    prints: list[tuple] = []
+    slot_of: dict[str, int] = {}
     pairs: list[tuple[str, str]] = []
     for d in decisions:
         key = d.strip().casefold()
-        if key in kept_keys:
-            pairs.append((d, kept_keys[key]))
+        if key in slot_of:
+            pairs.append((d, kept[slot_of[key]]))
             continue
-        mine = _stems(d)
-        other = next((text for stems, text in kept_stems if _same_decision(mine, stems)), None) if mine else None
-        if other is not None:
-            pairs.append((d, other))
-            continue
-        kept.append(d)
-        kept_keys[key] = d
-        kept_stems.append((mine, d))
+        mine = _fingerprint(d)
+        n = next((i for i, other in enumerate(prints) if _same_fingerprint(mine, other)), None) if mine[0] else None
+        if n is None:
+            slot_of[key] = len(kept)
+            kept.append(d)
+            prints.append(mine)
+        elif mine[0] > prints[n][0] and mine[1] >= prints[n][1]:
+            # Позже пришла та же мысль с подробностями — короткая формулировка уступает слот
+            # длинной, позиция прежняя: склейка не теряет сказанное (выход n824-out1, Sonnet I2).
+            pairs.append((kept[n], d))
+            kept[n], prints[n] = d, mine
+            slot_of[key] = n
+        else:
+            pairs.append((d, kept[n]))
     return kept, pairs
 
 
@@ -569,7 +594,12 @@ def _extract_long(cfg: dict, transcript: str, project_rule: str = "",
             continue
         for key, value in got.items():
             if isinstance(value, list):
-                merged.setdefault(key, []).extend(value)
+                have = merged.get(key)
+                if not isinstance(have, list):
+                    # Часть раньше дала здесь не список (null, строку): `extend` по нему ронял
+                    # весь разбор встречи (выход n824-out1, DS C2, Haiku C1).
+                    merged[key] = [have] if have else []
+                merged[key].extend(value)
             elif key not in merged or not merged[key]:
                 merged[key] = value          # название берём из первой удачной части
     if not merged:

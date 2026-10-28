@@ -72,6 +72,7 @@ def test_merge_off_by_key_or_language(model, sufler):
     ({}, True), ({"graph_decision_merge": None}, True), ({"graph_decision_merge": " "}, True),
     ({"graph_decision_merge": "да"}, True), ({"graph_decision_merge": "off"}, False),
     ({"graph_decision_merge": "fasle"}, False), ({"language": " RU "}, True), ({"language": "en-US"}, False),
+    ({"language": "ru-RU"}, False), ({"language": "ru_RU"}, False),
 ])
 def test_merge_key_is_read_like_the_second_pass(sufler, on):
     assert install_profile.graph_decision_merge_enabled({"sufler": sufler}) is on
@@ -101,7 +102,7 @@ def test_first_occurrence_stays_in_place():
 
 def test_decisions_without_stems_are_kept():
     """Решение без основ («Да») ни с чем не склеивается — только дословно."""
-    assert g._merge_decisions(["Да", "Нет", "да"]) == (["Да", "Нет"], [("да", "Да")])
+    assert g._merge_decisions(["Да", "Нет", "да", " Да "]) == (["Да", "Нет"], [("да", "Да"), (" Да ", "Да")])
 
 
 @pytest.mark.parametrize("raw, out", [
@@ -136,6 +137,14 @@ def test_shape_is_fixed_even_with_merge_off(capsys):
 @pytest.mark.parametrize("a, b, same", [
     ("Отдельное дело номер 4 по закупке", "Отдельное дело номер 6 по закупке", False),   # чужие числа
     ("Подготовить отчёт по стенду 1 к 15 декабря", "Подготовить отчёт по стенду 2 к 15 декабря", False),
+    # Метки с цифрой внутри слова и даты — основы их теряют или режут (выход n824-out1, DS C1, Sonnet I1).
+    ("Отключить старый бакет s3", "Отключить старый бакет s4", False),
+    ("Перенести встречу на понедельник 15го для проверки бакетов",
+     "Перенести встречу на понедельник 22го для проверки бакетов", False),
+    ("Перенести релиз отчётов на 12.12", "Перенести релиз отчётов на 12.01", False),
+    ("Закрыть отчёт по бюджету за Q3", "Закрыть отчёт по бюджету за Q4", False),
+    ("Перенести встречу на завтра 11:00", "Перенести встречу на завтра 11:30", False),
+    ("Перенести встречу на завтра 11:00", "Перенести встречу на завтра 11:00 для разбора", True),
     ("Перенести встречу на понедельник 16:00 для проверки бакетов",
      "Перенести встречу на понедельник для проверки бакетов", True),                     # число с одной стороны
     ("До 11 ноября решить вопрос с загрузкой инкрементов", "До 11 ноября решить загрузку инкрементов 2", True),
@@ -143,4 +152,50 @@ def test_shape_is_fixed_even_with_merge_off(capsys):
 ])
 def test_different_numbers_are_different_decisions(a, b, same):
     """Разные числа при общих словах — разные дела; число только у одной стороны — уточнение (№824)."""
-    assert g._same_decision(g._stems(a), g._stems(b)) is same
+    assert g._same_fingerprint(g._fingerprint(a), g._fingerprint(b)) is same
+    assert g._same_fingerprint(g._fingerprint(b), g._fingerprint(a)) is same
+    assert (len(g._merge_decisions([a, b])[0]) == 1) is same
+
+
+def test_numbers_guard_also_holds_between_passes():
+    """Склейка проходов читает тот же отпечаток: «за Q4» второго прохода не глушится «за Q3» первого."""
+    assert g._second_pass_decisions(["Закрыть отчёт по бюджету за Q3"],
+                                    ["Закрыть отчёт по бюджету за Q4"]) == ["Закрыть отчёт по бюджету за Q4"]
+
+
+def test_richer_wording_takes_the_slot():
+    """Позднее решение с подробностями занимает слот короткого: позиция прежняя, сказанное не теряется."""
+    short, rich = "Перенести релиз сервиса отчётов", "Перенести релиз сервиса отчётов на пятницу из-за блокера по данным"
+    assert g._merge_decisions(["Ольга готовит план", short, rich]) == (["Ольга готовит план", rich], [(short, rich)])
+    # Обратный порядок — первое и так подробнее, остаётся оно.
+    assert g._merge_decisions([rich, short]) == ([rich], [(short, rich)])
+    # Подробнее по словам, но без метки короткого — слот не отдаётся: метка дороже слов.
+    tagged, wordy = "Закрыть отчёт по бюджету за Q3", "Закрыть отчёт по бюджету подробно с разбивкой по отделам"
+    assert g._merge_decisions([tagged, wordy]) == ([tagged], [(wordy, tagged)])
+
+
+def test_literal_repeat_of_the_replaced_text_is_still_a_repeat():
+    short, rich = "Перенести релиз сервиса отчётов", "Перенести релиз сервиса отчётов на пятницу из-за блокера по данным"
+    assert g._merge_decisions([short, rich, short.upper()])[0] == [rich]
+
+
+@pytest.mark.parametrize("first", [None, "Подготовить два тестовых стенда к 12 декабря", {"текст": "x"}])
+def test_mixed_shapes_across_first_pass_chunks_do_not_crash(model, first):
+    """Часть дала null, строку или словарь, следующая — список: разбор встречи не падает (выход
+    n824-out1, DS C2, Haiku C1), строка сохраняется решением, прочее — нет."""
+    model.answers[1] = {"название": "Встреча", "решения": first, "люди": first}
+    model.answers[2] = {"решения": ["Заказать стенд нагрузочного тестирования"], "люди": [{"имя": "Ольга"}]}
+    data = g.extract(_cfg(), LONG)
+    want = [first] if isinstance(first, str) else []
+    assert data["решения"] == want + ["Заказать стенд нагрузочного тестирования"]
+    assert data["люди"][-1] == {"имя": "Ольга"}
+
+
+@pytest.mark.parametrize("raw, out", [
+    ("Перенести релиз на пятницу", ["Перенести релиз на пятницу"]),
+    ([MINUTES_A, MINUTES_B, None], [MINUTES_A]),
+])
+def test_short_meeting_gets_the_same_exit(model, raw, out):
+    """Встреча в один кусок идёт через тот же выход: форма и склейка (выход n824-out1, Sonnet M2, Haiku M2)."""
+    model.answers[1] = {"решения": raw}
+    assert g.extract(_cfg(), "реплика. " * 100)["решения"] == out
