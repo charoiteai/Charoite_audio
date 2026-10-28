@@ -20,7 +20,7 @@ READERS = {
     "src/daemon.py": {"EXIT_PRIVACY_REFUSED", "EXIT_ROOT_UNNAMED"},
     "src/charoite_paths.py": {"EXIT_ROOT_UNNAMED"},   # дверь точки входа (№340)
     "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL", "EXIT_UNMUTABLE",
-                                "EXIT_UNJUDGED"},
+                                "EXIT_UNJUDGED", "EXIT_BACKGROUND_QOS"},
     # движок в своём окружении: сторона движка отдаёт код, дверь его читает (№473)
     "src/diarize_nemotron.py": {"EXIT_ENGINE_UNAVAILABLE"},
     "src/foreign_python.py": {"EXIT_ENGINE_UNAVAILABLE"},
@@ -36,7 +36,8 @@ READERS = {
 VALUES = {"EXIT_NO_SPEECH": 3, "EXIT_NO_GRAPH": 4, "EXIT_ROOT_UNNAMED": 5, "EXIT_NOTHING_TO_CHECK": 6,
           "EXIT_PARTIAL": 7, "EXIT_UNMUTABLE": 8, "EXIT_UNJUDGED": 9, "EXIT_ENGINE_UNAVAILABLE": 10,
           "EXIT_PRIVACY_REFUSED": 11, "EXIT_INSTALL_BUSY": 12, "EXIT_INSTALL_CANCELLED": 13,
-          "EXIT_ATTESTATION_FAILED": 14, "EXIT_PROVIDER_UNAVAILABLE": 15, "EXIT_STAGE_PENDING": 16}
+          "EXIT_ATTESTATION_FAILED": 14, "EXIT_PROVIDER_UNAVAILABLE": 15, "EXIT_STAGE_PENDING": 16,
+          "EXIT_BACKGROUND_QOS": 17}
 #: Имена — не рукописный список, а всё, что объявил модуль: пятая константа
 #: без снимка значения иначе прошла бы мимо гейта (круг 3 по №339, DS I3).
 NAMES = {n for n in dir(exit_codes) if n.startswith("EXIT_")}
@@ -56,7 +57,7 @@ def test_exit_codes_module_has_no_imports():
     assert {v: exit_codes.outcome(v) for v in (0, 1, *VALUES.values())} == {
         0: "ok", 1: "fail", 3: "fail", 4: "fail", 5: "fail",
         6: "nothing", 7: "partial", 8: "unmutable", 9: "unjudged", 10: "fail",
-        11: "fail", 12: "fail", 13: "fail", 14: "fail", 15: "fail", 16: "fail"}
+        11: "fail", 12: "fail", 13: "fail", 14: "fail", 15: "fail", 16: "fail", 17: "fail"}
 
 
 def _imports_from_exit_codes(tree: ast.AST) -> set[str]:

@@ -188,7 +188,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # копию для мутантов он клонирует из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
-from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
+from exit_codes import (EXIT_BACKGROUND_QOS, EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL,  # noqa: E402
+                        EXIT_UNJUDGED, EXIT_UNMUTABLE)
 import live_gate  # noqa: E402
 # `outcome` — по имени модуля, не `from …`: список читателей кодов в тестах
 # (`tests/test_exit_codes.py`) выведен из from-импортов EXIT_*, и лишнее имя
@@ -1762,6 +1763,15 @@ def main(argv: list[str]) -> int:
     # или разбором — честный отказ, не тихая толкотня; (2) на время прогона
     # лежит logs/mutation.lock — ночь (wait_for_idle) видит нас и ждёт;
     # (3) началась живая встреча — прерываемся между мутантами.
+    # Фоновый режим процесса — не «занято», а «не те ядра»: набор под ним краснеет
+    # таймаутами (обвязка и сама откажет кодом 17), и база вышла бы красной с чужим
+    # диагнозом про .gitignore. `--force` зажим не снимает (№817, in1 DS-C2/DS-I1).
+    import machine_power  # noqa: E402
+    throttle = machine_power.background_throttle()
+    if throttle:
+        print(f"мутатор не стартует: процесс в фоновом режиме — {throttle}; потолки времени "
+              "тестов рассчитаны на обычные ядра. Запусти без taskpolicy.")
+        return EXIT_BACKGROUND_QOS
     # Один вызов гварда старта на все роли — одиночный прогон, родитель `--jobs` и
     # его доли: другой мутатор помехой не считается (замок разделяемый, №444 B).
     if busy_guard(args):

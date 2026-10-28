@@ -172,7 +172,11 @@ review gates, and who answers for what — is documented in
   models declares `@pytest.mark.ollama_отвечает("model", …)`, and a test that
   truly needs a socket asks for `сеть_разрешена`. A crash in a background
   thread fails the run (`filterwarnings` in `pyproject.toml`), and each test
-  has a 120-second ceiling.
+  has a 120-second ceiling. The ceilings assume ordinary cores: on macOS a run
+  under `taskpolicy -c background`, `-c maintenance` or `-b` is 7–13 times
+  slower and turns red on timeouts, not defects, so the harness refuses it
+  before collection with exit code 17 (`EXIT_BACKGROUND_QOS`), and
+  `scripts/mutate_check.py` refuses to start the same way (№817).
 - **No pattern blacklists.** Classification decisions go through the
   local model, not through hardcoded word lists — patterns rot, models
   understand context.

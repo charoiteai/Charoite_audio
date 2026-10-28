@@ -579,6 +579,24 @@ def test_гвард_занятости_снимает_только_force():
     assert mc.busy_guard(argparse.Namespace(force=True)) is False
 
 
+def test_фоновый_режим_останавливает_мутатор_и_force_не_снимает(monkeypatch, capsys):
+    """Зажим процесса (№817) — до гварда занятости и до плана: код 17 с причиной,
+    `--force` его не снимает (набор под зажимом откажет и сам). Без зажима тот же
+    вызов доходит до пустого диапазона — гейт не срабатывает ложно."""
+    import busy_signals
+    import exit_codes
+    import machine_power
+    monkeypatch.setattr(busy_signals, "machine_busy", lambda *a, **kw: [])
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: "QoS BACKGROUND (taskpolicy -c background)")
+    for флаги in ([], ["--force"]):
+        assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD", *флаги]) == exit_codes.EXIT_BACKGROUND_QOS
+        out = capsys.readouterr().out
+        assert "мутатор не стартует" in out and "taskpolicy -c background" in out, out
+    monkeypatch.setattr(machine_power, "background_throttle", lambda: None)
+    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD"]) == exit_codes.EXIT_NOTHING_TO_CHECK
+    assert "мутатор не стартует" not in capsys.readouterr().out
+
+
 def test_занятая_машина_останавливает_мутатор_а_force_нет(monkeypatch, capsys):
     """Поведение через `main`: при живой записи без флага — код 3 и ни одного
     прогона; `--force` проходит гвард и упирается в пустой диапазон, не в занятость."""
