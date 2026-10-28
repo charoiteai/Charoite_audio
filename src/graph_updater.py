@@ -89,6 +89,20 @@ def latest_transcript() -> pathlib.Path | None:
 CHUNK_CHARS = 12_000
 # Нахлёст между кусками: решение, произнесённое на стыке, не должно пропасть.
 CHUNK_OVERLAP = 1_000
+# Второй проход (№821, флаг `sufler.graph_second_pass`): та же стенограмма кусками
+# вдвое мельче. Замер 27.10 (17 встреч, эталон ревизии): модель на одной нарезке
+# пропускает около трети решений, и повтор той же нарезки ловит в основном то же
+# самое (+9 п. п.), а другая нарезка — другое: 12000 ∪ 6000 дали 77–82 % покрытия
+# против 60–65 % у одного прохода, без роста брака.
+CHUNK_CHARS_2 = 6_000
+CHUNK_OVERLAP_2 = 500
+# Склейка решений второго прохода с первым (№821): решение второго отбрасывается,
+# если у него с решением первого не меньше SECOND_PASS_MIN_SHARED общих основ слов
+# и они составляют не меньше SECOND_PASS_MIN_SHARE от меньшего из двух наборов.
+# Порог выбран замером: 0,34/2 склеивал разные решения (15 ложных на 17 встречах),
+# 0,7/3 — 4 «ложных», и все четыре при проверке глазами оказались одним делом.
+SECOND_PASS_MIN_SHARE = 0.7
+SECOND_PASS_MIN_SHARED = 3
 
 # Потолок ожидания одного запроса. Реальный разбор части укладывается в минуту
 # (промпт на 16К контекста плюс три тысячи токенов ответа), так что пять минут —
@@ -245,14 +259,194 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     if not llm_health.ensure_alive(cfg, lambda m: print(f"граф: {m}")):
         print("граф: модель не отвечает — встреча сохранена, граф не обновлён")
         return None
+    # Второй проход знает о себе заранее: счётчик частей в статусе общий на оба
+    # прохода, иначе человек увидел бы «3/3», а за ним снова «1/6».
+    second = []
+    if install_profile.graph_second_pass_enabled(cfg) and len(transcript) > CHUNK_CHARS_2:
+        if _language(cfg) not in ("en", "zh"):          # то же правило, что выбирает промпт
+            second = _split(transcript, CHUNK_CHARS_2, CHUNK_OVERLAP_2, short_tail=False)
+        else:
+            # Порог склейки 0,7/3 мерен только на русских встречах: в китайском
+            # основы слов не выделяются вовсе (склейка пропустила бы все повторы),
+            # в английском похожими делают служебные слова (выход n821-out1, DS C1).
+            print(f"граф: второй проход: нет замера для языка {_language(cfg)!r} — только первый")
     try:
         if len(transcript) <= CHUNK_CHARS:
-            return _extract(cfg, transcript, project_rule)
-        return _extract_long(cfg, transcript, project_rule)
+            if second:
+                _report(1, 1 + len(second))
+            data = _extract(cfg, transcript, project_rule)
+            done = 1
+        else:
+            first = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
+            data = _extract_long(cfg, transcript, project_rule,
+                                 total=len(first) + len(second) if second else None)
+            done = len(first)
     except requests.RequestException as e:
         print(f"граф: модель недоступна ({type(e).__name__}: {e}) — "
               f"встреча сохранена, граф не обновлён")
         return None
+    if not data or not second:
+        return data
+    try:
+        return _with_second_pass(cfg, data, second, project_rule, done)
+    except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
+        # Граница добавки целиком: сбой вне цикла кусков (склейка, разбор найденного)
+        # оставляет разбор первого (проверка правки по мутантам, Haiku M).
+        print(f"граф: второй проход упал ({type(e).__name__}: {e}) — остаётся разбор первого")
+        return data
+
+
+def _language(cfg: dict) -> str:
+    """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`.
+    Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3)."""
+    return str((cfg.get("sufler") or {}).get("language") or "ru").strip().lower()
+
+
+def _split(transcript: str, size: int, overlap: int, short_tail: bool = True) -> list[str]:
+    """Куски стенограммы с нахлёстом — одна нарезка на оба прохода и на тесты.
+
+    `short_tail=False` — хвост не длиннее нахлёста целиком лежит в предыдущем
+    куске и отдельным вызовом модели не идёт (второй проход, выход n821-out1,
+    DS M3). Первый проход режет как прежде: с выключенным флагом разбор не
+    меняется ни на вызов."""
+    step = size - overlap
+    starts = range(0, len(transcript), step)
+    if not short_tail:
+        starts = [i for i in starts if i == 0 or len(transcript) - i > overlap]
+    return [transcript[i:i + size] for i in starts]
+
+
+def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str,
+                      done: int) -> dict:
+    """Дописать в разбор решения второго прохода (№821).
+
+    Первый проход авторитетен: люди, сущности, связи, ядра, название и проект —
+    только из него. Второй даёт одни решения: замер покрытия есть только по ним,
+    а люди и сущности с другой нарезкой не сверены — новые узлы из непроверенного
+    канала граф владельца не получает (вход n821-in1, Sonnet I5, DeepSeek I3).
+
+    Решения второго — в хвост списка: brain уносит первые шесть по порядку
+    (`_meeting_facts`), и второй проход не должен подменить факты, которые туда
+    уже уходили (вход n821-in1, Sonnet C1).
+
+    Второй проход — добавка, а не условие: его сбой оставляет разбор первого,
+    а не роняет всю встречу в «модель недоступна» (Sonnet I2, DeepSeek I2).
+    Сбой разбора одного куска теряет только этот кусок; сетевой сбой и живая
+    встреча обрывают проход, найденное до них остаётся (выходы n821-out1 и out2).
+    """
+    total = done + len(parts)
+    first = data.get("решения")
+    if isinstance(first, str):
+        # Строка вместо списка: потребители итерировали бы её по буквам (выход n821-out2, DS I1).
+        first = [first] if first.strip() else []
+        data["решения"] = first
+    elif first is None:
+        first = []
+    elif not isinstance(first, list):
+        # Словарь или число — форма, которой здесь не понять; добавка её не затирает
+        # (выход n821-out2, Sonnet M1).
+        print(f"граф: второй проход пропущен: решения первого — {type(first).__name__}, а не список")
+        _report(total, total)
+        return data
+    print(f"граф: второй проход — {len(parts)} частями по {CHUNK_CHARS_2} знаков")
+    found: list[str] = []
+    for n, part in enumerate(parts, done + 1):
+        # Первый проход готов и ждёт записи: ждать конца живой встречи ради
+        # добавки значило бы держать готовый граф часами — проверка без ожидания,
+        # перед каждым куском (выходы n821-out1 и out2, Sonnet I3 и I1).
+        if _live_now():
+            print("граф: второй проход прерван: живая встреча — остаётся найденное")
+            break
+        _report(n, total)
+        try:
+            got = _extract(cfg, part, project_rule, raise_http=True)
+        except requests.RequestException as e:
+            # Модель не отвечает — следующий кусок ждал бы тот же таймаут
+            # (выход n821-out2, Sonnet I2).
+            print(f"граф: второй проход прерван ({type(e).__name__}: {e}) — остаётся найденное")
+            break
+        except LLMHTTPError as e:
+            # Занята или недоступна — каждый следующий кусок ждал бы те же BUSY_WAIT
+            # (финальный Opus, I1). Прочий отказ (400, 404, сломанный ответ) — про
+            # этот кусок, остаток прохода он не отменяет (проверка правок Opus, I1).
+            if llm.is_retry_later(e):
+                print(f"граф: второй проход прерван (HTTP {e.status}, {e.kind}) — остаётся найденное")
+                break
+            print(f"граф: часть {n}/{total} второго прохода упала (HTTP {e.status}, {e.kind}) — продолжаю")
+            continue
+        except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
+            print(f"граф: часть {n}/{total} второго прохода упала ({type(e).__name__}: {e}) — продолжаю")
+            continue
+        if not got:
+            print(f"граф: часть {n}/{total} не разобралась — продолжаю")
+            continue
+        got_decisions = got.get("решения")
+        # Строка вместо списка дописала бы решения по букве (выход n821-out1, DS I, Sonnet I1).
+        if isinstance(got_decisions, list):
+            found.extend(d for d in got_decisions if isinstance(d, str) and d.strip())
+    # Счётчик в статусе — до конца, как бы проход ни кончился (выход n821-out2, DS M6).
+    _report(total, total)
+    added = _second_pass_decisions(first, _dedup(found))
+    if added:
+        data["решения"] = first + added
+    print(f"граф: второй проход добавил решений: {len(added)} (найдено {len(found)})")
+    return data
+
+
+# Служебные слова, которые не делают два решения похожими. Набор — тот же, что у
+# счёта замера №800/№821: иначе порог склейки, выбранный замером, значил бы здесь
+# другое.
+_STOP_STEMS = frozenset(
+    "это этот эта эти того тому также если чтобы когда только нужно надо будет быть было были есть "
+    "или для как что при без над под после перед через между всех всего него неё них его она они "
+    "оно уже ещё еще так там тут где кто чем вместо либо очень более менее встречи встрече "
+    "необходимо которые который".split())
+
+
+def _stems(text: str) -> set[str]:
+    """Грубые основы слов: первые пять букв слова от четырёх букв, числа целиком."""
+    words = re.findall(r"[а-яёa-z0-9]+", str(text).lower().replace("ё", "е"))
+    return {w if w.isdigit() else w[:5]
+            for w in words if (len(w) >= 4 or w.isdigit()) and w not in _STOP_STEMS}
+
+
+def _second_pass_decisions(first: list, second: list) -> list:
+    """Решения второго прохода, которых нет среди решений первого.
+
+    Склейка несимметричная и только между проходами: решение второго
+    сравнивается с решениями первого, но не с соседями по своему проходу и не
+    наоборот. `_dedup` здесь не годится — он сравнивает дословно, а один и тот же
+    смысл два прохода формулируют по-разному; и расширять сам `_dedup` нельзя —
+    тот же порог склеил бы разные решения внутри одного прохода и чужие списки
+    (вход n821-in1, Sonnet I4, DeepSeek I1).
+    """
+    # Сравниваем только со строками: словарь среди решений первого не решение и
+    # не должен глушить настоящее решение второго (финальный Opus, M1).
+    first = [d for d in first if isinstance(d, str)]
+    seen = {d.strip().casefold() for d in first}
+    first_stems = [_stems(d) for d in first]
+    added = []
+    for d in second:
+        if not isinstance(d, str) or not d.strip() or d.strip().casefold() in seen:
+            continue
+        mine = _stems(d)
+        if mine and any(_same_decision(mine, other) for other in first_stems):
+            continue
+        added.append(d)
+    return added
+
+
+def _same_decision(a: set[str], b: set[str]) -> bool:
+    # Делитель стережёт себя сам: без стража деление держалось бы только на
+    # SECOND_PASS_MIN_SHARED >= 1 (проверка правки по мутантам, Sonnet/DS/Haiku M).
+    shared = len(a & b)
+    den = min(len(a), len(b))
+    return den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE
+
+
+def _live_now() -> bool:
+    """Идёт ли живая встреча прямо сейчас — без ожидания (см. live_gate)."""
+    return live_gate.daemon_alive(_root())
 
 
 def _yield_to_live() -> None:
@@ -261,17 +455,20 @@ def _yield_to_live() -> None:
     live_gate.wait_while_live(_root(), lambda m: print(f"граф: {m}"), what="разбор")
 
 
-def _extract_long(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
-    """Разбор по частям со слиянием: длинная встреча целиком, а не её начало."""
-    step = CHUNK_CHARS - CHUNK_OVERLAP
-    parts = [transcript[i:i + CHUNK_CHARS] for i in range(0, len(transcript), step)]
+def _extract_long(cfg: dict, transcript: str, project_rule: str = "",
+                  total: int | None = None) -> dict | None:
+    """Разбор по частям со слиянием: длинная встреча целиком, а не её начало.
+
+    `total` — частей в статусе на весь разбор, когда за этим проходом идёт
+    второй (№821); без него счёт — по частям этого прохода."""
+    parts = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
     print(f"граф: стенограмма {len(transcript)} знаков — разбираю {len(parts)} частями")
 
     merged: dict = {}
     for n, part in enumerate(parts, 1):
         # Номер части — в статус: на длинной встрече эта стадия висит минутами
         # и внешне ничем не отличается от зависшего процесса.
-        _report(n, len(parts))
+        _report(n, total or len(parts))
         if n > 1:
             _yield_to_live()
         got = _extract(cfg, part, project_rule)
@@ -312,7 +509,8 @@ def _dedup(items: list) -> list:
     return out
 
 
-def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
+def _extract(cfg: dict, transcript: str, project_rule: str = "",
+             raise_http: bool = False) -> dict | None:
     # think=false обязателен: у qwen3.6 рассуждение включено по умолчанию
     # и делит бюджет с ответом. На разборе стенограммы модель уходила
     # думать на тысячи знаков — и JSON приходил пустым или обрывался.
@@ -366,7 +564,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
                               "(node names, summaries, statuses, updates, topics; people "
                               "as spoken). Keep the JSON KEYS exactly as specified above. "
                               "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block."}
-                       .get(str(cfg.get("sufler", {}).get("language", "ru")).lower(), ""))
+                       .get(_language(cfg), ""))
     )
     # Ошибка сервера здесь стоила всего пост-процессинга: исключение летело
     # наружу, main() падал с трейсбеком в logs/graph_*.log, и не выполнялось
@@ -390,15 +588,22 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         cloud = privacy.cloud_engine_active(cfg)
         who = "шлюз" if cloud else "Ollama"
         if llm.is_retry_later(e):
+            # Второму проходу повтора не будет — встреча уже разобрана первым:
+            # обещание здесь только для первого (проверка правок Opus по №821).
             print(f"граф: {'облако недоступно или лимит' if cloud else 'модель занята'} "
-                  f"(HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин — "
-                  "часть пропущена; повтор подберёт незавершённую встречу")
+                  f"(HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин"
+                  + ("" if raise_http else " — часть пропущена; повтор подберёт незавершённую встречу"))
         elif e.status != 200:
             hint = ("проверьте llm.cloud_model, адрес и ключ" if cloud
                     else f"модель {cfg['llm']['model']} установлена? (ollama pull)")
             print(f"граф: {who} ответил HTTP {e.status} — {hint}")
         else:
             print(f"граф: {who} вернул ошибку: {e.detail}")
+        # Второму проходу «модель занята» — повод остановиться, а не пропустить
+        # кусок: каждый следующий ждал бы те же BUSY_WAIT, пока готовый первый
+        # проход не записан (финальный Opus по №821, I1). Первый проход — как был.
+        if raise_http:
+            raise
         return None
     # Разбор строгий и остаётся строгим, в том числе когда сервер без грамматики
     # (№419) держит модель на промпте: весь ответ — один объект. Проза вокруг,
