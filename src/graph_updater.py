@@ -240,6 +240,16 @@ def _project_rule(known: list[str], default: str) -> str:
 def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     """LLM → JSON: сущности, связи, решения, темы.
 
+    Разбор целиком — `_extract_all`; здесь единственный выход, через который
+    решения уходят в заметку, brain и лог: на нём список приводится к форме
+    и склеиваются повторы (№824, `_final_decisions`).
+    """
+    return _final_decisions(cfg, _extract_all(cfg, transcript, project_rule))
+
+
+def _extract_all(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
+    """Оба прохода разбора без итоговой склейки решений.
+
     Длинная встреча разбирается по частям. Раньше здесь стоял transcript[:12000],
     то есть в граф уходили первые двадцать минут — а решения принимают в конце
     («ну что, договорились: релиз 15-го»). Ничего не падало, граф выглядел
@@ -334,7 +344,9 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
 
     Решения второго — в хвост списка: brain уносит первые шесть по порядку
     (`_meeting_facts`), и второй проход не должен подменить факты, которые туда
-    уже уходили (вход n821-in1, Sonnet C1).
+    уже уходили (вход n821-in1, Sonnet C1). Итоговая склейка (`_final_decisions`,
+    №824) убирает пересказы и среди первых шести — тогда на освободившееся место
+    поднимается следующее, в том числе решение второго прохода (вход n824-in1, Sonnet M1).
 
     Второй проход — добавка, а не условие: его сбой оставляет разбор первого,
     а не роняет всю встречу в «модель недоступна» (Sonnet I2, DeepSeek I2).
@@ -424,8 +436,10 @@ def _second_pass_decisions(first: list, second: list) -> list:
     сравнивается с решениями первого, но не с соседями по своему проходу и не
     наоборот. `_dedup` здесь не годится — он сравнивает дословно, а один и тот же
     смысл два прохода формулируют по-разному; и расширять сам `_dedup` нельзя —
-    тот же порог склеил бы разные решения внутри одного прохода и чужие списки
-    (вход n821-in1, Sonnet I4, DeepSeek I1).
+    он общий для людей, сущностей и связей (вход n821-in1, Sonnet I4, DeepSeek I1).
+    Пересказы внутри прохода снимает итоговая склейка на выходе `extract`
+    (`_merge_decisions`, №824): замер 28.10 — тот же порог внутри прохода не
+    склеил ни одной пары разных дел.
     """
     # Сравниваем только со строками: словарь среди решений первого не решение и
     # не должен глушить настоящее решение второго (финальный Opus, M1).
@@ -448,7 +462,78 @@ def _same_decision(a: set[str], b: set[str]) -> bool:
     # SECOND_PASS_MIN_SHARED >= 1 (проверка правки по мутантам, Sonnet/DS/Haiku M).
     shared = len(a & b)
     den = min(len(a), len(b))
-    return den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE
+    if not (den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE):
+        return False
+    # Разные числа — разные дела («стенд 1» и «стенд 2», «к 15-му» и «к 22-му»), даже когда
+    # остальные слова общие; число только с одной стороны — уточнение того же дела. Замер 28.10
+    # и эталон №800: все склейки с числами — одно дело, у каждой числа одной стороны входят в
+    # числа другой; сторож снимает только чужие числа (№824, тест `test_graph_second_pass`).
+    nums_a, nums_b = {w for w in a if w.isdigit()}, {w for w in b if w.isdigit()}
+    return nums_a <= nums_b or nums_b <= nums_a
+
+
+def _final_decisions(cfg: dict, data: dict | None) -> dict | None:
+    """Решения разбора — списком строк и без пересказов одного дела (№824).
+
+    Форма приводится всегда: строка ушла бы потребителям по буквам, словарь или
+    число — не решения (вход n824-in1, DS C2). Склейка — только для русского и
+    под ключом `sufler.graph_decision_merge` (`install_profile`); её сбой оставляет
+    список несклеенным, а не отнимает разбор.
+    """
+    if not isinstance(data, dict) or "решения" not in data:
+        return data
+    raw = data["решения"]
+    if isinstance(raw, str):
+        decisions = [raw] if raw.strip() else []
+    elif isinstance(raw, list):
+        decisions = [d for d in raw if isinstance(d, str) and d.strip()]
+        if len(decisions) < len(raw):
+            print(f"граф: решения: отброшено не-строк и пустых: {len(raw) - len(decisions)}")
+    elif raw is None:
+        decisions = []
+    else:
+        print(f"граф: решения — {type(raw).__name__}, а не список — в заметку не идут")
+        decisions = []
+    data["решения"] = decisions
+    if not install_profile.graph_decision_merge_enabled(cfg):
+        return data
+    try:
+        kept, pairs = _merge_decisions(decisions)
+    except Exception as e:  # noqa: BLE001 — склейка не смеет отнять разбор
+        print(f"граф: склейка решений упала ({type(e).__name__}: {e}) — список без склейки")
+        return data
+    for dropped, other in pairs:
+        print(f"граф: склеено решение: «{dropped[:70]}» ~ «{other[:70]}»")
+    data["решения"] = kept
+    return data
+
+
+def _merge_decisions(decisions: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Склейка по всему списку: решение уходит, если раньше в списке уже есть то же
+    дело — дословно без регистра или по `_same_decision`. Остаётся первое вхождение:
+    решения первого прохода стоят первыми, brain уносит первые шесть (`_meeting_facts`).
+
+    Порог — тот же 0,7/3, что у склейки проходов: на шести встречах 28.10 он не склеил
+    ни одной пары разных дел, а все пересказы внутри части он не ловит (5 из 25 лишних,
+    остальное ниже порога)."""
+    kept: list[str] = []
+    kept_keys: dict[str, str] = {}
+    kept_stems: list[tuple[set[str], str]] = []
+    pairs: list[tuple[str, str]] = []
+    for d in decisions:
+        key = d.strip().casefold()
+        if key in kept_keys:
+            pairs.append((d, kept_keys[key]))
+            continue
+        mine = _stems(d)
+        other = next((text for stems, text in kept_stems if _same_decision(mine, stems)), None) if mine else None
+        if other is not None:
+            pairs.append((d, other))
+            continue
+        kept.append(d)
+        kept_keys[key] = d
+        kept_stems.append((mine, d))
+    return kept, pairs
 
 
 def _live_now() -> bool:

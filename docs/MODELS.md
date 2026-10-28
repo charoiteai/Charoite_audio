@@ -426,6 +426,9 @@ on 8 GB only) and `graph: true` on every profile. No profile writes
 measured — `qwen3.6:35b-mlx` on Ollama with `language: ru` (decision coverage
 57–65 % → 77–82 %, +2–2.5 model minutes per meeting). The daemon decides this
 from `llm.model`; your own `graph_second_pass: true` or `false` always wins.
+Rewordings of one decision (overlapping chunks, minutes read twice) are merged
+on the way out without a model call — `graph_decision_merge`, on by default for
+`language: ru` only.
 
 **Dialogue markup and the light profiles.** The loop that splits a paragraph
 into replies needs verbatim output: validation compares the words and drops

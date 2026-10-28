@@ -117,6 +117,25 @@ def graph_second_pass_enabled(cfg: dict) -> bool:
     return engine == "ollama" or (engine == "cloud" and not privacy.cloud_engine_active(cfg))
 
 
+def graph_decision_merge_enabled(cfg: dict) -> bool:
+    """Склейка повторов во всём списке решений разбора (`sufler.graph_decision_merge`, №824).
+
+    Части разбора идут с нахлёстом, а минутки лежат в хвосте стенограммы и попадают в две части
+    сразу: модель пересказывает одно решение разными словами, дословный `_dedup` их не видит.
+    Замер 28.10 (шесть встреч, 25 лишних строк глазами): склейка 0,7/3 снимает 5 из 25 без
+    единой ложной, на эталоне из 17 встреч покрытие −1 группа из 133. Модель не зовёт.
+
+    Пустое значение — включено; явный ключ может выключить, нераспознанное значение тоже
+    выключает (как у второго прохода: опечатка в `false` не должна оставлять склейку). Порог
+    мерен только на русском — en, zh и любой другой язык не клеят даже с явным `true`."""
+    if graph_language(cfg) != "ru":
+        return False
+    raw = _section(cfg).get("graph_decision_merge")
+    if raw is not None and str(raw).strip():
+        return flag(cfg, "graph_decision_merge", False)
+    return True
+
+
 def graph_language(cfg: dict) -> str:
     """Язык значений разбора встречи (`sufler.language`): точное значение, пустое — русский.
 

@@ -38,6 +38,9 @@ UNDOCUMENTED_ON_PURPOSE = {
     # без ключа решает умолчание демона по модели и языку
     # (`install_profile.graph_second_pass_enabled`, №822), явный ключ его перебивает
     "graph_second_pass",
+    # склейка пересказов решений: включена без ключа только для ru, в примере
+    # закомментирована рядом со вторым проходом (`install_profile.graph_decision_merge_enabled`, №824)
+    "graph_decision_merge",
 }
 
 # Все формы чтения sufler.*, живущие в src/. Кавычки — любые: cfg['sufler']

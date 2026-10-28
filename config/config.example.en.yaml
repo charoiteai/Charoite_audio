@@ -139,6 +139,10 @@ sufler:
   # Ollama with language: ru (or empty); off on other models. false turns it off, true turns it on
   # for any model. Russian meetings only (language: ru exactly; ru-RU is skipped) — the merge threshold was measured on them.
   # graph_second_pass: true
+  # Merge rewordings of one decision across the whole extraction list (chunks overlap and the
+  # minutes land in two chunks): no model call; measured on 28.10 it removed 5 of 25 extra lines
+  # with no false merges. On by default, Russian meetings only (language: ru); false turns it off.
+  # graph_decision_merge: true
   # Link byte-identical copies of meeting documents (the original under
   # "Документация", the copy under "Встречи-архив" for Finder) with hard
   # links: disk space and iCloud sync stop doubling, both paths keep
