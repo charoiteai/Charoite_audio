@@ -344,7 +344,8 @@ def test_first_pass_odd_shape_is_left_alone(model, odd):
 @pytest.mark.parametrize("cfg, lang", [
     ({}, "ru"), ({"sufler": None}, "ru"), ({"sufler": {}}, "ru"), ({"sufler": {"language": None}}, "ru"),
     ({"sufler": {"language": " ru "}}, "ru"), ({"sufler": {"language": " EN "}}, "en"),
-    ({"sufler": {"language": "zh"}}, "zh"),
+    ({"sufler": {"language": "zh"}}, "zh"), ({"sufler": {"language": "en-US"}}, "en"),
+    ({"sufler": {"language": "ru_RU"}}, "ru"), ({"sufler": {"language": "-"}}, "ru"),
 ])
 def test_language_is_read_like_the_prompt(cfg, lang):
     assert g._language(cfg) == lang

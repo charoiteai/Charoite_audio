@@ -129,6 +129,7 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertEqual(full.seedWrites(wroteHere: [k: "false"]), [.init(key: k, expected: "false", value: "true")])
         XCTAssertEqual(full.seedWrites(wroteHere: [k: "true"]), [])
         XCTAssertEqual(light.seedWrites(wroteHere: [:]), [], "не сеяли — «Лёгкий» ключ не трогает")
+        XCTAssertEqual(light.seedWrites(wroteHere: [k: "false"]), [], "свой откат уже лёг — повтор ничего не пишет")
     }
 
     func testТяжёлыеПрофилиНичегоНеОтключают() {

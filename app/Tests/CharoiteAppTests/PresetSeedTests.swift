@@ -45,21 +45,84 @@ final class PresetSeedTests: XCTestCase {
     /// Ручное значение владельца — в любой форме, которую читает PyYAML, — не тронуто:
     /// обычная строка — `.changed`; формы, которых не видит построчный разбор, — отказ оракула.
     func testРучноеЗначениеНеТронуто() async throws {
-        let owned = [
-            "sufler:\n  graph_second_pass: false\n",
-            "sufler:\n  \"graph_second_pass\": false\n",          // DS C1: ключ в кавычках
-            "sufler:\n  graph_second_pass : false\n",            // DS C1: пробел перед двоеточием
-            "sufler :\n  graph_second_pass: false\n",            // Haiku C1: заголовок с пробелом
-            "sufler: {graph_second_pass: false}\n",              // flow-форма
-            "sufler:\n  a: 1\nllm:\n  m: 1\nsufler :\n  graph_second_pass: false\n",
+        // refused: true — отказ оракула или формы с причиной; false — `.changed`, молча; nil — не судим.
+        let owned: [(String, Bool?)] = [
+            ("sufler:\n  graph_second_pass: false\n", false),
+            ("sufler:\n  \"graph_second_pass\": false\n", true),   // DS C1: ключ в кавычках
+            ("sufler:\n  graph_second_pass : false\n", true),     // DS C1: пробел перед двоеточием
+            ("sufler :\n  graph_second_pass: false\n", nil),      // Haiku C1: заголовок с пробелом
+            ("sufler: {graph_second_pass: false}\n", true),       // flow-форма
+            ("sufler:\n  a: 1\nllm:\n  m: 1\nsufler :\n  graph_second_pass: false\n", nil),
         ]
-        for text in owned {
+        for (text, refused) in owned {
             let r = try root(text)
             let before = try Data(contentsOf: config(r))
             let result = await apply("full", r)
             XCTAssertEqual(try Data(contentsOf: config(r)), before, text)
             XCTAssertEqual(result.wroteHere, [:], text)
+            if let refused { XCTAssertEqual(result.failure != nil, refused, text) }
         }
+    }
+
+    /// Настоящие шаблоны, которые мастер копирует на свежей машине, — посев ложится и проходит оракул.
+    func testПосевВНастоящиеШаблоны() async throws {
+        for name in ["config.example.yaml", "config.example.en.yaml", "config.example.zh.yaml"] {
+            let template = ConfigEditCheck.repo.appendingPathComponent("config/\(name)")
+            let r = try root(try String(contentsOf: template, encoding: .utf8))
+            let result = await apply("full", r)
+            XCTAssertNil(result.failure, name)
+            XCTAssertEqual(AppSettings.configValue(key, root: r), "true", name)
+        }
+    }
+
+    /// Проверка, которая перед настоящим оракулом дописывает комментарий в config.yaml —
+    /// чужая запись (имя, папка графа) в окне проверки. `once` — только при первом вызове.
+    private func drifting(once: Bool) throws -> ConfigEditCheck {
+        guard let py = ConfigEditCheck.testPython else { throw XCTSkip("нет python с PyYAML") }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("drift-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let mark = dir.appendingPathComponent("done").path
+        let guardLine = once ? "[ -e '\(mark)' ] || " : ""
+        let script = dir.appendingPathComponent("drift.sh")
+        try """
+        \(guardLine){ printf '# дрейф\\n' >> "$CHAROITE_ROOT/config/config.yaml"; : > '\(mark)'; }
+        exec '\(py.path)' '\(ConfigEditCheck.repo.path)/scripts/install_engine.py' "$@"
+        """.write(to: script, atomically: true, encoding: .utf8)
+        return ConfigEditCheck(python: URL(fileURLWithPath: "/bin/sh"), script: script.path)
+    }
+
+    /// Байты сдвинула чужая запись, значение то же — посев повторяется и ложится (n822-out2, DS I1).
+    func testДрейфБайтовНеПутаетсяСПравкойВладельца() async throws {
+        let r = try root("sufler:\n  graph: true\n")
+        ConfigEditCheck.current = try drifting(once: true)
+        let result = await apply("full", r)
+        XCTAssertNil(result.failure)
+        XCTAssertEqual(result.wroteHere, [key: "true"])
+        let text = try String(contentsOf: config(r), encoding: .utf8)
+        XCTAssertTrue(text.contains("# дрейф"))
+        XCTAssertEqual(AppSettings.configValue(key, root: r), "true")
+    }
+
+    /// Файл меняют на каждой попытке: посев не лёг, причина названа, свой посев мастер не забывает.
+    func testДрейфБезКонцаНеСтираетСвойПосев() async throws {
+        let r = try root("sufler:\n  graph: true\n")
+        let wrote = await apply("full", r).wroteHere
+        ConfigEditCheck.current = try drifting(once: false)
+        let result = await apply("light", r, wrote)
+        XCTAssertNotNil(result.failure)
+        XCTAssertEqual(result.wroteHere, [key: "true"], "посев всё ещё наш — следующий «Лёгкий» откатит")
+        XCTAssertEqual(AppSettings.configValue(key, root: r), "true")
+    }
+
+    /// Отказ проверки не стирает память о своём посеве.
+    func testОтказНеСтираетСвойПосев() async throws {
+        let r = try root("sufler:\n  graph: true\n")
+        let wrote = await apply("full", r).wroteHere
+        ConfigEditCheck.current = ConfigEditCheck(python: URL(fileURLWithPath: "/usr/bin/false"), script: "/dev/null")
+        let result = await apply("light", r, wrote)
+        XCTAssertNotNil(result.failure)
+        XCTAssertEqual(result.wroteHere, [key: "true"])
     }
 
     /// Отказ записи человеку виден: flow-форма секции — причина, а не тихий «успех».

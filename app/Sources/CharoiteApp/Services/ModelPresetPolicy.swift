@@ -135,10 +135,22 @@ enum ModelPresetPolicy {
         var wrote = wroteHere
         var failure: String?
         for w in writes {
-            switch await AppSettings.setConfigValueIfUnchanged(w.key, expected: w.expected,
-                                                               value: w.value, root: root) {
+            var outcome = await AppSettings.setConfigValueIfUnchanged(w.key, expected: w.expected,
+                                                                      value: w.value, root: root)
+            // Байты сдвинула чужая запись в окне проверки (имя, папка графа), а
+            // значение всё ещё то, что ждали, — это не правка владельца: одна
+            // повторная попытка (n822-out2, DS I1, Haiku I-1).
+            if case .changed(let current) = outcome, current == w.expected {
+                outcome = await AppSettings.setConfigValueIfUnchanged(w.key, expected: w.expected,
+                                                                      value: w.value, root: root)
+            }
+            switch outcome {
             case .written:
                 wrote[w.key] = w.value
+            case .changed(let current) where current == w.expected:
+                // Файл меняют снова и снова — посев не лёг, но и значение не чужое: помним как было.
+                failure = L.t("config.yaml меняли во время записи", "config.yaml changed during the write",
+                              "写入期间 config.yaml 被修改")
             case .changed:
                 // Значение теперь не наше: владелец поправил файл — не трогаем и не откатываем.
                 wrote[w.key] = nil

@@ -138,6 +138,11 @@ final class FirstRunConfigTests: XCTestCase {
             return XCTFail("applyPreset не найден — тест устарел вместе с экраном")
         }
         let body = String(text[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("seed(preset)\n    }"), "applyPreset не сеет")
+        XCTAssertTrue(body.contains("seeding = true"), "посев без защиты от второго входа")
+        XCTAssertTrue(body.contains("seeding = false"), "кнопка навсегда серая после посева")
+        XCTAssertTrue(body.contains("seededRoot = root.path"), "посев не привязан к корню")
+        XCTAssertTrue(text.contains(".disabled(seeding\n"), "«Записать» не ждёт посева")
         XCTAssertTrue(body.contains("seedWrites(wroteHere: seededHere)"), "план посева не строится")
         XCTAssertTrue(body.contains("ModelPresetPolicy.seed("), "посев не идёт условной записью")
         XCTAssertTrue(body.contains("seededHere = result.wroteHere"), "мастер забывает свой посев — откат не сработает")
