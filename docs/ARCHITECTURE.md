@@ -135,7 +135,8 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   attempt, so a refusal before 200 is a line too, and is written once, after
   the lease is released. The consumer is an explicit label
   (`model_ledger.consumer(...)`) where the stack lies — the daemon's shared
-  `_collect`, the two graph passes, the debrief; elsewhere the first frame
+  `_collect`, the two graph passes; elsewhere (the debrief is
+  `untagged:graph_updater.main`, its only direct model call) the first frame
   outside `llm.py`, marked `untagged:`. The ledger keeps its own term by the
   date in the file name (`llm.ledger_keep_days`, 35; exactly `0` = off and deletes earlier days, a negative or fractional value = 35): the shared
   `logs/` retention judges by mtime and the audio term and would wipe it.

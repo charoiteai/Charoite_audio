@@ -106,7 +106,8 @@ PortAudio 的麦克风。没有第三条路径：Core Audio tap 流已于 02.09 
   `stream_options` 的网关不提供——为 `null`）。调用对象在第一次尝试前创建，
   所以 200 之前的拒绝也有一行，且只在释放租约后写一次。调用方在栈信息不可靠处
   用显式标签（`model_ledger.consumer(...)`）：守护进程共用的 `_collect`、图谱的
-  两轮解析、会后复盘；其他地方取 `llm.py` 之外的第一个栈帧，标为 `untagged:`。
+  两轮解析；其他地方取 `llm.py` 之外的第一个栈帧，标为 `untagged:`（会后复盘即
+  `untagged:graph_updater.main`，该函数唯一的直接模型调用）。
   日志按文件名中的日期自行清理（`llm.ledger_keep_days`，35；恰好为 `0` 时关闭并删除以前各天的文件，负数或小数视为 35）：
   `logs/` 的通用清理按 mtime 和录音期限判断，会把它删掉。有意不计入：单 token
   健康探测、模型保活、向量模型以及 Swift 应用自己的聊天请求。

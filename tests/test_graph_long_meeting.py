@@ -50,3 +50,19 @@ def test_dedup_collapses_same_entity_from_different_chunks():
 def test_short_meeting_still_goes_in_one_pass():
     """Короткая встреча не должна дробиться — лишние запросы к модели ни к чему."""
     assert len(_parts("реплика. " * 100)) == 1
+
+
+def test_meeting_of_exactly_one_chunk_is_one_call(monkeypatch):
+    """Ровно CHUNK_CHARS знаков — один кусок, один вызов модели без нарезки
+    (мутант `<=` → `<` у порога первого прохода, CI №807)."""
+    calls = []
+    monkeypatch.setattr(g, "_yield_to_live", lambda *a, **k: None)
+    monkeypatch.setattr(g.llm_health, "ensure_alive", lambda *a, **k: True)
+    monkeypatch.setattr(g.install_profile, "graph_second_pass_enabled", lambda cfg: False)
+    monkeypatch.setattr(g, "_extract", lambda cfg, t, rule="", **k: calls.append(("one", len(t))) or {"ok": 1})
+    monkeypatch.setattr(g, "_extract_long", lambda cfg, t, rule="", **k: calls.append(("long", len(t))) or {"ok": 1})
+    assert g.extract({}, "x" * g.CHUNK_CHARS) == {"ok": 1}
+    assert calls == [("one", g.CHUNK_CHARS)]
+    calls.clear()
+    g.extract({}, "x" * (g.CHUNK_CHARS + 1))
+    assert calls == [("long", g.CHUNK_CHARS + 1)]
