@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import sys
 
@@ -11,7 +12,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from config_loader import load_user_or_example  # noqa: E402
+from config_loader import fingerprint, load_user_or_example  # noqa: E402
 
 
 MIGRATED = (
@@ -40,6 +41,32 @@ def _две_папки(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Pa
     _config_dir(данные)
     _config_dir(код)
     return данные, код
+
+
+def test_fingerprint_sees_an_edit_with_the_same_mtime(tmp_path):
+    """Правка с прежним временем (`cp -p`, `touch -r`) — другой отпечаток: кэши
+    журнала модели и MCP-сервера иначе держат старое значение (выход n807-out8)."""
+    own = _config_dir(tmp_path) / "config.yaml"
+    own.write_text("llm: {}\n", encoding="utf-8")
+    os.utime(own, (1_000_000, 1_000_000))
+    before = fingerprint(tmp_path, code=tmp_path)
+    own.write_text("llm:\n  ledger_keep_days: 0\n", encoding="utf-8")
+    os.utime(own, (1_000_000, 1_000_000))
+    assert fingerprint(tmp_path, code=tmp_path) != before
+
+
+def test_fingerprint_sees_a_same_length_edit_in_place(tmp_path):
+    """Тот же inode, та же длина, прежнее время — ловит только ctime (выход n807-out9)."""
+    own = _config_dir(tmp_path) / "config.yaml"
+    own.write_text("llm:\n  ledger_keep_days: 7\n", encoding="utf-8")
+    os.utime(own, (1_000_000, 1_000_000))
+    before = fingerprint(tmp_path, code=tmp_path)
+    ino = own.stat().st_ino
+    with open(own, "r+", encoding="utf-8") as f:
+        f.write("llm:\n  ledger_keep_days: 0\n")
+    os.utime(own, (1_000_000, 1_000_000))
+    assert (own.stat().st_ino, own.stat().st_mtime) == (ino, 1_000_000)
+    assert fingerprint(tmp_path, code=tmp_path) != before
 
 
 def test_user_config_wins_over_example(tmp_path):

@@ -124,6 +124,32 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
   the server under someone else's generation.
+- **Model minutes are measured per consumer.** The same two transport seams
+  (`llm._open_stream`, `llm._post_busy`) write one line per request to
+  `logs/model_calls-YYYY-MM-DD.jsonl` (`model_ledger`, №807): consumer, method,
+  engine, model, outcome (`ok` with a separate field `cut: "length"` when the
+  token ceiling ended it), wall/first-text/busy-queue seconds, and the server's
+  own numbers (`prompt_eval_count`, `eval_count`, `total_duration`) when the
+  engine sends them (Ollama does; mlx-server and gateways without
+  `stream_options` do not — `null`). The call object is born before the first
+  attempt, so a refusal before 200 is a line too, and is written once, after
+  the lease is released. The consumer is an explicit label
+  (`model_ledger.consumer(...)`) where the stack lies — the daemon's shared
+  `_collect`, the two graph passes; elsewhere (the debrief is
+  `untagged:graph_updater.main`, its only direct model call) the first frame
+  outside `llm.py`, marked `untagged:`. The ledger only appends and
+  deletes nothing: no retention term yet (every way of deriving "the owner's
+  term" — an empty config, the shipped example, the default for a missing key —
+  found a path to deleting by a number the owner never wrote); the shared
+  `logs/` retention leaves it alone, since it judges by mtime and the audio term
+  and would wipe it. Exactly `0` in `llm.ledger_keep_days` of the data root's own
+  `config/config.yaml` stops writing (earlier days stay); a config the caller
+  built itself cannot switch it off, and an edit reaches a running daemon on its
+  next call.
+  Outside the ledger by design: one-token health probes, the hold tick, the
+  embedder and the Swift app's own chat requests. `wall_s` starts at the first
+  POST: the daemon's pulse `model_ms` for a hint also counts building the
+  transcript tail, so the two differ by design.
 - **Our own generation in flight is a fact, not a guess.** For the duration of
   every request to the local model the transport (`llm._open_stream`,
   `llm._post_busy`) holds a lease file `data/llm_inflight/<pid>-<id>.json`

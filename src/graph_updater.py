@@ -29,6 +29,7 @@ import privacy  # noqa: E402
 import live_sidecar  # noqa: E402
 import channel_trace  # noqa: E402
 import meeting_source  # noqa: E402
+import model_ledger  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 import llm  # noqa: E402
 import nli  # noqa: E402
@@ -271,17 +272,20 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             # в английском похожими делают служебные слова (выход n821-out1, DS C1).
             # Белый список, а не «кроме en/zh»: любой другой язык тоже без замера (n822-in1, DS C1).
             print(f"граф: второй проход: нет замера для языка {_language(cfg)!r} — только первый")
+    # Оба прохода зовут модель через один `_extract`: по стеку журнал вызовов
+    # их не различит, метка — здесь (№807).
     try:
-        if len(transcript) <= CHUNK_CHARS:
-            if second:
-                _report(1, 1 + len(second))
-            data = _extract(cfg, transcript, project_rule)
-            done = 1
-        else:
-            first = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
-            data = _extract_long(cfg, transcript, project_rule,
-                                 total=len(first) + len(second) if second else None)
-            done = len(first)
+        with model_ledger.consumer("graph_updater.first_pass"):
+            if len(transcript) <= CHUNK_CHARS:
+                if second:
+                    _report(1, 1 + len(second))
+                data = _extract(cfg, transcript, project_rule)
+                done = 1
+            else:
+                first = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
+                data = _extract_long(cfg, transcript, project_rule,
+                                     total=len(first) + len(second) if second else None)
+                done = len(first)
     except requests.RequestException as e:
         print(f"граф: модель недоступна ({type(e).__name__}: {e}) — "
               f"встреча сохранена, граф не обновлён")
@@ -289,7 +293,8 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     if not data or not second:
         return data
     try:
-        return _with_second_pass(cfg, data, second, project_rule, done)
+        with model_ledger.consumer("graph_updater.second_pass"):
+            return _with_second_pass(cfg, data, second, project_rule, done)
     except Exception as e:  # noqa: BLE001 — добавка не смеет отнять готовый первый проход
         # Граница добавки целиком: сбой вне цикла кусков (склейка, разбор найденного)
         # оставляет разбор первого (проверка правки по мутантам, Haiku M).

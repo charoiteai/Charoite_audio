@@ -55,6 +55,7 @@ import live_nemotron  # noqa: E402
 import live_sidecar  # noqa: E402
 import machine_power  # noqa: E402
 import meeting_source  # noqa: E402
+import model_ledger  # noqa: E402
 import privacy  # noqa: E402
 
 import question_filter  # noqa: E402
@@ -1895,12 +1896,14 @@ def main():
         """Собрать стрим целиком, уступив ручному запросу: None — прервано
         (manual_evt взведён), вызывающий не двигает свой seen и вернётся к
         куску следующим тактом. Одна проверка на всех держателей замка вместо
-        копии условия в каждом цикле (DS/GLM r1 по #558)."""
+        копии условия в каждом цикле (DS/GLM r1 по #558). Потребитель в журнале
+        вызовов модели — тот, кто позвал помощника, а не сам помощник (№807)."""
         parts: list[str] = []
-        for tok in tokens:
-            if manual_evt.is_set():
-                return None
-            parts.append(tok)
+        with model_ledger.consumer(model_ledger.caller_name(1)):
+            for tok in tokens:
+                if manual_evt.is_set():
+                    return None
+                parts.append(tok)
         return "".join(parts)
 
     @contextlib.contextmanager

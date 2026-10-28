@@ -38,6 +38,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import brain  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
+from jsonl_log import append_record, read_records  # noqa: E402,F401 — писатель журнала общий (№807)
 import deps  # noqa: E402
 from charoite_paths import code_root, harden_umask, log_path, resolve_root  # noqa: E402
 
@@ -610,34 +611,6 @@ def bench_lock(root: pathlib.Path):
         if not file_locks.acquire_exclusive(f, attempts=50, pause=0.1):
             sys.exit("журнал бенча памяти занят другим прогоном дольше 5 с — запись не сделана")
         yield
-
-
-def read_records(path: pathlib.Path) -> list[dict]:
-    """Строки журнала; битая строка (оборванная запись) пропускается с предупреждением."""
-    if not path.exists():
-        return []
-    out = []
-    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            out.append(json.loads(line))
-        except ValueError:
-            print(f"⚠ {path.name}:{i}: битая строка пропущена")
-    return out
-
-
-def append_record(path: pathlib.Path, rec: dict) -> None:
-    """Оборванная прошлая запись (без перевода строки) не склеивается с новой:
-    иначе `read_records` выбросил бы обе."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lead = ""
-    if path.exists() and path.stat().st_size:
-        with path.open("rb") as f:
-            f.seek(-1, os.SEEK_END)
-            lead = "" if f.read(1) == b"\n" else "\n"
-    with path.open("a", encoding="utf-8") as f:
-        f.write(lead + json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def accepted_base(records: list[dict], key: tuple) -> dict | None:

@@ -43,7 +43,7 @@ def _held(graph, names, owner=""):
     return {k: cands for (k, _), (_, cands, _) in got.items()}
 
 
-def _meeting(tmp_path, monkeypatch, graph, data, owner="", sent=None):
+def _meeting(tmp_path, monkeypatch, graph, data, owner="", sent=None, llm=None):
     """Прогон main() на подставном разборе: модель, архив, хук и память — заглушки;
     `sent` собирает имена участников, ушедших в память."""
     voices = [p["имя"] for p in data.get("люди", [])]
@@ -63,7 +63,7 @@ def _meeting(tmp_path, monkeypatch, graph, data, owner="", sent=None):
         monkeypatch.setattr(g, "meeting_facts_to_brain",
                             lambda cfg, stamp, title, people, *a: sent.extend(p["имя"] for p in people))
     monkeypatch.setattr(g.privacy, "cloud_enrich_enabled", lambda cfg: False)
-    monkeypatch.setattr(g, "LLM", lambda cfg: (_ for _ in ()).throw(RuntimeError("модели нет")))
+    monkeypatch.setattr(g, "LLM", llm or (lambda cfg: (_ for _ in ()).throw(RuntimeError("модели нет"))))
     g.main()
     notes = sorted((graph / "Встречи").glob("*.md"))
     assert len(notes) == 1, notes
@@ -576,3 +576,29 @@ def test_alias_into_another_folder_touches_its_index_only(tmp_path, monkeypatch)
     _meeting(tmp_path / "2", monkeypatch, graph2,
              {"люди": [], "сущности": [{"имя": "Саша", "тип": "команда", "суть": "бот"}]})
     assert rebuilt == [], rebuilt
+
+
+def test_the_debrief_is_the_one_model_call_named_by_main(tmp_path, monkeypatch):
+    """Журнал вызовов (№807) зовёт разбор встречи `untagged:graph_updater.main`:
+    прямой вызов модели в main() один. Второй прямой вызов там же или вынос
+    разбора в помощник сменил бы имя потребителя молча (выход n807-out4)."""
+    import model_ledger
+    seen = []
+
+    class _Model:
+        def __init__(self, cfg):
+            pass
+
+        def recording_block(self, note):
+            return ""
+
+        def complete(self, prompt, **kw):
+            # кадры транспорта (`llm`) и этой заглушки журнал пропускает так же
+            call = model_ledger.Call(tmp_path, engine="t", model="m", kind="complete",
+                                     method="complete", skip=frozenset({"llm", __name__}))
+            seen.append((call.consumer, call.source))
+            return ""
+
+    graph = _graph(tmp_path)
+    _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Иван Петров")]}, llm=_Model)
+    assert seen == [("untagged:graph_updater.main", "stack")]

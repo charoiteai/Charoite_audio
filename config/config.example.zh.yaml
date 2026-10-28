@@ -61,6 +61,10 @@ llm:
   max_context_chars: 6000
   temperature: 0.4
   num_ctx: 8192                      # 必须设置：否则 KV 缓存会膨胀
+  # 模型调用日志：每个请求一行——由谁发起（提示、纪要、图谱解析……）、模型、token、
+  # 秒数、“忙”等待。不含文字。每天一个文件 logs/model_calls-YYYY-MM-DD.jsonl，只追加：
+  # 目前没有保留期限，旧文件请自行删除。恰好为 0——不再写入（以前的文件保留）。
+  # ledger_keep_days: 0
 
 sufler:
   # --- 使用者 ---

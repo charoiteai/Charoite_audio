@@ -1,14 +1,14 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 93.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 95.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 16): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
+- **base** (зависит от: —; модулей 17): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `exit_codes`, `file_locks`, `jsonl_log`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
 - **runtime** (зависит от: base; модулей 7): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`
-- **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
+- **llm** (зависит от: base, runtime; модулей 6): `decision_gate`, `llm`, `llm_health`, `model_lease`, `model_ledger`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 6): `cloud`, `night_cloud`, `pii_fake`, `pii_fake_pool`, `pii_mask`, `pii_ner`
 - **audio** (зависит от: base, runtime; модулей 13): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `speech_gate`, `stt`, `stt_runtime`, `voice_pitch`
@@ -45,8 +45,10 @@
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
 - `graphs` → meeting: дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app
 - `install_profile` → meeting: бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting
+- `jsonl_log` → base: дописываемый журнал JSON-строк в logs/ с починкой оборванной строки (№807): писатель и читатель одни на проект — журнал вызовов модели (model_ledger, llm) и база бенча памяти (scripts/memory_bench). Только stdlib; в llm он закрыл бы журнал бенчу от слоёв ниже
 - `media_meta` → base: разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует
 - `meeting_tail` → meeting: граница конца звонка (№733): делит сегменты стенограммы на разговор и хвост после звонка. Импортов из репозитория нет, только stdlib; единственный потребитель — rebuild_transcript (meeting). В base модуль открылся бы всем слоям, хотя решение о хвосте — предметное правило встречи
+- `model_ledger` → llm: журнал вызовов модели по потребителям (№807): строку пишет транспорт llm.py из своих швов (_open_stream, _post_busy), метку потребителя ставят демон и разбор графа — слой транспорта, рядом с арендой model_lease; сам зовёт только runtime и base (charoite_paths, config_loader — выключатель из конфига корня, jsonl_log, once).
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3, daemon и scripts/doctor.py (годность — refusal(), проба — judge())
 - `once` → base: общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его llm (llm, model_lease; llm передаёт его двери векторов значением), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm
 - `task_line` → base: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items и meeting_archive — источник саммари без учёта после встречи, without_statuses (№392); ничего из репо не импортирует
