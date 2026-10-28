@@ -378,7 +378,7 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
             break
         _report(n, total)
         try:
-            got = _answer(cfg, part, project_rule, raise_http=True)
+            got = _extract(cfg, part, project_rule, raise_http=True)
         except requests.RequestException as e:
             # Модель не отвечает — следующий кусок ждал бы тот же таймаут
             # (выход n821-out2, Sonnet I2).
@@ -465,16 +465,17 @@ def _same_decision(a: set[str], b: set[str]) -> bool:
     return den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE
 
 
-# Число для сторожа склейки — цифры с датой и временем через точку, двоеточие или дробь:
-# «12.12», «11:00», а у меток — только цифровое ядро («q3» → 3, «15го» → 15, «2ТБ» → 2).
-# Основы слов (`_stems`) метки теряют или режут («q3» короче четырёх букв, «12.01» → 12 и 01),
-# поэтому сторож читает текст сам. Ядро без букв: «Q3» и «3 квартал», «2ТБ» и «2 ТБ» — одно
-# число (выход n824-out2, DS I1, Sonnet I4); числа словами и римские цифры сторож не видит.
-_NUMBER = re.compile(r"[0-9]+(?:[.:/][0-9]+)*")
+# Числовая метка — токен с цифрой целиком, с датой и временем через точку, двоеточие или
+# дробь: «12.12», «11:00», «q3», «s3», «15го». Основы слов (`_stems`) такие метки теряют или
+# режут («q3» короче четырёх букв, «12.01» → 12 и 01), поэтому сторож чисел читает текст сам.
+# Токен целиком, а не цифровое ядро: ядро склеивало «A1» и «B1», «app1» и «db1» (выход
+# n824-out3, DS C1, Haiku C1). Цена — недосклейка «Q3» и «3 квартал», «2ТБ» и «2 ТБ»
+# (безопасная сторона, долг №615).
+_NUMBER_TOKEN = re.compile(r"[a-zа-я0-9]*[0-9][a-zа-я0-9]*(?:[.:/][0-9]+)*")
 
 
 def _numbers(text: str) -> frozenset[str]:
-    return frozenset(_NUMBER.findall(str(text)))
+    return frozenset(_NUMBER_TOKEN.findall(str(text).lower().replace("ё", "е")))
 
 
 def _fingerprint(text: str) -> tuple[set[str], frozenset[str]]:
@@ -633,10 +634,11 @@ _LIST_FIELDS = ("люди", "сущности", "решения", "связи", 
 
 
 def _answer(cfg: dict, transcript: str, project_rule: str = "", **kw) -> dict | None:
-    """Ответ модели на одну часть — уже в форме схемы. Единственный шов, где ответ
-    становится данными, для обоих проходов и встречи в одну часть: список в названии
-    ронял запись встречи (`.strip()` в main), строка или null рядом со списком другой
-    части — слияние частей (выходы n824-out1 и out2: DS C2, Haiku C1)."""
+    """Ответ модели на одну часть первого прохода — уже в форме схемы: и встреча в одну
+    часть, и части длинной. Список в названии ронял запись встречи (`.strip()` в main),
+    строка или null рядом со списком другой части — слияние частей (выходы n824-out1 и
+    out2: DS C2, Haiku C1). Второй проход читает только «решения» и держит их форму сам
+    (`_with_second_pass`): строка там не решение (выход n824-out3, DS I2, Haiku I1)."""
     return _shaped(_extract(cfg, transcript, project_rule, **kw))
 
 

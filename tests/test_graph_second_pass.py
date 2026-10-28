@@ -260,12 +260,13 @@ def test_russian_named_explicitly_keeps_second_pass(model, lang):
     assert data["решения"][-1] == "Новое решение по бюджету"
 
 
-def test_second_pass_string_instead_of_list_is_one_decision(model):
-    """Строка вместо списка — одно решение, а не буквы: форму ответа правит шов `_answer`
-    у обоих проходов одинаково (выход n824-out2, DS C1)."""
+@pytest.mark.parametrize("said", ["Новое решение по бюджету", "В этой части решений нет"])
+def test_second_pass_string_instead_of_list_adds_nothing(model, said):
+    """Строка вместо списка дописала бы решения по букве; целиком она чаще пояснение модели,
+    чем решение, — второй проход её не берёт (выход n824-out3, DS I2, Haiku I1)."""
     model.answers[1] = lambda n: _first()
-    model.answers[2] = lambda n: {"решения": "Новое решение по бюджету"}
-    assert g.extract(ON, LONG)["решения"][2:] == ["Новое решение по бюджету"]
+    model.answers[2] = lambda n: {"решения": said}
+    assert g.extract(ON, LONG) == _first()
 
 
 def test_junk_with_the_same_text_does_not_eat_the_decision(model):
