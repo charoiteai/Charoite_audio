@@ -127,7 +127,8 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
 - **Model minutes are measured per consumer.** The same two transport seams
   (`llm._open_stream`, `llm._post_busy`) write one line per request to
   `logs/model_calls-YYYY-MM-DD.jsonl` (`model_ledger`, №807): consumer, method,
-  engine, model, outcome (`cut: length` when the token ceiling ended it), wall/first-text/busy-queue seconds, and the server's
+  engine, model, outcome (`ok` with a separate field `cut: "length"` when the
+  token ceiling ended it), wall/first-text/busy-queue seconds, and the server's
   own numbers (`prompt_eval_count`, `eval_count`, `total_duration`) when the
   engine sends them (Ollama does; mlx-server and gateways without
   `stream_options` do not — `null`). The call object is born before the first
@@ -136,10 +137,12 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   (`model_ledger.consumer(...)`) where the stack lies — the daemon's shared
   `_collect`, the two graph passes, the debrief; elsewhere the first frame
   outside `llm.py`, marked `untagged:`. The ledger keeps its own term by the
-  date in the file name (`llm.ledger_keep_days`, 35; `0` = off): the shared
+  date in the file name (`llm.ledger_keep_days`, 35; exactly `0` = off and deletes earlier days, a negative or fractional value = 35): the shared
   `logs/` retention judges by mtime and the audio term and would wipe it.
   Outside the ledger by design: one-token health probes, the hold tick, the
-  embedder and the Swift app's own chat requests.
+  embedder and the Swift app's own chat requests. `wall_s` starts at the first
+  POST: the daemon's pulse `model_ms` for a hint also counts building the
+  transcript tail, so the two differ by design.
 - **Our own generation in flight is a fact, not a guess.** For the duration of
   every request to the local model the transport (`llm._open_stream`,
   `llm._post_busy`) holds a lease file `data/llm_inflight/<pid>-<id>.json`

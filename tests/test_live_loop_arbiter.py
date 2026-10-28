@@ -30,6 +30,8 @@ def test_background_loops_take_the_hint_slot_quietly_and_yield_to_a_manual_reque
     for loop in ("minutes_loop", "name_loop"):
         assert "_collect(" in _body(loop) and "if out is None:" in _body(loop), loop
     assert "manual_evt.is_set()" in _body("_collect")
+    # метка журнала — кадр того, кто позвал помощника, а не сам _collect (№807)
+    assert "model_ledger.consumer(model_ledger.caller_name(1))" in _body("_collect")
 
 
 def test_theses_backlog_is_consumed_head_first_not_dropped():

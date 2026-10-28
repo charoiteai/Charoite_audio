@@ -52,6 +52,7 @@ import once
 
 LEDGER_KIND = "model_calls"
 KEEP_DAYS_DEFAULT = 35
+KEEP_DAYS_MAX = 36500           # дальше срок уводит дату отсечки за календарь
 
 _consumer: contextvars.ContextVar[str | None] = contextvars.ContextVar("model_ledger_consumer",
                                                                       default=None)
@@ -99,24 +100,33 @@ def _who(skip: frozenset[str]) -> tuple[str, str]:
 
 
 def keep_days(cfg: dict | None) -> int:
-    """Срок журнала из `llm.ledger_keep_days`; мусор в конфиге — умолчание, не отказ."""
+    """Срок журнала из `llm.ledger_keep_days`; мусор в конфиге — умолчание, не отказ.
+
+    Выключает (и стирает прежние дни) только точный `0`: `-1` и `0.5` — не
+    «выключить», а мусор, иначе опечатка молча стирала бы журнал (выход n807-out2)."""
     section = cfg.get("llm") if isinstance(cfg, dict) else None
     raw = section.get("ledger_keep_days", KEEP_DAYS_DEFAULT) if isinstance(section, dict) else KEEP_DAYS_DEFAULT
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+    n = _count(raw)
+    if n is None or n != raw:
         return KEEP_DAYS_DEFAULT
-    return max(0, int(raw))
+    return min(n, KEEP_DAYS_MAX)
 
 
 def _count(x) -> int | None:
-    """Целое неотрицательное число из чужого тела, иначе None."""
-    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0:
+    """Целое неотрицательное число из чужого тела, иначе None (огромное целое
+    не бросает OverflowError, как бросил бы `math.isfinite`)."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
         return None
-    return int(x)
+    if isinstance(x, float) and not math.isfinite(x):
+        return None
+    return int(x) if x >= 0 else None
 
 
 def _seconds_ns(x) -> float | None:
     n = _count(x)
-    return None if n is None else round(n / 1e9, 3)
+    if n is None or n > 10**18:      # больше 30 лет в наносекундах — мусор; n / 1e9 бросил бы OverflowError
+        return None
+    return round(n / 1e9, 3)
 
 
 def _proc() -> str:

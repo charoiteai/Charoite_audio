@@ -248,8 +248,9 @@ def test_keep_zero_turns_the_ledger_off(_сеть_закрыта):
     assert list(_logs().glob("model_calls-*")) == []
 
 
-@pytest.mark.parametrize("raw, want", [(None, 35), (7, 7), (0, 0), (-3, 0), ("10", 35),
-                                       (True, 35), (float("nan"), 35), (2.9, 2)])
+@pytest.mark.parametrize("raw, want", [(None, 35), (7, 7), (7.0, 7), (0, 0), (-3, 35), (-1, 35),
+                                       (0.5, 35), (2.9, 35), ("10", 35), (True, 35),
+                                       (float("nan"), 35), (10**400, 36500)])
 def test_keep_days_from_config(raw, want):
     cfg = {"llm": {} if raw is None else {"ledger_keep_days": raw}}
     assert model_ledger.keep_days(cfg) == want
@@ -400,7 +401,9 @@ def test_torn_multibyte_char_breaks_one_line_not_the_file(tmp_path):
     jsonl_log.append_record(path, {"модель": "первая"})
     raw = json.dumps({"модель": "вторая"}, ensure_ascii=False).encode()
     with open(path, "ab") as f:
-        f.write(raw[:12])                                       # обрыв посреди знака
+        f.write(raw[:13])                                       # обрыв посреди знака
+    with pytest.raises(UnicodeDecodeError):
+        raw[:13].decode()                                       # и правда посреди: проверка не вакуумна
     jsonl_log.append_record(path, {"модель": "третья"})
     warned = []
     got = jsonl_log.read_records(path, warn=warned.append)
@@ -410,3 +413,29 @@ def test_torn_multibyte_char_breaks_one_line_not_the_file(tmp_path):
 def test_keep_days_survives_a_broken_section():
     assert model_ledger.keep_days({"llm": "строкой"}) == 35
     assert model_ledger.keep_days(None) == 35
+
+
+def test_warmup_is_its_own_consumer(_сеть_закрыта):
+    """Прогрев — прямая цель нити: без метки стек назвал бы потребителем
+    `threading.Thread.run` (выход n807-out2, DS I1)."""
+    import threading
+    c = llm.LLM(LOCAL)
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(_ndjson("готов"))
+    t = threading.Thread(target=c.warmup)
+    t.start()
+    t.join(10)
+    [rec] = _records()
+    assert (rec["consumer"], rec["src"], rec["method"]) == ("llm.warmup", "tag", "warmup")
+
+
+def test_huge_server_numbers_do_not_break_the_answer(_сеть_закрыта):
+    """Огромное целое в теле шлюза — `null` в строке, а не OverflowError
+    в конце уже доставленного ответа (выход n807-out2, DS M2)."""
+    c = llm.LLM(LOCAL)
+    done = {**DONE, "prompt_eval_count": 10**400, "total_duration": 10**400}
+    _сеть_закрыта[("POST", f"{c.base}/api/chat")] = lambda url, **k: _stream(
+        [json.dumps({"message": {"content": "а"}}).encode(), json.dumps(done).encode()])
+    with model_ledger.consumer("тест"):
+        assert "".join(c.stream("ВОПРОС", model="m1")) == "а"
+    [rec] = _records()
+    assert rec["outcome"] == "ok" and rec["server_s"] is None and rec["out_tok"] == 7
