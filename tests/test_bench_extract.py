@@ -116,3 +116,16 @@ def test_bench_does_not_inherit_the_owners_second_pass(tmp_path, monkeypatch):
     be.measure(owner, "m", f, second_pass=True)
     assert seen == [False, True]
     assert owner["sufler"]["graph_second_pass"] is True, "конфиг вызывающего не правится"
+
+
+def test_bench_does_not_merge_decisions(tmp_path, monkeypatch):
+    """Колонка «решения» — что нашла модель: склейка из конфига владельца в бенч не протекает (№824)."""
+    seen = []
+    monkeypatch.setattr(be.gu, "extract",
+                        lambda cfg, text: seen.append(cfg["sufler"]["graph_decision_merge"]) or {})
+    f = tmp_path / "m.md"
+    f.write_text(TRANSCRIPT, encoding="utf-8")
+    owner = {"llm": {"model": "x"}, "sufler": {"graph_decision_merge": True, "language": "ru"}}
+    be.measure(owner, "m", f)
+    assert seen == [False]
+    assert owner["sufler"]["graph_decision_merge"] is True, "конфиг вызывающего не правится"

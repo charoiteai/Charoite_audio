@@ -38,6 +38,9 @@ UNDOCUMENTED_ON_PURPOSE = {
     # без ключа решает умолчание демона по модели и языку
     # (`install_profile.graph_second_pass_enabled`, №822), явный ключ его перебивает
     "graph_second_pass",
+    # склейка пересказов решений: умолчание — в `install_profile.graph_decision_merge_enabled` (№824),
+    # в примере закомментирована рядом со вторым проходом
+    "graph_decision_merge",
 }
 
 # Все формы чтения sufler.*, живущие в src/. Кавычки — любые: cfg['sufler']
@@ -162,6 +165,8 @@ def test_every_key_the_app_presets_write_is_read_by_code():
     assert {"graph", "deja_vu", "tier3"} <= written, written
     # Второй проход пресет не пишет: умолчание — в демоне по модели (финальный Opus №822).
     assert "graph_second_pass" not in written
+    # Склейку решений пресет тоже не пишет: по умолчанию она выключена (n824-out5, DS M4).
+    assert "graph_decision_merge" not in written
     unread = sorted(written - _keys_read_by_code())
     assert not unread, f"пресет пишет ключи, которых код не читает: {unread}"
 

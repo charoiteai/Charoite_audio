@@ -18,6 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graph_updater as g  # noqa: E402
 
 ON = {"sufler": {"graph_second_pass": True}}
+MERGE_ON = {"sufler": {"graph_second_pass": True, "graph_decision_merge": True}}   # склейка выключена по умолчанию (n824-out5)
 OFF = {"sufler": {"graph_second_pass": False}}
 
 
@@ -124,9 +125,21 @@ def test_merge_drops_literal_repeat_and_junk():
 
 
 def test_merge_is_asymmetric_inside_the_second_pass():
-    """Внутри второго прохода похожие решения не склеиваются друг с другом: там действует только _dedup."""
+    """Склейка проходов сравнивает только с первым; пересказы внутри второго снимает итоговая склейка
+    (только по ключу `graph_decision_merge: true`)."""
     second = ["Перенести релиз сервиса отчётов на пятницу", "Релиз сервиса отчётов перенести на пятницу утром"]
     assert g._second_pass_decisions(["Совсем другое дело"], second) == second
+
+
+def test_rewording_inside_the_second_pass_is_merged_on_the_way_out(model):
+    """Тот же пересказ внутри второго прохода сквозь `extract` — одна строка, первое вхождение (№824)."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": ["Заказать стенд нагрузочного тестирования к среде",
+                                              "Стенд нагрузочного тестирования заказать к среде",
+                                              "Отдельное дело по закупке"]}
+    data = g.extract(MERGE_ON, LONG)
+    assert data["решения"] == _first()["решения"] + ["Заказать стенд нагрузочного тестирования к среде",
+                                                    "Отдельное дело по закупке"]
 
 
 def test_second_pass_failure_keeps_first(model):
@@ -249,11 +262,15 @@ def test_russian_named_explicitly_keeps_second_pass(model, lang):
     assert data["решения"][-1] == "Новое решение по бюджету"
 
 
-def test_second_pass_string_instead_of_list_adds_nothing(model):
-    """Строка вместо списка дописала бы решения по букве."""
+@pytest.mark.parametrize("said", ["Новое решение по бюджету", "В этой части решений нет", {"текст": "x"}, 5])
+def test_second_pass_string_instead_of_list_adds_nothing(model, said, capsys):
+    """Строка вместо списка дописала бы решения по букве; целиком она чаще пояснение модели,
+    чем решение, — второй проход её не берёт (выход n824-out3, DS I2, Haiku I1), но говорит
+    об этом в лог (выход n824-out4, Sonnet M3, Haiku M1)."""
     model.answers[1] = lambda n: _first()
-    model.answers[2] = lambda n: {"решения": "Новое решение по бюджету"}
+    model.answers[2] = lambda n: {"решения": said}
     assert g.extract(ON, LONG) == _first()
+    assert f"решения — {type(said).__name__}, а не список — пропущено" in capsys.readouterr().out
 
 
 def test_junk_with_the_same_text_does_not_eat_the_decision(model):
@@ -340,14 +357,15 @@ def test_first_pass_string_is_written_as_list_even_without_additions(model):
 
 
 @pytest.mark.parametrize("odd", [{"текст": "решение"}, 5])
-def test_first_pass_odd_shape_is_left_alone(model, odd):
-    """Словарь или число вместо списка — добавка их не затирает и модель зря не зовёт."""
+def test_first_pass_odd_shape_becomes_an_empty_list(model, odd, capsys):
+    """Словарь или число вместо списка — не решения: первый проход дал пустой список, второй
+    дописывает к нему, и об этом сказано в лог (вход n824-in1, DS C2; шов `_answer` — выход
+    n824-out2, DS C1)."""
     model.answers[1] = lambda n: _first(решения=odd)
     model.answers[2] = lambda n: {"решения": ["Новое решение по бюджету"]}
     data = g.extract(ON, LONG)
-    assert data["решения"] == odd
-    assert len(model.calls) == 3
-    assert model.reports[-1] == (8, 8)
+    assert data["решения"] == ["Новое решение по бюджету"]
+    assert f"«решения» — {type(odd).__name__}, а не список" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("cfg, lang", [
@@ -424,7 +442,7 @@ def test_empty_stems_do_not_divide_even_without_the_share_floor(monkeypatch):
 
 
 def test_second_pass_failure_outside_chunks_keeps_the_first(model, monkeypatch, capsys):
-    """Сбой добавки вне цикла кусков (склейка) не отнимает разбор первого прохода."""
+    """Сбой добавки вне цикла кусков (склейка проходов) не отнимает разбор первого прохода."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": ["Собрать стенд нагрузки к среде"]}
 
@@ -435,6 +453,20 @@ def test_second_pass_failure_outside_chunks_keeps_the_first(model, monkeypatch, 
     data = g.extract(ON, LONG)
     assert data["решения"] == _first()["решения"]
     assert "второй проход упал (ZeroDivisionError" in capsys.readouterr().out
+
+
+def test_final_merge_failure_keeps_every_decision(model, monkeypatch, capsys):
+    """Сбой итоговой склейки — список без склейки, а не разбор без решений (№824)."""
+    model.answers[1] = lambda n: _first()
+    model.answers[2] = lambda n: {"решения": ["Собрать стенд нагрузки к среде"]}
+
+    def broken(decisions):
+        raise ZeroDivisionError("division by zero")
+
+    monkeypatch.setattr(g, "_merge_decisions", broken)
+    data = g.extract(MERGE_ON, LONG)
+    assert data["решения"] == _first()["решения"] + ["Собрать стенд нагрузки к среде"]
+    assert "склейка решений упала (ZeroDivisionError" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("extra, second", [(0, False), (1, True)])

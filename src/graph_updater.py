@@ -240,6 +240,17 @@ def _project_rule(known: list[str], default: str) -> str:
 def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     """LLM → JSON: сущности, связи, решения, темы.
 
+    Разбор целиком — `_extract_all`; здесь единственный выход, через который
+    решения уходят в заметку, brain и лог: на нём список приводится к форме,
+    а повторы склеиваются только по ключу `graph_decision_merge: true` (№824,
+    `_final_decisions`; по умолчанию выключено, n824-out5).
+    """
+    return _final_decisions(cfg, _extract_all(cfg, transcript, project_rule))
+
+
+def _extract_all(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
+    """Оба прохода разбора без итоговой склейки решений.
+
     Длинная встреча разбирается по частям. Раньше здесь стоял transcript[:12000],
     то есть в граф уходили первые двадцать минут — а решения принимают в конце
     («ну что, договорились: релиз 15-го»). Ничего не падало, граф выглядел
@@ -279,7 +290,7 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             if len(transcript) <= CHUNK_CHARS:
                 if second:
                     _report(1, 1 + len(second))
-                data = _extract(cfg, transcript, project_rule)
+                data = _answer(cfg, transcript, project_rule)
                 done = 1
             else:
                 first = _split(transcript, CHUNK_CHARS, CHUNK_OVERLAP)
@@ -334,7 +345,10 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
 
     Решения второго — в хвост списка: brain уносит первые шесть по порядку
     (`_meeting_facts`), и второй проход не должен подменить факты, которые туда
-    уже уходили (вход n821-in1, Sonnet C1).
+    уже уходили (вход n821-in1, Sonnet C1). Итоговая склейка (`_final_decisions`,
+    №824) — только при `graph_decision_merge: true` — убирает пересказы и среди
+    первых шести: на освободившееся место поднимается следующее, в том числе
+    решение второго прохода (вход n824-in1, Sonnet M1).
 
     Второй проход — добавка, а не условие: его сбой оставляет разбор первого,
     а не роняет всю встречу в «модель недоступна» (Sonnet I2, DeepSeek I2).
@@ -391,6 +405,9 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
         # Строка вместо списка дописала бы решения по букве (выход n821-out1, DS I, Sonnet I1).
         if isinstance(got_decisions, list):
             found.extend(d for d in got_decisions if isinstance(d, str) and d.strip())
+        elif got_decisions is not None:
+            print(f"граф: часть {n}/{total} второго прохода: решения — "
+                  f"{type(got_decisions).__name__}, а не список — пропущено")
     # Счётчик в статусе — до конца, как бы проход ни кончился (выход n821-out2, DS M6).
     _report(total, total)
     added = _second_pass_decisions(first, _dedup(found))
@@ -424,20 +441,23 @@ def _second_pass_decisions(first: list, second: list) -> list:
     сравнивается с решениями первого, но не с соседями по своему проходу и не
     наоборот. `_dedup` здесь не годится — он сравнивает дословно, а один и тот же
     смысл два прохода формулируют по-разному; и расширять сам `_dedup` нельзя —
-    тот же порог склеил бы разные решения внутри одного прохода и чужие списки
-    (вход n821-in1, Sonnet I4, DeepSeek I1).
+    он общий для людей, сущностей и связей (вход n821-in1, Sonnet I4, DeepSeek I1).
+    Пересказы внутри прохода снимает итоговая склейка на выходе `extract`
+    (`_merge_decisions`, №824) — только по ключу `graph_decision_merge: true`;
+    без ключа (умолчание, n824-out5) они остаются отдельными строками, как на
+    базе до №824.
     """
     # Сравниваем только со строками: словарь среди решений первого не решение и
     # не должен глушить настоящее решение второго (финальный Opus, M1).
     first = [d for d in first if isinstance(d, str)]
     seen = {d.strip().casefold() for d in first}
-    first_stems = [_stems(d) for d in first]
+    first_prints = [_fingerprint(d) for d in first]
     added = []
     for d in second:
         if not isinstance(d, str) or not d.strip() or d.strip().casefold() in seen:
             continue
-        mine = _stems(d)
-        if mine and any(_same_decision(mine, other) for other in first_stems):
+        mine = _fingerprint(d)
+        if mine[0] and any(_same_fingerprint(mine, other) for other in first_prints):
             continue
         added.append(d)
     return added
@@ -449,6 +469,128 @@ def _same_decision(a: set[str], b: set[str]) -> bool:
     shared = len(a & b)
     den = min(len(a), len(b))
     return den > 0 and shared >= SECOND_PASS_MIN_SHARED and shared / den >= SECOND_PASS_MIN_SHARE
+
+
+# Числовая метка — токен с цифрой целиком, с датой и временем через точку, двоеточие или
+# дробь: «12.12», «11:00», «q3», «s3», «15го». Основы слов (`_stems`) такие метки теряют или
+# режут («q3» короче четырёх букв, «12.01» → 12 и 01), поэтому сторож чисел читает текст сам.
+# Токен целиком, а не цифровое ядро: ядро склеивало «A1» и «B1», «app1» и «db1» (выход
+# n824-out3, DS C1, Haiku C1). Цена — недосклейка «Q3» и «3 квартал», «2ТБ» и «2 ТБ»
+# (безопасная сторона, долг №615).
+_NUMBER_TOKEN = re.compile(r"[a-zа-я0-9]*[0-9][a-zа-я0-9]*(?:[.:/][0-9]+)*")
+
+
+def _numbers(text: str) -> frozenset[str]:
+    return frozenset(_NUMBER_TOKEN.findall(str(text).lower().replace("ё", "е")))
+
+
+# Короткие слова (2–3 буквы), которые `_stems` отбрасывает, а они различают решения: системы
+# (CRM и DWH), короткие имена (Оля и Яна). Служебные — мимо: они не различают дела.
+_SHORT_STOP = frozenset(
+    "в во на по до для при все всё его её ее их так от из за к ко с со у о об обо и а но да ли же бы "
+    "то что как кто это мы вы он она оно они мне нам вам там тут уже еще ещё или под над про раз чем "
+    "где тот эта эти вот был нас вас ему ей им the to of in on at by is it an and or for".split())
+# Отрицание переворачивает решение: «перенести» и «не переносить» — противоположные дела.
+_NEGATION = frozenset({"не", "ни", "нельзя", "без"})
+
+
+def _short_words(text: str) -> frozenset[str]:
+    words = re.findall(r"[а-яёa-z]+", str(text).lower().replace("ё", "е"))
+    return frozenset(w for w in words if 2 <= len(w) <= 3 and w not in _SHORT_STOP and w not in _NEGATION)
+
+
+def _negated(text: str) -> bool:
+    return bool(_NEGATION & set(re.findall(r"[а-яёa-z]+", str(text).lower())))
+
+
+def _fingerprint(text: str) -> tuple[set[str], frozenset[str], bool]:
+    """Отпечаток решения для склейки: основы слов (порог), метки — числовые и короткие слова
+    (сторож вложенностью) и отрицание (сторож равенством). Слова короче четырёх букв `_stems`
+    теряет, и без меток и отрицания склеивались CRM и DWH, «перенести» и «не переносить» —
+    в том числе между проходами на main (финальный Opus №824, C1)."""
+    return _stems(text), _numbers(text) | _short_words(text), _negated(text)
+
+
+def _same_fingerprint(a: tuple, b: tuple) -> bool:
+    """Одно ли дело: порог по основам, и числа не спорят. Разные числа — разные дела («стенд 1»
+    и «стенд 2», «за Q3» и «за Q4», «на 12.12» и «на 12.01»), даже когда остальные слова общие;
+    число только с одной стороны — уточнение того же дела. Замер 28.10 и эталон №800: все
+    склейки с числами — одно дело, числа одной стороны входят в числа другой (№824, выход
+    n824-out1: DS C1, Sonnet I1). Короткое слово — та же метка («к CRM» и «к DWH» — разные дела),
+    отрицание с одной стороны — противоположное решение. Метка и голое число («15го» и «15», «2ТБ» и «2», «Q3» и
+    «3») — разные токены и не склеиваются: недосклейка, безопасная сторона (выход n824-out4,
+    Haiku I1; долг №615)."""
+    # Вложенность — методом, не `<=`: у `a <= b or b <= a` оба мутанта `<=` → `<` эквивалентны
+    # (перебор всех пар подмножеств {1,2,3}: ноль расхождений), тестом их не убить (CI мутаций #871).
+    return (_same_decision(a[0], b[0]) and (a[1].issubset(b[1]) or b[1].issubset(a[1]))
+            and a[2] == b[2])
+
+
+def _final_decisions(cfg: dict, data: dict | None) -> dict | None:
+    """Решения разбора — списком строк и без пересказов одного дела (№824).
+
+    Форма приводится всегда: строка ушла бы потребителям по буквам, словарь или
+    число — не решения (вход n824-in1, DS C2). Склейка — только для русского и
+    под ключом `sufler.graph_decision_merge` (`install_profile`); её сбой оставляет
+    список несклеенным, а не отнимает разбор.
+    """
+    if not isinstance(data, dict) or "решения" not in data:
+        return data
+    raw = data["решения"]
+    if isinstance(raw, str):
+        decisions = [raw] if raw.strip() else []
+    elif isinstance(raw, list):
+        decisions = [d for d in raw if isinstance(d, str) and d.strip()]
+        if len(decisions) < len(raw):
+            print(f"граф: решения: отброшено не-строк и пустых: {len(raw) - len(decisions)}")
+    elif raw is None:
+        decisions = []
+    else:
+        print(f"граф: решения — {type(raw).__name__}, а не список — в заметку не идут")
+        decisions = []
+    data["решения"] = decisions
+    if not install_profile.graph_decision_merge_enabled(cfg):
+        return data
+    try:
+        kept, pairs = _merge_decisions(decisions)
+    except Exception as e:  # noqa: BLE001 — склейка не смеет отнять разбор
+        print(f"граф: склейка решений упала ({type(e).__name__}: {e}) — список без склейки")
+        return data
+    for dropped, other in pairs:
+        print(f"граф: склеено решение: «{dropped[:70]}» ~ «{other[:70]}»")
+    data["решения"] = kept
+    return data
+
+
+def _merge_decisions(decisions: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Склейка по всему списку: решение уходит, если раньше в списке уже есть то же
+    дело — дословно без регистра или по `_same_fingerprint`. Остаётся первое вхождение:
+    решения первого прохода стоят первыми, brain уносит первые шесть (`_meeting_facts`).
+    Пары — (ушедший текст, оставшийся). Подмена текста слота более подробным снята: с ней
+    слот поглощал осколки чужих дел и итог зависел от порядка (выход n824-out2, DS I2,
+    Sonnet I2); правило «какая формулировка выживает» — долг №615.
+
+    Порог — тот же 0,7/3, что у склейки проходов: на шести встречах 28.10 он не склеил
+    ни одной пары разных дел, а все пересказы внутри части он не ловит (5 из 25 лишних,
+    остальное ниже порога)."""
+    kept: list[str] = []
+    kept_keys: dict[str, str] = {}
+    kept_prints: list[tuple[tuple, str]] = []
+    pairs: list[tuple[str, str]] = []
+    for d in decisions:
+        key = d.strip().casefold()
+        if key in kept_keys:
+            pairs.append((d, kept_keys[key]))
+            continue
+        mine = _fingerprint(d)
+        other = next((text for fp, text in kept_prints if _same_fingerprint(mine, fp)), None) if mine[0] else None
+        if other is not None:
+            pairs.append((d, other))
+            continue
+        kept.append(d)
+        kept_keys[key] = d
+        kept_prints.append((mine, d))
+    return kept, pairs
 
 
 def _live_now() -> bool:
@@ -478,13 +620,17 @@ def _extract_long(cfg: dict, transcript: str, project_rule: str = "",
         _report(n, total or len(parts))
         if n > 1:
             _yield_to_live()
-        got = _extract(cfg, part, project_rule)
+        got = _answer(cfg, part, project_rule)
         if not got:
             print(f"граф: часть {n}/{len(parts)} не разобралась — продолжаю")
             continue
         for key, value in got.items():
             if isinstance(value, list):
-                merged.setdefault(key, []).extend(value)
+                if not isinstance(merged.get(key), list):
+                    # Поля схемы уже в форме (`_answer`); ключ вне схемы, пришедший раньше
+                    # не списком, не роняет слияние (выход n824-out1, DS C2, Haiku C1).
+                    merged[key] = []
+                merged[key].extend(value)
             elif key not in merged or not merged[key]:
                 merged[key] = value          # название берём из первой удачной части
     if not merged:
@@ -514,6 +660,44 @@ def _dedup(items: list) -> list:
             seen.add(key)
             out.append(item)
     return out
+
+
+# Форма ответа разбора по промпту `_extract`: какие поля строки, какие списки.
+_TEXT_FIELDS = ("название", "проект")
+_LIST_FIELDS = ("люди", "сущности", "решения", "связи", "темы", "ядра")
+
+
+def _answer(cfg: dict, transcript: str, project_rule: str = "", **kw) -> dict | None:
+    """Ответ модели на одну часть первого прохода — уже в форме схемы: и встреча в одну
+    часть, и части длинной. Список в названии ронял запись встречи (`.strip()` в main),
+    строка или null рядом со списком другой части — слияние частей (выходы n824-out1 и
+    out2: DS C2, Haiku C1). Второй проход читает только «решения» и держит их форму сам
+    (`_with_second_pass`): строка там не решение (выход n824-out3, DS I2, Haiku I1)."""
+    return _shaped(_extract(cfg, transcript, project_rule, **kw))
+
+
+def _shaped(got: dict | None) -> dict | None:
+    """Поля схемы — своего вида: строковое поле не строкой отбрасывается, списочное
+    строкой становится списком из неё, иным видом — пустым списком. Прочие ключи —
+    как пришли."""
+    if not isinstance(got, dict):
+        return got
+    for key in _TEXT_FIELDS:
+        if key in got and not isinstance(got[key], str):
+            if got[key] is not None:
+                print(f"граф: поле «{key}» — {type(got[key]).__name__}, а не строка — отброшено")
+            del got[key]
+    for key in _LIST_FIELDS:
+        value = got.get(key)
+        if key not in got or isinstance(value, list):
+            continue
+        if isinstance(value, str):
+            got[key] = [value] if value.strip() else []
+            continue
+        if value is not None:
+            print(f"граф: поле «{key}» — {type(value).__name__}, а не список — отброшено")
+        got[key] = []
+    return got
 
 
 def _extract(cfg: dict, transcript: str, project_rule: str = "",

@@ -104,8 +104,11 @@ def measure(cfg: dict, model: str, path: pathlib.Path, second_pass: bool = False
     text = path.read_text(encoding="utf-8")
     # Второй проход — явным ключом бенча, а не флагом из конфига владельца: иначе на машине с
     # `graph_second_pass: true` колонка «сек» молча мерила бы пару проходов (n822-in1, I3).
+    # Склейка решений — тоже: бенч меряет, что нашла модель, и колонка «решения» не должна
+    # зависеть от ключа и языка владельца (выход n824-out1, DS I1).
     cfg = {**cfg, "llm": {**cfg["llm"], "model": model},
-           "sufler": {**(cfg.get("sufler") or {}), "graph_second_pass": second_pass}}
+           "sufler": {**(cfg.get("sufler") or {}), "graph_second_pass": second_pass,
+                      "graph_decision_merge": False}}
     started = time.time()
     data = gu.extract(cfg, text)
     took = time.time() - started
