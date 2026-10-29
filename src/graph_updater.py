@@ -1042,10 +1042,9 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
     # до первого POST, снимается, когда в отметке весь состав. Его оплачивает
     # любой следующий отправитель — повтор обработки или ревизия (DS r2 M3 и
     # критика по #545: долг жил только в функции ревизии)
-    # Долг, лежавший ДО нас, — чужой заказ полной переотправки с /forget (ревизия сняла
-    # решение, упавший /forget, отказ замка): досылка его не гасит, гасит тот, кто сделал
-    # /forget, — resend_to_brain_after_review (финальный Opus I1 по №615 п. 8)
-    own = _set_debt(mark, graph, fresh=True)
+    # Владелец долга — граф, где встреча сейчас: проект мог увести её в соседний граф, и долг
+    # за прежним графом снял бы прежний граф строкой «заметки нет» (n615p8-key, Haiku C1)
+    own = _set_debt(mark, graph)
     n = 0
     # покрытие — по ТЕКУЩЕМУ списку и только по записанной отметке: `len(done)`
     # при равном числе чужих ключей гасило долг без единого POST (DS r3
@@ -1066,7 +1065,7 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
-    if covered == len(keyed) and own is not None:
+    if covered == len(keyed):
         _settle_debt(mark, own)
     return n
 
@@ -1123,24 +1122,16 @@ def _graph_key(graph: pathlib.Path) -> str:
     return os.path.realpath(graph)
 
 
-def _set_debt(mark: pathlib.Path, graph: pathlib.Path | None, *, fresh: bool = False) -> int | None:
+def _set_debt(mark: pathlib.Path, graph: pathlib.Path | None) -> int | None:
     """Поставить долг рядом с отметкой. В файле — корень графа встречи: платит и снимает долг
     только обработка этого графа, чужой граф о нём не судит — каталог отметок один на установку,
     а проект уводит встречу в соседний граф (финальный Opus C1 по №615 п. 8). Граф неизвестен —
-    содержимое не трогаем, только mtime. `fresh` — только если долга ещё нет (создание без
-    гонки с ревизией, ставящей свой долг без замка отправителя). Возвращает mtime_ns
-    поставленного долга, None — не поставлен."""
+    содержимое не трогаем, только mtime. Возвращает mtime_ns поставленного долга."""
     debt = mark.with_suffix(".pending")
     body = b"" if graph is None else (_graph_key(graph) + "\n").encode("utf-8")
     try:
         debt.parent.mkdir(parents=True, exist_ok=True)
-        if fresh:
-            fd = os.open(debt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            try:
-                os.write(fd, body)
-            finally:
-                os.close(fd)
-        elif graph is None:
+        if graph is None:
             debt.touch()
         else:
             safe_write.write_bytes(debt, body)
@@ -1285,7 +1276,7 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
         if ok is False:
             return "память Чароита не переотправлена: факты встречи шлёт другой процесс — позже"
         graph = note.parent.parent          # заметка — <граф>/Встречи/<штамп>.md
-        own = _set_debt(mark, graph)
+        _set_debt(mark, graph)
         try:
             post(f"{BRAIN}/forget", json={"meeting": stamp}, timeout=15).raise_for_status()
         except Exception as e:  # noqa: BLE001 — brain выключен: память догонит повтор
@@ -1297,8 +1288,6 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
         title, people, topics = _note_head(after)
         n = send_to_brain(stamp, title, people, topics, new, mark, post=post, enabled=enabled, locked=True,
                           graph=graph)
-        if own is not None and n == len(_meeting_facts(stamp, title, people, topics, new)):
-            _settle_debt(mark, own)    # /forget и полный состав — наши; тронутый посреди — чужой
     dropped = len([d for d in old if d not in new])
     total = len(_meeting_facts(stamp, title, people, topics, new))
     if n < total:
@@ -1374,11 +1363,10 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
             continue
         out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(
             stamp, note, "", debt.with_suffix(".txt"), post=post, enabled=enabled, lock_wait=0.0))
-        if debt.exists():
-            try:
-                debt.touch()          # не оплачен — в конец очереди, слот освобождается
-            except OSError:
-                pass
+        try:
+            os.utime(debt)            # не оплачен — в конец очереди, слот освобождается; снятый
+        except OSError:               # посреди оплаты (forget) не воскрешаем: utime файл не создаёт
+            pass
     return out
 
 

@@ -418,38 +418,44 @@ def test_a_graph_pays_and_settles_only_its_own_debts(tmp_path):
         "долг без графа и без заметки не снимает никто — чей он, неизвестно"
 
 
-def test_every_debt_writer_names_the_graph_and_a_resend_settles_only_its_own_debt(tmp_path, monkeypatch):
-    """Отказ замка и отправка, поставившая долг, пишут в него граф встречи. Финальный Opus I1:
-    долг, лежавший до отправителя, — заказ полной переотправки с /forget; досылка недостающего
-    его не гасит, гасит переотправка по заметке."""
+def test_every_debt_writer_names_the_graph_and_the_debt_follows_the_meeting(tmp_path, monkeypatch):
+    """Отказ замка и отправка пишут в долг граф встречи. Проект увёл встречу в соседний граф —
+    отправка переписывает владельца: долг за прежним графом тот снял бы строкой «заметки нет»,
+    и недосланные факты не ушли бы никогда (n615p8-key, Haiku C1). Долг своей оборванной
+    отправки повтор, дославший всё, гасит (n615p8-key, Sonnet C-1)."""
     import fcntl
-    graph = tmp_path / "граф"
-    (graph / "Встречи").mkdir(parents=True)
+    a, b = tmp_path / "A", tmp_path / "B"
+    for graph in (a, b):
+        (graph / "Встречи").mkdir(parents=True)
     mark = tmp_path / "brain_sent" / "s.txt"
     debt = mark.with_suffix(".pending")
-    key = (g._graph_key(graph) + "\n").encode()
     dead = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down"))  # noqa: E731
-    assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=dead, graph=graph) == 0
-    assert debt.read_bytes() == key, "долг отправки без графа"
+    assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=dead, graph=a) == 0
+    assert debt.read_bytes() == (g._graph_key(a) + "\n").encode(), "долг отправки без графа"
     debt.unlink()
     monkeypatch.setattr(g, "SEND_LOCK_WAIT", 0.0)
     mark.parent.mkdir(exist_ok=True)
     with open(mark.with_suffix(".lock"), "a+") as holder:
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=dead, graph=graph) == 0
-    assert debt.read_bytes() == key, "долг при отказе замка без графа"
+        assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=dead, graph=a) == 0
+    assert debt.read_bytes() == (g._graph_key(a) + "\n").encode(), "долг при отказе замка без графа"
 
-    keys = [k for k, _ in g._meeting_facts("s", "Т", [], [], ["D1", "D2"])]
-    mark.write_text("sent 2/3\n" + "".join(f"id:{k}\n" for k in keys[:2]) + "# Т\n", encoding="utf-8")
-    before = debt.stat().st_mtime_ns
+    sends = []
+
+    def second_fails(url, json, timeout):
+        sends.append(url)
+        if len(sends) == 2:
+            raise ConnectionError("down")
+        return _Resp()
+
+    assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=second_fails, graph=b) == 1
+    assert debt.read_bytes() == (g._graph_key(b) + "\n").encode(), "долг остался за прежним графом"
+    (b / "Встречи" / "s.md").write_text("# Встреча s — Т\n\n## Решения\n- 📌 D1\n- 📌 D2\n", encoding="utf-8")
+    later = lambda: time.time() + g.DEBT_MIN_AGE + 1  # noqa: E731
+    assert g.pay_brain_debts(a, mark.parent, enabled=True, post=lambda *x, **k: _Resp(),
+                             now=later) == [] and debt.exists(), "прежний граф снял долг встречи"
+
     calls: list[str] = []
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
-    assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=ok, graph=graph) == 1
-    assert len(calls) == 1 and debt.exists() and debt.stat().st_mtime_ns == before, \
-        "досылка погасила заказ полной переотправки"
-    note = graph / "Встречи" / "s.md"
-    note.write_text("# Встреча s — Т\n\n## Решения\n- 📌 D1\n- 📌 D2\n", encoding="utf-8")
-    calls.clear()
-    out = g.resend_to_brain_after_review("s", note, note.read_text(encoding="utf-8"), mark,
-                                         enabled=True, post=ok)
-    assert calls[0].endswith("/forget") and len(calls) == 4 and not debt.exists(), out
+    assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=ok, graph=b) == 2
+    assert len(calls) == 2 and not debt.exists(), "дославший всё повтор не погасил долг"
