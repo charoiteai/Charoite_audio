@@ -1765,7 +1765,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 if note_path is not None:
                     # долг памяти — сразу после записи заметки, а не через мост и доставку:
                     # смерть процесса между ними иначе оставляла ⛔ в графе без долга (out3, DS I1);
-                    # второй вызов ниже ловит правки моста
+                    # мост и доставка решений заметки не меняют — вызов один (финальный Opus M1)
                     _owe_resend(stamp, note_path, note_before, cfg)
                 lines.append(_verdict_line(v, qdir))
                 # Песочница отработала — убираем. При сбое переноса по
@@ -2013,10 +2013,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # (may_edit) заметка не трогается — brain и граф согласны, пусть и
         # с ошибочным решением: граф здесь источник, а не ревизия.
         # Сама отправка — шаг после замка графа (`after_unlock`, выход n615p8-out1);
-        # долг за неё — здесь, под замком и до ротации и этапа «ok»: шаг, потерянный
-        # между ними, оплатит следующий прогон (выход n615p8-out2).
+        # долг за неё поставлен сразу после переноса: шаг, потерянный до запуска,
+        # оплатит следующий прогон (выходы n615p8-out2, out3).
         if published and may_edit and note_path is not None:
-            _owe_resend(stamp, note_path, note_before, cfg)
             after_unlock.append(functools.partial(_resend_and_log, stamp, note_path, note_before, log, cfg))
         try:
             with log.open("a", encoding="utf-8") as lf:

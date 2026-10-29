@@ -1044,11 +1044,16 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
     # до первого POST, снимается, когда в отметке весь состав. Его оплачивает
     # любой следующий отправитель — повтор обработки или ревизия (DS r2 M3 и
     # критика по #545: долг жил только в функции ревизии)
+    # Долг, лежавший ДО нас, — чужой заказ полной переотправки с /forget (ревизия сняла
+    # решение, упавший /forget, отказ замка): досылка его не гасит, гасит тот, кто сделал
+    # /forget, — resend_to_brain_after_review (финальный Opus I1 по №615 п. 8)
     debt = mark.with_suffix(".pending")
+    own = None
     try:
-        debt.parent.mkdir(parents=True, exist_ok=True)
-        debt.touch()
-        own = debt.stat().st_mtime_ns
+        if not debt.exists():
+            debt.parent.mkdir(parents=True, exist_ok=True)
+            debt.touch()
+            own = debt.stat().st_mtime_ns
     except OSError:
         own = None
     n = 0
@@ -1071,7 +1076,7 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
-    if covered == len(keyed):
+    if covered == len(keyed) and own is not None:
         _settle_debt(mark, own)
     return n
 
@@ -1251,9 +1256,11 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     with _sender_lock(mark, SEND_LOCK_WAIT if lock_wait is None else lock_wait) as ok:
         if ok is False:
             return "память Чароита не переотправлена: факты встречи шлёт другой процесс — позже"
+        own = None
         try:
             pending.parent.mkdir(parents=True, exist_ok=True)
             pending.touch()
+            own = pending.stat().st_mtime_ns
         except OSError:
             pass
         try:
@@ -1266,6 +1273,8 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
             pass
         title, people, topics = _note_head(after)
         n = send_to_brain(stamp, title, people, topics, new, mark, post=post, enabled=enabled, locked=True)
+        if n == len(_meeting_facts(stamp, title, people, topics, new)):
+            _settle_debt(mark, own)    # /forget и полный состав — наши; тронутый посреди — чужой
     dropped = len([d for d in old if d not in new])
     total = len(_meeting_facts(stamp, title, people, topics, new))
     if n < total:
@@ -1296,6 +1305,16 @@ def owe_brain_resend(note: pathlib.Path, note_before: str, mark: pathlib.Path, *
         pending.touch()
     except OSError:
         pass
+
+
+def _meeting_note_anywhere(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
+    """Заметка встречи — в графе прогона или в любом графе установки: каталог отметок один
+    на всех, а проект уводит встречу в соседний граф (финальный Opus C1 по №615 п. 8)."""
+    for g in [graph, *graphs.all_graphs("Встречи")]:
+        note = g / "Встречи" / f"{stamp}.md"
+        if note.is_file():
+            return note
+    return None
 
 
 def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: bool, skip: str = "",
@@ -1331,8 +1350,15 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
         return [f"долги памяти не оплачены: нет каталога встреч графа ({len(ripe)} ждут)"]
     for _, debt in sorted(ripe)[:limit]:
         stamp = debt.stem
-        note = graph / "Встречи" / f"{stamp}.md"
-        if not note.is_file():
+        note = _meeting_note_anywhere(graph, stamp)
+        if note is None and not all(r.is_dir() for r in graphs.roots()):
+            out.append(f"долг памяти {stamp}: заметки нет в доступных графах, часть vault недоступна — ждёт")
+            try:
+                debt.touch()
+            except OSError:
+                pass
+            continue
+        if note is None:
             _settle_debt(debt.with_suffix(".txt"))
             out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
             continue

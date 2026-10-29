@@ -376,3 +376,44 @@ def test_debts_are_kept_when_the_graph_meetings_folder_is_gone(tmp_path):
     lines = g.pay_brain_debts(tmp_path / "нет графа", sent, enabled=True, post=lambda *a, **k: _Resp(),
                               now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
     assert debt.exists() and "нет каталога встреч" in lines[0]
+
+
+def test_a_debt_of_a_meeting_in_another_graph_is_paid_not_dropped(tmp_path, monkeypatch):
+    """Финальный Opus C1 по №615 п. 8: каталог отметок один на установку, а проект уводит
+    встречу в соседний граф — долг такой встречи оплачивается по её графу, а не снимается.
+    Заметки нет нигде, но часть vault недоступна — долг ждёт."""
+    sent = tmp_path / "brain_sent"
+    sent.mkdir()
+    here, there = tmp_path / "А", tmp_path / "Б"
+    (here / "Встречи").mkdir(parents=True)
+    (there / "Встречи").mkdir(parents=True)
+    (there / "Встречи" / "2026-09-01_1000.md").write_text(BEFORE, encoding="utf-8")
+    debt = sent / "2026-09-01_1000.pending"
+    debt.touch()
+    monkeypatch.setattr(g.graphs, "all_graphs", lambda marker: [here, there])
+    calls: list[str] = []
+    ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
+    later = lambda: time.time() + g.DEBT_MIN_AGE + 1  # noqa: E731
+    lines = g.pay_brain_debts(here, sent, enabled=True, post=ok, now=later)
+    assert calls and calls[0].endswith("/forget") and not debt.exists(), lines
+
+    (there / "Встречи" / "2026-09-01_1000.md").unlink()
+    debt.touch()
+    monkeypatch.setattr(g.graphs, "roots", lambda: [tmp_path / "отключённый том"])
+    lines = g.pay_brain_debts(here, sent, enabled=True, post=ok, now=later)
+    assert debt.exists() and "ждёт" in lines[0], lines
+
+
+def test_a_rerun_fills_the_gap_but_leaves_an_ordered_debt_to_the_full_resend(tmp_path):
+    """Финальный Opus I1 по №615 п. 8: долг, лежавший до отправителя, — заказ полной
+    переотправки с /forget; досылка недостающего его не гасит, даже покрыв весь состав."""
+    mark = tmp_path / "brain_sent" / "s.txt"
+    mark.parent.mkdir()
+    keys = [k for k, _ in g._meeting_facts("s", "Т", [], [], ["D1"])]
+    mark.write_text("sent 1/2\n" + "".join(f"id:{k}\n" for k in keys) + "# Т\n", encoding="utf-8")
+    debt = mark.with_suffix(".pending")
+    debt.touch()
+    calls: list[str] = []
+    ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
+    assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=ok) == 1
+    assert mark.read_text(encoding="utf-8").startswith("sent 3/3\n") and debt.exists()
