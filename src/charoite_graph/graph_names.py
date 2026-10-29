@@ -74,6 +74,35 @@ def is_label_tag(inner: str) -> bool:
     return any(is_speaker_placeholder(part) for part in (inner or "").split(","))
 
 
+#: пометки при метке реплики, которые пишет диаризация («Собеседник 1, муж»); строчными —
+#: «М.» и «Муж» с заглавной бывают инициалом и фамилией (n828-out4 Haiku M1, Sonnet M2)
+_LABEL_NOTES = frozenset(("муж", "жен", "м", "ж", "мужчина", "женщина",
+                          "male", "female", "man", "woman", "男", "女"))
+
+
+def _is_role(inner: str) -> bool:
+    """Скобка при метке — роль, не имя: ни одной буквы, кроме строчных («(модератор)», «(main)»,
+    «(12:30)»). Заглавная или иероглиф — имя: «(Иван)», «(张伟)» (n828-out4 Sonnet M1)."""
+    return not any(c.isalpha() and not c.islower() for c in inner)
+
+
+def split_label(text: str) -> list[str] | None:
+    """Метка диаризации и что при ней — для маски ПДн, одно правило с `is_label_tag`.
+
+    None — метки нет. Иначе части, которые не метка, не пометка (`_LABEL_NOTES`) и не роль в
+    хвостовой скобке: «Собеседник 1, муж», «Собеседник 3 (модератор)» → [] — кусок целиком
+    метка; «Собеседник 5, Иван» → ["Иван"]; «Собеседник 5 (Иван)» → ["Собеседник 5 (Иван)"] —
+    имя в скобке остаётся при части (n828-out3, out4 DS-C2: правило скобки — здесь, не в маске)."""
+    s = text or ""
+    while (tail := _LABEL_TAIL_RE.search(s)) and _is_role(tail.group(1)):
+        s = s[:tail.start()]
+    parts = [x.strip() for x in re.split(r"[,，]", s) if x.strip()]
+    if not any(is_speaker_placeholder(x) for x in parts):
+        return None
+    return [x for x in parts if not (is_speaker_placeholder(x) and not re.search(r"[(（]", x))
+            and x.rstrip(".") not in _LABEL_NOTES]
+
+
 def is_placeholder_node(stem: str) -> bool:
     """Узел в Люди — метка диаризации? «Собеседник 3», «Speaker 2 (муж)»,
     «Собеседник 1 (Саша)» — да: облако дописывало имя в скобках, но узел

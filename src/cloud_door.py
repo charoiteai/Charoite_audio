@@ -17,7 +17,7 @@ from typing import Sequence
 
 import pii_mask
 import privacy
-from charoite_graph import graph_nodes
+from charoite_graph import graph_names, graph_nodes
 from charoite_schema import CHAROITE
 
 #: Слова, которые владелец разрешил отправлять как есть (общие термины, совпавшие с
@@ -39,7 +39,7 @@ def _common(graph: pathlib.Path) -> set[str]:
 
 
 def _forms(cfg: dict, graph: pathlib.Path,
-           known=lambda _w: False, lexeme=None) -> tuple[pii_mask.Forms, list[str]]:
+           known=None, lexeme=None, speech=None) -> tuple[pii_mask.Forms, list[str]]:
     snap = graph_nodes.NodeIndex(graph, schema=CHAROITE).snapshot_for_mask()
     nodes = [pii_mask.NodeForms(n.name, n.aliases, n.person) for n in snap.nodes
              if n.person or n.folder in SYSTEM_FOLDERS]
@@ -82,7 +82,8 @@ def _forms(cfg: dict, graph: pathlib.Path,
         stubs.append((s.name, canon, CHAROITE.is_person_folder(s.folder)))
     owner = str((cfg.get("sufler") or {}).get("user_name") or "").strip()
     return pii_mask.build_forms(nodes, stubs=stubs, owner=owner, common=_common(graph),
-                                known=known, lexeme=lexeme), notes
+                                known=known, lexeme=lexeme, speech=speech,
+                                label=graph_names.split_label), notes
 
 
 def empty_workdir() -> pathlib.Path:
@@ -148,14 +149,17 @@ def mask_prompt(cfg: dict, prompt: str, graph: pathlib.Path | None, *,
     try:
         import pii_ner    # natasha грузится только там, где маска действительно нужна
         import pii_fake   # pymorphy3 — тоже: лексема решает канон узла и подделки
-        forms, notes = _forms(cfg, graph, known=pii_ner.is_common, lexeme=pii_fake.same_lexeme)
+        forms, notes = _forms(cfg, graph, known=pii_ner.is_common, lexeme=pii_fake.same_lexeme,
+                              speech=pii_fake.speech_word)
         text = pii_mask.prepare(text)
-        ner = pii_ner.spans(text)
+        ner = pii_mask.drop_noise(text, pii_ner.spans(text), forms)
         ner += pii_mask.rare_word_spans(text, ner, pii_ner.is_common)
+        ner += pii_mask.abbrev_spans(text, pii_ner.is_common, _common(graph))
         regions = _regions(text, data)
         masked = pii_mask.mask(text, forms, ner, level=level, regions=regions)
-        # метки → подставные имена: легенды нет, модель видит обычный текст (№799, плечо C)
-        pii_fake.dress(masked, text, forms)
+        # метки → подставные имена: легенды нет, модель видит обычный текст (№799, плечо C);
+        # формы — те, по которым маскировал этот текст (n828-in1 DS-C2)
+        pii_fake.dress(masked, text, masked.forms)
     except pii_mask.MaskRefused:
         raise
     except Exception as e:  # noqa: BLE001 — дверь: любой сбой маски — отказ
