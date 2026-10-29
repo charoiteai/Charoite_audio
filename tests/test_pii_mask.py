@@ -577,6 +577,19 @@ def test_yo_and_fleeting_vowel_do_not_let_a_known_name_through():
     assert pm.postcondition_hits("Петр и Павла", forms) == 2
 
 
+@pytest.mark.parametrize("node, text, word", [
+    ("Журавель", "Вчера у Журавля спросили", "Журавля"),
+    ("Журавель", "Говорили с Журавлём", "Журавлём"),
+    ("Корень", "Звонил Корню утром", "Корню"),
+    ("Ремень", "Ответ Ремня пришёл", "Ремня"),
+    ("Лапоть", "Письмо от Лаптя", "Лаптя"),
+])
+def test_fleeting_vowel_before_soft_sign_is_masked(node, text, word):
+    """Узел на «-ень/-ель/-оть»: падеж с беглой гласной маскируется, как на main (n828-opus C1)."""
+    m = pm.mask(text, _forms(pm.NodeForms(node)))
+    assert m.replaced == 1 and word not in m.text
+
+
 def test_name_word_in_the_middle_of_a_phrase_stays_a_name():
     """Гость «Вера» посреди фразы — имя, хоть «вера» и есть строчными (n793-out1 S-I5)."""
     t = pm.prepare("Пришла Вера, вера в успех. Вот так, вот.")
