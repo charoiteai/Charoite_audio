@@ -150,6 +150,11 @@ def test_judge_live_names_keeps_everything_without_a_reason(monkeypatch):
     assert logs == []
 
 
+def test_judge_live_names_passes_the_owner_to_the_judge(monkeypatch):
+    monkeypatch.setattr(rebuild_transcript, "log", lambda *_: None)
+    assert rebuild_transcript.judge_live_names({"Собеседник 3": "Марк"}, _EVIDENCE, "Марк Тестов") == {}
+
+
 def test_rebuild_judges_both_sources_of_names_on_the_full_transcript():
     """Контракт на проводку (№830): перенесённые по времени имена и догадка
     модели проходят суд пары по полной итоговой выборке — модель на урезанной
