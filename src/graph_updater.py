@@ -975,7 +975,8 @@ def _meeting_facts(stamp: str, title: str, people: list, topics: list,
 
 
 def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions: list,
-                  mark: pathlib.Path, post=None, *, enabled: bool, locked: bool = False) -> int:
+                  mark: pathlib.Path, post=None, *, enabled: bool, locked: bool = False,
+                  graph: pathlib.Path | None = None) -> int:
     """Факты встречи → память Чароита. Возвращает, сколько ушло в этот раз.
 
     `enabled` — решение вызывающего по `install_profile.brain_enabled`, без умолчания: кто не
@@ -1009,17 +1010,14 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             # п. 8 полная отправка держит замок дольше SEND_LOCK_WAIT (выход n615p8-out2,
             # DS I2, Haiku I-1). Оплатит pay_brain_debts полной переотправкой по заметке.
             if not _all_marked(mark, keyed):
-                try:
-                    mark.with_suffix(".pending").touch()
-                except OSError:
-                    pass
+                _set_debt(mark, graph)
             print("память Чароита: факты этой встречи шлёт другой процесс — пропущено")
             return 0
-        return _send_facts(stamp, title, keyed, mark, post)
+        return _send_facts(stamp, title, keyed, mark, post, graph)
 
 
 def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
-                mark: pathlib.Path, post) -> int:
+                mark: pathlib.Path, post, graph: pathlib.Path | None = None) -> int:
     # Отметка помнит КЛЮЧИ отправленных фактов, а не позицию: повтор обработки
     # извлекает решения заново, порядок и состав могут отличаться — смещение
     # слало бы старые повторно и теряло новые (luna r2 по #455). Строка без
@@ -1044,13 +1042,10 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
     # до первого POST, снимается, когда в отметке весь состав. Его оплачивает
     # любой следующий отправитель — повтор обработки или ревизия (DS r2 M3 и
     # критика по #545: долг жил только в функции ревизии)
-    debt = mark.with_suffix(".pending")
-    try:
-        debt.parent.mkdir(parents=True, exist_ok=True)
-        debt.touch()
-        own = debt.stat().st_mtime_ns
-    except OSError:
-        own = None
+    # Долг, лежавший ДО нас, — чужой заказ полной переотправки с /forget (ревизия сняла
+    # решение, упавший /forget, отказ замка): досылка его не гасит, гасит тот, кто сделал
+    # /forget, — resend_to_brain_after_review (финальный Opus I1 по №615 п. 8)
+    own = _set_debt(mark, graph, fresh=True)
     n = 0
     # покрытие — по ТЕКУЩЕМУ списку и только по записанной отметке: `len(done)`
     # при равном числе чужих ключей гасило долг без единого POST (DS r3
@@ -1071,7 +1066,7 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
-    if covered == len(keyed):
+    if covered == len(keyed) and own is not None:
         _settle_debt(mark, own)
     return n
 
@@ -1122,6 +1117,44 @@ def _sender_lock(mark: pathlib.Path, wait: float, *, sleep=time.sleep, now=time.
             except OSError:
                 yield None
                 return
+
+
+def _graph_key(graph: pathlib.Path) -> str:
+    return os.path.realpath(graph)
+
+
+def _set_debt(mark: pathlib.Path, graph: pathlib.Path | None, *, fresh: bool = False) -> int | None:
+    """Поставить долг рядом с отметкой. В файле — корень графа встречи: платит и снимает долг
+    только обработка этого графа, чужой граф о нём не судит — каталог отметок один на установку,
+    а проект уводит встречу в соседний граф (финальный Opus C1 по №615 п. 8). Граф неизвестен —
+    содержимое не трогаем, только mtime. `fresh` — только если долга ещё нет (создание без
+    гонки с ревизией, ставящей свой долг без замка отправителя). Возвращает mtime_ns
+    поставленного долга, None — не поставлен."""
+    debt = mark.with_suffix(".pending")
+    body = b"" if graph is None else (_graph_key(graph) + "\n").encode("utf-8")
+    try:
+        debt.parent.mkdir(parents=True, exist_ok=True)
+        if fresh:
+            fd = os.open(debt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            try:
+                os.write(fd, body)
+            finally:
+                os.close(fd)
+        elif graph is None:
+            debt.touch()
+        else:
+            safe_write.write_bytes(debt, body)
+        return debt.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _debt_graph(debt: pathlib.Path) -> str:
+    """Корень графа, которому принадлежит долг; пусто — долг прежних версий или граф неизвестен."""
+    try:
+        return debt.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
 
 
 def _settle_debt(mark: pathlib.Path, own_ns: int | None = None) -> None:
@@ -1198,14 +1231,14 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
 
 
 def meeting_facts_to_brain(cfg: dict, stamp: str, title: str, people: list, topics: list,
-                           decisions: list) -> int:
+                           decisions: list, graph: pathlib.Path | None = None) -> int:
     """Шаг разбора «факты встречи → внешняя память»: флаг читается здесь, из конфига разбора
     (`sufler.brain`, №249). Выключена — ни замка, ни долга, ни запроса, а при явно заданном ключе
     одна строка в лог. Отдельной функцией, чтобы тест держал именно чтение флага точкой входа:
     мутант «флаг на месте вызова всегда да» выживал (круг 1 по коду №249, Opus I1)."""
     on = install_profile.brain_enabled(cfg)
     n = send_to_brain(stamp, title, people, topics, decisions,
-                      _root() / "logs" / "brain_sent" / f"{stamp}.txt", enabled=on)
+                      _root() / "logs" / "brain_sent" / f"{stamp}.txt", enabled=on, graph=graph)
     if not on and install_profile.brain_explicit(cfg):
         print("внешняя память выключена (sufler.brain: false) — факты встречи туда не отправлены")
     return n
@@ -1251,11 +1284,8 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     with _sender_lock(mark, SEND_LOCK_WAIT if lock_wait is None else lock_wait) as ok:
         if ok is False:
             return "память Чароита не переотправлена: факты встречи шлёт другой процесс — позже"
-        try:
-            pending.parent.mkdir(parents=True, exist_ok=True)
-            pending.touch()
-        except OSError:
-            pass
+        graph = note.parent.parent          # заметка — <граф>/Встречи/<штамп>.md
+        own = _set_debt(mark, graph)
         try:
             post(f"{BRAIN}/forget", json={"meeting": stamp}, timeout=15).raise_for_status()
         except Exception as e:  # noqa: BLE001 — brain выключен: память догонит повтор
@@ -1265,7 +1295,10 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
         except OSError:
             pass
         title, people, topics = _note_head(after)
-        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, enabled=enabled, locked=True)
+        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, enabled=enabled, locked=True,
+                          graph=graph)
+        if own is not None and n == len(_meeting_facts(stamp, title, people, topics, new)):
+            _settle_debt(mark, own)    # /forget и полный состав — наши; тронутый посреди — чужой
     dropped = len([d for d in old if d not in new])
     total = len(_meeting_facts(stamp, title, people, topics, new))
     if n < total:
@@ -1290,12 +1323,7 @@ def owe_brain_resend(note: pathlib.Path, note_before: str, mark: pathlib.Path, *
         return
     if note_decisions(note_before) == note_decisions(after):
         return
-    pending = mark.with_suffix(".pending")
-    try:
-        pending.parent.mkdir(parents=True, exist_ok=True)
-        pending.touch()
-    except OSError:
-        pass
+    _set_debt(mark, note.parent.parent)
 
 
 def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: bool, skip: str = "",
@@ -1308,8 +1336,10 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
     первыми; неоплаченный долг сдвигается в конец очереди (DS r3 I3);
     долг моложе DEBT_MIN_AGE — у живого отправителя, его не трогаем, а
     замок отправителя не ждём (DS r3 I2, GLM r3 I1). Свою встречу (`skip`)
-    не трогаем: её долг гасит сам прогон. Заметки нет в графе — долг
-    снимается: платить не по чему. Возвращает строки для лога. Внешняя память выключена
+    не трогаем: её долг гасит сам прогон. Долг другого графа не трогаем вовсе — ни платим, ни
+    снимаем (финальный Opus C1 по №615 п. 8). Своего графа, а заметки нет — снимается: платить
+    не по чему. Долг прежних версий (графа в файле нет) платим, только если заметка есть в этом
+    графе, и не снимаем: чей он — неизвестно. Возвращает строки для лога. Внешняя память выключена
     (`enabled`, №249) — долги не трогаем: они остаются списком неотправленного."""
     if not enabled:
         return []
@@ -1318,11 +1348,17 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
         debts = [p for p in sent_dir.glob("*.pending") if p.stem != skip]
     except OSError as e:
         return [f"долги памяти не проверены: {e}"]
+    key = _graph_key(graph)
     for p in debts:
         try:
             mtime = p.stat().st_mtime
         except OSError:
             continue              # оплатил сосед или forget — не наша очередь (DS r4 M2)
+        owner = _debt_graph(p)
+        if owner and owner != key:
+            continue              # долг другого графа — платит и снимает его обработка того графа
+        if not owner and not (graph / "Встречи" / f"{p.stem}.md").is_file():
+            continue              # долг без графа и не по заметке этого графа — не нам судить
         if float(now()) - mtime >= DEBT_MIN_AGE:
             ripe.append((mtime, p))
     out: list[str] = []
@@ -3714,7 +3750,7 @@ def main():
     if graph_ok:
         # участник со сборным именем остаётся фактом встречи: держится узел, не память
         # (n611-out2, шаг Haiku по понижению)
-        meeting_facts_to_brain(cfg, stamp, title, people_all, topics, decisions)
+        meeting_facts_to_brain(cfg, stamp, title, people_all, topics, decisions, graph)
 
     # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что

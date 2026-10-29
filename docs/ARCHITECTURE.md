@@ -915,7 +915,7 @@ and leaves no debt) remembers the keys of the facts already sent (the header
 by meeting, decisions by text): a repeat sends only what the mark lacks, not
 everything again. Memory gets the header with every participant and topic and
 every decision of the note — no positional cut; the resend after a cloud review
-runs after the graph lock is released, like paying other meetings' debts. The main file of a meeting whose title ends in a service
+runs after the graph lock is released, like paying other meetings' debts. A resend debt names its graph: a graph pays and settles only its own debts. The main file of a meeting whose title ends in a service
 word («…разбор») is recognised by its content; a retitle moves only the
 meeting's own derivatives, never a neighbouring meeting of the same minute,
 and the title tail never coincides with a service suffix («Демо live» →

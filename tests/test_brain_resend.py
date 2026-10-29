@@ -156,7 +156,7 @@ def test_send_to_brain_owns_the_debt_and_any_review_run_pays_other_meetings(tmp_
     graph = tmp_path / "graph"
     (graph / "Встречи").mkdir(parents=True)
     (graph / "Встречи" / "2026-09-01_1000.md").write_text(BEFORE.replace("2026-09-11_1533", "2026-09-01_1000"), encoding="utf-8")
-    (sent / "2026-09-02_1000.pending").touch()          # заметки нет — платить не по чему
+    (sent / "2026-09-02_1000.pending").write_text(g._graph_key(graph) + "\n")  # заметки нет — не по чему
     (sent / "2026-09-11_1533.pending").touch()          # своя встреча — не трогаем
     calls: list[str] = []
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
@@ -372,7 +372,84 @@ def test_debts_are_kept_when_the_graph_meetings_folder_is_gone(tmp_path):
     sent = tmp_path / "brain_sent"
     sent.mkdir()
     debt = sent / "2026-09-01_1000.pending"
-    debt.touch()
+    debt.write_text(g._graph_key(tmp_path / "нет графа") + "\n")
     lines = g.pay_brain_debts(tmp_path / "нет графа", sent, enabled=True, post=lambda *a, **k: _Resp(),
                               now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
     assert debt.exists() and "нет каталога встреч" in lines[0]
+
+
+def test_a_graph_pays_and_settles_only_its_own_debts(tmp_path):
+    """Финальный Opus C1 по №615 п. 8: каталог отметок один на установку, а проект уводит встречу
+    в соседний граф. Ревизия графа A снимала долг встречи графа B строкой «заметки нет» — снятое
+    ревизией решение оставалось в памяти. Долг помнит корень своего графа: обработка A долг B
+    не платит, не снимает и не трогает; платит и снимает его обработка B."""
+    sent = tmp_path / "brain_sent"
+    sent.mkdir()
+    a, b = tmp_path / "A", tmp_path / "B"
+    for graph in (a, b):
+        (graph / "Встречи").mkdir(parents=True)
+    in_b = b / "Встречи" / "2026-09-03_1000.md"
+    in_b.write_text(AFTER.replace("2026-09-11_1533", "2026-09-03_1000"), encoding="utf-8")
+    g.owe_brain_resend(in_b, BEFORE, sent / "2026-09-03_1000.txt", enabled=True)
+    g._set_debt(sent / "2026-09-04_1000.txt", b)               # заметку B уже убрали
+    (sent / "2026-09-05_1000.pending").touch()                  # долг прежней версии, заметки нет нигде
+    (a / "Встречи" / "2026-09-06_1000.md").write_text(BEFORE.replace("2026-09-11_1533", "2026-09-06_1000"),
+                                                      encoding="utf-8")
+    (sent / "2026-09-06_1000.pending").touch()                  # долг прежней версии по заметке A
+    debts = {p.name: (p.stat().st_mtime_ns, p.read_bytes()) for p in sent.glob("*.pending")}
+    assert debts["2026-09-03_1000.pending"][1] == (g._graph_key(b) + "\n").encode(), "долг не помнит граф"
+    calls: list[str] = []
+    ok = lambda url, json, timeout: calls.append(json.get("meeting") or json.get("text")) or _Resp()  # noqa: E731
+    later = lambda: time.time() + g.DEBT_MIN_AGE + 1  # noqa: E731
+
+    lines = g.pay_brain_debts(a, sent, enabled=True, post=ok, now=later)
+    assert [ln.split(":")[0] for ln in lines] == ["долг памяти 2026-09-06_1000"], lines
+    assert calls and all("2026-09-06_1000" in c for c in calls), "граф A платил чужую встречу"
+    left = {p.name: (p.stat().st_mtime_ns, p.read_bytes()) for p in sent.glob("*.pending")}
+    assert left == {k: v for k, v in debts.items() if k != "2026-09-06_1000.pending"}, \
+        "обработка графа A тронула долг графа B или долг без графа"
+
+    calls.clear()
+    lines = g.pay_brain_debts(b, sent, enabled=True, post=ok, now=later)
+    assert sorted(lines) == ["долг памяти 2026-09-03_1000: память Чароита переотправлена после ревизии: "
+                             "снято решений 0, ушло фактов 2",
+                             "долг памяти 2026-09-04_1000: заметки встречи в графе нет — снят"], lines
+    assert sorted(p.name for p in sent.glob("*.pending")) == ["2026-09-05_1000.pending"], \
+        "долг без графа и без заметки не снимает никто — чей он, неизвестно"
+
+
+def test_every_debt_writer_names_the_graph_and_a_resend_settles_only_its_own_debt(tmp_path, monkeypatch):
+    """Отказ замка и отправка, поставившая долг, пишут в него граф встречи. Финальный Opus I1:
+    долг, лежавший до отправителя, — заказ полной переотправки с /forget; досылка недостающего
+    его не гасит, гасит переотправка по заметке."""
+    import fcntl
+    graph = tmp_path / "граф"
+    (graph / "Встречи").mkdir(parents=True)
+    mark = tmp_path / "brain_sent" / "s.txt"
+    debt = mark.with_suffix(".pending")
+    key = (g._graph_key(graph) + "\n").encode()
+    dead = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down"))  # noqa: E731
+    assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=dead, graph=graph) == 0
+    assert debt.read_bytes() == key, "долг отправки без графа"
+    debt.unlink()
+    monkeypatch.setattr(g, "SEND_LOCK_WAIT", 0.0)
+    mark.parent.mkdir(exist_ok=True)
+    with open(mark.with_suffix(".lock"), "a+") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=dead, graph=graph) == 0
+    assert debt.read_bytes() == key, "долг при отказе замка без графа"
+
+    keys = [k for k, _ in g._meeting_facts("s", "Т", [], [], ["D1", "D2"])]
+    mark.write_text("sent 2/3\n" + "".join(f"id:{k}\n" for k in keys[:2]) + "# Т\n", encoding="utf-8")
+    before = debt.stat().st_mtime_ns
+    calls: list[str] = []
+    ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
+    assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=ok, graph=graph) == 1
+    assert len(calls) == 1 and debt.exists() and debt.stat().st_mtime_ns == before, \
+        "досылка погасила заказ полной переотправки"
+    note = graph / "Встречи" / "s.md"
+    note.write_text("# Встреча s — Т\n\n## Решения\n- 📌 D1\n- 📌 D2\n", encoding="utf-8")
+    calls.clear()
+    out = g.resend_to_brain_after_review("s", note, note.read_text(encoding="utf-8"), mark,
+                                         enabled=True, post=ok)
+    assert calls[0].endswith("/forget") and len(calls) == 4 and not debt.exists(), out
