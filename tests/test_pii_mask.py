@@ -593,6 +593,7 @@ def test_fleeting_vowel_before_soft_sign_is_masked(node, text, word):
 def test_no_fleeting_vowel_for_a_name_ending_in_a_vowel():
     """«Вера» → запасная основа «вр» ловила «Вроде» — у слова на гласную беглой гласной нет; у «-ий» — как на main."""
     assert pm.mask("Вроде пришли", _forms(pm.NodeForms("Вера"))).replaced == 0
+    assert ("бл",) not in {e.words for e in _forms(pm.NodeForms("Белю")).entries}   # «-ю» (n828-out8 S-M2)
     assert ("евгн",) in {e.words for e in _forms(pm.NodeForms("Евгений")).entries}
 
 
@@ -1063,16 +1064,37 @@ def test_other_lexeme_rule_keeps_every_node_of_the_form():
     assert not pm._other_word("стороны", dataclasses.replace(entry, alts=("Сторона",)), forms)
 
 
-def test_other_lexeme_rule_keeps_a_word_that_is_another_node():
-    # «стороны» — имя другого однословного узла: чужая форма-префикс «Стори» маску не снимает
-    # (дифф-сверка форм с main: «postgres» при «Postgres» и заглушке «Postgre», n828-opus)
+@pytest.mark.parametrize("node", ["Стороны", "Сторона"])
+def test_other_lexeme_rule_keeps_a_word_that_is_another_node(node):
+    # «стороны» — имя или падеж другого однословного узла: чужая форма-префикс «Стори» маску не
+    # снимает (дифф-сверка форм с main: «postgres» при «Postgres» и заглушке «Postgre», n828-opus;
+    # падеж — n828-out8 DS-I1)
     known = _w("стороны", "сторона")
-    forms = _forms(pm.NodeForms("Стороны", person=False), stubs=[("Стори", None, False)], known=known)
+    forms = _forms(pm.NodeForms(node, person=False), stubs=[("Стори", None, False)], known=known)
     stub = next(e for e in forms.entries if e.source == ("Стори",))
     assert not pm._other_word("стороны", stub, forms)
     assert pm.mask("потом стороны упали", forms).replaced == 1
+    # срез подделок судит тем же словарём узлов, что и маска (n828-out8 H-I2)
+    near = pm.forms_touching(forms, ["Сторож"])
+    assert pm.postcondition_hits("Сторож стороны", near) == pm.postcondition_hits("Сторож стороны", forms) == 2
     alone = _forms(stubs=[("Стори", None, False)], known=known)
     assert pm.mask("потом стороны упали", alone).replaced == 0
+
+
+def test_node_word_sees_a_second_source_of_the_same_form():
+    """«Стороны» псевдонимом той же формы, что «Сторона», лежит в `alts`: и без лексемы это слово
+    узла (n828-out8 DS-I1, третий случай)."""
+    forms = _forms(pm.NodeForms("Сторона", ("Стороны",), person=False), lexeme=lambda a, b: False)
+    assert any(e.alts == ("Стороны",) for e in forms.entries)
+    assert pm._node_word("стороны", forms)
+
+
+def test_node_word_without_morphology_is_not_a_node():
+    """Словарь без лексемы — штатное состояние модуля: предикат не падает (n828-out8 DS-M3)."""
+    forms = pm.build_forms([pm.NodeForms("Стори", person=False), pm.NodeForms("Стороны", person=False)],
+                           known=_w("стороны"))
+    assert not pm._node_word("сторон", forms)
+    assert pm._node_word("стороны", forms)
 
 
 def test_node_word_with_a_case_tail_is_always_the_node():

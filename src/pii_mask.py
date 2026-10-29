@@ -38,6 +38,9 @@ _ENDINGS = ("ского", "скому", "ский", "ским", "ском", "с�
             "ий", "ый", "ой", "его", "ого", "ему", "ому", "им", "ым", "ом",
             "ая", "яя", "ую", "юю")
 _VOWEL_END = "аяеиоуыюйь"
+#: конец слова узла, у которого беглой гласной нет («Вера»); «ь» и «й» сюда не входят — у «Журавель»,
+#: «Евгений» запасная основа есть, как на main (n828-opus C1, n828-out8 DS-M1)
+_WORD_VOWEL_END = tuple("аеиоуыэюя")
 #: окончания для проверки «общее ли слово» по общему словарю (`_distinctive`)
 _INFLECT = ("а", "я", "ы", "и", "е", "у", "ю", "о", "ь", "й", "ом", "ем", "ой", "ей",
             "ов", "ев", "ам", "ям", "ами", "ями", "ах", "ях")
@@ -99,6 +102,9 @@ class Forms:
     #: метка диаризации («Собеседник 5»), не имя (`graph_names.split_label`; маска графа не
     #: импортирует — слой `cloud` ниже `graph`)
     label: Callable[[str], list[str] | None] | None = dataclasses.field(default=None, compare=False)
+    #: полный словарь, от которого `like` отрезал этот: «слово — узел» (`_node_word`) судит по всем
+    #: узлам, иначе срез `forms_touching` считает вхождения иначе, чем маска (n828-out8 H-I2)
+    whole: "Forms | None" = dataclasses.field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         for e in self.entries:
@@ -109,7 +115,7 @@ class Forms:
         """Другие формы с теми же правилами вхождения — единственный способ собрать производный
         словарь: ручной `Forms(...)` терял поля политики, `replace` — индекс (n828-in1 DS-M2)."""
         return Forms(list(entries), lexeme=self.lexeme, known=self.known, speech=self.speech,
-                     label=self.label)
+                     label=self.label, whole=self.whole or self)
 
 
 @dataclasses.dataclass
@@ -357,7 +363,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
             capital = plain and words[0][:1].isupper() \
                 or kind == PERSON and not _distinctive(words[0], known)
             ent = Entry((base,), (tail,), kind, canon, capital=capital, exact=exact, source=(words[0],))
-            if kind == PERSON and not exact and not _yo(words[0].lower()).endswith(tuple("аеиоуыэюя")):
+            if kind == PERSON and not exact and not _yo(words[0].lower()).endswith(_WORD_VOWEL_END):
                 # беглая гласная — по слову узла, не по обрезанной основе: у слова на гласную её нет
                 # («Вера» → «вр» ловило «Вроде»), у «Павел», «Журавель», «Евгений» — как на main (n828-opus C1)
                 for alt in _fleeting(base):
@@ -465,12 +471,14 @@ def _other_word(word: str, entry: Entry, forms: Forms) -> bool:
 
 
 def _node_word(word: str, forms: Forms) -> bool:
-    """Слово — имя другого однословного узла формы или его падеж: «postgres» при узлах «Postgres» и
-    «Postgre» — не чужое общее слово, снимать маску нельзя (дифф-сверка форм с main, n828-opus)."""
+    """Слово — имя или падеж однословной формы графа (имя узла, псевдоним, заглушка, слово длинного
+    имени): «postgres» при узлах «Postgres» и «Postgre» — не чужое общее слово, снимать маску нельзя
+    (дифф-сверка форм с main, n828-opus). Судит по полному словарю, и на срезе тоже (n828-out8 H-I2)."""
+    whole = forms.whole or forms
     low = _yo(word.lower())
-    for cut in range(0, min(forms.max_tail, len(low) - 1) + 1):
-        for e in forms.by_first.get(low[: len(low) - cut] if cut else low, ()):
-            if len(e.words) == 1 and any(_yo(n.lower()) == low or forms.lexeme(word, n)
+    for cut in range(0, min(whole.max_tail, len(low) - 1) + 1):
+        for e in whole.by_first.get(low[: len(low) - cut] if cut else low, ()):
+            if len(e.words) == 1 and any(_yo(n.lower()) == low or forms.lexeme is not None and forms.lexeme(word, n)
                                          for n in (*e.source[:1], *e.alts)):
                 return True
     return False
