@@ -25,7 +25,6 @@ import re
 import unicodedata
 from typing import Callable, Iterable, Sequence
 
-from charoite_graph.graph_names import is_label_tag
 
 OPEN, CLOSE = "⟦", "⟧"
 PERSON, SYSTEM = "Ч", "С"
@@ -97,6 +96,9 @@ class Forms:
     known: Callable[[str], bool] | None = dataclasses.field(default=None, compare=False)
     #: слово по грамматике — речь, а не имя (`pii_fake.speech_word`): сито спанов модели
     speech: Callable[[str], bool] | None = dataclasses.field(default=None, compare=False)
+    #: метка диаризации («Собеседник 5»), не имя (`graph_names.is_label_tag`; маска графа не
+    #: импортирует — слой `cloud` ниже `graph`)
+    label: Callable[[str], bool] | None = dataclasses.field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         for e in self.entries:
@@ -106,7 +108,8 @@ class Forms:
     def like(self, entries: Iterable[Entry]) -> "Forms":
         """Другие формы с теми же правилами вхождения — единственный способ собрать производный
         словарь: ручной `Forms(...)` терял поля политики, `replace` — индекс (n828-in1 DS-M2)."""
-        return Forms(list(entries), lexeme=self.lexeme, known=self.known, speech=self.speech)
+        return Forms(list(entries), lexeme=self.lexeme, known=self.known, speech=self.speech,
+                     label=self.label)
 
 
 @dataclasses.dataclass
@@ -222,7 +225,8 @@ def build_forms(nodes: Iterable[NodeForms], *,
                 owner: str = "", common: Iterable[str] = (),
                 known: Callable[[str], bool] | None = None,
                 lexeme: Callable[[str, str], bool] | None = None,
-                speech: Callable[[str], bool] | None = None) -> Forms:
+                speech: Callable[[str], bool] | None = None,
+                label: Callable[[str], bool] | None = None) -> Forms:
     """Формы маски из узлов графа.
 
     `stubs` — заглушки слияния: (имя заглушки, канон живого узла или None — цель не
@@ -235,7 +239,8 @@ def build_forms(nodes: Iterable[NodeForms], *,
     и какие слова длинного имени системы маскируются ещё и поодиночке. `lexeme` — одна ли
     лексема у слова текста и слова узла (pymorphy, `pii_fake.same_lexeme`): канон узла получает
     только его падеж, «Петров» при узле «Пётр» — другое слово (n793-out10 C1). `speech` —
-    слово по грамматике речь (`pii_fake.speech_word`), для сита спанов модели. Без `known`
+    слово по грамматике речь (`pii_fake.speech_word`), для сита спанов модели. `label` — метка
+    диаризации (`graph_names.is_label_tag`): не форма и не имя в спане модели. Без `known`
     словаря нет: сборка считает, что общих слов нет, а правила, которым нужно «слово языка»
     (строчная аббревиатура, сито речи), выключены (n828-out1 DS-I4).
     """
@@ -268,7 +273,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
                 if kind == PERSON or name_part(a or b, known):
                     add_name(a or b, kind, canon if kind == SYSTEM else None)
             name = re.sub(r"\([^()]*\)|«[^«»]*»" if kind == PERSON else r"\([^()]*\)", " ", name)
-        if _is_label(name):
+        if _is_label(name, label):
             # метка диаризации («Собеседник 5» заглушки «Коллега (Собеседник 5)») — не имя: форма
             # «собеседник» маскировала каждую реплику (n828-in1 DS-C1); имя в скобках при метке
             # («Собеседник 2 (Саша)») уже добавлено выше
@@ -376,7 +381,8 @@ def build_forms(nodes: Iterable[NodeForms], *,
     for e in entries:
         canons.setdefault((e.words, e.kind), set()).add(e.group)
     return Forms([dataclasses.replace(e, group=None) if len(canons[(e.words, e.kind)]) > 1 else e
-                  for e in entries], lexeme=lexeme, known=policy_known, speech=speech)
+                  for e in entries], lexeme=lexeme, known=policy_known, speech=speech,
+                  label=label)
 
 
 def _fleeting(base: str) -> list[str]:
@@ -562,19 +568,19 @@ def _ner_noise(text: str, start: int, stop: int, kind: str, forms: Forms | None 
     return False
 
 
-def _is_label(s: str) -> bool:
+def _is_label(s: str, label: Callable[[str], bool] | None) -> bool:
     """Метка диаризации целиком: «Собеседник 5», «Собеседник 1, муж». Часть через запятую с
     заглавной — имя, а не пометка: «Собеседник 5, Иван», «Петров, участник» — не метка
     (n828-out1 DS-M7, Haiku I2)."""
     parts = [x.strip() for x in s.split(",")]
-    return is_label_tag(s) and all(is_label_tag(x) or not any(c.isupper() for c in x) for x in parts)
+    return label is not None and label(s) and all(label(x) or not any(c.isupper() for c in x) for x in parts)
 
 
 def _never_a_name(text: str, start: int, stop: int, kind: str, forms: Forms | None) -> bool:
     """Кусок спана модели — не имя в любой позиции: метка реплики или слово языка, которое по
     грамматике речь. Годится и для остатка спана после словаря («Попроси Лену» минус «Лену»);
     правило начала фразы — нет: «Вера» из «Вера Петрова» — имя."""
-    if _is_label(text[start:stop]):
+    if forms is not None and _is_label(text[start:stop], forms.label):
         return True
     words = _WORD.findall(text[start:stop])
     return kind == PERSON and len(words) == 1 and forms is not None and forms.known is not None \

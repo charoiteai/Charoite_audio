@@ -17,7 +17,7 @@ from typing import Sequence
 
 import pii_mask
 import privacy
-from charoite_graph import graph_nodes
+from charoite_graph import graph_names, graph_nodes
 from charoite_schema import CHAROITE
 
 #: Слова, которые владелец разрешил отправлять как есть (общие термины, совпавшие с
@@ -82,7 +82,8 @@ def _forms(cfg: dict, graph: pathlib.Path,
         stubs.append((s.name, canon, CHAROITE.is_person_folder(s.folder)))
     owner = str((cfg.get("sufler") or {}).get("user_name") or "").strip()
     return pii_mask.build_forms(nodes, stubs=stubs, owner=owner, common=_common(graph),
-                                known=known, lexeme=lexeme, speech=speech), notes
+                                known=known, lexeme=lexeme, speech=speech,
+                                label=graph_names.is_label_tag), notes
 
 
 def empty_workdir() -> pathlib.Path:

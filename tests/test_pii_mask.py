@@ -15,6 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import cloud_door  # noqa: E402
 import pii_fake  # noqa: E402
+from charoite_graph import graph_names  # noqa: E402
 import pii_mask as pm  # noqa: E402
 import privacy  # noqa: E402
 from charoite_graph.graph_nodes import NodeIndex  # noqa: E402
@@ -25,6 +26,7 @@ def _forms(*nodes, **kw):
     # лексема — как `cloud_door._forms`: иначе тесты судят перечень хвостов, которого в
     # продукте нет (n793-out11 DS-M6, H-M3)
     kw.setdefault("lexeme", pii_fake.same_lexeme)
+    kw.setdefault("label", graph_names.is_label_tag)
     return pm.build_forms(nodes, **kw)
 
 
