@@ -530,8 +530,9 @@ def test_debrief_tasks_are_judged_like_minutes(line, marked):
 
 
 def test_debrief_other_sections_are_not_judged():
-    """«Вопросы» и «Рекомендации» — предложения модели: даты в них по построению не
-    из речи, пометка была бы шумом (Sonnet I2 in1)."""
+    """«Рекомендации» — предложения модели: даты в них по построению не из речи,
+    пометка была бы шумом; «Вопросы» вне гейта по решению входного круга
+    (Sonnet I2 in1, Opus M3 n829-final)."""
     doc = _debrief(_list_item("до 28.10"))
     assert action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY) == doc
 
