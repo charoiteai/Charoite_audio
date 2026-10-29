@@ -1365,6 +1365,7 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # сосед мог бы принять его файлы за правки облака (круг-1 по #381).
     deliver = graph_available
     rev_before = rev_mtime(rev)          # снимок ДО ожидания замка
+    after_unlock: list = []              # шаги после замка графа: вызовы внешней памяти
     with contextlib.ExitStack() as stack:
         # Замок нужен ВСЕГДА, когда мы пишем в граф. Доставка ревизии пишет
         # в защищённые папки и при may_edit=False (cloud_edit_graph
@@ -1391,7 +1392,13 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 return RC_OK
         rc = _run_locked(stamp, transcript, graph, rev, log, cfg,
                          may_edit=may_edit, graph_available=graph_available,
-                         deliver=deliver, unlock=stack.close)
+                         deliver=deliver, unlock=stack.close, after_unlock=after_unlock)
+    # Переотправка своей встречи в память — после замка, как и чужие долги: brain
+    # с медленным эмбеддингом держал граф на каждый факт встречи, а с №615 п. 8 их
+    # уходит не шесть, а все — сосед ждал бы дольше запаса LOCK_WAIT над TIMEOUT
+    # и уходил бы на чтение без доставки (выход n615p8-out1, DS C1).
+    for step in after_unlock:
+        step()
     if graph_available:
         _pay_brain_debts(stamp, graph, log, cfg)
     return rc
@@ -1402,9 +1409,38 @@ def _resend_to_brain(stamp: str, note_path: pathlib.Path, note_before: str, cfg:
     (`sufler.brain`, №249); None — выключена. Флаг читается здесь, из конфига прогона, и строка
     собирается здесь же: тест держит и чтение флага, и то, что уходит в лог (Opus I1 круга 1)."""
     said = graph_updater.resend_to_brain_after_review(
-        stamp, note_path, note_before, _root() / "logs" / "brain_sent" / f"{stamp}.txt",
+        stamp, note_path, note_before, _brain_mark(stamp),
         enabled=install_profile.brain_enabled(cfg))
     return f"[cloud-review] {said}\n" if said else None
+
+
+def _owe_resend(stamp: str, note_path: pathlib.Path, note_before: str, cfg: dict) -> None:
+    """Долг переотправки своей встречи — до шага после замка; сбой — не сбой ревизии."""
+    try:
+        graph_updater.owe_brain_resend(note_path, note_before, _brain_mark(stamp),
+                                       enabled=install_profile.brain_enabled(cfg))
+    except Exception as e:  # noqa: BLE001 — память не важнее ревизии
+        print(f"долг памяти не записан: {e}")
+
+
+def _brain_mark(stamp: str) -> pathlib.Path:
+    return _root() / "logs" / "brain_sent" / f"{stamp}.txt"
+
+
+def _resend_and_log(stamp: str, note_path: pathlib.Path, note_before: str, log: pathlib.Path,
+                    cfg: dict) -> None:
+    """Переотправка своей встречи после ревизии — вне замка графа; строка — в лог ревизии."""
+    try:
+        said = _resend_to_brain(stamp, note_path, note_before, cfg)
+    except Exception as e:  # noqa: BLE001 — память не важнее ревизии
+        said = f"[cloud-review] память Чароита не переотправлена: {e}\n"
+    if not said:
+        return
+    try:
+        with log.open("a", encoding="utf-8") as lf:
+            lf.write(said)
+    except OSError:
+        print(said, end="")
 
 
 def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path, cfg: dict) -> None:
@@ -1430,7 +1466,7 @@ def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path, cfg: di
 def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 rev: pathlib.Path, log: pathlib.Path, cfg: dict, *,
                 may_edit: bool, graph_available: bool, deliver: bool = True,
-                unlock=lambda: None) -> int:
+                unlock=lambda: None, after_unlock: list) -> int:
     # Выход в сеть — здесь, и рубильник спрашивается на самом выходе
     # (контракт tests/test_cloud_call_sites.py), а не только в run() выше.
     if not privacy.cloud_enrich_enabled(cfg):
@@ -1726,6 +1762,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     except OSError as e:
                         lines.append(f"[cloud-review] указатель {folder} не записан ({e})\n")
                 checked = not v.failed
+                if note_path is not None:
+                    # долг памяти — сразу после записи заметки, а не через мост и доставку:
+                    # смерть процесса между ними иначе оставляла ⛔ в графе без долга (out3, DS I1);
+                    # мост и доставка решений заметки не меняют — вызов один (финальный Opus M1)
+                    _owe_resend(stamp, note_path, note_before, cfg)
                 lines.append(_verdict_line(v, qdir))
                 # Песочница отработала — убираем. При сбое переноса по
                 # одному файлу (v.failed: ENOSPC на карантине или в
@@ -1971,13 +2012,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # переноса они те же (GLM r1 I2 по #545). Без права правки графа
         # (may_edit) заметка не трогается — brain и граф согласны, пусть и
         # с ошибочным решением: граф здесь источник, а не ревизия.
+        # Сама отправка — шаг после замка графа (`after_unlock`, выход n615p8-out1);
+        # долг за неё поставлен сразу после переноса: шаг, потерянный до запуска,
+        # оплатит следующий прогон этого графа (выходы n615p8-out2, out3).
         if published and may_edit and note_path is not None:
-            try:
-                said = _resend_to_brain(stamp, note_path, note_before, cfg)
-                if said:
-                    lines.append(said)
-            except Exception as e:  # noqa: BLE001 — память не важнее ревизии
-                lines.append(f"[cloud-review] память Чароита не переотправлена: {e}\n")
+            after_unlock.append(functools.partial(_resend_and_log, stamp, note_path, note_before, log, cfg))
         try:
             with log.open("a", encoding="utf-8") as lf:
                 lf.writelines(lines)

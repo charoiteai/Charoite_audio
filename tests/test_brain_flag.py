@@ -137,7 +137,8 @@ def test_the_review_worker_pays_no_debts_when_disabled(tmp_path):
     sent = cloud_review._root() / "logs" / "brain_sent"
     sent.mkdir(parents=True)
     debt = sent / "2026-07-10_0900.pending"
-    debt.touch()
+    (tmp_path / "граф" / "Встречи").mkdir(parents=True)   # граф на месте, заметки нет
+    debt.write_text(graph_updater._graph_key(tmp_path / "граф") + "\n")   # долг этого графа
     # долг созревший, а заметки встречи в графе нет: включённая оплата сняла бы его строкой
     # в лог — выключенная не трогает ни долга, ни лога (свежий долг молчал бы при любом флаге,
     # и мутант «долги платятся всегда» выживал)
