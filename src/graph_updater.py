@@ -1876,16 +1876,16 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
 def held_note(cands: list[str], via: str = "") -> str:
     """Хвост строки участника со сборным именем: узла нет, кандидаты — ссылками,
     чтобы Obsidian связал встречу с ними, а не со сборным узлом (№611). `via` —
-    сборный узел, к которому поиск привёл другое написание («Владимир Попов» →
-    «Владимир»): без него причина «голое имя» не читается у полного имени
-    (n611-out2 DS M3). Причина в журнале не меняется — она ключ пары (№236)."""
+    узел, к которому привёл поиск, если его нет среди кандидатов: сборный, куда
+    пришло другое написание («Владимир Попов» → «Владимир»), — без него причина
+    «голое имя» не читается у полного имени (n611-out2 DS M3). Причина в журнале не меняется — она ключ пары (№236)."""
     tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
     return f"{_HELD_PERSON}{_held_lead(via)}{_HELD_WHY['collective']}{tail})_"
 
 
 def _held_lead(via: str) -> str:
-    """Начало причины удержания у имени, которое поиск привёл в сборный узел другим
-    написанием, — одно для участника и сущности (n611-out3 DS M2)."""
+    """Начало причины удержания у имени, которое поиск привёл в узел не из списка
+    кандидатов, — одно для участника и сущности (n611-out3 DS M2)."""
     return f"поиск ведёт в {via.split('/', 1)[-1]} — " if via else ""
 
 
@@ -2239,7 +2239,8 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
                     born: list[str] = (),
                     ) -> dict[tuple[str, str | None], tuple[str, list[str], str]]:
     """Имена встречи, которые не пишутся в узел: `(name_key, папка)` → (имя,
-    кандидаты «Люди/X», сборный узел поиска — если имя пришло в него другим написанием).
+    кандидаты «Люди/X», узел, куда привёл поиск, — если его ключ не равен входному и
+    в кандидатах его нет).
 
     Голое имя при живых тёзках — сборный узел: каждый «Саша» любой встречи садился
     в `Люди/Саша`, и под ним копились факты разных людей (№611; замер 27.10 — 42
@@ -2251,9 +2252,10 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
     не рождается. Цель угадала подстрока (`guessed`), а у входного имени есть тёзки
     кроме неё — тоже судим входное имя: голое имя не садится в узел одного из тёзок
     (№835). Соперники цели — все живые носители имени, узел владельца тоже: владельца
-    снимает только порог `is_collective` (n835-out1 DS I1). Строка удержания называет
-    угаданную цель («поиск ведёт в …») — в списке кандидатов узла владельца нет
-    (n835-out2 DS). Цель вне папок людей — как раньше, её видит доктор
+    снимает только порог `is_collective` (n835-out1 DS I1). Если подстрока угадала
+    узел владельца, он встаёт в кандидаты: встреча в него не пишется (№611), но
+    строка ссылается на него, и журнал его предлагает (n835-out3 DS C1, Haiku C1).
+    Цель вне папок людей — как раньше, её видит доктор
     (`people_in_systems`; n611-in3 DS C2). Порог — `is_collective`, один с доктором.
 
     Таблица строится ДО записи встречи: `born` — имена людей этой же встречи;
@@ -2316,9 +2318,9 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
         if target is not None and target.parent.name not in _PEOPLE_FOLDERS:
             continue
         judged = target.stem if target is not None else clean
-        if guessed and target is not None and any(
-                live[n] != f"{target.parent.name}/{target.stem}"
-                for n in bare_namesakes(clean, index, owner="", tags=tags)):
+        tpath = f"{target.parent.name}/{target.stem}" if target is not None else ""
+        rivals = {live[n] for n in bare_namesakes(clean, index, owner="", tags=tags)} if guessed else set()
+        if target is not None and rivals - {tpath}:
             # подстрока выбрала одного из тёзок: «Алексей» при трёх «Алексей …» уходил в
             # того, чью фамилию пропустил фильтр длины (№835). Единственный тёзка — сам
             # найденный узел: фамилия «Петров» при одном «Иван Петров» — не догадка.
@@ -2328,9 +2330,12 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
             # с владельцем, как для голого имени без цели
             judged = clean
         if is_collective(judged, index, owner=owner, tags=tags):
-            held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)),
-                                   f"{target.parent.name}/{target.stem}"
-                                   if target is not None and name_key(target.stem) != key else "")
+            cands = sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags))
+            if judged == clean and tpath in rivals and tpath not in cands:
+                # подстрока угадала узел владельца: порог его снял, а ссылка на него нужна
+                cands = sorted([*cands, tpath])
+            via = tpath if target is not None and name_key(target.stem) != key and tpath not in cands else ""
+            held[(key, folder)] = (clean, cands, via)
     return held
 
 
