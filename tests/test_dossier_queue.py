@@ -660,9 +660,9 @@ def test_graph_gone_mid_run_does_not_stop_the_night(nd, tmp_path, monkeypatch):
     assert "б1" in nd.calls
 
 
-def test_cut_full_rebuild_continues_from_the_rest_next_sunday(nd, tmp_path, monkeypatch):
+def test_cut_full_rebuild_continues_from_the_rest_next_manual_run(nd, tmp_path, monkeypatch):
     """№749, вход in1 DS C3: урезанная полная пересборка не начинается заново,
-    а следующим воскресеньем берёт ровно то, что не успела, — по `собрано`
+    а следующим ручным `--full` берёт ровно то, что не успела, — по `собрано`
     настоящих досье, а не по засеву теста."""
     import datetime as dt
     graph = _graph(tmp_path, "Г", {f"тема{i}": None for i in range(6)})
