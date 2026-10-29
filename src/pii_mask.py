@@ -220,7 +220,7 @@ def name_part(part: str, known: Callable[[str], bool]) -> bool:
 def build_forms(nodes: Iterable[NodeForms], *,
                 stubs: Iterable[tuple[str, str | None, bool]] = (),
                 owner: str = "", common: Iterable[str] = (),
-                known: Callable[[str], bool] = lambda _w: False,
+                known: Callable[[str], bool] | None = None,
                 lexeme: Callable[[str, str], bool] | None = None,
                 speech: Callable[[str], bool] | None = None) -> Forms:
     """Формы маски из узлов графа.
@@ -235,8 +235,11 @@ def build_forms(nodes: Iterable[NodeForms], *,
     и какие слова длинного имени системы маскируются ещё и поодиночке. `lexeme` — одна ли
     лексема у слова текста и слова узла (pymorphy, `pii_fake.same_lexeme`): канон узла получает
     только его падеж, «Петров» при узле «Пётр» — другое слово (n793-out10 C1). `speech` —
-    слово по грамматике речь (`pii_fake.speech_word`), для сита спанов модели.
+    слово по грамматике речь (`pii_fake.speech_word`), для сита спанов модели. Без `known`
+    словаря нет: сборка считает, что общих слов нет, а правила, которым нужно «слово языка»
+    (строчная аббревиатура, сито речи), выключены (n828-out1 DS-I4).
     """
+    policy_known, known = known, known or (lambda _w: False)
     common_l = {_yo(" ".join(_words(c)).lower()) for c in common}
     nodes = list(nodes)
     if owner and not any(n.person and n.name == owner for n in nodes):
@@ -265,7 +268,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
                 if kind == PERSON or name_part(a or b, known):
                     add_name(a or b, kind, canon if kind == SYSTEM else None)
             name = re.sub(r"\([^()]*\)|«[^«»]*»" if kind == PERSON else r"\([^()]*\)", " ", name)
-        if is_label_tag(name):
+        if _is_label(name):
             # метка диаризации («Собеседник 5» заглушки «Коллега (Собеседник 5)») — не имя: форма
             # «собеседник» маскировала каждую реплику (n828-in1 DS-C1); имя в скобках при метке
             # («Собеседник 2 (Саша)») уже добавлено выше
@@ -373,7 +376,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
     for e in entries:
         canons.setdefault((e.words, e.kind), set()).add(e.group)
     return Forms([dataclasses.replace(e, group=None) if len(canons[(e.words, e.kind)]) > 1 else e
-                  for e in entries], lexeme=lexeme, known=known, speech=speech)
+                  for e in entries], lexeme=lexeme, known=policy_known, speech=speech)
 
 
 def _fleeting(base: str) -> list[str]:
@@ -559,11 +562,19 @@ def _ner_noise(text: str, start: int, stop: int, kind: str, forms: Forms | None 
     return False
 
 
+def _is_label(s: str) -> bool:
+    """Метка диаризации целиком: «Собеседник 5», «Собеседник 1, муж». Часть через запятую с
+    заглавной — имя, а не пометка: «Собеседник 5, Иван», «Петров, участник» — не метка
+    (n828-out1 DS-M7, Haiku I2)."""
+    parts = [x.strip() for x in s.split(",")]
+    return is_label_tag(s) and all(is_label_tag(x) or not any(c.isupper() for c in x) for x in parts)
+
+
 def _never_a_name(text: str, start: int, stop: int, kind: str, forms: Forms | None) -> bool:
     """Кусок спана модели — не имя в любой позиции: метка реплики или слово языка, которое по
     грамматике речь. Годится и для остатка спана после словаря («Попроси Лену» минус «Лену»);
     правило начала фразы — нет: «Вера» из «Вера Петрова» — имя."""
-    if is_label_tag(text[start:stop]):
+    if _is_label(text[start:stop]):
         return True
     words = _WORD.findall(text[start:stop])
     return kind == PERSON and len(words) == 1 and forms is not None and forms.known is not None \
@@ -583,8 +594,8 @@ def _phrase_start(text: str, start: int) -> bool:
     return not before.strip() or re.search(r"[.!?:…]\s*$", before) is not None
 
 
-#: Разметка в начале строки: таймкод, маркер списка, цитата, жирный, ссылка.
-_MARKUP = re.compile(r"(?:\s|[-–—*>#•]|\[\[|\[\d{1,2}:\d{2}(?::\d{2})?\])*")
+#: Разметка в начале строки: таймкод, маркер и номер списка, флажок задачи, цитата, жирный, ссылка.
+_MARKUP = re.compile(r"(?:\s|[-–—*>#•]|\[\[|\[[ xX]?\]|\d{1,3}[.)]|\[\d{1,2}:\d{2}(?::\d{2})?\])*")
 
 
 def _speech_start(text: str, start: int) -> bool:
@@ -626,7 +637,8 @@ def abbrev_spans(text: str, known: Callable[[str], bool],
     """Аббревиатура кириллицей 3–6 букв, которой нет в общем словаре («ЖЗИК»), — система без
     узла: Slovnet такие не видит (замер 29.10: 19 на 8 встречах, все доменные; «ИНН», «СМС», «ЦОД»
     — в словаре). Свои общие владелец снимает файлом `_маска_общие.md` (`common`)."""
-    skip = {_yo(c).upper() for c in common}
+    # строку файла — как `build_forms`: «ЖЗИК.» и «ЖЗИК» одно и то же (n828-out1 DS-M5)
+    skip = {_yo(" ".join(_words(c))).upper() for c in common}
     return [(m.start(), m.end(), SYSTEM) for m in _WORD.finditer(text)
             if 3 <= len(m.group(0)) <= 6 and _is_abbrev(m.group(0))
             and all("А" <= c <= "Я" or c == "Ё" for c in m.group(0))

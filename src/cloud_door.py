@@ -39,7 +39,7 @@ def _common(graph: pathlib.Path) -> set[str]:
 
 
 def _forms(cfg: dict, graph: pathlib.Path,
-           known=lambda _w: False, lexeme=None, speech=None) -> tuple[pii_mask.Forms, list[str]]:
+           known=None, lexeme=None, speech=None) -> tuple[pii_mask.Forms, list[str]]:
     snap = graph_nodes.NodeIndex(graph, schema=CHAROITE).snapshot_for_mask()
     nodes = [pii_mask.NodeForms(n.name, n.aliases, n.person) for n in snap.nodes
              if n.person or n.folder in SYSTEM_FOLDERS]

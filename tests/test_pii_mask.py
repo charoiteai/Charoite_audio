@@ -1,6 +1,7 @@
 """Маска ПДн перед облаком (№793, этап A): формы, маска, постусловие, обратный ход."""
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import random
 import re
@@ -1018,27 +1019,52 @@ def test_label_left_after_the_dictionary_cut_is_not_a_name():
 
 
 def test_common_word_of_another_lexeme_is_not_a_system():
-    # «кору» при узле «Кори» — общее слово другой лексемы: ложная группа (замер 28.10: 12 групп)
-    forms = _forms(pm.NodeForms("Кори", person=False), known=_w("кора", "кору"))
-    m = pm.mask("сняли кору, Кори упал", forms)
-    assert m.text.startswith("сняли кору, ") and "Кори" not in m.text
+    # «стороны» при узле «Стори» — общее слово другой лексемы: ложная группа (замер 28.10: 12 групп);
+    # без словаря языка правило молчит — маска остаётся
+    forms = _forms(pm.NodeForms("Стори", person=False), known=_w("стороны"))
+    assert pm.mask("на две стороны, Стори упал", forms).text == "на две стороны, ⟦С1.1⟧ упал"
+    assert pm.mask("на две стороны", _forms(pm.NodeForms("Стори", person=False))).replaced == 1
 
 
 def test_other_lexeme_rule_keeps_every_node_of_the_form():
-    # та же основа у второго узла-слова языка («Кора»): его падеж словарь может не узнать —
+    # у формы второй узел — слово языка («Сторона»): его падеж словарь может не узнать —
     # маска остаётся (n828-in1 S-C1, H-C1)
-    forms = _forms(pm.NodeForms("Кори", person=False), pm.NodeForms("Кора", person=False),
-                   known=_w("кора", "кору"))
-    assert pm.mask("сняли кору", forms).replaced == 1
+    forms = _forms(pm.NodeForms("Стори", person=False), known=_w("стороны", "сторона"))
+    entry = forms.entries[0]
+    assert pm._other_word("стороны", entry, forms)
+    assert not pm._other_word("стороны", dataclasses.replace(entry, alts=("Сторона",)), forms)
 
 
 def test_node_word_with_a_case_tail_is_always_the_node():
-    # «спарка» при узле «Спарк»: слово узла плюс падежный хвост — падеж, что бы ни сказал словарь;
+    # «спарками» при узле «Спарк»: слово узла плюс падежный хвост — падеж, что бы ни сказал словарь;
     # и обратно — «цод» при узле «ЦОДы»
-    assert pm._inflected("спарка", "Спарк") and pm._inflected("цод", "ЦОДы")
+    assert pm._inflected("спарками", "Спарк") and pm._inflected("цод", "ЦОДы")
     assert not pm._inflected("кору", "Кори")
-    forms = _forms(pm.NodeForms("Спарк", person=False), known=_w("спарка"))
-    assert pm.mask("у спарка память", forms).replaced == 1
+    forms = _forms(pm.NodeForms("Спарк", person=False), known=_w("спарками"))
+    entry = dataclasses.replace(forms.entries[0], capital=False)
+    assert not pm._other_word("спарками", entry, forms)
+
+
+def test_system_word_written_lowercase_follows_its_capital_in_the_text():
+    # «маяк» строчными при «Маяк» посреди фразы — то же имя в этом тексте (класс «маяк» №827:
+    # ×6 строчными при одной заглавной); без такой улики строчное — речь (правило №793)
+    forms = _forms(pm.NodeForms("Маяк", person=False), known=_w("маяк", "маяка"))
+    assert pm.mask("Маяк упал. Вчера Маяк лежал, а маяк снова", forms).replaced == 3
+    assert "а маяк снова" in pm.mask("Маяк упал. а маяк снова", forms).text
+
+
+@pytest.mark.parametrize("label,masked", [("Собеседник 1, муж", False), ("Собеседник 5, Иван", True)])
+def test_label_with_a_note_is_a_label_but_with_a_name_is_not(label, masked):
+    # запятая не делает меткой соседнее имя (n828-out1 DS-M7, Haiku I2)
+    m = pm.mask(f"{label}: да", _forms(), [(0, len(label), pm.PERSON)])
+    assert ("Иван" not in m.text) if masked else m.text.startswith(label)
+    assert pm.mask("Петров пришёл", _forms(pm.NodeForms("Петров, участник"))).replaced == 1
+
+
+@pytest.mark.parametrize("line", ["- [ ] Вера пришла.", "2) Вера пришла.", "[10:41] Вера пришла."])
+def test_list_markup_at_line_start_is_not_evidence(line):
+    forms = _forms(pm.NodeForms("Вера"), known=_w("вера"))
+    assert "а вера в лучшее" in pm.mask(f"{line}\nа вера в лучшее", forms).text
 
 
 @pytest.mark.parametrize("word,noise", [("Вроде", True), ("Попроси", True), ("Угу", True),
@@ -1084,6 +1110,8 @@ def test_unknown_cyrillic_abbreviation_is_a_system_without_a_node():
     got = [t[s:e] for s, e, _k in pm.abbrev_spans(t, _w("инн"))]
     assert got == ["ЖЗИК"]
     assert pm.abbrev_spans(t, _w("инн"), common=["ЖЗИК"]) == []
+    # строка файла владельца — как в `build_forms`: «ЖЗИК.» снимает «ЖЗИК» (n828-out1 DS-M5)
+    assert pm.abbrev_spans("ЖЗИК упал", _w(), ["ЖЗИК."]) == []
 
 
 def test_speech_word_by_grammar():
