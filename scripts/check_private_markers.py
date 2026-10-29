@@ -63,7 +63,7 @@ def nfc(text: str) -> str:
 # (вход №570, Sonnet C1). Не-UTF-8 — «не проверить», путь двоичного: отказ,
 # выход — хеш блоба в списке владельца. Чтение — `surrogateescape`: байт вне
 # UTF-8 виден (`opaque`), остальная строка судится как есть (`clean`).
-NOT_UTF8 = "не UTF-8 — содержимое не проверить"
+NOT_UTF8 = "не UTF-8 — не проверить"
 _OPAQUE = re.compile("[\udc80-\udcff]")
 
 
@@ -141,55 +141,63 @@ def git_ok(*args: str) -> bool:
 
 
 def tracked_files() -> list[pathlib.Path]:
-    """Файлы под учётом git — то, что уже опубликовано."""
-    out = git("ls-files", "-z").decode("utf-8", "replace")
+    """Файлы под учётом git — то, что уже опубликовано. Путь не в UTF-8 — без
+    потерь (`undecoded`): файл открывается, имя судится (выход out1 №570, C2)."""
+    out = undecoded(git("ls-files", "-z"))
     return [pathlib.Path(p) for p in out.split("\0") if p]
 
 
 # Медиа не судится по содержимому (текст метаданных — долг). Медиа — суффикс
-# медиаформата И подпись любого из них в начале содержимого: суффикс один
-# пропускал документ, переименованный в картинку; «своя» подпись отказывала бы
-# законной иконке .ico, которая на деле PNG (вход №570, Sonnet I4). Архив и
-# офисный документ подписи медиа не имеют.
+# медиаформата И подпись в начале содержимого: суффикс один пропускал документ,
+# переименованный в картинку. Сильная подпись (4+ байт) годится любому медиа-
+# суффиксу — иконка .ico, которая на деле PNG, законна (вход №570, Sonnet I4);
+# слабая (байт-два) — только своему. Голый кадр mp3 «FF Ex» не подпись: это «я»
+# и строчная буква в cp1251 (выход out1, Haiku I4) — mp3 без тега ID3 идёт
+# путём двоичного, выход по хешу. Архив и офисный документ подписи медиа не имеют.
 MEDIA_SUFFIX = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".onnx", ".wav", ".m4a", ".mp3"}
-_MEDIA_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"%PDF", b"\x00\x00\x01\x00", b"ID3",
-                b"\x08")        # ONNX: protobuf начинается полем ir_version
+_MEDIA_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"%PDF", b"ID3")
+_WEAK_MAGIC = {".ico": lambda h: h.startswith(b"\x00\x00\x01\x00"),
+               ".onnx": lambda h: h.startswith(b"\x08")}      # protobuf: поле ir_version
 MEDIA_HEAD = 16
 
 
 def media(name: str, head: bytes) -> bool:
     """Медиа ли файл `name` с этими первыми байтами (`MEDIA_HEAD` хватает)."""
-    if pathlib.PurePosixPath(name).suffix.lower() not in MEDIA_SUFFIX:
+    suffix = pathlib.PurePosixPath(name).suffix.lower()
+    if suffix not in MEDIA_SUFFIX:
         return False
+    weak = _WEAK_MAGIC.get(suffix)
     return (head.startswith(_MEDIA_MAGIC)
             or head[4:8] == b"ftyp"                                    # m4a
             or head[:4] == b"RIFF" and head[8:12] == b"WAVE"
-            or len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)   # кадр mp3
+            or bool(weak and weak(head)))
 
 
 class NotUtf8(Exception):
-    """Текст файла не в UTF-8 и его блоба нет в списке владельца."""
-
-
-def blob_sha(data: bytes) -> str:
-    """Хеш блоба git для содержимого файла дерева (то же, что `git hash-object`)."""
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    """Файл дерева не проверить: имя или текст не в UTF-8. Сообщение — готовая
+    находка с выходом (хеш блоба для текста, переименование для имени)."""
 
 
 def tree_text(f: pathlib.Path, data: bytes) -> str | None:
     """Текст файла дерева для суда. UTF-8 — текст (нулевой байт не помеха: строки
     читаются, вход №570 S-I5); медиа и двоичное (NUL в первых 8000 байт, как у git)
     — None, в дереве как прежде: двоичное отказывает покоммитный страж. Иначе —
-    текст в чужой кодировке: `NotUtf8`, если его версии нет в списке владельца."""
+    текст в чужой кодировке: `NotUtf8` с хешем блоба, если его версии нет в
+    списке владельца. Имя не в UTF-8 — `NotUtf8` всегда (выход out1 №570, C1).
+    Хеш считает git: формат объектов репозитория знает он (sha1 или sha256)."""
+    if opaque(str(f)):
+        raise NotUtf8(f"{clean(str(f))}: имя {NOT_UTF8} — переименуй")
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         pass
     if media(f.name, data[:MEDIA_HEAD]) or b"\0" in data[:8000]:
         return None
-    if blob_sha(data) in allowed_blobs():
+    blob = git("hash-object", "--stdin", stdin=data).decode().strip()
+    if blob in allowed_blobs():
         return None
-    raise NotUtf8(str(f))
+    raise NotUtf8(f"{f}: {NOT_UTF8} — сопровождающий пропускает версию строкой {blob} "
+                  f"в {blob_allow_path()}")
 
 
 def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]:
@@ -206,8 +214,8 @@ def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]
             text = tree_text(f, f.read_bytes())
         except OSError:
             continue        # удалённый файл — не наша забота
-        except NotUtf8:
-            hits.append(f"{f}: {NOT_UTF8}")
+        except NotUtf8 as e:
+            hits.append(str(e))
             continue
         if text is None:
             continue
@@ -264,8 +272,8 @@ def scan_public(files: list[pathlib.Path]) -> list[str]:
             text = tree_text(f, f.read_bytes())
         except OSError:
             continue
-        except NotUtf8:
-            hits.append(f"{f}: {NOT_UTF8}")
+        except NotUtf8 as e:
+            hits.append(str(e))
             continue
         if text is not None:
             texts.append((f, text))
@@ -298,13 +306,14 @@ def _unescape(m: re.Match[bytes]) -> bytes:
 def _unquote_path(raw: str) -> str:
     """Путь из заголовка `+++ b/…`: git берёт в C-кавычки имена со спецсимволами
     (кавычки всегда парные); хвост `\t` git ставит после имени с пробелом.
-    Байты вне UTF-8 — U+FFFD, как в `added_paths`: путь — ключ, по которому
-    сводятся находки строк и имён файлов (вход №570, Sonnet I3)."""
+    Байты вне UTF-8 — суррогаты, как в `added_paths`: путь — ключ, по которому
+    сводятся находки строк и имён файлов (вход №570, Sonnet I3), и по нему же
+    git отдаёт блоб (выход out1, C1); печатается путь через `clean`."""
     raw = raw.rstrip("\t")
     if not raw.startswith('"'):
-        return clean(raw)
+        return raw
     body = re.sub(rb"\\([0-7]{3}|.)", _unescape, raw[1:-1].encode("utf-8", "surrogateescape"), flags=re.S)
-    return body.decode("utf-8", "replace")
+    return undecoded(body)
 
 
 def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
@@ -378,7 +387,7 @@ def _z_records(out: bytes) -> Iterator[tuple[str, list[str]]]:
     Режется сначала по NUL, коммит — поле `\x01<sha>`: имя файла может
     содержать и `\x01`, и перевод строки, но не NUL."""
     sha, fields = None, []
-    for token in out.decode("utf-8", "replace").split("\0"):
+    for token in undecoded(out).split("\0"):     # путь не в UTF-8 — без потерь (out1 C1)
         token = token.lstrip("\n")
         if token.startswith("\x01") and _SHA.fullmatch(token[1:]):
             if sha:
@@ -747,8 +756,8 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         fresh = new_objects(revs) if fresh is None else fresh
         if blob not in fresh:
             continue                     # этот блоб уже опубликован
-        if why == "двоичный" and media(name, blob_head(blob)):
-            continue
+        if media(name, blob_head(blob)):
+            continue                     # PDF без NUL git показывает текстом (out1 I1)
         allowed = allowed_blobs() if allowed is None else allowed
         if blob not in allowed:
             hits.append(f"{sha[:9]} {mask(name)} ({why}): содержимое не проверить — "
@@ -1048,7 +1057,7 @@ def _people_files(files: list[pathlib.Path], read, also_paths: list[pathlib.Path
         if is_path:
             out.append(f"имя файла (путь скрыт): {_PEOPLE_FIX}")
         else:
-            out.append(f"{'(путь скрыт)' if f in hidden else f}:{line or '?'}: {_PEOPLE_FIX}")
+            out.append(f"{'(путь скрыт)' if f in hidden else clean(str(f))}:{line or '?'}: {_PEOPLE_FIX}")
     return out
 
 
@@ -1188,8 +1197,8 @@ def _run(a: argparse.Namespace) -> int:
             bad = _people_files(tracked_files(), lambda f: f.read_bytes())
             title = "имена людей графа в опубликованном дереве"
         else:
-            staged = [pathlib.Path(n) for n in git("diff", "--cached", "--name-only", "-z", "--no-renames",
-                                                    "--diff-filter=d").decode("utf-8", "replace").split("\0") if n]
+            staged = [pathlib.Path(n) for n in undecoded(git("diff", "--cached", "--name-only", "-z",
+                                                              "--no-renames", "--diff-filter=d")).split("\0") if n]
             bad = _people_files(staged, lambda f: git("show", f":{f.as_posix()}"),
                                 also_paths=tracked_files())
             title = "КОММИТ ЗАБЛОКИРОВАН — имена людей графа"
@@ -1224,14 +1233,17 @@ def _run(a: argparse.Namespace) -> int:
         if opaque(text) and name not in unreadable:
             unreadable.append(name)
         if pattern.search(nfc(clean(text))):
-            hits.append(f"{name}:{lineno}")
+            hits.append(f"{clean(name)}:{lineno}")
     if unreadable:
         allowed = allowed_blobs()
         for name in unreadable:
-            blob = git("rev-parse", f":{name}").decode().strip() if git_ok("cat-file", "-e", f":{name}") else ""
-            if blob not in allowed:
-                hits.append(f"{name} ({NOT_UTF8}): сопровождающий пропускает версию строкой "
-                            f"{blob or '<хеш блоба>'} в {blob_allow_path()}")
+            if not git_ok("cat-file", "-e", f":{name}"):
+                hits.append(f"{clean(name)} ({NOT_UTF8}): объект в индексе не найден")
+                continue
+            blob = git("rev-parse", f":{name}").decode().strip()
+            if blob not in allowed and not media(name, blob_head(blob)):
+                hits.append(f"{clean(name)} ({NOT_UTF8}): сопровождающий пропускает версию "
+                            f"строкой {blob} в {blob_allow_path()}")
 
     if hits:
         print(f"❌ КОММИТ ЗАБЛОКИРОВАН: {len(hits)} строк с личными/банковскими маркерами "

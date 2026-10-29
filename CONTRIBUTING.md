@@ -425,11 +425,12 @@ per-commit check by hand. Media files (images, audio, PDF) are judged by name
 only: text inside their metadata (EXIF, PDF author, audio tags) is not checked.
 A file counts as media only when both its suffix and its first bytes say so; a
 document renamed to `.jpg` is not media, and text under a picture name is read
-as text. Any other file git treats as binary (archives, office documents, icons,
-a text file with a NUL byte) and text that is not UTF-8 (cp1251 and other code
+as text. Any other file git treats as binary (archives, office documents, `.icns`
+icons, a text file with a NUL byte) and text that is not UTF-8 (cp1251 and other code
 pages are not guessed) cannot be checked and are refused; the maintainer lets a
 specific version through by adding its blob hash, which the refusal prints, to
-`~/.config/charoite/blob_allow.txt`. The maintainer's hook does not fetch: when
+`~/.config/charoite/blob_allow.txt`. A file name that is not UTF-8 is refused
+everywhere: rename the file. The maintainer's hook does not fetch: when
 the server has commits the clone has not seen (a squash merge on GitHub), a
 refusal adds `git fetch <remote>` — fetch and push again.
 

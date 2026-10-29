@@ -1116,17 +1116,21 @@ def test_cp1251_text_is_refused_per_commit_with_its_blob_hash(repo):
 
 
 def test_cp1251_text_is_refused_by_the_tree_scan(repo):
+    """Отказ дерева печатает хеш блоба — единственный выход (выход out1, I2)."""
     (repo.work / "notes.txt").write_bytes(CP1251)
-    repo.commit("cp1251")
+    sha = repo.commit("cp1251")
+    blob = git(repo.work, "rev-parse", f"{sha}:notes.txt", env=repo.env).stdout.strip()
     p = guard_run(repo.work, "--all", env=repo.env)
     assert p.returncode == 1 and f"notes.txt: {guard.NOT_UTF8}" in p.stderr, p.stdout + p.stderr
+    assert blob in p.stderr, p.stderr
 
 
 def test_cp1251_text_is_refused_by_pre_commit(repo):
     (repo.work / "notes.txt").write_bytes(CP1251)
     git(repo.work, "add", "notes.txt", env=repo.env)
+    blob = git(repo.work, "rev-parse", ":notes.txt", env=repo.env).stdout.strip()
     p = guard_run(repo.work, env=repo.env)
-    assert p.returncode == 1 and guard.NOT_UTF8 in p.stderr, p.stdout + p.stderr
+    assert p.returncode == 1 and guard.NOT_UTF8 in p.stderr and blob in p.stderr, p.stdout + p.stderr
 
 
 def test_allowed_cp1251_blob_passes_every_mode(repo):
@@ -1176,20 +1180,31 @@ def test_icon_that_is_really_a_png_passes(repo):
 
 @pytest.mark.parametrize("head", [b"\xff\xd8\xff\xe0", b"GIF89a", b"%PDF-1.7\n\x00",
                                   b"\x00\x00\x00\x18ftypmp42", b"RIFF\x00\x00\x00\x00WAVEfmt ",
-                                  b"ID3\x04\x00", b"\xff\xfb\x90\x00"])
-def test_media_signatures(head):
+                                  b"ID3\x04\x00"])
+def test_strong_media_signatures_fit_any_media_suffix(head):
     assert guard.media("x.png", head + b"\x00" * 16)
     assert not guard.media("x.bin", head + b"\x00" * 16)
+
+
+def test_weak_media_signatures_fit_only_their_own_suffix():
+    """Байт-два подписи — только своему суффиксу; голый кадр mp3 не подпись:
+    «я» и строчная буква в cp1251 (выход out1, Haiku I4)."""
+    assert guard.media("m.onnx", b"\x08\x07\x12")
+    assert not guard.media("m.png", b"\x08\x07\x12")
+    assert guard.media("i.ico", b"\x00\x00\x01\x00\x01")
+    assert not guard.media("i.jpg", b"\x00\x00\x01\x00\x01")
+    assert not guard.media("n.mp3", "язык".encode("cp1251"))
 
 
 def test_media_suffix_without_a_signature_is_not_media():
     assert not guard.media("x.jpg", b"PK\x03\x04" + b"\x00" * 12)
 
 
-def test_non_utf8_path_in_a_patch_matches_the_path_list():
-    """Путь из заголовка патча — в той же форме, что у `added_paths` (вход S-I3)."""
-    assert guard._unquote_path('"a\\377.md"') == "a\ufffd.md"
-    assert guard._unquote_path(guard.undecoded(b"b\xff.md")) == "b\ufffd.md"
+def test_non_utf8_path_in_a_patch_keeps_its_bytes():
+    """Путь из заголовка патча — в той же форме, что у `added_paths` (вход S-I3),
+    и без потерь: по нему git отдаёт блоб (выход out1, C1)."""
+    assert guard._unquote_path('"a\\377.md"') == guard.undecoded(b"a\xff.md")
+    assert guard._unquote_path(guard.undecoded(b"b\xff.md")) == guard.undecoded(b"b\xff.md")
 
 
 def test_git_error_does_not_show_url_credentials(repo, monkeypatch):
@@ -1237,3 +1252,53 @@ def test_push_after_a_server_squash_without_fetch_names_the_fix(repo):
     git(wt, "fetch", "-q", "origin", env=repo.env)
     p = git(wt, "push", "-q", "origin", "feat", env=repo.env, check=False)
     assert p.returncode == 0, p.stderr
+
+
+# ── выход out1 (№570) ───────────────────────────────────────────────────────
+
+def test_non_utf8_file_name_in_a_commit_is_refused(repo):
+    """Имя в cp1251 в коммите (cherry-pick с Linux): на main — код 0, маркер
+    имени не виден. Индекс пишется напрямую — APFS такое имя на диске не создаст."""
+    blob = git(repo.work, "hash-object", "-w", "--stdin", env=repo.env)
+    name = f"{MARKER}.md".encode("cp1251")
+    subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                    b"100644," + blob.stdout.strip().encode() + b"," + name],
+                   cwd=repo.work, env=repo.env, check=True, capture_output=True)
+    sha = repo.commit("cp1251 name")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1, p.stderr
+    assert f"{sha[:9]} имя файла" in p.stderr and guard.NOT_UTF8 in p.stderr, p.stderr
+
+
+def test_non_utf8_file_name_in_the_tree_is_refused(repo):
+    """Дерево открывало путь с U+FFFD — OSError — файл выпадал молча (out1, C2)."""
+    raw = os.fsencode(repo.work) + b"/\xff.md"
+    try:
+        with open(raw, "wb") as fh:
+            fh.write(f"{MARKER}\n".encode())
+    except OSError:
+        pytest.skip("файловая система не принимает имя не в UTF-8 (APFS)")
+    repo.commit("raw name")
+    p = guard_run(repo.work, "--all", env=repo.env)
+    assert p.returncode == 1 and f"имя {guard.NOT_UTF8}" in p.stderr, p.stdout + p.stderr
+
+
+def test_pdf_without_nul_passes_every_mode(repo):
+    """git показывает текстом PDF без NUL; высокие байты заголовка — не UTF-8.
+    Медиа решает подпись в обоих путях (выход out1, I1: на ветке был отказ)."""
+    (repo.work / "doc.pdf").write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< >>\nendobj\n")
+    git(repo.work, "add", "doc.pdf", env=repo.env)
+    p = guard_run(repo.work, env=repo.env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    repo.commit("pdf")
+    for args in (("--range", f"{repo.base}..HEAD"), ("--all",)):
+        p = guard_run(repo.work, *args, env=repo.env)
+        assert p.returncode == 0, (args, p.stdout + p.stderr)
+
+
+def test_cp1251_text_under_an_mp3_name_is_refused(repo):
+    (repo.work / "note.mp3").write_bytes(f"язык {MARKER}\n".encode("cp1251"))
+    repo.commit("mp3")
+    for args in (("--range", f"{repo.base}..HEAD"), ("--all",)):
+        p = guard_run(repo.work, *args, env=repo.env)
+        assert p.returncode == 1 and "note.mp3" in p.stderr, (args, p.stdout + p.stderr)
