@@ -39,6 +39,7 @@ from charoite_paths import code_root, harden_umask, log_path, meeting_log, resol
 import meeting_stamp
 from meeting_stamp import files_with_stamp, publishable, stamp_of
 from charoite_graph import frontmatter
+from charoite_graph import text_norm
 import graphs
 import graph_links
 from charoite_graph import redirects
@@ -494,7 +495,8 @@ _SHORT_STOP = frozenset(
 # Отрицание переворачивает решение: «перенести» и «не переносить» — противоположные дела.
 _NEGATION = frozenset({"не", "ни", "нельзя", "без"})
 # Сокращения «т. д.», «т. е.», «т. п.», «т. к.», «т. н.» (и без второй точки) — не метки: вырезаются
-# до разбора на слова и до смены регистра, только строчными. Список закрытый: общий шаблон
+# до разбора на слова и до `text_norm.norm` (регистр, «ё»), только строчными; граница — `\w`
+# любого письма. Список закрытый: общий шаблон
 # «буква-точка-буква» съедал метку варианта вместе с предлогом следующей фразы («вариант Б. В
 # пятницу…», выход n833-out2); заглавные «Т. Д.» — инициалы или вариант, а не сокращение (out3).
 _ABBREVIATION = re.compile(r"(?<!\w)т\.\s*[депкн](?!\w)")
@@ -509,7 +511,7 @@ def _short_words(text: str) -> frozenset[str]:
     инициалы «А.» и «О.») меток не дают — склейка, как на базе (долг №615). Лишняя метка
     («2026 г.», «2-й») — недосклейка, безопасная сторона: исключения, которые снимали метки,
     теряли варианты (выход n833-out2)."""
-    t = _ABBREVIATION.sub(" ", str(text).replace("ё", "е")).lower()
+    t = text_norm.norm(_ABBREVIATION.sub(" ", str(text)))
     return frozenset(w for w in _SHORT_WORD.findall(t) if w not in _SHORT_STOP and w not in _NEGATION)
 
 
