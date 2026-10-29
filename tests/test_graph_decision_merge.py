@@ -224,9 +224,12 @@ def test_shape_is_fixed_even_with_merge_off(capsys):
     # Дата с годом и без — разные числа: недосклейка, безопасная сторона (долг №615).
     ("Перенести релиз отчётов на 12.12.2026", "Перенести релиз отчётов на 12.12", False),
 ])
-def test_different_numbers_are_different_decisions(a, b, same):
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_different_numbers_are_different_decisions(a, b, same, form):
     """Разные числа и короткие метки при общих словах — разные дела (№824); метка только у
-    одной стороны — тоже не склейка (№833)."""
+    одной стороны — тоже не склейка (№833). Левая строка — в обеих формах Unicode: каждая часть
+    отпечатка сводит разложенную «ё» (выход n833-out6, DS I1)."""
+    a = unicodedata.normalize(form, a)
     assert g._same_fingerprint(g._fingerprint(a), g._fingerprint(b)) is same
     assert g._same_fingerprint(g._fingerprint(b), g._fingerprint(a)) is same
     assert (len(g._merge_decisions([a, b])[0]) == 1) is same
