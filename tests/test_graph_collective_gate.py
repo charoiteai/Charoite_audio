@@ -654,6 +654,8 @@ def test_guessed_namesake_and_owner(tmp_path):
     assert g.find_canonical(graph, "Алексей", folder="Люди") == graph / "Люди" / "Алексей Ан.md"
     assert _held(graph, ["Алексей"], owner="Алексей Воронцовский") == {"алексей": ["Люди/Алексей Ан"]}
     assert _held(graph, ["Алексей"], owner="Алексей Ан") == {"алексей": ["Люди/Алексей Воронцовский"]}
+    got = g.collective_held(graph, [("Алексей", "Люди")], owner="Алексей Ан", born=["Алексей"])
+    assert got[("алексей", "Люди")][2] == "Люди/Алексей Ан", "строка называет узел владельца, куда вёл поиск"
     graph2 = _graph(tmp_path / "один", "Люди/Алексей Ан")
     assert _held(graph2, ["Алексей"], owner="Алексей Ан") == {}
 
@@ -680,5 +682,6 @@ def test_main_does_not_write_the_meeting_into_a_guessed_namesake(tmp_path, monke
     note = _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Алексей"), _person("Гоша")]})
     assert target.read_bytes() == before, "чужой узел не тронут"
     assert not (graph / "Люди" / "Алексей.md").exists(), "голого узла нет"
-    assert "- Алексей — разработчик: сроки релиза _(узел не выбран: голое имя при живых тёзках: " in note, note
+    assert ("- Алексей — разработчик: сроки релиза _(узел не выбран: поиск ведёт в Алексей Ан — "
+            "голое имя при живых тёзках: ") in note, note
     assert "\n- [[Люди/Алексей Ан|" not in note, "участник не ссылается на тёзку"

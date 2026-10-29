@@ -2250,11 +2250,14 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
     n611-in3 S-C1, S-C3). Цели нет — судим входное имя: голый узел при живом полном
     не рождается. Цель угадала подстрока (`guessed`), а у входного имени есть тёзки
     кроме неё — тоже судим входное имя: голое имя не садится в узел одного из тёзок
-    (№835). Цель вне папок людей — как раньше, её видит доктор
+    (№835). Соперники цели — все живые носители имени, узел владельца тоже: владельца
+    снимает только порог `is_collective` (n835-out1 DS I1). Строка удержания называет
+    угаданную цель («поиск ведёт в …») — в списке кандидатов узла владельца нет
+    (n835-out2 DS). Цель вне папок людей — как раньше, её видит доктор
     (`people_in_systems`; n611-in3 DS C2). Порог — `is_collective`, один с доктором.
 
-    Таблица строится ДО записи встречи: `born` — многословные имена людей этой же
-    встречи, тёзки наравне с живыми узлами (n611-in3 Sonnet I1).
+    Таблица строится ДО записи встречи: `born` — имена людей этой же встречи;
+    многословные из них — тёзки наравне с живыми узлами (n611-in3 Sonnet I1).
 
     Ключ — с папкой места: поиск зависит от папки, и вердикт одного вхождения не
     снимает другое, у которого свой узел (n611-out1 DS I2 / Sonnet I1). Сущность,
@@ -2326,7 +2329,8 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
             judged = clean
         if is_collective(judged, index, owner=owner, tags=tags):
             held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)),
-                                   f"{target.parent.name}/{target.stem}" if name_key(judged) != key else "")
+                                   f"{target.parent.name}/{target.stem}"
+                                   if target is not None and name_key(target.stem) != key else "")
     return held
 
 
