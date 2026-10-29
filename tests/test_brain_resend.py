@@ -262,3 +262,35 @@ def test_unpayable_debt_does_not_hold_the_queue(tmp_path):
     assert second[0].startswith("долг памяти 2026-09-02_1000: память Чароита переотправлена"), second
     third = g.pay_brain_debts(graph, sent, limit=1, enabled=True, post=post, now=later)
     assert third[0].startswith("долг памяти 2026-09-03_1000: память Чароита переотправлена"), third
+
+
+def test_meeting_facts_carry_every_decision_participant_and_topic():
+    """№615 п. 8: срез `decisions[:6]` молча терял хвост — на встречах 1–29.10 у 63 из
+    104 решений больше шести. Состав факта — шапка и каждое уникальное решение; шапка
+    называет всех участников и все темы (срезы `[:6]`/`[:4]` — тот же класс, вход in1 DS C1)."""
+    people = [{"имя": f"Участник {i}"} for i in range(9)]
+    topics = [f"тема {i}" for i in range(7)]
+    for n in range(31):
+        decisions = [f"решение номер {i}" for i in range(n)]
+        keyed = g._meeting_facts("2026-10-28_1633", "Планёрка", people, topics, decisions + decisions[:2])
+        assert len(keyed) == 1 + n, (n, len(keyed))
+        assert [f["text"].rsplit(": ", 1)[1] for _, f in keyed[1:]] == decisions, "все решения, порядок заметки"
+    head = keyed[0][1]["text"]
+    assert all(p["имя"] in head for p in people) and all(t in head for t in topics), head
+
+
+def test_resend_after_review_sends_the_tail_appended_by_the_review(tmp_path):
+    """Облачная модель ревизии дописывает решения в конец раздела (в графе владельца —
+    163 из 380 решений за шестым); переотправка по заметке уносит их все (№615 п. 8)."""
+    tail = "".join(f"- 📌 _(ревизия, не записано авто)_ Дописанное решение {i}\n" for i in range(5))
+    after = BEFORE.replace("\n## Связи", tail + "\n## Связи")
+    note = tmp_path / "2026-09-11_1533.md"
+    note.write_text(after, encoding="utf-8")
+    mark = tmp_path / "brain_sent" / "2026-09-11_1533.txt"
+    calls: list[tuple[str, dict]] = []
+    out = g.resend_to_brain_after_review("2026-09-11_1533", note, BEFORE, mark, enabled=True,
+                                         post=lambda url, json, timeout: calls.append((url, json)) or _Resp())
+    sent = [j["text"] for u, j in calls if u.endswith("/remember")]
+    assert out == "память Чароита переотправлена после ревизии: снято решений 0, ушло фактов 9", out
+    assert len(sent) == 9 and sent[-1].endswith("Дописанное решение 4"), sent
+    assert mark.read_text(encoding="utf-8").startswith("sent 9/9\n")
