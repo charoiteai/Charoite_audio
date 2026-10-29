@@ -814,6 +814,9 @@ GATE_NODES = (
     pm.NodeForms("Задачи", person=False),
     pm.NodeForms("Пётр Кузнецов", ("Петя",)),
     pm.NodeForms("Елена (методология)"),
+    # система с меткой — имя целиком, как на main: метку разбирают только у людей (n828-out7 DS-I1)
+    pm.NodeForms("Собеседник 5, Иван", person=False),
+    pm.NodeForms("Speaker 5, man", person=False),
 )
 
 
@@ -833,7 +836,8 @@ def test_gate_no_node_name_leaves_open_unless_the_owner_excluded_it():
     после маски. Эвристика «отличительной части» давала по утечке на круг («Реактив»,
     «Экстра офис» — №799); на графе владельца 26.10: открыто 897 имён из 3238 → 0."""
     common = ("Задачи",)
-    forms = pm.build_forms(GATE_NODES, common=common, known=GATE_KNOWN.__contains__)
+    forms = pm.build_forms(GATE_NODES, common=common, known=GATE_KNOWN.__contains__,
+                           label=graph_names.split_label)
     for node in GATE_NODES:
         for name in (node.name, *node.aliases):
             text = f"Вчера обсуждали {name} с командой."
@@ -1092,7 +1096,9 @@ def test_node_with_a_label_keeps_the_name_and_drops_the_label():
     forms = _forms(pm.NodeForms("Собеседник 4 (Аристарх (Чебуреков))"))
     # полноширинная запятая — та же метка (n828-out4 Sonnet I1, DS-I2)
     assert not any("собесед" in e.words[0] for e in _forms(pm.NodeForms("Собеседник 5，Иван")).entries)
-    assert pm.mask("Аристарх и Чебуреков пришли", forms).replaced == 2
+    m = pm.mask("Аристарх и Чебуреков пришли", forms)
+    # имена из скобок — чужие люди, в группу узла не сливаются (n828-out7 Haiku I3)
+    assert m.replaced == 2 and {g.canon for g in m.groups.values()} == {None}
 
 
 @pytest.mark.parametrize("node", ["Спикер", "Участник", "Speaker"])
