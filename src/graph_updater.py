@@ -1982,9 +1982,13 @@ def find_canonical(graph: pathlib.Path, name: str,
     `guessed` получает True, если ответ дала подстрока (проход 3), а не имя, ключ,
     псевдоним или падеж: единственный кандидат там бывает и потому, что фильтр длины
     отрезал остальных тёзок. Догадка ли это — судит затвор сборных имён (№835).
+    Ответа нет (канон заглушки исчез) — нет и догадки (n835-opus M1).
     """
     p = _find_canonical_raw(graph, name, ambiguous, folder, guessed)
-    return follow_stubs(graph, p) if p is not None else None
+    found = follow_stubs(graph, p) if p is not None else None
+    if found is None and guessed is not None:
+        guessed.clear()
+    return found
 
 
 def _journal_graph_event(kind: str, what: str, meeting_link: str) -> None:
@@ -2317,7 +2321,7 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
                 target = alt
         if target is not None and target.parent.name not in _PEOPLE_FOLDERS:
             continue
-        judged = target.stem if target is not None else clean
+        judged = [target.stem if target is not None else clean]
         tpath = f"{target.parent.name}/{target.stem}" if target is not None else ""
         rivals = {live[n] for n in bare_namesakes(clean, index, owner="", tags=tags)} if guessed else set()
         if target is not None and rivals - {tpath}:
@@ -2327,15 +2331,20 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
             # Соперники цели считаются вместе с узлом владельца (n835-out1 DS I1): иначе
             # при владельце «Алексей Воронцовский» единственным тёзкой оставался угаданный
             # «Алексей Ан», и встреча шла в его узел. Держать ли — решает `is_collective`
-            # с владельцем, как для голого имени без цели
-            judged = clean
-        if is_collective(judged, index, owner=owner, tags=tags):
-            cands = sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags))
-            if judged == clean and tpath in rivals and tpath not in cands:
+            # с владельцем, как для голого имени без цели. Входное имя судится ВДОБАВОК к
+            # цели: удержание только растёт — сборную цель («Алекс» при «Алекс Смит»)
+            # база держала, и соперник, которого снял владелец, её не отпускает (n835-opus C1)
+            judged.insert(0, clean)
+        for name in judged:
+            if not is_collective(name, index, owner=owner, tags=tags):
+                continue
+            cands = sorted(live[n] for n in bare_namesakes(name, index, owner=owner, tags=tags))
+            if name == clean and tpath in rivals and tpath not in cands:
                 # подстрока угадала узел владельца: порог его снял, а ссылка на него нужна
                 cands = sorted([*cands, tpath])
             via = tpath if target is not None and name_key(target.stem) != key and tpath not in cands else ""
             held[(key, folder)] = (clean, cands, via)
+            break
     return held
 
 

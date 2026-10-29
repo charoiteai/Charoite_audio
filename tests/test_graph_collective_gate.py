@@ -622,6 +622,10 @@ def test_substring_reports_that_it_guessed(tmp_path):
         guessed = []
         assert g.find_canonical(graph, name, folder="Люди", guessed=guessed) == graph / "Люди" / f"{stem}.md"
         assert guessed == [], name
+    (graph / "Люди" / "Алексей Ан.md").write_text("# Алексей Ан → [[Люди/Нет]]\n", encoding="utf-8")
+    guessed = []
+    assert g.find_canonical(graph, "Алексей", folder="Люди", guessed=guessed) is None
+    assert guessed == [], "канон заглушки исчез — ответа нет, догадки тоже"
 
 
 def test_bare_name_guessed_among_namesakes_is_held(tmp_path):
@@ -662,6 +666,15 @@ def test_guessed_namesake_and_owner(tmp_path):
     assert _held(graph3, ["Саша"], owner="Саша Образцов") == {"саша": ["Люди/Саша Сидоров"]}
     graph2 = _graph(tmp_path / "один", "Люди/Алексей Ан")
     assert _held(graph2, ["Алексей"], owner="Алексей Ан") == {}
+
+
+def test_guess_does_not_release_a_collective_target(tmp_path):
+    """Подстрока угадала сборный «Алекс» (тёзка «Алекс Смит»), а единственного носителя
+    «Алексей» снял владелец: база держала цель, ветка не отпускает (n835-opus C1)."""
+    graph = _graph(tmp_path, "Люди/Алексей Воронцовский", "Люди/Алекс", "Люди/Алекс Смит")
+    assert g.find_canonical(graph, "Алексей", folder="Люди") == graph / "Люди" / "Алекс.md"
+    got = g.collective_held(graph, [("Алексей", "Люди")], owner="Алексей Воронцовский", born=["Алексей"])
+    assert got == {("алексей", "Люди"): ("Алексей", ["Люди/Алекс Смит"], "Люди/Алекс")}
 
 
 def test_alias_beats_namesakes(tmp_path):
