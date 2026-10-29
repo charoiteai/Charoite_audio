@@ -302,7 +302,7 @@ def test_back_formed_forms_need_the_position_of_a_name():
     assert heard_forms("Саша", "[·] Я: Сашей звали собаку") == (), "творительный без «с» — не форма имени"
     assert heard_forms("Таня", "[·] Я: я звонил Тане вчера") == (), "косвенный падеж третьего лица — намеренно мимо"
     assert heard_forms("Таня", "[·] Я: Тань глянь смету") == (), "обращение без знака — принятая цена"
-    # позиция здесь шире, чем у вето (`_vocative_at`): лишняя форма только разрешает имя
+    # позиция здесь шире, чем у вето (только начало реплики): лишняя форма только разрешает имя
     assert heard_forms("Маша", "[·] Я: Маш: глянь смету.") == ("маш",)
     assert heard_forms("Маша", "[·] Я: спросим у Маш.") == ("маш",)
 
@@ -335,16 +335,11 @@ def test_each_guard_names_its_own_reason(raw, kw, reason):
 
 # №830. Суд пары «метка — имя» по итоговой стенограмме (`judge_label`): его
 # правила — тем же способом, реальным входом на каждую причину.
-_SELF_ADDRESS = "\n".join((
-    "[10:00] Я: Мария сейчас подключится.",
-    "[10:01] Собеседник: Да, Мария, сейчас попробуем.",
-))
 LABEL_REFUSALS = [
     ("  ", dict(sample=INTRO, label="Собеседник"), sn.REASON_EMPTY),
     ("Собеседник", dict(sample=INTRO, label="Собеседник 2"), sn.REASON_LABEL),
     ("Игорь", dict(sample=DIALOG, label="Собеседник", owner_name=OWNER), sn.REASON_OWNER),
     ("Мария", dict(sample=_OWN_ADDRESS, label="Собеседник"), sn.REASON_OWN_LINES),
-    ("Мария", dict(sample=_SELF_ADDRESS, label="Собеседник"), sn.REASON_SELF_ADDRESS),
 ]
 
 
@@ -360,66 +355,25 @@ def test_every_reason_has_a_text_and_a_real_input():
     assert {r for *_, r in REFUSALS + LABEL_REFUSALS} == codes
 
 
-def test_self_address_is_not_part_of_the_live_judge():
-    """Живой цикл судит по скользящему хвосту — самообращение там не судится
-    (n830-in1 Sonnet I1): `judge_name` принимает то, что снимает `judge_label`."""
-    assert sn.judge_name("Мария", sample=_SELF_ADDRESS, label="Собеседник").name == "Мария"
-
-
-@pytest.mark.parametrize("name, line, expected", [
-    ("Коля", "Коль, судя по твоему вопросу, смета готова.", True),
-    ("Мария", "Смету пришлю завтра, Мария?", True),
-    ("Мария", "Мария! Глянь цифры.", True),
-    ("Мария", "Спасибо, Мария.", True),                   # обращение замыкает реплику после запятой
-    ("Мария", "Спасибо, Мария", True),
-    ("Андрей", "Андрей, глянь цифры.", True),            # своё имя на «-ей» — не творительный
-    ("Мария", "Мария обещала прислать смету.", False),   # третье лицо
-    ("Мария", "Смету готовит Мария.", False),            # третье лицо в конце фразы
-    ("Мария", "Мария — наш бухгалтер.", True),           # о себе под тире не говорят — довод против метки
-    ("Мария", "Кто считал? Мария: она и пришлёт.", True),
-    ("Маша", "Маш — глянь смету.", True),
-    ("Мария", "Мария… ты тут?", True),
-    ("Мария", "Мария... ты тут?", True),
-    ("Мария", "Вот это, Мария, интересно.", True),        # запятая перед именем — не представление
-    ("Мария", "Он сказал «да». Мария, ты идёшь?", True),  # кавычка закрыта до имени
-    ("Мария", "Спасибо, Мария смету пришлёт.", False),   # после запятой, но реплика не кончилась
-    ("Мария", "Спасибо, Мария   и смету.", False),
-    ("Мария", "Да, Мария, это я.", False),                # представление после имени
-    ("Мария", "Мария, слушаю.", False),                   # ответ на звонок
-    ("Мария", "спасибо, мария, выручила", False),        # строчное не судится — плата за нарицательные
-    ("Надежда", "Надежда, что успеем, есть.", True),       # с заглавной — неотличимо от обращения
-    ("Надежда", "Есть надежда, что успеем.", False),     # нарицательное — строчная
-    ("Мария", "Он спросил: «Мария, ты идёшь?»", False),   # цитата чужой речи
-    ("Мария", 'Он спросил: "Мария, ты идёшь?"', False),
-    ("Мария", "Да, я Мария.", False),                     # представление
-    ("Мария", "Меня зовут Мария, я по смете.", False),
-    ("Мария", "Это — Мария, добрый день.", False),
-    ("Саша", "Договорились с Сашей, она пришлёт.", False),  # творительный — не обращение
-])
-def test_self_address_is_judged_by_the_position_of_each_mention(name, line, expected):
-    sample = "\n".join((f"[11:19] Собеседник 2: {line}", f"[11:20] Я: {name} в курсе."))
-    assert sn.addresses_self(name, sample, "Собеседник 2") is expected
-
-
-def test_only_the_labels_own_lines_count_for_self_address():
-    sample = "\n".join((
-        "[10:00] Я: Мария, привет — смету видела?",
-        "[10:00] Собеседник 23: Мария, ответь.",
-        "[10:01] Собеседник 2: Видела, всё сходится.",
-    ))
-    assert sn.addresses_self("Мария", sample, "Собеседник 2") is False
-    assert sn.judge_label("Мария", sample=sample, label="Собеседник 2") == \
+def test_a_name_others_also_say_is_kept_by_the_label_judge():
+    """Вето «метка сама зовёт этим именем» снято замером 29.10 (теряло верные
+    имена): имя, которое звучит и у других, пара сохраняет, даже если метка
+    открывает им свою реплику."""
+    sample = "\n".join(("[10:00] Я: Мария сейчас подключится.",
+                         "[10:01] Собеседник: Мария, сейчас попробуем."))
+    assert sn.judge_label("Мария", sample=sample, label="Собеседник") == \
         sn.NameVerdict("Мария", "", "Мария", "Мария")
 
 
 def test_label_judge_keeps_the_name_as_given_and_checks_its_shape():
-    """Имя пересборки уже приведено — суд пары его не нормализует; форму
-    ответа проверяет та же `_shape_refusal`, что у `judge_name`: правленый
-    руками live.json не протащит «Я», «NONE» или число (n830-out2 DS C1/M3)."""
-    assert sn.judge_label(" Мария ", sample=INTRO, label="Собеседник").name == "Мария"
-    for raw, reason in (("Я", sn.REASON_LENGTH), ("NONE", sn.REASON_EMPTY), ("42", sn.REASON_NOT_A_WORD),
-                        ("Собеседник", sn.REASON_LABEL)):
-        assert sn.judge_label(raw, sample=INTRO, label="Собеседник 2").reason == reason, raw
+    """Имя пересборки уже приведено — суд пары его не нормализует и не требует
+    одного слова (`_clean` сделал бы из «Мария Ветрова» «Мария ветрова»,
+    `_shape_refusal` отказал бы ей как «не одно слово», n830-out3 DS C1).
+    Форма судится только на пусто/NONE и метку вместо имени."""
+    assert sn.judge_label(" Мария Ветрова ", sample=INTRO, label="Собеседник").name == "Мария Ветрова"
+    assert sn.judge_label("NONE", sample=INTRO, label="Собеседник 2").reason == sn.REASON_EMPTY
+    assert sn.judge_label("Собеседник 3", sample=INTRO, label="Собеседник 2").reason == sn.REASON_LABEL
+    assert sn.judge_label("собеседник 2", sample=INTRO, label="Собеседник 2").reason == sn.REASON_LABEL
 
 
 def test_label_judge_does_not_require_the_name_to_be_heard():
@@ -431,18 +385,18 @@ def test_label_judge_does_not_require_the_name_to_be_heard():
 
 def test_verify_names_splits_kept_and_refused_with_reasons():
     sample = "\n".join((
-        "[·] Собеседник 2: Да, Мария, сейчас попробуем.",
-        "[·] Собеседник 3: Это Пётр, я по смете, Мария в курсе.",
+        "[·] Собеседник 2: Коль, сейчас попробуем.",
+        "[·] Собеседник 3: Это Пётр, я по смете.",
         "[·] Собеседник 4: Игорь, ты смету видел?",
     ))
     kept, refused = sn.verify_names(
-        {"Собеседник 2": "Мария", "Собеседник 3": "Пётр", "Собеседник 4": "Игорь"},
+        {"Собеседник 2": "Коля", "Собеседник 3": "Пётр", "Собеседник 4": "Игорь"},
         sample=sample, owner_name=OWNER)
     assert kept == {"Собеседник 3": "Пётр"}
     assert {k: v.reason for k, v in refused.items()} == {
-        "Собеседник 2": sn.REASON_SELF_ADDRESS, "Собеседник 4": sn.REASON_OWNER}
+        "Собеседник 2": sn.REASON_OWN_LINES, "Собеседник 4": sn.REASON_OWNER}
     assert sn.refusal_line("Собеседник 2", refused["Собеседник 2"]) == \
-        "«Мария» для «Собеседник 2» не принято — метка сама обращается по этому имени — имя чужое"
+        "«Коля» для «Собеседник 2» не принято — звучит только в своих репликах — обращение к другому"
     assert sn.verify_names({}, sample=sample) == ({}, {})
     assert sn.verify_names({"Собеседник 5": " "}, sample=sample) == ({}, {}), "пустое — не отказ"
 

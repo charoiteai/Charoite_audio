@@ -47,10 +47,7 @@ PREFIX = 4
 
 # Самопредставление: только оно оправдывает имя, прозвучавшее исключительно в
 # собственных репликах говорящего.
-# Слова представления — одни на «звучит только в своих репликах» и вето
-# самообращения (n830-out2 Sonnet M4).
-_INTRO_WORDS = r"это|я|меня\s+зовут"
-_INTRO = rf"({_INTRO_WORDS})\s+"
+_INTRO = r"(это|я|меня\s+зовут)\s+"
 
 # Звательный падеж — имя на «-а/-я» без последней гласной: «Коль», «Ань»,
 # «Саш». Префиксная склейка выше этого не видит, когда расходится четвёртая
@@ -251,76 +248,8 @@ def _own_lines_only(name: str, sample: str, label: str,
 
 
 def _label_lines(sample: str, label: str) -> list[str]:
-    """Реплики самой метки — строки «[…] метка: текст». Одно правило разбора на
-    `_own_lines_only` и вето самообращения (n830-in1 Sonnet M2)."""
+    """Реплики самой метки — строки «[…] метка: текст»."""
     return [ln for ln in sample.splitlines() if re.search(rf"\]\s*{re.escape(label)}\s*:", ln)]
-
-
-# Представление в той же реплике: перед именем «я Коля», «это Коля», «я — Коля»
-# (без запятой: «Вот это, Коль, интересно» — обращение, n830-out2 Sonnet M1);
-# после имени — ответ на звонок или на оклик: «Маша, слушаю», «Да, Маша, это я»
-# (n830-out2 Sonnet I1, Haiku I-1).
-_INTRO_BEFORE = re.compile(rf"(?<!\w)(?:{_INTRO_WORDS})[\s—–-]+$", re.I)
-_INTRO_AFTER = re.compile(r"\s*,\s*(?:это\s+я|слушаю)(?!\w)", re.I)
-
-
-def _vocative_at(body: str, start: int, end: int) -> bool:
-    """Слово `body[start:end]` — обращение, узко: с заглавной, не в кавычках,
-    за ним «, ! ? … — :» («Коль, ты тут?», «Саш!», «Маш — глянь») или оно
-    замыкает реплику после запятой («Спасибо, Маша.»).
-
-    Уже, чем позиция в `heard_forms`, намеренно: там лишняя форма только
-    разрешает имя, здесь — снимает его. Нарицательное («Есть надежда.»),
-    цитата чужой речи и третье лицо посреди фразы («Смету готовит Мария.»)
-    вето не дают (n830-out1 Sonnet I1, DS I3, Haiku I-1). Своё имя под тире
-    или двоеточием («Мария — наш бухгалтер») — довод против метки так же,
-    как обращение: о себе в третьем лице не говорят (n830-out2 DS I2).
-    Строчное имя («спасибо, маша») не судится — плата за отсев нарицательных."""
-    if not body[start:end][:1].isupper():
-        return False
-    before = body[:start]
-    if before.count("«") > before.count("»") or before.count('"') % 2:
-        return False
-    after = body[end:]
-    if re.match(r"\s*(?:[,!?…—–:]|\.\.\.)", after):
-        return True
-    return re.search(r",\s*$", before) is not None and re.match(r"\s*\.?\s*$", after) is not None
-
-
-def addresses_self(name: str, sample: str, label: str,
-                   forms: tuple[str, ...] | None = None) -> bool:
-    """Метка в СВОИХ репликах зовёт этим именем — значит, имя не её (№830).
-
-    Человек не обращается к себе: «Коль, судя по твоему вопросу» под меткой
-    «Коль» — это обращение к Коле, а метка — кто-то другой, кому живой цикл
-    отдал звательную форму. Правило 2 модуля (`_own_lines_only`) ловит только
-    случай, когда имя звучит ИСКЛЮЧИТЕЛЬНО в репликах метки; самообращение
-    снимает имя, даже если его произносят и другие. Каждое вхождение судится
-    по позиции (`_vocative_at`): упоминание в третьем лице («Маша обещала
-    прислать») и творительный («с Сашей») обращением не считаются,
-    представление в той же реплике («да, я Маша.») снимает подозрение.
-
-    Замер 29.10 на итоговых стенограммах октября (64 живых имени с ревизией):
-    12 срабатываний, во всех метка зовёт своё имя; подтверждено неверных 5,
-    без другого свидетельства 6, спорная 1 — одно обращение из 86 реплик."""
-    if forms is None:
-        forms = heard_forms(name, sample)
-    if not forms:
-        return False
-    own = name.strip().casefold()
-    for line in _label_lines(sample, label):
-        # текст реплики — после «] метка:», а не после первого двоеточия: у живой
-        # ленты в скобках время «[11:19]»
-        body = re.split(rf"\]\s*{re.escape(label)}\s*:", line, maxsplit=1)[-1]
-        for f in forms:
-            for m in re.finditer(rf"(?<!\w){re.escape(f)}(?!\w)", body, re.I):
-                # творительный — только у выведенной формы: «Андрей» сам кончается на «-ей»
-                if (f != own and _instrumental_like(m.group(0))) or not _vocative_at(body, m.start(), m.end()):
-                    continue
-                if _INTRO_BEFORE.search(body[:m.start()]) or _INTRO_AFTER.match(body, m.end()):
-                    continue
-                return True
-    return False
 
 
 #: Причины отказа гварда (№502) — код, по которому журнал называет сработавшее
@@ -335,7 +264,6 @@ REASON_NOT_HEARD = "not_heard"
 REASON_OWNER = "owner"
 REASON_OWN_LINES = "own_lines"
 REASON_VOICE = "voice"
-REASON_SELF_ADDRESS = "self_address"
 
 REASON_TEXT = {
     REASON_EMPTY: "пусто или NONE",
@@ -346,7 +274,6 @@ REASON_TEXT = {
     REASON_OWNER: "имя владельца",
     REASON_OWN_LINES: "звучит только в своих репликах — обращение к другому",
     REASON_VOICE: "голос и род имени противоречат",
-    REASON_SELF_ADDRESS: "метка сама обращается по этому имени — имя чужое",
 }
 
 
@@ -361,17 +288,24 @@ class NameVerdict(typing.NamedTuple):
     resolved: str
 
 
+def _is_empty(name: str) -> bool:
+    return not name or name.upper() == "NONE"
+
+
+def _is_label(name: str, label: str) -> bool:
+    return name.casefold() == label.casefold() or name.casefold().startswith("собеседник")
+
+
 def _shape_refusal(name: str, label: str) -> str:
-    """Годится ли строка как имя вообще — пусто/NONE, не слово, длина, метка
-    вместо имени. Одна проверка на `judge_name` и `judge_label` (n830-out2
-    DS C1/M3): правленый руками live.json не протащит «Я» или «NONE»."""
-    if not name or name.upper() == "NONE":
+    """Годится ли ответ модели как имя — пусто/NONE, не слово, длина, метка
+    вместо имени."""
+    if _is_empty(name):
         return REASON_EMPTY
     if not name.replace("-", "").isalpha():
         return REASON_NOT_A_WORD
     if not (MIN_LEN <= len(name) <= MAX_LEN):
         return REASON_LENGTH
-    if name.casefold() == label.casefold() or name.casefold().startswith("собеседник"):
+    if _is_label(name, label):
         return REASON_LABEL
     return ""
 
@@ -435,20 +369,23 @@ def judge_label(name: str, *, sample: str, label: str, owner_name: str = "") -> 
     модели, а из живой сессии или прошло `judge_name`, падеж уже приведён.
     «Не звучало» здесь не судится — живое имя слышно в живой ленте, а итоговое
     распознавание может его не дать (замер 29.10: из 7 таких снятий 4 — верные
-    имена). Правила — форма ответа (`_shape_refusal`), владелец, «только в своих
-    репликах» и самообращение.
+    имена). Правила — пусто/NONE и метка вместо имени, владелец и «только в своих
+    репликах». Вето «метка сама зовёт этим именем» снято замером 29.10: на
+    октябре и 69 встречах №813 оно теряло 3 имени, которые ревизия оставила.
     Живой цикл демона этот суд не зовёт: его выборка — скользящий хвост, вердикт
     по окну менялся бы от такта к такту (n830-in1 Sonnet I1, DS I3)."""
     said = (name or "").strip()     # не `_clean`: падеж и регистр уже приведены
-    if reason := _shape_refusal(said, label):
-        return NameVerdict(None, reason, said, said)
+    # форма — только пусто/NONE и метка: имя уже приведено, многословное
+    # законно (n830-out3 DS C1)
+    if _is_empty(said):
+        return NameVerdict(None, REASON_EMPTY, said, said)
+    if _is_label(said, label):
+        return NameVerdict(None, REASON_LABEL, said, said)
     if is_owner(said, owner_name):
         return NameVerdict(None, REASON_OWNER, said, said)
     forms = heard_forms(said, sample)
     if _own_lines_only(said, sample, label, forms):
         return NameVerdict(None, REASON_OWN_LINES, said, said)
-    if addresses_self(said, sample, label, forms):
-        return NameVerdict(None, REASON_SELF_ADDRESS, said, said)
     return NameVerdict(said, "", said, said)
 
 

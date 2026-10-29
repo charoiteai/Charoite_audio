@@ -118,13 +118,13 @@ def test_minutes_names_follow_the_numbering_the_minutes_were_written_in():
 _EVIDENCE = "\n".join((
     "[·] Собеседник 2: Коль, судя по твоему вопросу, смета готова.",
     "[·] Собеседник 3: Это Марк, я по срокам.",
-    "[·] Я: Коля, Марк, спасибо.",
+    "[·] Я: Марк, спасибо.",
 ))
 
 
-def test_judge_live_names_drops_a_self_addressed_name(tmp_path, monkeypatch):
-    """№830: живое имя «Коля» перенесено на метку, которая сама зовёт Колю, —
-    снято, метка остаётся безымянной и уходит к модели; в журнале — причина.
+def test_judge_live_names_drops_a_name_heard_only_in_the_labels_own_lines(tmp_path, monkeypatch):
+    """№830: живое имя «Коля» перенесено на метку, и только она сама его
+    произносит («Коль, …» — обращение к другому), — снято, метка остаётся безымянной и уходит к модели; в журнале — причина.
     Сайдкар не трогается: решение — свойство пары в тексте этого прохода."""
     logs: list[str] = []
     monkeypatch.setattr(rebuild_transcript, "log", logs.append)
@@ -136,7 +136,7 @@ def test_judge_live_names_drops_a_self_addressed_name(tmp_path, monkeypatch):
         {"Собеседник 2": "Коля", "Собеседник 3": "Марк"}, _EVIDENCE, "")
     assert kept == {"Собеседник 3": "Марк"}
     assert logs == ["имена из живой сессии: «Коля» для «Собеседник 2» не принято — "
-                    "метка сама обращается по этому имени — имя чужое"]
+                    "звучит только в своих репликах — обращение к другому"]
     assert rebuild_transcript.live_meta_path(live).read_bytes() == before
     assert rebuild_transcript.minutes_names(rebuild_transcript.live_meta(live)) == {
         "Собеседник 1": "Коля", "Собеседник 4": "Марк"}, "живая нумерация судом пересборки не правится"

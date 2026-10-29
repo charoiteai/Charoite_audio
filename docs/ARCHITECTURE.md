@@ -629,8 +629,9 @@ code path is shared.
    are in docs/DIARIZATION.md. Other names are assigned by the LLM from what was said,
    through the full trust guard (`speaker_names`). Names the live session found
    are carried over by time and judged again on the whole final transcript
-   (`speaker_names.judge_label`, the same check for the LLM's guesses): a label
-   that itself addresses the name in its own lines does not get it. The
+   (`speaker_names.judge_label`, the same check for the LLM's guesses): a name
+   heard only in the label's own lines (an address to someone else) or the
+   owner's name does not stay. The
    verdict is not stored: each rebuild judges its own text again. The live version is kept
    as a draft.
 
