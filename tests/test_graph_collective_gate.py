@@ -602,3 +602,70 @@ def test_the_debrief_is_the_one_model_call_named_by_main(tmp_path, monkeypatch):
     graph = _graph(tmp_path)
     _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Иван Петров")]}, llm=_Model)
     assert seen == [("untagged:graph_updater.main", "stack")]
+
+
+# --- №835: подстрока выбрала одного из тёзок ------------------------------------------
+# Имена не короче пяти букв: проход 3 короче не смотрит, и «Пётр» держится затвором и без №835.
+_NAMESAKES = ("Люди/Алексей Ан", "Люди/Алексей Воронцовский", "Люди/Лебедев Алексей")
+
+
+def test_substring_reports_that_it_guessed(tmp_path):
+    """Фильтр длины пропускает из трёх тёзок одного — поиск отдаёт его и говорит, что угадал;
+    точное имя, псевдоним и падеж угадыванием не считаются."""
+    graph = _graph(tmp_path, *_NAMESAKES)
+    _node(graph, "Люди/Коля")
+    _node(graph, "Люди/Иван Иванов", 'aliases: ["Ванечка"]\n')
+    guessed: list[bool] = []
+    assert g.find_canonical(graph, "Алексей", folder="Люди", guessed=guessed) == graph / "Люди" / "Алексей Ан.md"
+    assert guessed == [True]
+    for name, stem in (("Алексей Ан", "Алексей Ан"), ("Ванечка", "Иван Иванов"), ("Коль", "Коля")):
+        guessed = []
+        assert g.find_canonical(graph, name, folder="Люди", guessed=guessed) == graph / "Люди" / f"{stem}.md"
+        assert guessed == [], name
+
+
+def test_bare_name_guessed_among_namesakes_is_held(tmp_path):
+    """28.10: «Алексей» сел в узел того тёзки, чью фамилию пропустил фильтр длины.
+    Затвор судит входное имя — строка со всеми тёзками."""
+    graph = _graph(tmp_path, *_NAMESAKES)
+    assert _held(graph, ["Алексей"]) == {"алексей": sorted(_NAMESAKES)}
+
+
+def test_sole_namesake_found_by_substring_keeps_the_link(tmp_path):
+    """Фамилия при единственном её носителе — не догадка: «Петров» → «Иван Петров»."""
+    graph = _graph(tmp_path, "Люди/Иван Петров", "Люди/Иван Сидоров")
+    assert g.find_canonical(graph, "Петров", folder="Люди") == graph / "Люди" / "Иван Петров.md"
+    assert _held(graph, ["Петров"]) == {}
+
+
+def test_namesake_born_in_the_meeting_makes_the_guess_ambiguous(tmp_path):
+    """В графе один «Алексей Ан», но встреча принесла и «Алексей Сидоров» — тёзок двое."""
+    graph = _graph(tmp_path, "Люди/Алексей Ан")
+    assert _held(graph, ["Алексей"]) == {}
+    assert _held(graph, ["Алексей", "Алексей Сидоров"]) == {"алексей": ["Люди/Алексей Ан", "Люди/Алексей Сидоров"]}
+
+
+def test_alias_beats_namesakes(tmp_path):
+    """Псевдоним записал человек — это не догадка, затвор его не трогает."""
+    graph = _graph(tmp_path, "Люди/Алексей Воронцовский", "Люди/Лебедев Алексей")
+    _node(graph, "Люди/Алексей Ан", 'aliases: ["Алексей"]\n')
+    assert _held(graph, ["Алексей"]) == {}
+
+
+def test_guessed_target_outside_people_is_not_held(tmp_path):
+    """Подстрока без папки нашла систему: тёзки-люди её ссылку не отнимают."""
+    graph = _graph(tmp_path, "Системы/Сокол-М", "Люди/Сокол Александрович", "Люди/Сокол Валерьянович")
+    assert g.find_canonical(graph, "Сокол") == graph / "Системы" / "Сокол-М.md"
+    got = g.collective_held(graph, [("Сокол", None)], owner="")
+    assert got == {}
+
+
+def test_main_does_not_write_the_meeting_into_a_guessed_namesake(tmp_path, monkeypatch):
+    graph = _graph(tmp_path, *_NAMESAKES)
+    target = graph / "Люди" / "Алексей Ан.md"
+    before = target.read_bytes()
+    note = _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Алексей"), _person("Гоша")]})
+    assert target.read_bytes() == before, "чужой узел не тронут"
+    assert not (graph / "Люди" / "Алексей.md").exists(), "голого узла нет"
+    assert "- Алексей — разработчик: сроки релиза _(узел не выбран: голое имя при живых тёзках: " in note, note
+    assert "\n- [[Люди/Алексей Ан|" not in note, "участник не ссылается на тёзку"

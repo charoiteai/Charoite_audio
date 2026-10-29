@@ -1964,7 +1964,8 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> 
 
 def find_canonical(graph: pathlib.Path, name: str,
                    ambiguous: list[str] | None = None,
-                   folder: str | None = None) -> pathlib.Path | None:
+                   folder: str | None = None,
+                   guessed: list[bool] | None = None) -> pathlib.Path | None:
     """Ищет существующий узел: точное имя или имя-подстрока (система → ИС 1494 система).
 
     Если подходящих несколько — не гадаем и возвращаем None (новый узел): приклеить
@@ -1977,8 +1978,12 @@ def find_canonical(graph: pathlib.Path, name: str,
     ведёт к канону: по точному имени проход 1 находил именно заглушку, и
     `upsert_entity` дописывал встречу в мёртвый файл (DS F3, аудит памяти 07.09);
     для Ядер то же давно делает `resolve_core_path`. Канон заглушки исчез — узла нет.
+
+    `guessed` получает True, если ответ дала подстрока (проход 3), а не имя, ключ,
+    псевдоним или падеж: «один кандидат» там бывает лишь потому, что фильтр длины
+    отрезал остальных тёзок. Судит это затвор сборных имён (№835).
     """
-    p = _find_canonical_raw(graph, name, ambiguous, folder)
+    p = _find_canonical_raw(graph, name, ambiguous, folder, guessed)
     return follow_stubs(graph, p) if p is not None else None
 
 
@@ -2070,7 +2075,8 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
 
 def _find_canonical_raw(graph: pathlib.Path, name: str,
                         ambiguous: list[str] | None,
-                        folder: str | None) -> pathlib.Path | None:
+                        folder: str | None,
+                        guessed: list[bool] | None = None) -> pathlib.Path | None:
     n = safe_name(name).casefold()
     key = name_key(name)
     files = [f for place in NODE_FOLDERS if (graph / place).exists()
@@ -2156,6 +2162,8 @@ def _find_canonical_raw(graph: pathlib.Path, name: str,
         if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
             candidates.append(f)
     if len(candidates) == 1:
+        if guessed is not None:
+            guessed.append(True)
         return candidates[0]
     if candidates and ambiguous is not None:
         ambiguous.extend(f.stem for f in candidates)
@@ -2239,8 +2247,9 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
     (`names` — пары «имя, папка»: люди — «Люди», сущность — папка типа, конец
     связи — без папки), а судим найденную цель: «Саш», псевдоним на самом сборном и
     связь без папки приходят в сборный обходом, а не входным именем (n611-in2 S-C1,
-    n611-in3 S-C1, S-C3). Цели нет — судим входное имя: голый узел при живом
-    полном не рождается. Цель вне папок людей — как раньше, её видит доктор
+    n611-in3 S-C1, S-C3). Цели нет или её угадала подстрока (`guessed`) — судим
+    входное имя: голый узел при живом полном не рождается, и голое имя не садится в
+    узел одного из тёзок (№835). Цель вне папок людей — как раньше, её видит доктор
     (`people_in_systems`; n611-in3 DS C2). Порог — `is_collective`, один с доктором.
 
     Таблица строится ДО записи встречи: `born` — многословные имена людей этой же
@@ -2285,7 +2294,8 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
             if folder is not None and folder not in _PEOPLE_FOLDERS else ""
         if verdict == "resolved":
             continue
-        target = find_canonical(graph, clean, folder=folder)
+        guessed: list[bool] = []
+        target = find_canonical(graph, clean, folder=folder, guessed=guessed)
         if target is None and folder is not None and verdict in ("", "new", "existing"):
             # цепочка заглушки оборвана — писатель заведёт узел по её цели («Сашка →
             # [[Люди/Саша]]», а «Саша» разделён и удалён); судим этот узел (n611-final-opus C1).
@@ -2302,6 +2312,13 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
         if target is not None and target.parent.name not in _PEOPLE_FOLDERS:
             continue
         judged = target.stem if target is not None else clean
+        if guessed and target is not None and any(
+                live[n] != f"{target.parent.name}/{target.stem}"
+                for n in bare_namesakes(clean, index, owner=owner, tags=tags)):
+            # подстрока выбрала одного из тёзок: «Алексей» при четырёх «Алексей …» уходил в
+            # того, чью фамилию пропустил фильтр длины (№835). Единственный тёзка — сам
+            # найденный узел: фамилия «Петров» при одном «Иван Петров» — не догадка
+            judged = clean
         if is_collective(judged, index, owner=owner, tags=tags):
             held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)),
                                    f"{target.parent.name}/{target.stem}" if name_key(judged) != key else "")
