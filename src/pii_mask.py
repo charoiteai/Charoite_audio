@@ -361,7 +361,10 @@ def build_forms(nodes: Iterable[NodeForms], *,
                 # и строчными («абв» при «АБВ»): только слово, которого нет в языке (`_occurs`)
                 # свой ключ: та же основа у обычной формы («Дапо») — её правило, не это (опыт n828:
                 # слитая с ней строчная запись теряла «дап» узла «Дапо»)
-                low = Entry((base.lower(),), (tail,), kind, canon, uncommon=True, source=(words[0],))
+                # exact — падеж по перечню хвостов: у словаря нет лексемы аббревиатуры, иначе
+                # «Злком» уходил этой формой без канона человека (CI 4097f133)
+                low = Entry((base.lower(),), (tail,), kind, canon, uncommon=True, exact=True,
+                            source=(words[0],))
                 if (low.words, kind, canon, "uncommon") not in seen:
                     seen.add((low.words, kind, canon, "uncommon"))
                     entries.append(low)
