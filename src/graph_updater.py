@@ -2255,10 +2255,9 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
     n611-in3 S-C1, S-C3). Цели нет — судим входное имя: голый узел при живом полном
     не рождается. Цель угадала подстрока (`guessed`), а у входного имени есть тёзки
     кроме неё — тоже судим входное имя: голое имя не садится в узел одного из тёзок
-    (№835). Соперники цели — все живые носители имени, узел владельца тоже: владельца
-    снимает только порог `is_collective` (n835-out1 DS I1). Если подстрока угадала
-    узел владельца, он встаёт в кандидаты: встреча в него не пишется (№611), но
-    строка ссылается на него, и журнал его предлагает (n835-out3 DS C1, Haiku C1).
+    (№835). Соперники цели — все живые носители имени, узел владельца тоже, и все они
+    встают в кандидаты: встреча в узел владельца не пишется (№611), но строка ссылается
+    на него, и журнал его предлагает (n835-out1 DS I1, n835-out3 DS C1).
     Цель вне папок людей — как раньше, её видит доктор
     (`people_in_systems`; n611-in3 DS C2). Порог — `is_collective`, один с доктором.
 
@@ -2324,25 +2323,21 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
         judged = [target.stem if target is not None else clean]
         tpath = f"{target.parent.name}/{target.stem}" if target is not None else ""
         rivals = {live[n] for n in bare_namesakes(clean, index, owner="", tags=tags)} if guessed else set()
-        if target is not None and rivals - {tpath}:
-            # подстрока выбрала одного из тёзок: «Алексей» при трёх «Алексей …» уходил в
-            # того, чью фамилию пропустил фильтр длины (№835). Единственный тёзка — сам
-            # найденный узел: фамилия «Петров» при одном «Иван Петров» — не догадка.
-            # Соперники цели считаются вместе с узлом владельца (n835-out1 DS I1): иначе
-            # при владельце «Алексей Воронцовский» единственным тёзкой оставался угаданный
-            # «Алексей Ан», и встреча шла в его узел. Держать ли — решает `is_collective`
-            # с владельцем, как для голого имени без цели. Входное имя судится ВДОБАВОК к
-            # цели: удержание только растёт — сборную цель («Алекс» при «Алекс Смит»)
-            # база держала, и соперник, которого снял владелец, её не отпускает (n835-opus C1)
+        guess = target is not None and bool(rivals - {tpath})
+        if guess:
+            # подстрока выбрала одного из носителей имени: «Алексей» при трёх «Алексей …» уходил
+            # в того, чью фамилию пропустил фильтр длины (№835). Единственный носитель — сам
+            # найденный узел: фамилия «Петров» при одном «Иван Петров» — не догадка. Носители
+            # считаются вместе с узлом владельца (n835-out1 DS I1), и догадка держится сама,
+            # даже если порог владельца снял их всех: «Алексей» владельца «Алексей Воронцовский»
+            # иначе уходил в «Алекс» (n835-s-after-opus2 Haiku I2). Кандидаты — все носители
+            # (узел владельца тоже, ссылкой: может быть и он) и тёзки сборной цели — удержание
+            # только растёт против базы (n835-opus C1, n835-s-after-opus I1)
             judged.insert(0, clean)
         hit = [j for j in judged if is_collective(j, index, owner=owner, tags=tags)]
-        if hit:
-            # сборные оба — кандидаты обоих: ссылки на тёзок цели, которые давала база,
-            # не теряются (n835-s-after-opus I1 / Haiku C1)
-            cands = sorted({live[n] for j in hit for n in bare_namesakes(j, index, owner=owner, tags=tags)})
-            if clean in hit and tpath in rivals and tpath not in cands:
-                # подстрока угадала узел владельца: порог его снял, а ссылка на него нужна
-                cands = sorted([*cands, tpath])
+        if hit or guess:
+            cands = sorted({live[n] for j in hit for n in bare_namesakes(j, index, owner=owner, tags=tags)}
+                           | (rivals if guess else set()))
             via = tpath if target is not None and name_key(target.stem) != key and tpath not in cands else ""
             held[(key, folder)] = (clean, cands, via)
     return held
