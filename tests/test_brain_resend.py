@@ -324,3 +324,52 @@ def test_a_sender_turned_away_by_the_lock_leaves_a_debt(tmp_path, monkeypatch):
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert g.send_to_brain("2026-09-01_1000", "Т", [], [], ["x"], mark, enabled=True, post=ok) == 0
     assert not calls and mark.with_suffix(".pending").exists()
+
+
+def test_a_marked_meeting_keeps_an_ordered_debt_and_a_debt_touched_mid_send_survives(tmp_path, monkeypatch):
+    """Выход n615p8-out3. Haiku I-1: весь текущий состав уже в отметке — это не доказывает, что
+    снятое ревизией решение ушло из памяти, долг остаётся для полной переотправки. Sonnet I1:
+    долг, тронутый посреди отправки (отказ замка другому отправителю), её переживает.
+    DS I2: отказ замка при полностью отмеченном составе долга не ставит."""
+    import fcntl
+    import os
+    mark = tmp_path / "brain_sent" / "s.txt"
+    mark.parent.mkdir()
+    keys = [k for k, _ in g._meeting_facts("s", "Т", [], [], ["D1", "D2"])]
+    mark.write_text("sent 3/3\n" + "".join(f"id:{k}\n" for k in keys) + "# Т\n", encoding="utf-8")
+    debt = mark.with_suffix(".pending")
+    debt.touch()
+    calls: list[str] = []
+    ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
+    assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=ok) == 0 and not calls
+    assert debt.exists(), "покрытие ключей погасило заказ полной переотправки"
+
+    mark.unlink()
+    debt.unlink()
+
+    def touched_mid_send(url, json, timeout):
+        st = debt.stat()
+        os.utime(debt, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        return _Resp()
+
+    assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=touched_mid_send) == 3
+    assert debt.exists(), "долг, поставленный посреди отправки, снят ею"
+
+    debt.unlink()
+    monkeypatch.setattr(g, "SEND_LOCK_WAIT", 0.0)
+    with open(mark.with_suffix(".lock"), "a+") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=ok) == 0
+    assert not debt.exists(), "досылать нечего — долг не нужен"
+
+
+def test_debts_are_kept_when_the_graph_meetings_folder_is_gone(tmp_path):
+    """Выход n615p8-out3, DS I3: том графа ушёл посреди прогона — «заметки нет» не значит
+    «встречу забыли», долги не снимаются."""
+    sent = tmp_path / "brain_sent"
+    sent.mkdir()
+    debt = sent / "2026-09-01_1000.pending"
+    debt.touch()
+    lines = g.pay_brain_debts(tmp_path / "нет графа", sent, enabled=True, post=lambda *a, **k: _Resp(),
+                              now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
+    assert debt.exists() and "нет каталога встреч" in lines[0]

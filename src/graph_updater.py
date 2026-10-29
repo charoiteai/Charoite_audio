@@ -1008,11 +1008,12 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             # Долг, а не молчаливый пропуск: держатель может слать другой состав, а с №615
             # п. 8 полная отправка держит замок дольше SEND_LOCK_WAIT (выход n615p8-out2,
             # DS I2, Haiku I-1). Оплатит pay_brain_debts полной переотправкой по заметке.
-            try:
-                mark.with_suffix(".pending").touch()
-            except OSError:
-                pass
-            print("память Чароита: факты этой встречи шлёт другой процесс — пропущено, долг записан")
+            if not _all_marked(mark, keyed):
+                try:
+                    mark.with_suffix(".pending").touch()
+                except OSError:
+                    pass
+            print("память Чароита: факты этой встречи шлёт другой процесс — пропущено")
             return 0
         return _send_facts(stamp, title, keyed, mark, post)
 
@@ -1025,7 +1026,6 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
     # маркера `sent` — отметка прежних версий: всё отправлено.
     done: set[str] = set()
     todo = keyed
-    legacy = False
     if mark.exists():
         lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
         if lines and lines[0].startswith("sent ") and any(ln.startswith("id:") for ln in lines):
@@ -1033,14 +1033,12 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
             todo = [(k, f) for k, f in keyed if k not in done]
         else:
             todo = []      # отметка прежних форматов (заголовок, «sha1:» круга-2) — всё отправлено
-            legacy = True
     if not todo:
         print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
-        # долг снимается только по отметке, которая ЗНАЕТ состав; легаси —
-        # предположение «всё отправлено», а долг мог оставить упавший
-        # /forget (DS r3 M4)
-        if not legacy:
-            _settle_debt(mark)
+        # Долг здесь не снимается: его ставит тот, кому нужна ПОЛНАЯ переотправка с /forget
+        # (ревизия сняла решение, упавший /forget, отказ замка) — покрытие ключей текущего
+        # состава этого не доказывает, снятое решение осталось бы в памяти (выход
+        # n615p8-out3, Haiku I-1; раньше — DS r3 M4 для легаси). Платит pay_brain_debts.
         return 0
     # Долг «не всё дошло» — рядом с отметкой, у того, кто её пишет: ставится
     # до первого POST, снимается, когда в отметке весь состав. Его оплачивает
@@ -1050,8 +1048,9 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
     try:
         debt.parent.mkdir(parents=True, exist_ok=True)
         debt.touch()
+        own = debt.stat().st_mtime_ns
     except OSError:
-        pass
+        own = None
     n = 0
     # покрытие — по ТЕКУЩЕМУ списку и только по записанной отметке: `len(done)`
     # при равном числе чужих ключей гасило долг без единого POST (DS r3
@@ -1073,8 +1072,20 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
     if covered == len(keyed):
-        _settle_debt(mark)
+        _settle_debt(mark, own)
     return n
+
+
+def _all_marked(mark: pathlib.Path, keyed: list[tuple[str, dict]]) -> bool:
+    """Весь состав уже в отметке нового формата — досылать нечего (выход n615p8-out3, DS I2)."""
+    try:
+        lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    if not (lines and lines[0].startswith("sent ")):
+        return False
+    done = {ln[3:] for ln in lines[1:] if ln.startswith("id:")}
+    return all(k in done for k, _ in keyed)
 
 
 SEND_LOCK_WAIT = 30.0        # свой отправитель ждёт соседа; плательщик чужих долгов — нет
@@ -1114,10 +1125,15 @@ def _sender_lock(mark: pathlib.Path, wait: float, *, sleep=time.sleep, now=time.
                 return
 
 
-def _settle_debt(mark: pathlib.Path) -> None:
-    """Снять долг переотправки рядом с отметкой — состав дошёл целиком."""
+def _settle_debt(mark: pathlib.Path, own_ns: int | None = None) -> None:
+    """Снять долг переотправки рядом с отметкой — состав дошёл целиком. `own_ns` — mtime долга,
+    который поставил сам отправитель: тронутый позже (отказ замка другому отправителю,
+    ревизия посреди отправки) — чужой заказ, он остаётся (выход n615p8-out3, Sonnet I1)."""
+    debt = mark.with_suffix(".pending")
     try:
-        mark.with_suffix(".pending").unlink()
+        if own_ns is not None and debt.stat().st_mtime_ns != own_ns:
+            return
+        debt.unlink()
     except OSError:
         pass
 
@@ -1312,6 +1328,9 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
         if float(now()) - mtime >= DEBT_MIN_AGE:
             ripe.append((mtime, p))
     out: list[str] = []
+    if ripe and not (graph / "Встречи").is_dir():
+        # том графа ушёл посреди прогона — «заметки нет» здесь не значит «встречу забыли»
+        return [f"долги памяти не оплачены: нет каталога встреч графа ({len(ripe)} ждут)"]
     for _, debt in sorted(ripe)[:limit]:
         stamp = debt.stem
         note = graph / "Встречи" / f"{stamp}.md"

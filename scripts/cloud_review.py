@@ -1762,6 +1762,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     except OSError as e:
                         lines.append(f"[cloud-review] указатель {folder} не записан ({e})\n")
                 checked = not v.failed
+                if published and note_path is not None:
+                    # долг памяти — сразу после записи заметки, а не через мост и доставку:
+                    # смерть процесса между ними иначе оставляла ⛔ в графе без долга (out3, DS I1);
+                    # второй вызов ниже ловит правки моста
+                    _owe_resend(stamp, note_path, note_before, cfg)
                 lines.append(_verdict_line(v, qdir))
                 # Песочница отработала — убираем. При сбое переноса по
                 # одному файлу (v.failed: ENOSPC на карантине или в

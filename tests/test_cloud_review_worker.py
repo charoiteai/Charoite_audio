@@ -3577,3 +3577,37 @@ def test_no_debt_when_the_review_left_decisions_alone_or_memory_is_off(tmp_path,
     assert not mark.with_suffix(".pending").exists()
     assert owe(note, "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=True) is True
     assert mark.with_suffix(".pending").exists()
+
+
+def test_the_resend_debt_is_written_right_after_the_note_lands(tmp_path, monkeypatch):
+    """Выход n615p8-out3, DS I1: между записью заметки и мостом с доставкой процесс может
+    умереть — долг ставится сразу после переноса, а не в конце ревизии."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    (graph / "Встречи" / f"{stamp}.md").write_text(
+        "# Встреча\n\n## Решения\n- 📌 оставить граф закрытым\n- 📌 снять доступ\n", encoding="utf-8")
+    transcript, rev, log = _meeting(tmp_path)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        (pathlib.Path(kwargs["cwd"]) / "Встречи" / f"{stamp}.md").write_text(
+            "# Встреча\n\n## Решения\n- 📌 оставить граф закрытым\n- ⛔ снять доступ\n", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    class Killed(BaseException):
+        """Смерть процесса: `except Exception` ревизии её не ловит."""
+
+    def died(*a):
+        raise Killed
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    monkeypatch.setattr(cloud_review, "_verdict_line", died)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False, "brain": True}}
+    with pytest.raises(Killed):
+        cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert (tmp_path / "data" / "logs" / "brain_sent" / f"{stamp}.pending").exists()
