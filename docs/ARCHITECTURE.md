@@ -1393,8 +1393,8 @@ The post-meeting debrief gets the same gate (№829): its "## Задачи" sect
 writers, `meeting_source.finish_debrief` (the live `graph_updater` path and
 `retro_fill`): the gate, then the recording note; an empty or blank model
 answer becomes an empty string. The section runs to the next heading of its level or higher; other
-sections (questions, recommendations) are the model's proposals and are not
-judged. The debrief is not the task canon (the Tasks tab does not read it), but
+sections are not judged: recommendations and possible solutions are the model's
+proposals, questions and answers stay outside the gate by decision. The debrief is not the task canon (the Tasks tab does not read it), but
 a person reads it: in October 19 of 159 debrief deadlines were not in the
 speech, among them "today (05.10)" at a 06.10 meeting.
 

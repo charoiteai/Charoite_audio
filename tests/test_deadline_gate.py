@@ -632,3 +632,48 @@ def test_retro_debrief_goes_through_the_entry(tmp_path, monkeypatch):
     assert "разбор" in made
     body = live.with_name("2026-10-26_1000_разбор.md").read_text(encoding="utf-8")
     assert _list_item("до 28.10") + "\n" in body and _list_item("до 30.11") + " — " + MARK + "\n" in body
+
+
+def test_live_debrief_goes_through_the_entry(tmp_path, monkeypatch):
+    """Живой писатель (`graph_updater.main`) пишет разбор через `finish_debrief`:
+    невыдуманный срок цел, выдуманный — с пометкой, паспорт — хеш итоговых байтов
+    (Opus M1 n829-final: до того дверь держал только текстовый сторож)."""
+    import graph_updater as g
+    import live_sidecar
+    graph = tmp_path / "Граф"
+    for d in ("Встречи", "Люди", "Системы"):
+        (graph / d).mkdir(parents=True)
+    tpath = tmp_path / "transcripts" / "2026-10-27_1000.md"
+    tpath.parent.mkdir()
+    tpath.write_text("**Участник А** [10:00]: отчёт к 28-му, проверим стенд и релиз по делу.\n" * 3
+                     + "Конец обсуждения. " * 20, encoding="utf-8")
+    answer = ("# Разбор встречи\n## Задачи\n" + _list_item("до 28.10") + "\n" + _list_item("до 30.11") + "\n"
+              "## Рекомендации: что проработать до следующей встречи\n- **Предложение** — сверить смету — до 30.11\n")
+
+    class FakeLLM:
+        def __init__(self, cfg):
+            pass
+
+        def complete(self, prompt, **kw):
+            return answer if "Составь разбор" in prompt else ""
+
+        def __getattr__(self, name):
+            return lambda *a, **k: ""
+
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(graph))
+    monkeypatch.setattr(sys, "argv", ["graph_updater.py", str(tpath)])
+    monkeypatch.setattr(g, "load_cfg", lambda: {"sufler": {"user_name": ""}, "llm": {"model": "нет-такой"}})
+    monkeypatch.setattr(g, "extract", lambda *a, **k: {"люди": [{"имя": "Участник А", "роль": "", "вклад": ""}]})
+    for fn in ("_open_progress", "harden_umask", "archive_and_publish", "run_post_hook",
+               "reindex_memory", "meeting_facts_to_brain", "_revise_meeting_cores", "_yield_to_live"):
+        monkeypatch.setattr(g, fn, lambda *a, **k: None)
+    monkeypatch.setattr(g.privacy, "cloud_enrich_enabled", lambda cfg: False)
+    monkeypatch.setattr(g, "LLM", FakeLLM)
+    g.main()
+    debriefs = sorted(tpath.parent.glob("*_разбор.md"))
+    assert len(debriefs) == 1, debriefs
+    body = debriefs[0].read_text(encoding="utf-8")
+    assert _list_item("до 28.10") + "\n" in body
+    assert _list_item("до 30.11") + " — " + MARK + "\n" in body
+    assert "- **Предложение** — сверить смету — до 30.11\n" in body
+    assert live_sidecar.read(tpath)["debrief_sha256"] == live_sidecar.sha(body)
