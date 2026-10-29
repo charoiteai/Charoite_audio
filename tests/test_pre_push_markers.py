@@ -1173,8 +1173,10 @@ def test_text_under_a_picture_name_is_judged_by_the_tree_scan(repo):
 
 
 def test_icon_that_is_really_a_png_passes(repo):
-    """Сигнатура любого медиа, не «своего» формата: .ico из PNG — законно (вход S-I4)."""
-    (repo.work / "favicon.ico").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00" + MARKER.encode())
+    """Сигнатура любого медиа, не «своего» формата: .ico из PNG — законно (вход S-I4).
+    Содержимое медиа не судится (метаданные — долг №570), поэтому маркера в
+    фикстуре нет: тест не закрепляет пропуск текста внутри картинки (out3 H-C1)."""
+    (repo.work / "favicon.ico").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x10")
     repo.commit("ico")
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
     assert p.returncode == 0, p.stderr
@@ -1214,6 +1216,11 @@ def test_git_error_does_not_show_url_credentials(repo, monkeypatch):
     with pytest.raises(guard.GitError) as e:     # адрес и в аргументах, и в выводе git
         guard.git("rev-parse", "https://" + "u:" + "tok" + "@example.com/r.git")
     assert "tok" not in str(e.value) and "u:" not in str(e.value), str(e.value)
+
+
+def test_redact_url_takes_the_whole_userinfo():
+    assert guard.redact_url("https://" + "u:p@ss" + "@host/r") == "https://host/r"
+    assert guard.redact_url("ssh://git@host/r and //a:b@c/d") == "ssh://host/r and //c/d"
 
 
 def test_non_utf8_ref_name_on_stdin_is_a_finding(repo):
@@ -1334,3 +1341,14 @@ def test_cp1251_text_under_an_mp3_name_is_refused(repo):
     for args in (("--range", f"{repo.base}..HEAD"), ("--all",)):
         p = guard_run(repo.work, *args, env=repo.env)
         assert p.returncode == 1 and "note.mp3" in p.stderr, (args, p.stdout + p.stderr)
+
+
+def test_mp3_without_an_id3_tag_exits_by_its_hash(repo):
+    """Принятая цена (out1 Haiku I4, out3 Haiku I3): голый кадр mp3 — не подпись,
+    такой файл идёт путём двоичного, выход — хеш блоба."""
+    (repo.work / "s.mp3").write_bytes(b"\xff\xfb\x90\x64" + b"\x00" * 8)
+    sha = repo.commit("mp3")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "s.mp3 (двоичный)" in p.stderr, p.stderr
+    _allow(repo, git(repo.work, "rev-parse", f"{sha}:s.mp3", env=repo.env).stdout.strip())
+    assert guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env).returncode == 0

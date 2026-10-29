@@ -125,15 +125,21 @@ _FOREIGN_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FI
                      "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
 
 
+def redact_url(text: str) -> str:
+    """Логин и токен адреса (`//user:pass@host`) вон; `@` в пароле — до последнего
+    в сегменте (выход out3 №570, M1)."""
+    return re.sub(r"//[^/\s]*@", "//", text)
+
+
 def git(*args: str, stdin: bytes | None = None, own_repo: bool = False) -> bytes:
     """`own_repo` — репозиторий, где запущен страж, без переменных выбора чужого (out6 DS C1)."""
     env = {k: v for k, v in os.environ.items() if k not in _FOREIGN_REPO_ENV} if own_repo else None
     p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin, env=env)
     if p.returncode != 0:
-        err = p.stderr.decode("utf-8", "replace").strip()
-        # логин и токен адреса — и в выводе git, и в аргументах (выход out2, I2)
-        raise GitError(re.sub(r"//[^/@\s]*@", "//",
-                              f"git {' '.join(args[:2])}: {_clip(err, 300) or f'код {p.returncode}'}"))
+        # Скраб — до обрезки (обрезок адреса без «@» прошёл бы), и в аргументах
+        # тоже (выход out2 I2, out3 M1); путь не в UTF-8 — через `clean`.
+        err = redact_url(clean(p.stderr.decode("utf-8", "surrogateescape").strip()))
+        raise GitError(f"git {redact_url(clean(' '.join(args[:2])))}: {_clip(err, 300) or f'код {p.returncode}'}")
     return p.stdout
 
 
@@ -151,8 +157,8 @@ def tracked_files() -> list[pathlib.Path]:
 
 # Медиа не судится по содержимому (текст метаданных — долг). Медиа — суффикс
 # медиаформата И подпись в начале содержимого: суффикс один пропускал документ,
-# переименованный в картинку. Сильная подпись (4+ байт) годится любому медиа-
-# суффиксу — иконка .ico, которая на деле PNG, законна (вход №570, Sonnet I4);
+# переименованный в картинку. Сильная подпись (3+ байт или структура ftyp,
+# RIFF/WAVE) годится любому медиа-суффиксу — иконка .ico, которая на деле PNG, законна (вход №570, Sonnet I4);
 # слабая (байт-два) — только своему. Голый кадр mp3 «FF Ex» не подпись: это «я»
 # и строчная буква в cp1251 (выход out1, Haiku I4) — mp3 без тега ID3 идёт
 # путём двоичного, выход по хешу. Архив и офисный документ подписи медиа не имеют.
@@ -818,7 +824,7 @@ def _known_remote(remote: str) -> list[str]:
     names = git("remote").decode("utf-8", "replace").split()
     if remote not in names:
         # userinfo адреса (логин, токен) в журнал не попадает
-        shown = re.sub(r"//[^/@]*@", "//", remote)
+        shown = redact_url(remote)
         raise GitError(f"push не в названный remote ({shown!r}): опубликованное не с чем "
                        f"сравнить — пушьте в remote из `git remote` ({', '.join(names) or 'нет'})")
     return names
