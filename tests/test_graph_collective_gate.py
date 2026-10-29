@@ -683,6 +683,38 @@ def test_guess_does_not_release_a_collective_target(tmp_path):
         assert got == {("алексей", "Люди"): ("Алексей", ["Люди/Алекс Смит", *alexeys], "Люди/Алекс")}, owner
 
 
+def test_guess_only_adds_to_the_hold_of_the_base(tmp_path, monkeypatch):
+    """Свойство №835: догадка подстроки только ДОБАВЛЯЕТ — что держал прежний путь (поиск без
+    признака `guessed`, то есть судим найденную цель), то держится и теперь, и каждая его ссылка
+    остаётся среди кандидатов. Перебор графов из шести узлов, трёх владельцев и трёх имён ловит
+    весь класс «потеряли против базы» (n835-opus C1, n835-s-after-opus I1)."""
+    import itertools
+    pool = ("Алексей Ан", "Алексей Воронцовский", "Лебедев Алексей", "Алекс", "Алекс Смит", "Смит")
+    owners = ("", "Алексей Ан", "Алексей Воронцовский")
+    inputs = ("Алексей", "Алекс", "Смит")
+    real = g.find_canonical
+
+    def base_find(graph, name, ambiguous=None, folder=None, guessed=None):
+        return real(graph, name, ambiguous, folder)
+
+    checked = grew = 0
+    for r in range(1, len(pool) + 1):
+        for nodes in itertools.combinations(pool, r):
+            graph = _graph(tmp_path / f"{r}-{'-'.join(nodes)}", *(f"Люди/{n}" for n in nodes))
+            pairs = [(n, "Люди") for n in inputs]
+            for owner in owners:
+                now = g.collective_held(graph, pairs, owner=owner, born=list(inputs))
+                with monkeypatch.context() as m:
+                    m.setattr(g, "find_canonical", base_find)
+                    before = g.collective_held(graph, pairs, owner=owner, born=list(inputs))
+                for k, (_, cands, _) in before.items():
+                    assert k in now, (nodes, owner, k, "удержание базы потеряно")
+                    assert set(cands) <= set(now[k][1]), (nodes, owner, k, cands, now[k][1])
+                checked += len(before)
+                grew += len(now) - len(before)
+    assert checked > 0 and grew > 0, "перебор пуст или догадка ничего не держит — свойство вакуумно"
+
+
 def test_alias_beats_namesakes(tmp_path):
     """Псевдоним записал человек — это не догадка, затвор его не трогает."""
     graph = _graph(tmp_path, "Люди/Алексей Воронцовский", "Люди/Лебедев Алексей")
