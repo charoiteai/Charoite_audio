@@ -308,3 +308,19 @@ def test_rerun_of_a_meeting_sent_under_the_old_cut_sends_only_the_tail(tmp_path)
                         post=lambda url, json, timeout: sent.append(json["text"]) or _Resp())
     assert n == 3 and [t.rsplit(": ", 1)[1] for t in sent] == decisions[6:], sent
     assert mark.read_text(encoding="utf-8").startswith("sent 10/10\n")
+
+
+def test_a_sender_turned_away_by_the_lock_leaves_a_debt(tmp_path, monkeypatch):
+    """Выход n615p8-out2 (DS I2, Haiku I-1): с №615 п. 8 полная отправка держит замок
+    отправителя дольше SEND_LOCK_WAIT, и второй отправитель уходил молча — его состав
+    терялся. Теперь отказ оставляет долг, его платит pay_brain_debts по заметке."""
+    import fcntl
+    monkeypatch.setattr(g, "SEND_LOCK_WAIT", 0.0)
+    mark = tmp_path / "brain_sent" / "2026-09-01_1000.txt"
+    mark.parent.mkdir()
+    calls: list[str] = []
+    ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
+    with open(mark.with_suffix(".lock"), "a+") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert g.send_to_brain("2026-09-01_1000", "Т", [], [], ["x"], mark, enabled=True, post=ok) == 0
+    assert not calls and mark.with_suffix(".pending").exists()

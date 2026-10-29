@@ -1409,9 +1409,22 @@ def _resend_to_brain(stamp: str, note_path: pathlib.Path, note_before: str, cfg:
     (`sufler.brain`, №249); None — выключена. Флаг читается здесь, из конфига прогона, и строка
     собирается здесь же: тест держит и чтение флага, и то, что уходит в лог (Opus I1 круга 1)."""
     said = graph_updater.resend_to_brain_after_review(
-        stamp, note_path, note_before, _root() / "logs" / "brain_sent" / f"{stamp}.txt",
+        stamp, note_path, note_before, _brain_mark(stamp),
         enabled=install_profile.brain_enabled(cfg))
     return f"[cloud-review] {said}\n" if said else None
+
+
+def _owe_resend(stamp: str, note_path: pathlib.Path, note_before: str, cfg: dict) -> None:
+    """Долг переотправки своей встречи — до шага после замка; сбой — не сбой ревизии."""
+    try:
+        graph_updater.owe_brain_resend(note_path, note_before, _brain_mark(stamp),
+                                       enabled=install_profile.brain_enabled(cfg))
+    except Exception as e:  # noqa: BLE001 — память не важнее ревизии
+        print(f"долг памяти не записан: {e}")
+
+
+def _brain_mark(stamp: str) -> pathlib.Path:
+    return _root() / "logs" / "brain_sent" / f"{stamp}.txt"
 
 
 def _resend_and_log(stamp: str, note_path: pathlib.Path, note_before: str, log: pathlib.Path,
@@ -1994,8 +2007,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # переноса они те же (GLM r1 I2 по #545). Без права правки графа
         # (may_edit) заметка не трогается — brain и граф согласны, пусть и
         # с ошибочным решением: граф здесь источник, а не ревизия.
-        # Сама отправка — шаг после замка графа (`after_unlock`, выход n615p8-out1).
+        # Сама отправка — шаг после замка графа (`after_unlock`, выход n615p8-out1);
+        # долг за неё — здесь, под замком и до ротации и этапа «ok»: шаг, потерянный
+        # между ними, оплатит следующий прогон (выход n615p8-out2).
         if published and may_edit and note_path is not None:
+            _owe_resend(stamp, note_path, note_before, cfg)
             after_unlock.append(functools.partial(_resend_and_log, stamp, note_path, note_before, log, cfg))
         try:
             with log.open("a", encoding="utf-8") as lf:

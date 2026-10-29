@@ -25,6 +25,7 @@ import os
 import pathlib
 import re
 import sys
+import time
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -33,6 +34,7 @@ sys.path.insert(0, str(REPO / "src"))
 import pytest
 
 import cloud_review
+import graph_updater
 
 
 @pytest.fixture(autouse=True)
@@ -3506,3 +3508,72 @@ def test_resend_failure_is_a_log_line_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review, "_resend_to_brain", lambda *a: None)
     cloud_review._resend_and_log("s", tmp_path / "n.md", "", log, {})
     assert log.read_text(encoding="utf-8").count("\n") == 1, "память выключена — строки нет"
+
+
+def test_a_resend_lost_after_the_lock_is_a_debt_paid_by_the_next_run(tmp_path, monkeypatch):
+    """Шаг переотправки идёт после замка графа, и сбой между постановкой шага и его запуском
+    (ротация снимков, kill после этапа «ok») терял его без следа: долг ставила только сама
+    отправка, а снятое ревизией решение оставалось в памяти (выход n615p8-out2, DS C1,
+    Haiku C-1). Долг записан под замком — следующий прогон забывает встречу и шлёт заново."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    node = graph / "Встречи" / f"{stamp}.md"
+    node.write_text("# Встреча\n\n## Решения\n- 📌 оставить граф закрытым\n- 📌 снять доступ\n",
+                    encoding="utf-8")
+    transcript, rev, log = _meeting(tmp_path)
+    resent = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        (pathlib.Path(kwargs["cwd"]) / "Встречи" / f"{stamp}.md").write_text(
+            "# Встреча\n\n## Решения\n- 📌 оставить граф закрытым\n- ⛔ снять доступ\n",
+            encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    def lost(*a):
+        raise OSError("каталог снимков исчез")
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    monkeypatch.setattr(cloud_review, "rotate_snapshots", lost)
+    monkeypatch.setattr(cloud_review, "_resend_to_brain", lambda *a: resent.append(a))
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False,
+                      "brain": True}}
+    with pytest.raises(OSError):
+        cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert resent == [], "шаг после замка выполнился — сценарий потери не воспроизведён"
+    sent_dir = tmp_path / "data" / "logs" / "brain_sent"
+    assert (sent_dir / f"{stamp}.pending").exists(), "потерянный шаг не оставил долга"
+
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+    def post(url, json=None, timeout=None):
+        calls.append((url.rsplit("/", 1)[-1], json))
+        return Resp()
+
+    later = time.time() + graph_updater.DEBT_MIN_AGE + 1
+    graph_updater.pay_brain_debts(graph, sent_dir, enabled=True, post=post, now=lambda: later)
+    assert calls[0] == ("forget", {"meeting": stamp})
+    sent = " ".join(str(j) for _, j in calls[1:])
+    assert "оставить граф закрытым" in sent and "снять доступ" not in sent
+    assert not (sent_dir / f"{stamp}.pending").exists(), "долг оплачен, а не снят"
+
+
+def test_no_debt_when_the_review_left_decisions_alone_or_memory_is_off(tmp_path, monkeypatch):
+    note = tmp_path / "n.md"
+    note.write_text("## Решения\n- 📌 а\n", encoding="utf-8")
+    mark = tmp_path / "sent" / "s.txt"
+    owe = graph_updater.owe_brain_resend
+    assert owe(note, "## Решения\n- 📌 а\n", mark, enabled=True) is False
+    assert owe(note, "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=False) is False
+    assert not mark.with_suffix(".pending").exists()
+    assert owe(note, "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=True) is True
+    assert mark.with_suffix(".pending").exists()

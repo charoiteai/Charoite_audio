@@ -1005,7 +1005,14 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     # дубли или дыра в памяти (DS r3 I2, GLM r3 I1 по #545)
     with (contextlib.nullcontext(True) if locked else _sender_lock(mark, SEND_LOCK_WAIT)) as ok:
         if ok is False:
-            print("память Чароита: факты этой встречи шлёт другой процесс — пропущено")
+            # Долг, а не молчаливый пропуск: держатель может слать другой состав, а с №615
+            # п. 8 полная отправка держит замок дольше SEND_LOCK_WAIT (выход n615p8-out2,
+            # DS I2, Haiku I-1). Оплатит pay_brain_debts полной переотправкой по заметке.
+            try:
+                mark.with_suffix(".pending").touch()
+            except OSError:
+                pass
+            print("память Чароита: факты этой встречи шлёт другой процесс — пропущено, долг записан")
             return 0
         return _send_facts(stamp, title, keyed, mark, post)
 
@@ -1251,6 +1258,30 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
         return (f"память Чароита НЕ переотправлена полностью (ушло {n} из {total}) — "
                 "долг записан, догонит следующая ревизия или повтор обработки")
     return f"память Чароита переотправлена после ревизии: снято решений {dropped}, ушло фактов {n}"
+
+
+def owe_brain_resend(note: pathlib.Path, note_before: str, mark: pathlib.Path, *, enabled: bool) -> bool:
+    """Долг переотправки — в момент, когда ревизия изменила решения заметки, а не когда до
+    отправки дойдёт очередь. Воркер ставит его под замком графа, сам шаг идёт после замка
+    (выход n615p8-out1): сбой или kill между ними иначе терял переотправку без следа —
+    этап ревизии уже «ok», и снятое решение оставалось в памяти (выход n615p8-out2, DS C1).
+    Долг платит сам шаг (`resend_to_brain_after_review` видит `.pending`) или `pay_brain_debts`
+    следующего прогона. True — долг записан."""
+    if not enabled:
+        return False
+    try:
+        after = note.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if note_decisions(note_before) == note_decisions(after):
+        return False
+    pending = mark.with_suffix(".pending")
+    try:
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.touch()
+    except OSError:
+        return False
+    return True
 
 
 def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: bool, skip: str = "",
