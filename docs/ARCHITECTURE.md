@@ -1387,6 +1387,17 @@ like `v1.10` or `Python3.10` are not dates; the suffix "г" counts only right
 after a four-digit year; any horizontal space may separate day and month.
 Chains of numbers and ranges wait for one token parser, not more patterns.
 
+The post-meeting debrief gets the same gate (№829): its "## Задачи" section
+("- **Who** — what — deadline", no checkbox) is marked by
+`action_items.check_debrief_deadlines` through one entry for both debrief
+writers, `meeting_source.finish_debrief` (the live `graph_updater` path and
+`retro_fill`): the gate, then the recording note; an empty model answer stays
+empty. The section runs to the next heading of its level or higher; other
+sections (questions, recommendations) are the model's proposals and are not
+judged. The debrief is not the task canon (the Tasks tab does not read it), but
+a person reads it: in October 19 of 159 debrief deadlines were not in the
+speech, among them "today (05.10)" at a 06.10 meeting.
+
 **Why a phone recording stopped is a value that travels with the file.** On
 07.09 one meeting arrived on the Mac as three pieces with no call in between,
 and the reason was nowhere on disk: the companion's `stop()` released the
