@@ -416,8 +416,10 @@ def test_a_graph_pays_and_settles_only_its_own_debts(tmp_path):
                              "долг памяти 2026-09-04_1000: заметки встречи в графе нет — снят"], lines
     assert sorted(p.name for p in sent.glob("*.pending")) == ["2026-09-05_1000.pending"], \
         "долг без графа и без заметки не снимает никто — чей он, неизвестно"
-    assert g._debt_graph(sent / "2026-09-07_1000.pending") == "", \
-        "нечитаемый долг — без графа, как долг прежних версий, а не чужой"
+    unreadable = sent / "2026-09-07_1000.pending"
+    assert g._debt_graph(unreadable) == "", "исчезнувший долг — без графа, а не чужой"
+    unreadable.mkdir()                                          # read_text → IsADirectoryError
+    assert g._debt_graph(unreadable) == "", "нечитаемый долг — без графа, а не исключение"
 
 
 def test_every_debt_writer_names_the_graph_and_the_debt_follows_the_meeting(tmp_path, monkeypatch):
