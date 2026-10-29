@@ -403,7 +403,7 @@ def test_label_judge_does_not_require_the_name_to_be_heard():
 def test_verify_names_splits_kept_and_refused_with_reasons():
     sample = "\n".join((
         "[·] Собеседник 2: Да, Мария, сейчас попробуем.",
-        "[·] Собеседник 3: Это Пётр, я по смете.",
+        "[·] Собеседник 3: Это Пётр, я по смете, Мария в курсе.",
         "[·] Собеседник 4: Игорь, ты смету видел?",
     ))
     kept, refused = sn.verify_names(

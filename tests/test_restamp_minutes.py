@@ -156,7 +156,7 @@ def test_judge_live_names_drops_a_self_addressed_name_and_remembers_it(tmp_path,
     assert meta2["names_vetoed"] == ["Коля", "Ян"] == rebuild_transcript.live_meta(live)["names_vetoed"]
     assert rebuild_transcript.minutes_names(meta2) == {"Собеседник 4": "Марк"}
     assert "Коля" not in rebuild_transcript.live_session_names(rebuild_transcript.live_meta(live)).values()
-    assert "names_vetoed" not in meta, "meta вызывающего не мутируется"
+    assert meta["names_vetoed"] == ["Ян"], "meta вызывающего не мутируется"
     assert any("«Коля» для «Собеседник 2» не принято" in ln for ln in logs), logs
 
 
