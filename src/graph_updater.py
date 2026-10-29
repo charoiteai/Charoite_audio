@@ -16,6 +16,7 @@ import re
 import sys
 import time
 import typing
+import unicodedata
 
 import requests
 import yaml
@@ -430,7 +431,7 @@ _STOP_STEMS = frozenset(
 
 def _stems(text: str) -> set[str]:
     """Грубые основы слов: первые пять букв слова от четырёх букв, числа целиком."""
-    words = re.findall(r"[а-яёa-z0-9]+", str(text).lower().replace("ё", "е"))
+    words = re.findall(r"[а-яёa-z0-9]+", text_norm.norm(str(text)))
     return {w if w.isdigit() else w[:5]
             for w in words if (len(w) >= 4 or w.isdigit()) and w not in _STOP_STEMS}
 
@@ -482,7 +483,7 @@ _NUMBER_TOKEN = re.compile(r"[a-zа-я0-9]*[0-9][a-zа-я0-9]*(?:[.:/][0-9]+)*")
 
 
 def _numbers(text: str) -> frozenset[str]:
-    return frozenset(_NUMBER_TOKEN.findall(str(text).lower().replace("ё", "е")))
+    return frozenset(_NUMBER_TOKEN.findall(text_norm.norm(str(text))))
 
 
 # Короткие слова (1–3 буквы), которые `_stems` отбрасывает, а они различают решения: системы
@@ -510,13 +511,15 @@ def _short_words(text: str) -> frozenset[str]:
     варианта («вариант Б» и «вариант Д», №833); служебные буквы («вариант А» и «вариант В»,
     инициалы «А.» и «О.») меток не дают — склейка, как на базе (долг №615). Лишняя метка
     («2026 г.», «2-й») — недосклейка, безопасная сторона: исключения, которые снимали метки,
-    теряли варианты (выход n833-out2)."""
-    t = text_norm.norm(_ABBREVIATION.sub(" ", str(text)))
+    теряли варианты (выход n833-out2). Порядок: сборка Unicode (NFC), вырезание строчных
+    сокращений по исходному регистру, затем `text_norm.norm` — та же форма, что у основ, чисел и
+    отрицания: разложенная «ё» не рвёт слово ни в одной части отпечатка (выход n833-out5)."""
+    t = text_norm.norm(_ABBREVIATION.sub(" ", unicodedata.normalize("NFC", str(text))))
     return frozenset(w for w in _SHORT_WORD.findall(t) if w not in _SHORT_STOP and w not in _NEGATION)
 
 
 def _negated(text: str) -> bool:
-    return bool(_NEGATION & set(re.findall(r"[а-яёa-z]+", str(text).lower())))
+    return bool(_NEGATION & set(re.findall(r"[а-яёa-z]+", text_norm.norm(str(text)))))
 
 
 def _fingerprint(text: str) -> tuple[set[str], frozenset[str], bool]:
