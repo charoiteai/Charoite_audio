@@ -143,6 +143,7 @@ def test_the_review_worker_pays_no_debts_when_disabled(tmp_path):
     # и мутант «долги платятся всегда» выживал)
     os.utime(debt, (0, 0))
     log = tmp_path / "ревизия.log"
+    (tmp_path / "граф" / "Встречи").mkdir(parents=True)   # граф на месте, заметки нет
     # флаг — из конфига прогона, читает его сам воркер (Opus I1 круга 1 по коду)
     cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, {"sufler": {"brain": False}})
     assert not log.exists(), "выключенная память не пишет в лог ревизии ни строки"

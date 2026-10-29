@@ -131,11 +131,14 @@ def test_resend_keeps_a_debt_when_remember_fails_after_forget_and_pays_it_next_t
     # brain лёг на /forget — долг остаётся, отметка цела
     out = g.resend_to_brain_after_review("s", note, BEFORE, mark, enabled=True, post=lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down")))
     assert "долг записан" in out and debt.exists() and mark.exists()
-    # долг гасит и обычный отправитель — повтор обработки (DS r2 M3): отметка полна → долг снят
+    # повтор обработки с полной отметкой долг НЕ гасит: /forget не прошёл, снятое ревизией
+    # решение в памяти, а покрытие ключей этого не видит (выход n615p8-out3, Haiku I-1;
+    # раньше гасил — DS r2 M3, когда долг платила только ревизия). Платит pay_brain_debts.
+    calls.clear()
     g.send_to_brain("s", "Планёрка команды", [{"имя": "Иван"}], ["тема"],
                     ["Пересчёт бюджета произойдёт на следующей неделе"], mark, enabled=True,
-                    post=lambda *a, **k: _Resp())
-    assert not debt.exists()
+                    post=lambda *a, **k: calls.append(a) or _Resp())
+    assert debt.exists() and not calls
 
 
 def test_send_to_brain_owns_the_debt_and_any_review_run_pays_other_meetings(tmp_path):
