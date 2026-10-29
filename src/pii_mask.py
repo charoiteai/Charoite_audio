@@ -460,7 +460,20 @@ def _other_word(word: str, entry: Entry, forms: Forms) -> bool:
     if any(forms.known(_yo(n.lower())) for n in nodes):
         # имя узла само слово языка («Хосты», «Согласий»): его падеж словарь может не узнать
         return False
-    return not any(_inflected(word, n) or forms.lexeme(word, n) for n in nodes)
+    return not any(_inflected(word, n) or forms.lexeme(word, n) for n in nodes) \
+        and not _node_word(word, forms)
+
+
+def _node_word(word: str, forms: Forms) -> bool:
+    """Слово — имя другого однословного узла формы или его падеж: «postgres» при узлах «Postgres» и
+    «Postgre» — не чужое общее слово, снимать маску нельзя (дифф-сверка форм с main, n828-opus)."""
+    low = _yo(word.lower())
+    for cut in range(0, min(forms.max_tail, len(low) - 1) + 1):
+        for e in forms.by_first.get(low[: len(low) - cut] if cut else low, ()):
+            if len(e.words) == 1 and any(_yo(n.lower()) == low or forms.lexeme(word, n)
+                                         for n in (*e.source[:1], *e.alts)):
+                return True
+    return False
 
 
 def _occurs(word: str, entry: Entry, forms: Forms) -> bool:

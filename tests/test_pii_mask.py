@@ -1057,6 +1057,18 @@ def test_other_lexeme_rule_keeps_every_node_of_the_form():
     assert not pm._other_word("стороны", dataclasses.replace(entry, alts=("Сторона",)), forms)
 
 
+def test_other_lexeme_rule_keeps_a_word_that_is_another_node():
+    # «стороны» — имя другого однословного узла: чужая форма-префикс «Стори» маску не снимает
+    # (дифф-сверка форм с main: «postgres» при «Postgres» и заглушке «Postgre», n828-opus)
+    known = _w("стороны", "сторона")
+    forms = _forms(pm.NodeForms("Стороны", person=False), stubs=[("Стори", None, False)], known=known)
+    stub = next(e for e in forms.entries if e.source == ("Стори",))
+    assert not pm._other_word("стороны", stub, forms)
+    assert pm.mask("потом стороны упали", forms).replaced == 1
+    alone = _forms(stubs=[("Стори", None, False)], known=known)
+    assert pm.mask("потом стороны упали", alone).replaced == 0
+
+
 def test_node_word_with_a_case_tail_is_always_the_node():
     # «спарками» при узле «Спарк»: слово узла плюс падежный хвост — падеж, что бы ни сказал словарь;
     # и обратно — «цод» при узле «ЦОДы»
