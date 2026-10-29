@@ -56,6 +56,32 @@ def nfc(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
+# ── Байты судимого → текст (№570) ───────────────────────────────────────────
+#
+# Кодек не угадывается: cp1251, koi8-r и cp866 «успешно» читаются друг другом,
+# а строка UTF-8 с одним битым байтом, прочитанная как cp1251, теряет маркер
+# (вход №570, Sonnet C1). Не-UTF-8 — «не проверить», путь двоичного: отказ,
+# выход — хеш блоба в списке владельца. Чтение — `surrogateescape`: байт вне
+# UTF-8 виден (`opaque`), остальная строка судится как есть (`clean`).
+NOT_UTF8 = "не UTF-8 — содержимое не проверить"
+_OPAQUE = re.compile("[\udc80-\udcff]")
+
+
+def opaque(text: str) -> bool:
+    """В тексте, прочитанном с `surrogateescape`, есть байты вне UTF-8."""
+    return bool(_OPAQUE.search(text))
+
+
+def clean(text: str) -> str:
+    """Байты вне UTF-8 — U+FFFD: так текст судят шаблоны, печатают отчёт и гейт имён."""
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def undecoded(data: bytes) -> str:
+    """Вывод git и содержимое — в текст без потерь (байты вне UTF-8 — суррогаты)."""
+    return data.decode("utf-8", "surrogateescape")
+
+
 def load_markers(path: pathlib.Path) -> list[str]:
     """Единственный читатель списка: пустые строки и `#`-комментарии — не маркеры."""
     return [nfc(ln.strip()) for ln in path.read_text(encoding="utf-8").splitlines()
@@ -104,7 +130,7 @@ def git(*args: str, stdin: bytes | None = None, own_repo: bool = False) -> bytes
     env = {k: v for k, v in os.environ.items() if k not in _FOREIGN_REPO_ENV} if own_repo else None
     p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin, env=env)
     if p.returncode != 0:
-        err = p.stderr.decode("utf-8", "replace").strip()
+        err = re.sub(r"//[^/@\s]*@", "//", p.stderr.decode("utf-8", "replace").strip())   # логин и токен адреса
         raise GitError(f"git {' '.join(args[:2])}: {_clip(err, 300) or f'код {p.returncode}'}")
     return p.stdout
 
@@ -120,10 +146,50 @@ def tracked_files() -> list[pathlib.Path]:
     return [pathlib.Path(p) for p in out.split("\0") if p]
 
 
-SKIP_SUFFIX = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf",
-               ".zip", ".onnx", ".wav", ".m4a", ".mp3"}
-# Покоммитный страж распаковывает zip сам: у него .zip — не медиа (выход №541).
-_COMMIT_SKIP = SKIP_SUFFIX - {".zip"}
+# Медиа не судится по содержимому (текст метаданных — долг). Медиа — суффикс
+# медиаформата И подпись любого из них в начале содержимого: суффикс один
+# пропускал документ, переименованный в картинку; «своя» подпись отказывала бы
+# законной иконке .ico, которая на деле PNG (вход №570, Sonnet I4). Архив и
+# офисный документ подписи медиа не имеют.
+MEDIA_SUFFIX = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".onnx", ".wav", ".m4a", ".mp3"}
+_MEDIA_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"%PDF", b"\x00\x00\x01\x00", b"ID3",
+                b"\x08")        # ONNX: protobuf начинается полем ir_version
+MEDIA_HEAD = 16
+
+
+def media(name: str, head: bytes) -> bool:
+    """Медиа ли файл `name` с этими первыми байтами (`MEDIA_HEAD` хватает)."""
+    if pathlib.PurePosixPath(name).suffix.lower() not in MEDIA_SUFFIX:
+        return False
+    return (head.startswith(_MEDIA_MAGIC)
+            or head[4:8] == b"ftyp"                                    # m4a
+            or head[:4] == b"RIFF" and head[8:12] == b"WAVE"
+            or len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)   # кадр mp3
+
+
+class NotUtf8(Exception):
+    """Текст файла не в UTF-8 и его блоба нет в списке владельца."""
+
+
+def blob_sha(data: bytes) -> str:
+    """Хеш блоба git для содержимого файла дерева (то же, что `git hash-object`)."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def tree_text(f: pathlib.Path, data: bytes) -> str | None:
+    """Текст файла дерева для суда. UTF-8 — текст (нулевой байт не помеха: строки
+    читаются, вход №570 S-I5); медиа и двоичное (NUL в первых 8000 байт, как у git)
+    — None, в дереве как прежде: двоичное отказывает покоммитный страж. Иначе —
+    текст в чужой кодировке: `NotUtf8`, если его версии нет в списке владельца."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if media(f.name, data[:MEDIA_HEAD]) or b"\0" in data[:8000]:
+        return None
+    if blob_sha(data) in allowed_blobs():
+        return None
+    raise NotUtf8(str(f))
 
 
 def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]:
@@ -136,12 +202,15 @@ def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]
     """
     hits: list[str] = []
     for f in files:
-        if f.suffix.lower() in SKIP_SUFFIX:
-            continue
         try:
-            text = f.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue        # бинарь или удалённый файл — не наша забота
+            text = tree_text(f, f.read_bytes())
+        except OSError:
+            continue        # удалённый файл — не наша забота
+        except NotUtf8:
+            hits.append(f"{f}: {NOT_UTF8}")
+            continue
+        if text is None:
+            continue
         for i, line in enumerate(text.splitlines(), 1):
             if pattern.search(nfc(line)):
                 hits.append(f"{f}:{i}")
@@ -189,15 +258,20 @@ def public_hits(line: str) -> list[str]:
 def scan_public(files: list[pathlib.Path]) -> list[str]:
     """Находки по публичным шаблонам — «путь:строка: чем сработало»."""
     hits: list[str] = []
+    texts: list[tuple[pathlib.Path, str]] = []
+    for f in files:
+        try:
+            text = tree_text(f, f.read_bytes())
+        except OSError:
+            continue
+        except NotUtf8:
+            hits.append(f"{f}: {NOT_UTF8}")
+            continue
+        if text is not None:
+            texts.append((f, text))
     for name, raw in PUBLIC_PATTERNS.items():
         rx = re.compile(raw)
-        for f in files:
-            if f.suffix.lower() in SKIP_SUFFIX:
-                continue
-            try:
-                text = f.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
+        for f, text in texts:
             for i, line in enumerate(text.splitlines(), 1):
                 if PUBLIC_ALLOW in line:
                     continue
@@ -223,11 +297,13 @@ def _unescape(m: re.Match[bytes]) -> bytes:
 
 def _unquote_path(raw: str) -> str:
     """Путь из заголовка `+++ b/…`: git берёт в C-кавычки имена со спецсимволами
-    (кавычки всегда парные); хвост `\t` git ставит после имени с пробелом."""
+    (кавычки всегда парные); хвост `\t` git ставит после имени с пробелом.
+    Байты вне UTF-8 — U+FFFD, как в `added_paths`: путь — ключ, по которому
+    сводятся находки строк и имён файлов (вход №570, Sonnet I3)."""
     raw = raw.rstrip("\t")
     if not raw.startswith('"'):
-        return raw
-    body = re.sub(rb"\\([0-7]{3}|.)", _unescape, raw[1:-1].encode("utf-8"), flags=re.S)
+        return clean(raw)
+    body = re.sub(rb"\\([0-7]{3}|.)", _unescape, raw[1:-1].encode("utf-8", "surrogateescape"), flags=re.S)
     return body.decode("utf-8", "replace")
 
 
@@ -240,20 +316,22 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
     Двоичные по мнению git файлы здесь не видны: для них — отказ или хеш в
     списке разрешённых (`allowed_blobs`). Pathspec нет намеренно: с ним git упрощает историю, и слияние,
     равное родителю, прятало коммиты влитой ветки (выход 1 №541, Sonnet C1).
-    Содержимое медиа-суффиксов отсекается по пути в разборе, их имена проверяет
-    `added_paths`.
+    Текст строки — без потерь (`undecoded`): байты вне UTF-8 судящий видит
+    `opaque`. Суффикс не решает ничего: то, что git показал текстом, судится,
+    даже под именем картинки (вход №570).
     """
     out = git("log", "--format=%x01%H", "-p", "-U0", "--cc", "--no-renames",
               "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/",
               "--no-show-signature", *revs, "--")
-    return parse_patch(out.decode("utf-8", "replace"), None)
+    return parse_patch(undecoded(out), None)
 
 
 def parse_patch(text: str, sha: str | None) -> Iterator[tuple[str, str, int, str]]:
     """Автомат разбора патча: `\x01<sha>` — коммит; `diff ` — заголовок файла
     (только в нём читается `+++ b/…`); `@@`/`@@@` — хунк, в нём `+++` —
     обычная добавленная строка. Непонятный заголовок файла — отказ, а не
-    «нечего судить» (финальный круг №541, Opus M5)."""
+    «нечего судить» (финальный круг №541, Opus M5). Текст строки отдаётся
+    как пришёл: с суррогатами, если патч прочитан `undecoded`."""
     path = None
     mode = ""
     parents: int      # заданы заголовком хунка до первого чтения
@@ -287,8 +365,7 @@ def parse_patch(text: str, sha: str | None) -> Iterator[tuple[str, str, int, str
             if len(prefix) < parents or line.startswith("\\"):
                 continue
             if prefix == "+" * parents:
-                if sha and path is not None and \
-                        pathlib.PurePosixPath(path).suffix.lower() not in _COMMIT_SKIP:
+                if sha and path is not None:
                     yield sha, path, lineno, line[parents:]
                 lineno += 1
             elif "-" not in prefix:
@@ -343,7 +420,7 @@ class CommitMeta:
 def commit_meta(revs: list[str]) -> list[CommitMeta]:
     out = git("log", "-z", "--encoding=UTF-8", "--no-show-signature",
               "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B", *revs, "--")
-    tokens = out.decode("utf-8", "replace").split("\0")
+    tokens = undecoded(out).split("\0")     # сообщение без заголовка encoding git отдаёт как есть
     if tokens[-1] == "":           # split всегда даёт хотя бы один элемент
         tokens.pop()
     if len(tokens) % 6:
@@ -357,11 +434,12 @@ def commit_meta(revs: list[str]) -> list[CommitMeta]:
     return metas
 
 
-# Двоичный файл (по мнению git: NUL в первых 8 КБ) вне медиа-суффиксов не
-# судится по содержимому — отказ, выход один: хеш блоба в списке разрешённых у
-# владельца. Три круга подряд (выход №541) находили новый вид содержимого,
-# который разбор не видел (теги, атрибуты, UTF-16, cp1251, контейнеры); класс
-# открыт, поэтому постановка сужена до «непроверяемое не публикуется без решения».
+# Двоичный файл (по мнению git: NUL в первых 8 КБ) вне медиа (`media`) и текст
+# не в UTF-8 не судятся по содержимому — отказ, выход один: хеш блоба в списке
+# разрешённых у владельца. Три круга подряд (выход №541) находили новый вид
+# содержимого, который разбор не видел (теги, атрибуты, UTF-16, cp1251,
+# контейнеры); класс открыт, поэтому постановка сужена до «непроверяемое не
+# публикуется без решения».
 
 
 def blob_allow_path() -> pathlib.Path:
@@ -402,6 +480,19 @@ def binary_files(revs: list[str]) -> list[tuple[str, str]]:
     return found
 
 
+def blob_head(spec: str) -> bytes:
+    """Первые `MEDIA_HEAD` байт блоба — без чтения всего: модель или запись
+    бывают в сотни МБ (вход №570, Sonnet M1). Отказ git — пустая голова: не медиа."""
+    p = subprocess.Popen([*_GIT, "cat-file", "blob", spec], stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL)
+    try:
+        return p.stdout.read(MEDIA_HEAD)
+    finally:
+        p.stdout.close()
+        p.kill()
+        p.wait()
+
+
 def raw_objects(shas: list[str]) -> dict[str, str]:
     """Сырой текст объектов одним `cat-file --batch`."""
     out = git("cat-file", "--batch", stdin=("\n".join(shas) + "\n").encode())
@@ -413,7 +504,7 @@ def raw_objects(shas: list[str]) -> dict[str, str]:
         if len(head) != 3:
             raise GitError(f"cat-file --batch: {_clip(out[pos:end].decode('utf-8', 'replace'))!r}")
         size = int(head[2])
-        objs[head[0].decode()] = out[end + 1:end + 1 + size].decode("utf-8", "replace")
+        objs[head[0].decode()] = undecoded(out[end + 1:end + 1 + size])
         pos = end + 1 + size + 1
     return objs
 
@@ -564,8 +655,8 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
                  extra_emails: list[tuple[str, str]] = (),
                  people: bool = False) -> tuple[int, list[str]]:
     """Что публикует каждый коммит набора — строки, имена файлов, сообщение,
-    имена и почты — против обоих наборов; двоичное вне медиа — отказ, если его
-    блоба нет в списке владельца; плюс `extra`
+    имена и почты — против обоих наборов; двоичное вне медиа и текст не в UTF-8
+    — отказ, если его блоба нет в списке владельца; плюс `extra`
     (имена ссылок, аннотации тегов) и почты тегеров. `people` — те же тексты
     ещё и против имён людей графа (`people_hits`, №605): добавленные строки
     файла коммита идут одним текстом, имя через перенос строки не теряется.
@@ -576,14 +667,17 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
     """
     def kinds(text: str) -> list[str]:
         # По строкам: пометка PUBLIC_ALLOW гасит только свою строку сообщения.
-        text = nfc(text)
-        found = ["приватный маркер"] if private and private.search(text) else []
+        # Байты вне UTF-8 (сообщение, тег, имя ссылки) — отказ «не проверить»,
+        # остальной текст судится как прочитан (вход №570).
+        found = [NOT_UTF8] if opaque(text) else []
+        text = nfc(clean(text))
+        found += ["приватный маркер"] if private and private.search(text) else []
         for line in text.splitlines() or [text]:
             found += [k for k in public_hits(line) if k not in found]
         return found
 
     def mask(name: str) -> str:
-        name = nfc(name)
+        name = nfc(clean(name))
         if private:
             name = private.sub("***", name)
         for raw in PUBLIC_PATTERNS.values():
@@ -595,7 +689,7 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
     refs: dict[int, str] = {}                  # номер записи → имя ссылки (в месте записи)
     for field, text in extra:
         refs[len(texts)] = field.rsplit(" ", 1)[-1]   # в имени ссылки git пробелов не допускает
-        texts.append((f"{mask(field)}", text))
+        texts.append((f"{mask(field)}", clean(text)))
         for k in kinds(text):
             hits.append(f"{mask(field)}: {k}")
     if identity:
@@ -607,7 +701,7 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         short = m.sha[:9]
         for field, text in (("сообщение", m.message), ("автор", f"{m.author} <{m.author_email}>"),
                             ("коммитер", f"{m.committer} <{m.committer_email}>")):
-            texts.append((f"{short} {field}", text))
+            texts.append((f"{short} {field}", clean(text)))
             for k in kinds(text):
                 hits.append(f"{short} {field}: {k}")
         if identity:
@@ -619,7 +713,7 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         return 0, hits
     for sha, raw in raw_objects([m.sha for m in metas]).items():
         for key, text in extra_headers(raw):
-            texts.append((f"{sha[:9]} заголовок {key}", text))
+            texts.append((f"{sha[:9]} заголовок {key}", clean(text)))
             for k in kinds(text):
                 hits.append(f"{sha[:9]} заголовок {key}: {k}")
     present = added_paths(revs)
@@ -630,7 +724,12 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         for k in kinds(name):
             hits.append(f"{sha[:9]} имя файла {mask(name)}: {k}")
     groups: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    unreadable: list[tuple[str, str]] = []      # файлы с байтами вне UTF-8 — путь двоичного
     for sha, name, lineno, text in added_lines(revs):
+        if opaque(text):
+            if (sha, name) not in unreadable:
+                unreadable.append((sha, name))
+            text = clean(text)
         groups.setdefault((sha, name), []).append((lineno, text))
         for k in kinds(text):
             hits.append(f"{sha[:9]} {mask(name)}:{lineno}: {k}")
@@ -639,19 +738,20 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
     kept = set(present)
     allowed: set[str] | None = None
     fresh: set[str] | None = None
-    for sha, name in binary_files(revs):
-        if (sha, name) not in kept or \
-                pathlib.PurePosixPath(name).suffix.lower() in _COMMIT_SKIP:
-            continue                     # удалён (numstat показывает и их) или медиа
+    unchecked = [(sha, name, "двоичный") for sha, name in binary_files(revs) if (sha, name) in kept]
+    unchecked += [(sha, name, "не UTF-8") for sha, name in unreadable]
+    for sha, name, why in unchecked:     # numstat показывает и удалённые — их нет в kept
         if not git_ok("cat-file", "-e", f"{sha}:{name}"):
             raise GitError(f"{sha[:9]} {mask(name)}: объект файла не найден — имя не разобрать")
         blob = git("rev-parse", f"{sha}:{name}").decode().strip()
         fresh = new_objects(revs) if fresh is None else fresh
         if blob not in fresh:
             continue                     # этот блоб уже опубликован
+        if why == "двоичный" and media(name, blob_head(blob)):
+            continue
         allowed = allowed_blobs() if allowed is None else allowed
         if blob not in allowed:
-            hits.append(f"{sha[:9]} {mask(name)} (двоичный): содержимое не проверить — "
+            hits.append(f"{sha[:9]} {mask(name)} ({why}): содержимое не проверить — "
                         f"сопровождающий пропускает версию строкой {blob} в {blob_allow_path()}")
     return len(metas), hits
 
@@ -711,23 +811,28 @@ class PushSet:
     notes: list[str]
     texts: list[tuple[str, str]]       # (что, текст): имена ссылок, аннотации тегов
     emails: list[tuple[str, str]]      # (что, почта): тегеры
+    hint: str = ""                     # к находкам: сервер знает вершины, которых нет локально
 
 
-def server_tips(remote: str) -> list[str]:
-    """Вершины веток и тегов на сервере сейчас, известные локально.
+def server_tips(remote: str) -> tuple[list[str], int]:
+    """Вершины веток и тегов на сервере сейчас, известные локально, и сколько
+    вершин сервера локально неизвестно.
 
     Опубликованное берётся у сервера, а не из remote-tracking ссылок: ветку,
     удалённую на сервере (например, после утечки), кэш считал бы опубликованной
     и повторный push вернул бы её мимо стража (выход 2 №541, Sonnet I3).
+    Неизвестная вершина (сквош-мерж на GitHub после последнего fetch) только
+    расширяет судимое: опубликованное за ней судится заново. Fetch страж не
+    делает — гейт не ходит в сеть сверх `ls-remote` (вход №570, обе головы).
     """
     out = git("ls-remote", "--heads", "--tags", remote).decode("utf-8", "replace")
     shas = sorted({ln.split()[0] for ln in out.splitlines() if ln.strip()})
     if not shas:
-        return []
+        return [], 0
     # batch-check отвечает «<sha> <тип> <размер>» или «<sha> missing»
     known = git("cat-file", "--batch-check", stdin="\n".join(shas).encode() + b"\n")
-    return [ln.split()[0] for ln in known.decode().splitlines()
-            if ln.split()[1] in ("commit", "tag")]
+    rows = [ln.split() for ln in known.decode().splitlines()]
+    return [r[0] for r in rows if r[1] in ("commit", "tag")], sum(r[1] == "missing" for r in rows)
 
 
 def push_revs(remote: str, lines: list[str], url: str | None = None) -> PushSet:
@@ -761,19 +866,22 @@ def push_revs(remote: str, lines: list[str], url: str | None = None) -> PushSet:
         texts.append((f"имя ссылки {remote_ref}", remote_ref))
         obj = lsha
         while git("cat-file", "-t", obj).strip() == b"tag":     # тег на тег — вся цепочка
-            body = git("cat-file", "tag", obj).decode("utf-8", "replace")
+            body = undecoded(git("cat-file", "tag", obj))
             texts.append((f"тег {remote_ref}", body))
             tagger = re.search(r"^tagger .*<([^>]*)>", body, re.M)
             emails.append((f"тег {remote_ref}", tagger.group(1) if tagger else ""))
             obj = re.search(r"^object (\S+)", body, re.M).group(1)
     if not local:
         return PushSet(None, notes, texts, emails)
-    tips = server_tips(url or remote)
+    tips, missing = server_tips(url or remote)
     if remote != "origin" and "origin" in names:
         # публичный — тот, куда origin пушит (pushurl), а не откуда тянет
         origin_push = git("remote", "get-url", "--push", "origin").decode().strip()
-        tips += server_tips(origin_push)
-    return PushSet([*local, "--not", *tips], notes, texts, emails)
+        more, gone = server_tips(origin_push)
+        tips, missing = tips + more, missing + gone
+    hint = (f"на сервере {missing} вершин(ы), которых нет локально: находки могут быть в уже "
+            f"опубликованном (сквош-мерж на GitHub) — git fetch {remote} и повтори push") if missing else ""
+    return PushSet([*local, "--not", *tips], notes, texts, emails, hint)
 
 
 def env_revs() -> list[str]:
@@ -910,8 +1018,10 @@ def install_hooks(force: bool) -> int:
 
 def _people_files(files: list[pathlib.Path], read, also_paths: list[pathlib.Path] = ()) -> list[str]:
     """Пути и тексты файлов против имён людей графа → «путь:строка» без цитаты;
-    путь, в котором имя, не печатается. Двоичное и медиа — только путь;
-    `also_paths` — только путь (дерево в pre-commit: его пути печатает проход маркеров)."""
+    путь, в котором имя, не печатается. Двоичное и медиа — только путь; текст
+    не в UTF-8 — только путь, отказ по нему даёт проход маркеров (`NotUtf8`);
+    `read` отдаёт байты; `also_paths` — только путь (дерево в pre-commit: его
+    пути печатает проход маркеров)."""
     records: list[tuple[str, str]] = []
     where: list[tuple[pathlib.Path, bool]] = []          # (файл, запись — путь)
     own = set(files)
@@ -922,13 +1032,11 @@ def _people_files(files: list[pathlib.Path], read, also_paths: list[pathlib.Path
     for f in files:
         records.append(("", f.as_posix()))
         where.append((f, True))
-        if f.suffix.lower() in SKIP_SUFFIX:
-            continue
         try:
-            text = read(f)
-        except (OSError, UnicodeDecodeError, GitError):
-            continue        # бинарь или удалённый файл — как в scan_files
-        if "\0" not in text[:8192]:
+            text = tree_text(f, read(f))
+        except (OSError, GitError, NotUtf8):
+            continue        # удалённый файл; не-UTF-8 отказывает проход маркеров
+        if text is not None:
             records.append(("", text))
             where.append((f, False))
     found = people_hits(records) if records else []
@@ -961,7 +1069,7 @@ def owner_markers_path() -> pathlib.Path:
 
 def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
                 notes: list[str], extra: list[tuple[str, str]] = (),
-                extra_emails: list[tuple[str, str]] = ()) -> int:
+                extra_emails: list[tuple[str, str]] = (), hint: str = "") -> int:
     """Общий ход трёх режимов по коммитам. `need_list` — нет списка маркеров
     значит отказ, и `CI` этого не меняет: режимы владельца в CI не зовутся, а
     переменная из окружения сессии не должна выключать гейт (выход 1 №541,
@@ -985,6 +1093,8 @@ def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
         _report("PUSH ЗАБЛОКИРОВАН — уходящие коммиты публикуют приватное", hits)
         print("Обезличь и перепиши эти коммиты (rebase), не поверх: промежуточный "
               "коммит публикуется вместе с исправлением.", file=sys.stderr)
+        if hint:
+            print(f"❗ {hint}", file=sys.stderr)
     if missing:
         print(f"❌ список маркеров отсутствует ({path}) — fail-closed; "
               "публичные форматы проверены", file=sys.stderr)
@@ -1032,9 +1142,10 @@ def _run(a: argparse.Namespace) -> int:
     if a.range is not None:
         return run_commits(a.range.split(), need_list=True, identity=False, notes=[])
     if a.pre_push is not None:
-        push = push_revs(a.pre_push, sys.stdin.read().splitlines(), a.push_url)
+        # байтами: имя ссылки вне UTF-8 — находка, а не traceback (вход №570, Sonnet M2)
+        push = push_revs(a.pre_push, undecoded(sys.stdin.buffer.read()).splitlines(), a.push_url)
         return run_commits(push.revs, need_list=True, identity=True, notes=push.notes,
-                           extra=push.texts, extra_emails=push.emails)
+                           extra=push.texts, extra_emails=push.emails, hint=push.hint)
     if a.range_from_env:
         return run_commits(env_revs(), need_list=False, identity=False, notes=[])
     full_only = a.all
@@ -1074,12 +1185,12 @@ def _run(a: argparse.Namespace) -> int:
     # каждом коммите, опубликованное он не вернёт).
     if owner:
         if full_only:
-            bad = _people_files(tracked_files(), lambda f: f.read_text(encoding="utf-8"))
+            bad = _people_files(tracked_files(), lambda f: f.read_bytes())
             title = "имена людей графа в опубликованном дереве"
         else:
             staged = [pathlib.Path(n) for n in git("diff", "--cached", "--name-only", "-z", "--no-renames",
                                                     "--diff-filter=d").decode("utf-8", "replace").split("\0") if n]
-            bad = _people_files(staged, lambda f: git("show", f":{f.as_posix()}").decode("utf-8"),
+            bad = _people_files(staged, lambda f: git("show", f":{f.as_posix()}"),
                                 also_paths=tracked_files())
             title = "КОММИТ ЗАБЛОКИРОВАН — имена людей графа"
         if bad:
@@ -1104,14 +1215,27 @@ def _run(a: argparse.Namespace) -> int:
               + (", имён людей графа нет" if owner else ""))
         return 0
 
-    diff = git("diff", "--cached", "-U0", "--no-renames", "--no-ext-diff", "--no-textconv",
-               "--src-prefix=a/", "--dst-prefix=b/").decode("utf-8", "replace")
+    diff = undecoded(git("diff", "--cached", "-U0", "--no-renames", "--no-ext-diff",
+                         "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"))
     # Место, а не цитата: коммитят и фоновые сессии, их вывод — журнал (Opus M2).
-    hits = [f"{name}:{lineno}" for _sha, name, lineno, text in parse_patch(diff, "индекс")
-            if pattern.search(nfc(text))]
+    hits: list[str] = []
+    unreadable: list[str] = []      # строки не в UTF-8: маркер в чужой кодировке не виден
+    for _sha, name, lineno, text in parse_patch(diff, "индекс"):
+        if opaque(text) and name not in unreadable:
+            unreadable.append(name)
+        if pattern.search(nfc(clean(text))):
+            hits.append(f"{name}:{lineno}")
+    if unreadable:
+        allowed = allowed_blobs()
+        for name in unreadable:
+            blob = git("rev-parse", f":{name}").decode().strip() if git_ok("cat-file", "-e", f":{name}") else ""
+            if blob not in allowed:
+                hits.append(f"{name} ({NOT_UTF8}): сопровождающий пропускает версию строкой "
+                            f"{blob or '<хеш блоба>'} в {blob_allow_path()}")
 
     if hits:
-        print(f"❌ КОММИТ ЗАБЛОКИРОВАН: {len(hits)} строк с личными/банковскими маркерами:",
+        print(f"❌ КОММИТ ЗАБЛОКИРОВАН: {len(hits)} строк с личными/банковскими маркерами "
+              "или содержимым, которое не проверить:",
               file=sys.stderr)
         for place in hits[:5]:
             print(f"  {_scrub(place)}", file=sys.stderr)

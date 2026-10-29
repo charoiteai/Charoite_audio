@@ -226,7 +226,8 @@ def test_odd_file_names_and_a_last_line_without_newline(repo):
     assert p.returncode == 1
     for n in names:
         assert f"{n}:2: приватный маркер" in p.stderr, (n, p.stderr)
-    assert "СНИМОК.PNG:" not in p.stderr, "содержимое медиа-суффикса читать не должен"
+    # Текст под именем картинки судится: суффикс не решает (вход №570, Sonnet I2).
+    assert "СНИМОК.PNG:1: приватный маркер" in p.stderr, p.stderr
 
 
 def test_allow_mark_silences_only_its_own_message_line(repo):
@@ -1093,3 +1094,146 @@ def test_the_label_rule_is_a_tracked_file_of_the_product():
     assert guard.PLACEHOLDER_RULE == "src/charoite_graph/graph_names.py"
     assert subprocess.run(["git", "-C", str(REPO), "cat-file", "-e", f"HEAD:{guard.PLACEHOLDER_RULE}"],
                           capture_output=True).returncode == 0, "правила нет в ревизии, которая станет main"
+
+
+# ── не UTF-8, медиа по содержимому, push без fetch (№570) ───────────────────
+# Каждый тест — грязный вход, который на main уходил с кодом 0
+# (опыт 29.10 20:25: семь входов из семи).
+
+CP1251 = f"запуск на {MARKER}\n".encode("cp1251")
+
+
+def test_cp1251_text_is_refused_per_commit_with_its_blob_hash(repo):
+    """Кодек не угадывается: cp1251, koi8-r и cp866 «успешно» декодируют почти
+    любой байт. Не UTF-8 — содержимое не проверить, путь двоичного."""
+    (repo.work / "notes.txt").write_bytes(CP1251)
+    sha = repo.commit("cp1251")
+    blob = git(repo.work, "rev-parse", f"{sha}:notes.txt", env=repo.env).stdout.strip()
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1, p.stderr
+    assert f"{sha[:9]} notes.txt (не UTF-8): содержимое не проверить" in p.stderr, p.stderr
+    assert blob in p.stderr
+
+
+def test_cp1251_text_is_refused_by_the_tree_scan(repo):
+    (repo.work / "notes.txt").write_bytes(CP1251)
+    repo.commit("cp1251")
+    p = guard_run(repo.work, "--all", env=repo.env)
+    assert p.returncode == 1 and f"notes.txt: {guard.NOT_UTF8}" in p.stderr, p.stdout + p.stderr
+
+
+def test_cp1251_text_is_refused_by_pre_commit(repo):
+    (repo.work / "notes.txt").write_bytes(CP1251)
+    git(repo.work, "add", "notes.txt", env=repo.env)
+    p = guard_run(repo.work, env=repo.env)
+    assert p.returncode == 1 and guard.NOT_UTF8 in p.stderr, p.stdout + p.stderr
+
+
+def test_allowed_cp1251_blob_passes_every_mode(repo):
+    (repo.work / "notes.txt").write_bytes(CP1251)
+    git(repo.work, "add", "notes.txt", env=repo.env)
+    _allow(repo, git(repo.work, "rev-parse", ":notes.txt", env=repo.env).stdout.strip())
+    p = guard_run(repo.work, env=repo.env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    repo.commit("cp1251")
+    for args in (("--range", f"{repo.base}..HEAD"), ("--all",)):
+        p = guard_run(repo.work, *args, env=repo.env)
+        assert p.returncode == 0, (args, p.stdout + p.stderr)
+
+
+def test_marker_next_to_a_stray_byte_is_still_found(repo):
+    """Один битый байт на строке не прячет UTF-8 маркер рядом (вход №570, S-C1)."""
+    (repo.work / "mix.md").write_bytes(f"{MARKER} ".encode() + b"\xff\n")
+    sha = repo.commit("mix")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1, p.stderr
+    assert f"{sha[:9]} mix.md:1: приватный маркер" in p.stderr, p.stderr
+    assert "mix.md (не UTF-8)" in p.stderr, p.stderr
+
+
+def test_docx_renamed_to_a_picture_is_refused(repo):
+    """Медиа — по сигнатуре содержимого: zip под .jpg — двоичное, отказ."""
+    (repo.work / "photo.jpg").write_bytes(_zip({"word/document.xml": MARKER.encode()}))
+    repo.commit("docx")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "photo.jpg (двоичный)" in p.stderr, p.stderr
+
+
+def test_text_under_a_picture_name_is_judged_by_the_tree_scan(repo):
+    (repo.work / "shot.png").write_text(f"раз\n{MARKER}\n", encoding="utf-8")
+    repo.commit("text png")
+    p = guard_run(repo.work, "--all", env=repo.env)
+    assert p.returncode == 1 and "shot.png:2" in p.stderr, p.stdout + p.stderr
+
+
+def test_icon_that_is_really_a_png_passes(repo):
+    """Сигнатура любого медиа, не «своего» формата: .ico из PNG — законно (вход S-I4)."""
+    (repo.work / "favicon.ico").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00" + MARKER.encode())
+    repo.commit("ico")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stderr
+
+
+@pytest.mark.parametrize("head", [b"\xff\xd8\xff\xe0", b"GIF89a", b"%PDF-1.7\n\x00",
+                                  b"\x00\x00\x00\x18ftypmp42", b"RIFF\x00\x00\x00\x00WAVEfmt ",
+                                  b"ID3\x04\x00", b"\xff\xfb\x90\x00"])
+def test_media_signatures(head):
+    assert guard.media("x.png", head + b"\x00" * 16)
+    assert not guard.media("x.bin", head + b"\x00" * 16)
+
+
+def test_media_suffix_without_a_signature_is_not_media():
+    assert not guard.media("x.jpg", b"PK\x03\x04" + b"\x00" * 12)
+
+
+def test_non_utf8_path_in_a_patch_matches_the_path_list():
+    """Путь из заголовка патча — в той же форме, что у `added_paths` (вход S-I3)."""
+    assert guard._unquote_path('"a\\377.md"') == "a\ufffd.md"
+    assert guard._unquote_path(guard.undecoded(b"b\xff.md")) == "b\ufffd.md"
+
+
+def test_git_error_does_not_show_url_credentials(repo, monkeypatch):
+    monkeypatch.chdir(repo.work)
+    with pytest.raises(guard.GitError) as e:
+        guard.git("rev-parse", "https://" + "u:" + "tok" + "@example.com/r.git")
+    assert "tok" not in str(e.value) and "example.com" in str(e.value), str(e.value)
+
+
+def test_non_utf8_ref_name_on_stdin_is_a_finding(repo):
+    repo.install()
+    sha = repo.head()
+    line = b"refs/heads/x " + sha.encode() + b" refs/heads/\xff " + b"0" * 40 + b"\n"
+    p = subprocess.run([sys.executable, str(SCRIPT), "--pre-push", "origin",
+                        "--push-url", str(repo.remote)], cwd=repo.work, env=repo.env,
+                       input=line, capture_output=True)
+    err = p.stderr.decode("utf-8", "replace")
+    assert p.returncode == 1 and guard.NOT_UTF8 in err and "Traceback" not in err, err
+
+
+def test_push_after_a_server_squash_without_fetch_names_the_fix(repo):
+    """Сквош-мерж GitHub: сервер ушёл вперёд коммитом не владельца, локальная
+    main его не знает. Хук не ходит в сеть (вход S-I6) — отказ с подсказкой
+    fetch; после fetch тот же push проходит."""
+    web = repo.tmp / "web"
+    bot = ("-c", "user.email=noreply@github.com", "-c", "user.name=GitHub",
+           "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}")
+    git(repo.tmp, "clone", "-q", str(repo.remote), str(web), env=repo.env)
+    (web / "s1.md").write_text("s1\n", encoding="utf-8")
+    git(web, "add", "s1.md", env=repo.env)
+    git(web, *bot, "commit", "-qm", "S1 (#1)", env=repo.env)
+    git(web, *bot, "push", "-q", "origin", "main", env=repo.env)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "pull", "-q",
+        "--ff-only", "origin", "main", env=repo.env)
+    (web / "s2.md").write_text("s2\n", encoding="utf-8")
+    git(web, "add", "s2.md", env=repo.env)
+    git(web, *bot, "commit", "-qm", "S2 (#2)", env=repo.env)
+    git(web, *bot, "push", "-q", "origin", "main", env=repo.env)
+    repo.install()
+    wt = repo.worktree("feat")
+    repo.write("f.md", "своё\n", wt)
+    repo.commit("feat", wt)
+    p = git(wt, "push", "-q", "origin", "feat", env=repo.env, check=False)
+    assert p.returncode != 0 and "git fetch origin и повтори push" in p.stderr, p.stderr
+    git(wt, "fetch", "-q", "origin", env=repo.env)
+    p = git(wt, "push", "-q", "origin", "feat", env=repo.env, check=False)
+    assert p.returncode == 0, p.stderr
