@@ -95,10 +95,13 @@ jobs:
 
           # README пакета закрывает только код своего packages/<имя>/, а не
           # соседнего пакета и не src/. Имена файлов здесь — данные (grep -F).
+          # Ведущая скобка шаблона case ниже обязательна: bash 3.2 (macOS) без неё
+          # принимает закрывающую скобку шаблона за конец подстановки команды —
+          # 4 кейса теста docs-guard красили ночной Mac-прогон 8 ночей (№832).
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
             touches_code="$(echo "$touches_code" | while IFS= read -r f; do
               case "$f" in
-                packages/*/*)
+                (packages/*/*)
                   pkg="${f#packages/}"; pkg="${pkg%%/*}"
                   if grep -qxF "packages/$pkg/README.md" <<<"$changed"; then
                     continue

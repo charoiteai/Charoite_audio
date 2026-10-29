@@ -205,7 +205,7 @@
 
 | Когда | Что |
 |---|---|
-| каждый push и PR | `lint`: ruff, байт-компиляция, «тест обязан быть способен упасть», shellcheck, semgrep, mypy (советник), ключи примера конфига · `pytest (src/)`: весь набор python в четыре процесса (`-n 4 --dist loadgroup`), затем гейт раскладки |
+| каждый push и PR | `lint`: ruff, байт-компиляция, «тест обязан быть способен упасть», shellcheck, semgrep, mypy (советник), ключи примера конфига · `pytest (src/)`: весь набор python в четыре процесса (`-n 4 --dist loadgroup`), затем гейт раскладки · `pytest macOS (src/)`: тот же набор на macOS, платформе продукта (`-n 3`), параллельно |
 | push в `main` и каждый PR | CodeQL (`analyze`, ещё и еженедельно) · цепочка поставки: zizmor по workflow и проверка обезличивания по публичным форматам |
 | только PR | мутация изменённых строк четырьмя шардами (`mutation (changed lines)`) и их вердикт (`mutation verdict`) · страж документации · conventional-заголовок PR · dependency review (high и выше валит) |
 | при правках `app/`, `app-ios/` или `app-android/` | сборка и детерминированные тесты Swift-приложения со SwiftLint, сборка iOS · Android: unit-тесты, lint и debug-сборка |

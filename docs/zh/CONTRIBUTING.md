@@ -31,7 +31,7 @@
 
 | 时机 | 内容 |
 |---|---|
-| 每次 push 与 PR | `lint`：ruff、字节编译、「测试必须能够失败」、shellcheck、semgrep、mypy（参考）、示例配置的键 · `pytest (src/)`：完整 Python 测试（四个进程，`-n 4 --dist loadgroup`），随后是布局门禁 |
+| 每次 push 与 PR | `lint`：ruff、字节编译、「测试必须能够失败」、shellcheck、semgrep、mypy（参考）、示例配置的键 · `pytest (src/)`：完整 Python 测试（四个进程，`-n 4 --dist loadgroup`），随后是布局门禁 · `pytest macOS (src/)`：同一套测试在产品平台 macOS 上运行（`-n 3`），并行 |
 | 推送到 `main` 与每个 PR | CodeQL（`analyze`，另有每周定时）· 供应链：对工作流的 zizmor 与按公开格式的去标识化检查 |
 | 仅 PR | 改动行的变异，分四个分片（`mutation (changed lines)`），以及它们的判定（`mutation verdict`）· 文档守卫 · 约定式 PR 标题 · dependency review（high 及以上即失败） |
 | 改动 `app/`、`app-ios/` 或 `app-android/` 时 | Swift 应用构建与确定性测试（含 SwiftLint）、iOS 构建 · Android 单元测试、lint 与 debug 构建 |

@@ -274,6 +274,9 @@ def test_docs_guard_executes_its_actual_policy(tmp_path, files, labels, expected
         ["bash", "-c", step["run"]], cwd=tmp_path, text=True, capture_output=True,
         env={**os.environ, "BASE_SHA": base, "HEAD_SHA": git("rev-parse", "HEAD"),
              "PR_LABELS": labels}, timeout=10)
+    # код возврата не отличает «правило сказало 1» от ошибки разбора шелла (на macOS
+    # `bash` из PATH — 3.2): разбор судится отдельно (№832, Sonnet M1)
+    assert "syntax error" not in result.stderr, result.stderr
     assert result.returncode == expected, result.stdout + result.stderr
 
 
@@ -394,7 +397,8 @@ def test_release_app_can_be_pointed_at_a_tag_by_hand():
 #: применённое к одной копии цикла, другую оставляло обрываться посреди второй
 #: попытки (DeepSeek по PR #637). `mutation-verdict` цикла не имеет, но его потолок —
 #: тоже сумма шагов: без неё обрыв job прятал бы вердикт шардов (№441).
-CEILED_JOBS = ("tests", "mutation", "mutation-verdict")
+#: `tests-macos` — тот же полный набор на macOS со своим циклом brew (№832).
+CEILED_JOBS = ("tests", "tests-macos", "mutation", "mutation-verdict")
 
 
 def _retry_worst_s(run: str) -> int:
@@ -660,7 +664,7 @@ def test_mutation_range_starts_at_the_current_base_branch():
 #: Числа — по ядрам раннера (ubuntu-latest — 4 vCPU, macos-15 — 3), приёмка —
 #: первые прогоны; вне сторожа по замыслу — preflight (bash) и полный набор внутри
 #: `run_tests` мутатора (там xdist снят `-p no:xdist`).
-FULL_SUITE_JOBS = {("ci.yml", "tests"): 4, ("nightly.yml", "pytest"): 3}
+FULL_SUITE_JOBS = {("ci.yml", "tests"): 4, ("ci.yml", "tests-macos"): 3, ("nightly.yml", "pytest"): 3}
 #: Флаги параллельного режима xdist: вне реестра их нет ни в одном job.
 XDIST_FLAGS = ("-n", "--numprocesses", "--dist")
 

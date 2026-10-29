@@ -247,7 +247,9 @@ as above: the unzipped app must report `CFBundleShortVersionString`
 Required checks on `main` are **`lint`** and **`pytest (src/)`**. The layout
 gate (`scripts/layout_map.py --check`) is a step of `pytest (src/)`, so it
 blocks too; it runs even when pytest is red, so a broken test collection does
-not hide its verdict. Everything else reports without blocking: `analyze`,
+not hide its verdict. Everything else reports without blocking: `pytest macOS (src/)`
+(the same suite on macOS, the product platform — a candidate for the required
+list; until then a red one is read before merging), `analyze`,
 `mutation (changed lines)`, the docs guard, the PR-title check, the
 supply-chain jobs, the Swift and iOS builds and the Android job. Two
 deliberate choices behind that short list:

@@ -27,8 +27,9 @@ env:
 
 jobs:
   pytest:
-    # macOS, а не ubuntu как в ci.yml: продукт живёт на macOS, и ночная
-    # проверка обязана ловить именно то, что ломается на боевой платформе.
+    # macOS: продукт живёт на macOS. На каждом push и PR тот же набор идёт в
+    # ci.yml (`tests-macos`, №832); ночью он ловит дрейф — `pip install .` берёт
+    # свежие зависимости при неизменном коде.
     runs-on: macos-15
     timeout-minutes: 20
     steps:

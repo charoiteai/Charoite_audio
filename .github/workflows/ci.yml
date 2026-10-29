@@ -157,6 +157,58 @@ jobs:
         timeout-minutes: 3
         run: python3 scripts/layout_map.py --check
 
+  # Тот же полный набор на macOS — продуктовой платформе (№832). До него Mac гонялся
+  # только ночью (nightly.yml), после мержа: тест, пропущенный на ubuntu
+  # (`skipif(sys.platform != "darwin")`, mac-only `importorskip`) или зависящий от
+  # bash 3.2 и BSD-утилит, уходил в main зелёным, а ночной красный 8 ночей подряд
+  # никто не читал. Параллельно `tests`, без `needs`: ожидания не прибавляет, а
+  # `skipped` от `needs` защита ветки сочла бы успехом. Идёт и на push, как `tests`:
+  # только так его можно сделать обязательной проверкой (docs/RELEASING.md).
+  # `-rs` — в логе остаются пропущенные и на Mac-раннере (веса, mlx): их видит
+  # только машина владельца.
+  tests-macos:
+    name: pytest macOS (src/)
+    runs-on: macos-15
+    # 2 + 3 + 7 + 6 + 12 = 30, плюс минута запаса (CEILING_MARGIN)
+    timeout-minutes: 31
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        timeout-minutes: 3
+        with:
+          python-version: "3.12"
+          cache: pip
+      # sounddevice тянется на импорте main/daemon: без PortAudio падает сбор всего
+      # набора. Повтор с лимитом попытки, как у apt выше: висящая попытка без
+      # лимита съела бы весь потолок шага и второй не было бы (круг n832-in2, Haiku
+      # I2). GNU `timeout` на macOS нет — тот же контракт через `alarm` perl
+      # (таймер переживает exec); сторож потолков читает `timeout N` из тела шага.
+      - name: PortAudio
+        # три попытки по 120 + 15 с — до 6¾ мин
+        timeout-minutes: 7
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          brew list portaudio >/dev/null 2>&1 && exit 0
+          for try in 1 2 3; do
+            if timeout 120 brew install portaudio >/dev/null; then exit 0; fi
+            echo "portaudio: попытка $try не прошла, ждём 15 с"
+            sleep 15
+          done
+          exit 1
+      - name: Deps
+        timeout-minutes: 6
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}" "pytest-xdist==${PYTEST_XDIST_VERSION}" "setuptools==${SETUPTOOLS_VERSION}"
+      # macos-15 — 3 vCPU (№453); ночью тот же набор шёл 4¼ мин (nightly 29.10)
+      - name: pytest
+        timeout-minutes: 12
+        run: python -m pytest tests/ -q -n 3 --dist loadgroup -rs
+
   mutation:
     name: mutation (changed lines)
     runs-on: ubuntu-latest
