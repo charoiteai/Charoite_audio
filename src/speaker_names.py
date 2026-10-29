@@ -204,10 +204,18 @@ def heard_forms(name: str, sample: str) -> tuple[str, ...]:
         if _instrumental_like(word):
             heard = re.search(r"(?<!\w)со?\s+$", sample[max(0, m.start() - 4):m.start()], re.I) is not None
         else:
-            heard = re.match(r"\s*(?:[,!?…—–:;.-]|\n|$)", sample[m.end():m.end() + 3]) is not None
+            heard = _addressed_at(sample, m.end())
         if heard and word.casefold() not in forms:
             forms.append(word.casefold())
     return tuple(forms)
+
+
+def _addressed_at(text: str, end: int) -> bool:
+    """Слово, кончающееся на `end`, стоит так, как звучит обращение: за ним знак
+    или конец строки («Коль, ты тут?», «Саш!», «…спроси, Тань»). Одна проверка
+    на `heard_forms` и вето самообращения — два теста одного понятия разошлись
+    бы (n830-in1 Haiku V1)."""
+    return re.match(r"\s*(?:[,!?…—–:;.-]|\n|$)", text[end:end + 3]) is not None
 
 
 def _instrumental_like(word: str) -> bool:
@@ -240,11 +248,57 @@ def _own_lines_only(name: str, sample: str, label: str,
                   if any(_whole_word(f, ln) for f in forms)]
     if not lines_with:
         return False
-    own = [ln for ln in lines_with if re.search(rf"\]\s*{re.escape(label)}\s*:", ln)]
+    own = _label_lines("\n".join(lines_with), label)
     if len(own) != len(lines_with):
         return False    # имя звучало и с другой стороны — законный источник
     intro = _INTRO + "(?:" + "|".join(re.escape(f) for f in forms) + ")"
     return not re.search(intro, sample, re.I)
+
+
+def _label_lines(sample: str, label: str) -> list[str]:
+    """Реплики самой метки — строки «[…] метка: текст». Одно правило разбора на
+    `_own_lines_only` и вето самообращения (n830-in1 Sonnet M2)."""
+    return [ln for ln in sample.splitlines() if re.search(rf"\]\s*{re.escape(label)}\s*:", ln)]
+
+
+# Представление перед именем в той же реплике: «я Коля», «это Коля», «я — Коля».
+_INTRO_BEFORE = re.compile(r"(?<!\w)(?:это|я|меня\s+зовут)[\s,—–-]+$", re.I)
+
+
+def addresses_self(name: str, sample: str, label: str,
+                   forms: tuple[str, ...] | None = None) -> bool:
+    """Метка в СВОИХ репликах зовёт этим именем — значит, имя не её (№830).
+
+    Человек не обращается к себе: «Коль, судя по твоему вопросу» под меткой
+    «Коль» — это обращение к Коле, а метка — кто-то другой, кому живой цикл
+    отдал звательную форму. Правило 2 модуля (`_own_lines_only`) ловит только
+    случай, когда имя звучит ИСКЛЮЧИТЕЛЬНО в репликах метки; самообращение
+    снимает имя, даже если его произносят и другие. Каждое вхождение судится
+    по позиции (`_addressed_at`): упоминание в третьем лице («Маша обещала
+    прислать») и творительный («с Сашей») обращением не считаются,
+    представление в той же реплике («да, я Маша.») снимает подозрение.
+
+    Замер 29.10 на итоговых стенограммах октября (64 живых имени с ревизией):
+    12 срабатываний, во всех метка зовёт своё имя; подтверждено неверных 5,
+    без другого свидетельства 6, спорная 1 — одно обращение из 86 реплик."""
+    if forms is None:
+        forms = heard_forms(name, sample)
+    if not forms:
+        return False
+    own = name.strip().casefold()
+    for line in _label_lines(sample, label):
+        # текст реплики — после «] метка:», а не после первого двоеточия: у живой
+        # ленты в скобках время «[11:19]»
+        body = re.split(rf"\]\s*{re.escape(label)}\s*:", line, maxsplit=1)[-1]
+        for f in forms:
+            for m in re.finditer(rf"(?<!\w){re.escape(f)}(?!\w)", body, re.I):
+                # творительный — только у выведенной формы: «Андрей» сам кончается на «-ей»
+                if (f != own and _instrumental_like(m.group(0))) or not _addressed_at(body, m.end()):
+                    continue
+                if _INTRO_BEFORE.search(body[:m.start()]):
+                    continue
+                return True
+    return False
 
 
 #: Причины отказа гварда (№502) — код, по которому журнал называет сработавшее
@@ -259,6 +313,7 @@ REASON_NOT_HEARD = "not_heard"
 REASON_OWNER = "owner"
 REASON_OWN_LINES = "own_lines"
 REASON_VOICE = "voice"
+REASON_SELF_ADDRESS = "self_address"
 
 REASON_TEXT = {
     REASON_EMPTY: "пусто или NONE",
@@ -269,6 +324,7 @@ REASON_TEXT = {
     REASON_OWNER: "имя владельца",
     REASON_OWN_LINES: "звучит только в своих репликах — обращение к другому",
     REASON_VOICE: "голос и род имени противоречат",
+    REASON_SELF_ADDRESS: "метка сама обращается по этому имени — имя чужое",
 }
 
 
@@ -338,6 +394,47 @@ def judge_name(raw: str, *, sample: str, label: str,
     if voice_pitch.contradicts(voice, name_gender):
         return NameVerdict(None, REASON_VOICE, said, name)     # басовитый голос и женское имя — оставляем «Собеседник N»
     return NameVerdict(name, "", said, name)
+
+
+def judge_label(name: str, *, sample: str, label: str, owner_name: str = "") -> NameVerdict:
+    """Суд пары «метка — имя» по ВСЕЙ итоговой стенограмме: годится ли уже
+    выбранное имя этой метке (№830).
+
+    Стадия привязки к метке без стадии привязки к тексту: имя пришло не от
+    модели, а из живой сессии или прошло `judge_name`, падеж уже приведён.
+    «Не звучало» здесь не судится — живое имя слышно в живой ленте, а итоговое
+    распознавание может его не дать (замер 29.10: из 7 таких снятий 4 — верные
+    имена). Правила — владелец, «только в своих репликах» и самообращение.
+    Живой цикл демона этот суд не зовёт: его выборка — скользящий хвост, вердикт
+    по окну менялся бы от такта к такту (n830-in1 Sonnet I1, DS I3)."""
+    said = (name or "").strip()     # не `_clean`: capitalize() испортил бы «Мария Ветрова»
+    if not said:
+        return NameVerdict(None, REASON_EMPTY, said, said)
+    if is_owner(said, owner_name):
+        return NameVerdict(None, REASON_OWNER, said, said)
+    forms = heard_forms(said, sample)
+    if _own_lines_only(said, sample, label, forms):
+        return NameVerdict(None, REASON_OWN_LINES, said, said)
+    if addresses_self(said, sample, label, forms):
+        return NameVerdict(None, REASON_SELF_ADDRESS, said, said)
+    return NameVerdict(said, "", said, said)
+
+
+def verify_names(names: dict[str, str], *, sample: str, owner_name: str = "",
+                 ) -> tuple[dict[str, str], dict[str, NameVerdict]]:
+    """Итоговая карта «метка → имя»: что `judge_label` оставил и что снял с
+    причиной. Один шаг на оба источника имён пересборки — перенос из живой
+    сессии и догадку модели, чтобы модель на урезанной выборке не вернула
+    метке имя, снятое по полной (n830-in1 DS C3, Sonnet I2)."""
+    kept: dict[str, str] = {}
+    refused: dict[str, NameVerdict] = {}
+    for label, name in names.items():
+        verdict = judge_label(name, sample=sample, label=label, owner_name=owner_name)
+        if verdict.name:
+            kept[label] = name
+        else:
+            refused[label] = verdict
+    return kept, refused
 
 
 def trustworthy_name(raw: str, *, sample: str, label: str,

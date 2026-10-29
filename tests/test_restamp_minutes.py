@@ -115,6 +115,89 @@ def test_minutes_names_follow_the_numbering_the_minutes_were_written_in():
     assert rebuild_transcript.minutes_names(None) == {}
 
 
+def test_vetoed_live_names_are_not_read_by_anyone():
+    """№830: имя, снятое судом пересборки, лежит в сайдкаре `names_vetoed`;
+    `live_session_names` — единственная точка чтения живых имён (перенос,
+    минутки, ретро-проход), снятое она не отдаёт. Мусор в ключе — как пусто."""
+    meta = {"names": {"Собеседник 2": "Инга", "Собеседник 3": "Марк"}, "names_vetoed": [" Инга "]}
+    assert rebuild_transcript.live_session_names(meta) == {"Собеседник 3": "Марк"}
+    assert rebuild_transcript.minutes_names(meta) == {"Собеседник 3": "Марк"}
+    for junk in ("Инга", {"Инга": 1}, [5, None, "  "], None):
+        assert rebuild_transcript.vetoed_names({"names_vetoed": junk}) == frozenset()
+        assert rebuild_transcript.live_session_names(
+            {"names": {"Собеседник 2": "Инга"}, "names_vetoed": junk}) == {"Собеседник 2": "Инга"}
+    assert rebuild_transcript.vetoed_names(None) == frozenset()
+
+
+def _live_with_names(tmp_path, names: dict, **extra):
+    live = tmp_path / "2026-10-28_0848.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    live_sidecar.merge(live, {"names": names, **extra})
+    return live
+
+
+_EVIDENCE = "\n".join((
+    "[·] Собеседник 2: Коль, судя по твоему вопросу, смета готова.",
+    "[·] Собеседник 3: Это Марк, я по срокам.",
+))
+
+
+def test_judge_live_names_drops_a_self_addressed_name_and_remembers_it(tmp_path, monkeypatch):
+    """Живое имя «Коля» легло на метку, которая сама зовёт Колю: снято, метка
+    остаётся безымянной, решение — в сайдкаре (следующий проход и минутки его
+    не вернут) и в `meta` этого прохода; в журнале — причина."""
+    logs: list[str] = []
+    monkeypatch.setattr(rebuild_transcript, "log", logs.append)
+    live = _live_with_names(tmp_path, {"Собеседник 1": "Коля", "Собеседник 4": "Марк"}, names_vetoed=["Ян"])
+    meta = rebuild_transcript.live_meta(live)
+    kept, meta2 = rebuild_transcript.judge_live_names(
+        live, meta, {"Собеседник 2": "Коля", "Собеседник 3": "Марк"}, _EVIDENCE, "")
+    assert kept == {"Собеседник 3": "Марк"}
+    assert meta2["names_vetoed"] == ["Коля", "Ян"] == rebuild_transcript.live_meta(live)["names_vetoed"]
+    assert rebuild_transcript.minutes_names(meta2) == {"Собеседник 4": "Марк"}
+    assert "Коля" not in rebuild_transcript.live_session_names(rebuild_transcript.live_meta(live)).values()
+    assert "names_vetoed" not in meta, "meta вызывающего не мутируется"
+    assert any("«Коля» для «Собеседник 2» не принято" in ln for ln in logs), logs
+
+
+def test_judge_live_names_without_vetoes_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(rebuild_transcript, "log", lambda *_: None)
+    live = _live_with_names(tmp_path, {"Собеседник 4": "Марк"})
+    before = rebuild_transcript.live_meta_path(live).read_bytes()
+    meta = rebuild_transcript.live_meta(live)
+    kept, meta2 = rebuild_transcript.judge_live_names(live, meta, {"Собеседник 3": "Марк"}, _EVIDENCE, "")
+    assert (kept, meta2) == ({"Собеседник 3": "Марк"}, meta)
+    assert rebuild_transcript.live_meta_path(live).read_bytes() == before
+
+
+def test_unwritable_sidecar_still_keeps_the_veto_for_this_pass(tmp_path, monkeypatch):
+    """Сайдкар не записался — минутки этого прохода снятого имени всё равно не
+    получат (решение в `meta` прохода), журнал предупреждает про следующий."""
+    logs: list[str] = []
+    monkeypatch.setattr(rebuild_transcript, "log", logs.append)
+    monkeypatch.setattr(live_sidecar, "merge", lambda *a, **k: False)
+    live = tmp_path / "2026-10-28_0848.md"
+    meta = {"names": {"Собеседник 1": "Коля"}}
+    kept, meta2 = rebuild_transcript.judge_live_names(live, meta, {"Собеседник 2": "Коля"}, _EVIDENCE, "")
+    assert kept == {} and rebuild_transcript.minutes_names(meta2) == {}
+    assert any("не записаны в сайдкар" in ln for ln in logs), logs
+
+
+def test_rebuild_judges_both_sources_of_names_on_the_full_transcript():
+    """Контракт на проводку (№830): перенесённые по времени имена и догадка
+    модели проходят суд пары по полной итоговой выборке — модель на урезанной
+    выборке не вернёт метке имя, снятое по полной (n830-in1 DS C3)."""
+    src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
+    fn = src[src.index("def rebuild("):src.index("def human_edited_transcript(")]
+    carry = fn.index("names = names_by_time(")
+    judged = fn.index("names, meta = judge_live_names(live, meta, names, evidence, user_name)")
+    model = fn.index("naming = name_speakers(")
+    verified = fn.index("speaker_names.verify_names(naming.names, sample=evidence")
+    assert carry < judged < model < verified
+    assert "rest = neutral - set(names) - no_names" in fn[judged:model], "снятая метка уходит к модели"
+    assert "evidence = \"\\n\".join(_sample_line(spk, text) for _, _, spk, text in lines if text)" in fn
+
+
 def test_rebuild_wires_live_names_into_restamp():
     """Контракт на проводку: rebuild обязан отдавать в restamp словарь по
     нумерации минуток (minutes_names) — откат на пересборочный `names`

@@ -330,10 +330,91 @@ def test_each_guard_names_its_own_reason(raw, kw, reason):
     assert trustworthy_name(raw, **kw) is None
 
 
+# №830. Суд пары «метка — имя» по итоговой стенограмме (`judge_label`): его
+# правила — тем же способом, реальным входом на каждую причину.
+_SELF_ADDRESS = "\n".join((
+    "[10:00] Я: Мария сейчас подключится.",
+    "[10:01] Собеседник: Да, Мария, сейчас попробуем.",
+))
+LABEL_REFUSALS = [
+    ("  ", dict(sample=INTRO, label="Собеседник"), sn.REASON_EMPTY),
+    ("Игорь", dict(sample=DIALOG, label="Собеседник", owner_name=OWNER), sn.REASON_OWNER),
+    ("Мария", dict(sample=_OWN_ADDRESS, label="Собеседник"), sn.REASON_OWN_LINES),
+    ("Мария", dict(sample=_SELF_ADDRESS, label="Собеседник"), sn.REASON_SELF_ADDRESS),
+]
+
+
+@pytest.mark.parametrize("name, kw, reason", LABEL_REFUSALS, ids=[r for *_, r in LABEL_REFUSALS])
+def test_each_label_rule_names_its_own_reason(name, kw, reason):
+    verdict = sn.judge_label(name, **kw)
+    assert (verdict.name, verdict.reason) == (None, reason)
+
+
 def test_every_reason_has_a_text_and_a_real_input():
     codes = {v for k, v in vars(sn).items() if k.startswith("REASON_") and isinstance(v, str)}
     assert set(sn.REASON_TEXT) == codes
-    assert {r for *_, r in REFUSALS} == codes
+    assert {r for *_, r in REFUSALS + LABEL_REFUSALS} == codes
+
+
+def test_self_address_is_not_part_of_the_live_judge():
+    """Живой цикл судит по скользящему хвосту — самообращение там не судится
+    (n830-in1 Sonnet I1): `judge_name` принимает то, что снимает `judge_label`."""
+    assert sn.judge_name("Мария", sample=_SELF_ADDRESS, label="Собеседник").name == "Мария"
+
+
+@pytest.mark.parametrize("name, line, expected", [
+    ("Коля", "Коль, судя по твоему вопросу, смета готова.", True),
+    ("Мария", "Смету пришлю завтра, Мария?", True),
+    ("Андрей", "Андрей, глянь цифры.", True),            # своё имя на «-ей» — не творительный
+    ("Мария", "Мария обещала прислать смету.", False),   # третье лицо
+    ("Мария", "Да, я Мария.", False),                     # представление
+    ("Мария", "Это — Мария, добрый день.", False),
+    ("Саша", "Договорились с Сашей, она пришлёт.", False),  # творительный — не обращение
+])
+def test_self_address_is_judged_by_the_position_of_each_mention(name, line, expected):
+    sample = "\n".join((f"[11:19] Собеседник 2: {line}", f"[11:20] Я: {name} в курсе."))
+    assert sn.addresses_self(name, sample, "Собеседник 2") is expected
+
+
+def test_only_the_labels_own_lines_count_for_self_address():
+    sample = "\n".join((
+        "[10:00] Я: Мария, привет — смету видела?",
+        "[10:00] Собеседник 23: Мария, ответь.",
+        "[10:01] Собеседник 2: Видела, всё сходится.",
+    ))
+    assert sn.addresses_self("Мария", sample, "Собеседник 2") is False
+    assert sn.judge_label("Мария", sample=sample, label="Собеседник 2") == \
+        sn.NameVerdict("Мария", "", "Мария", "Мария")
+
+
+def test_label_judge_keeps_the_name_as_given():
+    """Имя пересборки уже приведено: суд пары не нормализует его
+    (`_clean` сделал бы из «Мария Ветрова» «Мария ветрова»)."""
+    assert sn.judge_label(" Мария Ветрова ", sample=INTRO, label="Собеседник").name == "Мария Ветрова"
+
+
+def test_label_judge_does_not_require_the_name_to_be_heard():
+    """Живое имя слышно в живой ленте, итоговое STT может его не дать
+    (замер 29.10: из 7 таких снятий 4 — верные имена) — «не звучало» не судится."""
+    assert sn.judge_label("Ольга", sample=INTRO, label="Собеседник").name == "Ольга"
+    assert sn.judge_name("Ольга", sample=INTRO, label="Собеседник").reason == sn.REASON_NOT_HEARD
+
+
+def test_verify_names_splits_kept_and_refused_with_reasons():
+    sample = "\n".join((
+        "[·] Собеседник 2: Да, Мария, сейчас попробуем.",
+        "[·] Собеседник 3: Это Пётр, я по смете.",
+        "[·] Собеседник 4: Игорь, ты смету видел?",
+    ))
+    kept, refused = sn.verify_names(
+        {"Собеседник 2": "Мария", "Собеседник 3": "Пётр", "Собеседник 4": "Игорь"},
+        sample=sample, owner_name=OWNER)
+    assert kept == {"Собеседник 3": "Пётр"}
+    assert {k: v.reason for k, v in refused.items()} == {
+        "Собеседник 2": sn.REASON_SELF_ADDRESS, "Собеседник 4": sn.REASON_OWNER}
+    assert sn.refusal_line("Собеседник 2", refused["Собеседник 2"]) == \
+        "«Мария» для «Собеседник 2» не принято — метка сама обращается по этому имени — имя чужое"
+    assert sn.verify_names({}, sample=sample) == ({}, {})
 
 
 def test_an_accepted_name_carries_no_reason():
