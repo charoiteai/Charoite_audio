@@ -1307,14 +1307,25 @@ def owe_brain_resend(note: pathlib.Path, note_before: str, mark: pathlib.Path, *
         pass
 
 
-def _meeting_note_anywhere(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
-    """Заметка встречи — в графе прогона или в любом графе установки: каталог отметок один
-    на всех, а проект уводит встречу в соседний граф (финальный Opus C1 по №615 п. 8)."""
-    for g in [graph, *graphs.all_graphs("Встречи")]:
-        note = g / "Встречи" / f"{stamp}.md"
-        if note.is_file():
-            return note
-    return None
+def _vault_graphs() -> tuple[list[pathlib.Path], bool]:
+    """Графы установки с каталогом «Встречи» и полнота обхода. Не `graphs.all_graphs`: он молча
+    пропускает нечитаемый корень, а здесь неполный обход снял бы долг живой встречи (проверка
+    правок Opus, Haiku I1). Корня нет: iCloud — vault там просто не заведён (Sonnet C-1),
+    настроенный граф — том ушёл, обход неполный."""
+    found: list[pathlib.Path] = []
+    complete = True
+    for root in graphs.roots():
+        if not root.exists():
+            complete = complete and root == graphs.ICLOUD
+            continue
+        try:
+            entries = list(os.scandir(root))
+        except OSError:
+            complete = False
+            continue
+        found += [pathlib.Path(e.path) for e in entries
+                  if not e.name.startswith(".") and (pathlib.Path(e.path) / "Встречи").is_dir()]
+    return found, complete
 
 
 def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: bool, skip: str = "",
@@ -1345,22 +1356,28 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
         if float(now()) - mtime >= DEBT_MIN_AGE:
             ripe.append((mtime, p))
     out: list[str] = []
-    if ripe and not (graph / "Встречи").is_dir():
-        # том графа ушёл посреди прогона — «заметки нет» здесь не значит «встречу забыли»
-        return [f"долги памяти не оплачены: нет каталога встреч графа ({len(ripe)} ждут)"]
+    vault: tuple[list[pathlib.Path], bool] | None = None
     for _, debt in sorted(ripe)[:limit]:
         stamp = debt.stem
-        note = _meeting_note_anywhere(graph, stamp)
-        if note is None and not all(r.is_dir() for r in graphs.roots()):
-            out.append(f"долг памяти {stamp}: заметки нет в доступных графах, часть vault недоступна — ждёт")
+        note: pathlib.Path | None = graph / "Встречи" / f"{stamp}.md"
+        if not note.is_file():
+            # каталог отметок один на установку, а проект уводит встречу в соседний граф
+            # (финальный Opus C1 по №615 п. 8) — обход графов один раз за вызов
+            vault = vault or _vault_graphs()
+            note = next((n for g in vault[0] if (n := g / "Встречи" / f"{stamp}.md").is_file()), None)
+        if note is None:
+            # «заметки нет» значит «встречу забыли», только если обход полный и каталог встреч
+            # своего графа на месте: том ушёл посреди прогона — долг ждёт (out3 DS I3)
+            if vault and vault[1] and (graph / "Встречи").is_dir():
+                _settle_debt(debt.with_suffix(".txt"))
+                out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
+                continue
+            out.append(f"долг памяти {stamp}: заметки нет, но обход неполный (нет каталога встреч графа "
+                       "или vault не читается) — ждёт")
             try:
                 debt.touch()
             except OSError:
                 pass
-            continue
-        if note is None:
-            _settle_debt(debt.with_suffix(".txt"))
-            out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
             continue
         out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(
             stamp, note, "", debt.with_suffix(".txt"), post=post, enabled=enabled, lock_wait=0.0))
