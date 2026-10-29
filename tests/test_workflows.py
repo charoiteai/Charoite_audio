@@ -724,3 +724,15 @@ def test_full_suite_helpers_read_the_run_lines():
     assert not _full_suite(["tests/test_a.py", "-q"]) and not _full_suite(["tests/", "tests/test_a.py"])
     assert not _full_suite([]) and not _full_suite(["-q", "tests/"])
     assert _pair(["-n", "4"], "-n", "4") and not _pair(["-n"], "-n", "4") and not _pair(["-n", "3"], "-n", "4")
+
+
+def test_macos_suite_runs_on_macos_and_its_retry_limit_is_defined():
+    """Mac-набор на PR (№832) держит то, ради чего заведён: раннер — macOS, а лимит
+    попытки `timeout N`, который читает сторож потолков, определён в самом шаге —
+    GNU `timeout` на macOS нет, и без функции цикл падал бы `command not found` под
+    видом «portaudio не поставился» (выходной круг n832-out1, Haiku M1, M3)."""
+    job = _load("ci.yml")["jobs"]["tests-macos"]
+    assert str(job["runs-on"]).startswith("macos-"), job["runs-on"]
+    step = next(s for s in job["steps"] if s.get("name") == "PortAudio")
+    assert re.search(r"\btimeout \d+", step["run"]), step["run"]
+    assert "timeout() {" in step["run"], "лимит попытки `timeout N` без своего определения"
