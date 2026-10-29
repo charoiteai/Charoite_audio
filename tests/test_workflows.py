@@ -19,6 +19,7 @@ import pathlib
 import re
 import os
 import subprocess
+import time
 
 import pytest
 import yaml
@@ -274,6 +275,9 @@ def test_docs_guard_executes_its_actual_policy(tmp_path, files, labels, expected
         ["bash", "-c", step["run"]], cwd=tmp_path, text=True, capture_output=True,
         env={**os.environ, "BASE_SHA": base, "HEAD_SHA": git("rev-parse", "HEAD"),
              "PR_LABELS": labels}, timeout=10)
+    # код возврата не отличает «правило сказало 1» от ошибки разбора шелла (на macOS
+    # `bash` из PATH — 3.2): разбор судится отдельно (№832, Sonnet M1)
+    assert "syntax error" not in result.stderr, result.stderr
     assert result.returncode == expected, result.stdout + result.stderr
 
 
@@ -394,7 +398,8 @@ def test_release_app_can_be_pointed_at_a_tag_by_hand():
 #: применённое к одной копии цикла, другую оставляло обрываться посреди второй
 #: попытки (DeepSeek по PR #637). `mutation-verdict` цикла не имеет, но его потолок —
 #: тоже сумма шагов: без неё обрыв job прятал бы вердикт шардов (№441).
-CEILED_JOBS = ("tests", "mutation", "mutation-verdict")
+#: `tests-macos` — тот же полный набор на macOS со своим циклом brew (№832).
+CEILED_JOBS = ("tests", "tests-macos", "mutation", "mutation-verdict")
 
 
 def _retry_worst_s(run: str) -> int:
@@ -660,7 +665,7 @@ def test_mutation_range_starts_at_the_current_base_branch():
 #: Числа — по ядрам раннера (ubuntu-latest — 4 vCPU, macos-15 — 3), приёмка —
 #: первые прогоны; вне сторожа по замыслу — preflight (bash) и полный набор внутри
 #: `run_tests` мутатора (там xdist снят `-p no:xdist`).
-FULL_SUITE_JOBS = {("ci.yml", "tests"): 4, ("nightly.yml", "pytest"): 3}
+FULL_SUITE_JOBS = {("ci.yml", "tests"): 4, ("ci.yml", "tests-macos"): 3, ("nightly.yml", "pytest"): 3}
 #: Флаги параллельного режима xdist: вне реестра их нет ни в одном job.
 XDIST_FLAGS = ("-n", "--numprocesses", "--dist")
 
@@ -720,3 +725,24 @@ def test_full_suite_helpers_read_the_run_lines():
     assert not _full_suite(["tests/test_a.py", "-q"]) and not _full_suite(["tests/", "tests/test_a.py"])
     assert not _full_suite([]) and not _full_suite(["-q", "tests/"])
     assert _pair(["-n", "4"], "-n", "4") and not _pair(["-n"], "-n", "4") and not _pair(["-n", "3"], "-n", "4")
+
+
+def test_macos_suite_runs_on_macos_and_its_retry_limit_works():
+    """Mac-набор на PR (№832) держит то, ради чего заведён: раннер — macOS, а лимит
+    попытки `timeout N`, который читает сторож потолков, определён в самом шаге до
+    первого вызова и обрывает команду — GNU `timeout` на macOS нет, и без функции
+    цикл падал бы `command not found` под видом «portaudio не поставился»
+    (выходные круги n832-out1, Haiku M1, M3; n832-out2, Sonnet M1: судить поведение,
+    а не текст)."""
+    job = _load("ci.yml")["jobs"]["tests-macos"]
+    assert str(job["runs-on"]).startswith("macos-"), job["runs-on"]
+    step = next((s for s in job["steps"] if s.get("name") == "PortAudio"), None)
+    assert step, "в tests-macos нет шага PortAudio"
+    lines = step["run"].splitlines()
+    first_call = next(i for i, line in enumerate(lines) if re.search(r"\btimeout \d+", line))
+    defs = [line for line in lines[:first_call] if re.match(r"\s*timeout\s*\(\)\s*\{", line)]
+    assert len(defs) == 1, f"лимит попытки `timeout N` без своего определения выше вызова: {lines}"
+    started = time.monotonic()
+    out = subprocess.run(["bash", "-c", defs[0] + "\ntimeout 1 sleep 5"], capture_output=True, text=True,
+                         timeout=10)
+    assert out.returncode != 0 and time.monotonic() - started < 4, (out.returncode, out.stderr)

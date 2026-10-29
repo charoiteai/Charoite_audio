@@ -103,7 +103,7 @@ Settings → Secrets and variables → Actions → New repository secret。证�
 
 ## 分支保护：什么会阻止合并，以及为什么
 
-`main` 上的必需检查是 **`lint`** 和 **`pytest (src/)`**。布局门禁（`scripts/layout_map.py --check`）是 `pytest (src/)` 的一个步骤，因此它同样阻止合并；即使 pytest 为红它也会运行，以免测试收集失败掩盖它的结论。其余检查只报告、不阻止：`analyze`、`mutation (changed lines)`、文档守卫、PR 标题检查、供应链 job、Swift 与 iOS 构建以及 Android job。这个简短的列表背后有两个有意的决定。
+`main` 上的必需检查是 **`lint`** 和 **`pytest (src/)`**。布局门禁（`scripts/layout_map.py --check`）是 `pytest (src/)` 的一个步骤，因此它同样阻止合并；即使 pytest 为红它也会运行，以免测试收集失败掩盖它的结论。其余检查只报告、不阻止：`pytest macOS (src/)`（同一套测试在产品平台 macOS 上运行，是必需检查的候选；在此之前，它的红色结果须在合并前阅读）、`analyze`、`mutation (changed lines)`、文档守卫、PR 标题检查、供应链 job、Swift 与 iOS 构建以及 Android job。这个简短的列表背后有两个有意的决定。
 
 **测试现在会阻止合并。** 此前并不会：必需检查是 `lint` 和 `analyze`，因此失败的 `pytest` 也能顺利合并。全部 123 个测试都只是参考性的，包括守护隐私承诺的那些哨兵。
 

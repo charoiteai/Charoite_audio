@@ -216,7 +216,7 @@ review gates, and who answers for what — is documented in
 
 | When | What |
 |---|---|
-| every push and PR | `lint`: ruff, byte-compile, "a test must be able to fail", shellcheck, semgrep, mypy (advisory), example config keys · `pytest (src/)`: the full python suite in four processes (`-n 4 --dist loadgroup`), then the layout gate |
+| every push and PR | `lint`: ruff, byte-compile, "a test must be able to fail", shellcheck, semgrep, mypy (advisory), example config keys · `pytest (src/)`: the full python suite in four processes (`-n 4 --dist loadgroup`), then the layout gate · `pytest macOS (src/)`: the same suite on macOS, the product platform (`-n 3`), in parallel |
 | pushes to `main` and every PR | CodeQL (`analyze`, also weekly) · supply chain: zizmor on the workflows and the public-format de-identification check |
 | every PR only | mutation of the changed lines in four shards (`mutation (changed lines)`) and their verdict (`mutation verdict`) · docs guard · conventional PR title · dependency review (high severity fails) |
 | when `app/`, `app-ios/` or `app-android/` change | Swift app build and deterministic tests with SwiftLint, iOS build · Android unit tests, lint and debug build |
