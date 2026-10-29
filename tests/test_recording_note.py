@@ -317,7 +317,9 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     gen = rf[rf.index("def gen("):rf.index("\ndef ", rf.index("def gen(") + 1)]
     assert gen.index("transcript[:24000]") < gen.index("client.recording_block(note)") < gen.index("+ task")
     assert rf.count("note=source.recording_note") == 2 and "source_sha = source.sha()" in rf and "speech_sha" not in rf
-    assert rf.count("meeting_source.with_note(out, source.recording_note)") == 2, "строка итога — у разбора И тезисов (DS круга 2)"
+    assert rf.count("meeting_source.with_note(out, source.recording_note)") == 1, "строка итога у тезисов (DS круга 2)"
+    assert rf.count("out = meeting_source.finish_debrief(out, source)\n") == 1, \
+        "разбор — входом разбора (гейт срока №829 + строка итога)"
     assert "meeting_source.of(f, text)" in rf and "meeting_source.of(f, text, bare)" not in rf, \
         "источник — по прямому сайдкару, штамп bare читателю не передаётся (Critical DS/GLM круга 1)"
     # MCP-сборщик проверяется поведением, а не текстом исходника (№663):
@@ -330,7 +332,8 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     assert "meeting_source.of(live, edited).matches(" in rt, "второй читатель паспорта — тем же источником"
     assert "_speech(" not in rt, "хеш голой речи как источник производной — прохода мимо MeetingSource нет"
     gu2 = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
-    assert "debrief = meeting_source.with_note(debrief, source.recording_note)" in gu2, "живой разбор — со строкой итога"
+    assert "debrief = meeting_source.finish_debrief(debrief, source)" in gu2, "живой разбор — входом разбора со строкой итога"
+    assert "with_note(debrief" not in gu2, "мимо входа разбора — ни одного своего шага (№829)"
     # пятый сборщик — саммари архива (№314): блок факта после материалов, строка в документ
     ma_src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
     gen = ma_src[ma_src.index("def _gen_summary("):ma_src.index("def unhide_graph(")]

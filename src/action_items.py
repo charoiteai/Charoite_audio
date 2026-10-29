@@ -574,7 +574,14 @@ def check_deadline_item(line: str, speech: str, day: datetime.date | None, lang:
     head = _ITEM_HEAD.match(line)
     if head is None:
         return line
-    body = line.rstrip()[head.end():]
+    return _mark_unheard(line, head.end(), speech, day, lang)
+
+
+def _mark_unheard(line: str, head_end: int, speech: str, day: datetime.date | None, lang: str) -> str:
+    """Разметка частей пункта после головы (маркер и ящик кончаются на
+    `head_end`): одна на минутки и разбор — части, хвост «(куски …)» и
+    пометка у обоих одни (№829, DS C1 in1)."""
+    body = line.rstrip()[head_end:]
     trail = line[len(line.rstrip()):]
     pieces = _PIECES_TAIL.search(body)
     body, suffix = (body[:pieces.start()], pieces.group()) if pieces else (body, "")
@@ -592,7 +599,7 @@ def check_deadline_item(line: str, speech: str, day: datetime.date | None, lang:
             parts[i], changed = parts[i] + parts[i - 1] + mark, True
     if not changed:
         return line
-    return line[:head.end()] + "".join(parts) + suffix + trail
+    return line[:head_end] + "".join(parts) + suffix + trail
 
 
 def check_deadlines(text: str, speech: str, day: datetime.date | None, lang: str = "ru") -> str:
@@ -606,3 +613,61 @@ def check_deadlines(text: str, speech: str, day: datetime.date | None, lang: str
     if not speech.strip():
         return text
     return "\n".join(check_deadline_item(line, speech, day, lang=lang) for line in text.split("\n"))
+
+
+# Разбор после встречи (№829): пункты «- **Кто** — что — срок» без ящика в
+# разделе «## Задачи». Голова пункта — те же маркер и ящик грамматики строки
+# поручения: пункт списка (`_BULLET`, маркер и пробел — иначе «*» маркера съел бы
+# жирное «**Имя**» строки без маркера), ящик необязателен. Своя регулярка
+# «имени» была бы третьей грамматикой пункта (DS C1 in1, маркер «1.»).
+_LIST_HEAD = re.compile(_BULLET.pattern + r"(?:" + task_line.BOX + r"\s*)?")
+_HEADING = re.compile(r"^(#{1,6})\s")
+# Заголовок раздела задач оба промпта разбора задают одинаково — «## Задачи»
+# (509 из 510 разборов владельца 29.10, ни одного подзаголовка внутри); хвост
+# после слова («## Задачи (кто/что/срок)») раздел не отменяет (DS I3 in1),
+# регистр — тоже (Sonnet M1 out1). Единственное число раздел не открывает:
+# «### Задача для …» внутри «Рекомендаций» судился бы (Haiku M1 out2).
+_DEBRIEF_TASKS = re.compile(r"^(#{1,6})\s+Задачи(?![^\W\d_])", re.IGNORECASE)
+
+
+def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -> str:
+    """Гейт срока №805 на разделе «Задачи» разбора: за сроком, которого речь не
+    подтверждает, — «— срок не из речи», срок не стирается. Разбор не канон
+    задач (вкладка его не читает), его читает человек: до №829 «сегодня
+    (05.10)» у встречи 06.10 и «до конца дня 27.10» у встречи 28.10 стояли
+    фактами (замер октября: 19 сроков из 159 речь не подтверждает).
+
+    Раздел — от заголовка «Задачи» до заголовка того же или более высокого
+    уровня (Sonnet I2 in1): подзаголовок внутри раздела его не закрывает, и
+    вложенный «Задачи» уровень открытого раздела не меняет (DS I2 out1).
+    Прочие разделы разбора не судятся: в «Рекомендациях» сроки — предложения
+    модели по построению. Пункт с ящиком судится по тем же правилам, что в
+    минутках (`check_deadline_item`), без ящика — как пункт с открытым ящиком;
+    пункт с полями хвоста или пометкой контроля не трогается, как в минутках:
+    дата поля («📅 2026-11-05» даёт «11.05») и тире внутри пометки контроля
+    пошли бы в суд срока (DS C1, Haiku I1 out2; в разборах таких строк 0 из
+    2494). Язык пометки — русский: промпты разбора русские."""
+    if not speech.strip():
+        return text
+    out: list[str] = []
+    level = 0                                # уровень заголовка «Задачи»; 0 — вне раздела
+    for line in text.split("\n"):
+        heading = _HEADING.match(line)
+        if heading:
+            if len(heading.group(1)) <= level:
+                level = 0
+            tasks = _DEBRIEF_TASKS.match(line)
+            if tasks and not level:
+                level = len(tasks.group(1))
+        elif level:
+            line = _check_debrief_item(line, speech, day)
+        out.append(line)
+    return "\n".join(out)
+
+
+def _check_debrief_item(line: str, speech: str, day: datetime.date | None) -> str:
+    head = _LIST_HEAD.match(line)
+    if (head is None or task_line.settled(line) or task_line.fields(line)
+            or task_line.CONTROL_MARK.search(line)):
+        return line
+    return _mark_unheard(line, head.end(), speech, day, "ru")

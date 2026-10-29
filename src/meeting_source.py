@@ -136,6 +136,24 @@ def finish_minutes(doc: str, source: MeetingSource, *, owner: str,
     return doc
 
 
+def finish_debrief(doc: str, source: MeetingSource) -> str:
+    """Механические шаги разбора после модели — один вход для двух писателей
+    (живой путь `graph_updater` и ретро-обход `retro_fill`), как
+    `finish_minutes` у минуток: гейт срока на разделе «Задачи»
+    (`action_items.check_debrief_deadlines`, №829) по тому же тексту, что
+    видела модель (речь + оговорка, `canon`), затем строка оговорки. Сноски
+    и «не участник» разбору не нужны: сноску саммари взяло бы содержанием
+    промпта, а «не участник» — свойство канона задач (in1 №829).
+    Пустой или пробельный ответ модели — пустая строка: `with_note` на нём
+    дал бы файл из одной оговорки, и писатель записал бы его с паспортом
+    (DS I2 in1); отказ «модель не ответила» писатели решают по пустой
+    строке (Haiku C1 out1)."""
+    if not doc.strip():
+        return ""
+    doc = action_items.check_debrief_deadlines(doc, source.canon(), source.day)
+    return with_note(doc, source.recording_note)
+
+
 def content_of(text: str) -> str:
     """Содержание встречи для ИЗВЛЕЧЕНИЯ (узлы графа, факты памяти): речь и
     живые тезисы контура, без следа записи в хвосте — строк события канала и

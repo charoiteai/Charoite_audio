@@ -488,3 +488,193 @@ def test_chinese_weekday_by_any_name(tail, speech, kept):
 def test_bare_weekday_is_a_deed(line):
     """День недели без предлога срока не начинает (Sonnet M1, Haiku I1 out4)."""
     assert action_items.check_deadline_item(line, "[10:00] Участник А: настрою", DAY) == line
+
+
+# ---- разбор после встречи (№829) ------------------------------------------------
+
+SPEECH_DEBRIEF = "[10:00] Участник А: отчёт к 28-му\n"
+
+
+def _debrief(*items: str, after: str = "## Рекомендации: что проработать до следующей встречи\n"
+             "- **Предложение** — сверить смету — до 30.11\n") -> str:
+    return ("# Разбор встречи\n## Вопросы встречи и ответы\n- **Отчёт?** — открыт — до 30.11\n## Задачи\n"
+            + "".join(i + "\n" for i in items) + after)
+
+
+def _list_item(tail: str, who: str = "Участник А", what: str = "сдать отчёт") -> str:
+    return f"- **{who}** — {what} — {tail}"
+
+
+@pytest.mark.parametrize("line,marked", [
+    (_list_item("до 30.11"), True),                     # даты нет в речи
+    (_list_item("до 28.10"), False),                    # день прозвучал, дата в окне встречи
+    (_list_item("к пятнице"), True),                    # дня недели нет в речи
+    (_list_item("сегодня (25.10)"), True),              # дата раньше встречи и не из речи
+    (_list_item("срок не указан"), False),
+    ("1. **Участник А** — сдать отчёт — до 30.11", True),   # маркер «1.» — как у минуток (DS C1 in1)
+    ("– **Участник А** – сдать отчёт – до 30.11", True),
+    ("- Участник А — сдать отчёт — до 30.11", True),    # имя не обязано быть жирным — как у минуток
+    ("- [ ] **Участник А** — сдать отчёт — до 30.11", True),
+    ("- [x] **Участник А** — сдать отчёт — до 30.11", False),             # решённый статус
+    # поле и пометка контроля — как в минутках, не судятся: дата поля «11.05» и
+    # тире внутри пометки пошли бы в суд срока (DS C1, Haiku I1 out2)
+    (_list_item("до 05.11 📅 2026-11-05"), False),
+    (_list_item("до 30.11 _(снято: перенесено — 29.10)_"), False),
+    ("**Участник А** — сдать отчёт — до 30.11", False),  # не пункт списка
+])
+def test_debrief_tasks_are_judged_like_minutes(line, marked):
+    out = action_items.check_debrief_deadlines(_debrief(line), SPEECH_DEBRIEF, DAY)
+    sep = " – " if line.startswith("–") else " — "
+    expect = line + sep + MARK if marked else line
+    assert out == _debrief(expect)
+
+
+def test_debrief_other_sections_are_not_judged():
+    """«Рекомендации» — предложения модели: даты в них по построению не из речи,
+    пометка была бы шумом; «Вопросы» вне гейта по решению входного круга
+    (Sonnet I2 in1, Opus M3 n829-final)."""
+    doc = _debrief(_list_item("до 28.10"))
+    assert action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY) == doc
+
+
+@pytest.mark.parametrize("heading,inside", [
+    ("## Задачи (кто/что/срок)", True),                 # хвост после слова (DS I3 in1)
+    ("### Задачи", True),
+    ("## ЗАДАЧИ", True),                                # регистр (Sonnet M1 out1)
+    ("### Задача для Участника А", False),              # единственное число — нет (Haiku M1 out2)
+    ("## Задачи2", True),
+    ("## Задачник", False),
+    ("##Задачи", False),
+    ("Задачи:", False),
+])
+def test_debrief_tasks_heading(heading, inside):
+    doc = f"{heading}\n{_list_item('до 30.11')}\n"
+    out = action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY)
+    assert (out != doc) is inside
+
+
+def test_debrief_section_ends_at_a_heading_of_its_level_not_below():
+    """Подзаголовок внутри «Задач» раздел не закрывает, заголовок того же или более
+    высокого уровня — закрывает (Sonnet I2 in1)."""
+    item = _list_item("до 30.11")
+    doc = f"## Задачи\n### Участник А\n{item}\n## Другое\n{item}\n# Конец\n{item}\n### Задачи\n{item}\n# Ещё\n{item}"
+    out = action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY).split("\n")
+    marked = item + " — " + MARK
+    assert out == ["## Задачи", "### Участник А", marked, "## Другое", item, "# Конец", item,
+                   "### Задачи", marked, "# Ещё", item]
+
+
+def test_debrief_nested_tasks_heading_keeps_the_open_level():
+    """Вложенный «### Задачи» уровень открытого «## Задачи» не меняет: «### Прочее»
+    раздел не закрывает (DS I2, Haiku I1 out1); раздел уровня 3 закрывает заголовок
+    уровня 3 и выше, а не только 1–2 (Sonnet M3 out1, мутант уровня-константы)."""
+    item = _list_item("до 30.11")
+    marked = item + " — " + MARK
+    doc = f"## Задачи\n### Задачи\n### Прочее\n{item}\n## Другое\n{item}"
+    assert action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY).split("\n") == [
+        "## Задачи", "### Задачи", "### Прочее", marked, "## Другое", item]
+    doc = f"### Задачи\n#### Участник А\n{item}\n### Другое\n{item}"
+    assert action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY).split("\n") == [
+        "### Задачи", "#### Участник А", marked, "### Другое", item]
+
+
+def test_debrief_last_line_and_repeat_pass():
+    """Пункт последней строкой без перевода строки судится; второй проход — те же байты."""
+    doc = "## Задачи\n" + _list_item("до 30.11")
+    once = action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY)
+    assert once == doc + " — " + MARK
+    assert action_items.check_debrief_deadlines(once, SPEECH_DEBRIEF, DAY) == once
+
+
+def test_debrief_without_speech_is_left_alone():
+    doc = _debrief(_list_item("до 30.11"))
+    assert action_items.check_debrief_deadlines(doc, " \n", DAY) == doc
+
+
+def test_finish_debrief_judges_by_speech_and_note_then_adds_the_note():
+    """Вход разбора судит по тому же тексту, что видела модель (речь + оговорка), и
+    дописывает строку оговорки; день встречи — из источника (DS M6 in1)."""
+    note = "📋 запись неполная: канал собеседников с 30.11 не записан"
+    src = meeting_source.live(SPEECH_DEBRIEF, note, day=DAY)
+    doc = "## Задачи\n" + _list_item("до 30.11") + "\n" + _list_item("к пятнице") + "\n"
+    out = meeting_source.finish_debrief(doc, src)
+    assert out == meeting_source.with_note(
+        "## Задачи\n" + _list_item("до 30.11") + "\n" + _list_item("к пятнице") + " — " + MARK + "\n", note)
+    assert meeting_source.finish_debrief(out, src) == out
+
+
+def test_finish_debrief_keeps_an_empty_answer_empty():
+    """Пустой ответ модели с оговоркой не становится файлом из одной оговорки (DS I2 in1);
+    пробельный — пустая строка, писатель скажет «модель не ответила» (Haiku C1 out1)."""
+    src = meeting_source.live(SPEECH_DEBRIEF, "📋 запись неполная", day=DAY)
+    assert meeting_source.finish_debrief("", src) == ""
+    assert meeting_source.finish_debrief(" \n", src) == ""
+
+
+def test_retro_debrief_goes_through_the_entry(tmp_path, monkeypatch):
+    """Ретро-обход пишет разбор через `finish_debrief`: невыдуманный срок цел,
+    выдуманный — с пометкой."""
+    import live_sidecar
+    import retro_fill
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-10-26_1000.md"
+    live.write_text("# Встреча 2026-10-26_1000\n" + SPEECH_DEBRIEF, encoding="utf-8")
+    answer = "## Задачи\n" + _list_item("до 28.10") + "\n" + _list_item("до 30.11") + "\n"
+    monkeypatch.setattr(retro_fill, "gen", lambda *a, **k: answer if "Составь разбор" in a[3] else "")
+    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **k: None)
+    monkeypatch.setattr(retro_fill.live_sidecar, "wants_build",
+                        lambda state, policy: state == live_sidecar.MISSING and policy is live_sidecar.POLICY_RETRO)
+    import rebuild_transcript
+    monkeypatch.setattr(rebuild_transcript, "finalize_minutes", lambda *a, **k: "kept")
+    monkeypatch.setattr(rebuild_transcript, "record_minutes_passport", lambda *a, **k: None)
+    made = retro_fill.process(live, {"llm": {"model": "m"}, "sufler": {"user_name": "Владелец"}},
+                              tmp_path / "graph", tdir)
+    assert "разбор" in made
+    body = live.with_name("2026-10-26_1000_разбор.md").read_text(encoding="utf-8")
+    assert _list_item("до 28.10") + "\n" in body and _list_item("до 30.11") + " — " + MARK + "\n" in body
+
+
+def test_live_debrief_goes_through_the_entry(tmp_path, monkeypatch):
+    """Живой писатель (`graph_updater.main`) пишет разбор через `finish_debrief`:
+    невыдуманный срок цел, выдуманный — с пометкой, паспорт — хеш итоговых байтов
+    (Opus M1 n829-final: до того дверь держал только текстовый сторож)."""
+    import graph_updater as g
+    import live_sidecar
+    graph = tmp_path / "Граф"
+    for d in ("Встречи", "Люди", "Системы"):
+        (graph / d).mkdir(parents=True)
+    tpath = tmp_path / "transcripts" / "2026-10-27_1000.md"
+    tpath.parent.mkdir()
+    tpath.write_text("**Участник А** [10:00]: отчёт к 28-му, проверим стенд и релиз по делу.\n" * 3
+                     + "Конец обсуждения. " * 20, encoding="utf-8")
+    answer = ("# Разбор встречи\n## Задачи\n" + _list_item("до 28.10") + "\n" + _list_item("до 30.11") + "\n"
+              "## Рекомендации: что проработать до следующей встречи\n- **Предложение** — сверить смету — до 30.11\n")
+
+    class FakeLLM:
+        def __init__(self, cfg):
+            pass
+
+        def complete(self, prompt, **kw):
+            return answer if "Составь разбор" in prompt else ""
+
+        def __getattr__(self, name):
+            return lambda *a, **k: ""
+
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(graph))
+    monkeypatch.setattr(sys, "argv", ["graph_updater.py", str(tpath)])
+    monkeypatch.setattr(g, "load_cfg", lambda: {"sufler": {"user_name": ""}, "llm": {"model": "нет-такой"}})
+    monkeypatch.setattr(g, "extract", lambda *a, **k: {"люди": [{"имя": "Участник А", "роль": "", "вклад": ""}]})
+    for fn in ("_open_progress", "harden_umask", "archive_and_publish", "run_post_hook",
+               "reindex_memory", "meeting_facts_to_brain", "_revise_meeting_cores", "_yield_to_live"):
+        monkeypatch.setattr(g, fn, lambda *a, **k: None)
+    monkeypatch.setattr(g.privacy, "cloud_enrich_enabled", lambda cfg: False)
+    monkeypatch.setattr(g, "LLM", FakeLLM)
+    g.main()
+    debriefs = sorted(tpath.parent.glob("*_разбор.md"))
+    assert len(debriefs) == 1, debriefs
+    body = debriefs[0].read_text(encoding="utf-8")
+    assert _list_item("до 28.10") + "\n" in body
+    assert _list_item("до 30.11") + " — " + MARK + "\n" in body
+    assert "- **Предложение** — сверить смету — до 30.11\n" in body
+    assert live_sidecar.read(tpath)["debrief_sha256"] == live_sidecar.sha(body)

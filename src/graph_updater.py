@@ -3758,9 +3758,10 @@ def main():
             timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
         )
         if debrief.strip():
-            # строка о неполной записи — механически, как у минуток и ретро-разбора:
+            # шаги после модели — одним входом с ретро-разбором: гейт срока «Задач»
+            # (№829) и строка о неполной записи — механически, как у минуток:
             # упомянула ли модель пропуск — непроверяемо (Important GLM выходного круга)
-            debrief = meeting_source.with_note(debrief, source.recording_note)
+            debrief = meeting_source.finish_debrief(debrief, source)
             # шапка честно называет автора: облачная ревизия рядом сверяет и
             # снимает ошибки, а сам разбор остаётся черновиком (№241)
             body = f"<!-- {stamp} · {title or 'встреча'} -->\n{DEBRIEF_NOTE}\n" + debrief
