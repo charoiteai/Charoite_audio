@@ -138,7 +138,7 @@ def test_the_review_worker_pays_no_debts_when_disabled(tmp_path):
     sent.mkdir(parents=True)
     debt = sent / "2026-07-10_0900.pending"
     debt.touch()
-    # долг созревший, а заметки встречи в графе нет: включённая оплата сняла бы его строкой
+    # долг созревший, а заметки встречи в графе нет: включённая оплата пишет строку «ждёт»
     # в лог — выключенная не трогает ни долга, ни лога (свежий долг молчал бы при любом флаге,
     # и мутант «долги платятся всегда» выживал)
     os.utime(debt, (0, 0))
@@ -149,7 +149,7 @@ def test_the_review_worker_pays_no_debts_when_disabled(tmp_path):
     assert not log.exists(), "выключенная память не пишет в лог ревизии ни строки"
     assert debt.exists(), "долг остаётся списком неотправленного"
     cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, {"sufler": {"brain": True}})
-    assert "заметки встречи в графе нет" in log.read_text(encoding="utf-8"), \
+    assert "заметки встречи не видно" in log.read_text(encoding="utf-8"), \
         "та же сцена при включённой — оплата идёт: без этого тест выше ничего не доказывает"
 
 

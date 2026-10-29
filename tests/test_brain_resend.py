@@ -156,7 +156,7 @@ def test_send_to_brain_owns_the_debt_and_any_review_run_pays_other_meetings(tmp_
     graph = tmp_path / "graph"
     (graph / "Встречи").mkdir(parents=True)
     (graph / "Встречи" / "2026-09-01_1000.md").write_text(BEFORE.replace("2026-09-11_1533", "2026-09-01_1000"), encoding="utf-8")
-    (sent / "2026-09-02_1000.pending").touch()          # заметки нет — платить не по чему
+    (sent / "2026-09-02_1000.pending").touch()          # заметки не видно — долг ждёт
     (sent / "2026-09-11_1533.pending").touch()          # своя встреча — не трогаем
     calls: list[str] = []
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
@@ -165,9 +165,9 @@ def test_send_to_brain_owns_the_debt_and_any_review_run_pays_other_meetings(tmp_
     later = lambda: time.time() + g.DEBT_MIN_AGE + 1  # noqa: E731
     lines = g.pay_brain_debts(graph, sent, skip="2026-09-11_1533", enabled=True, post=ok, now=later)
     assert lines == ["долг памяти 2026-09-01_1000: память Чароита переотправлена после ревизии: снято решений 0, ушло фактов 4",
-                     "долг памяти 2026-09-02_1000: заметки встречи в графе нет — снят"], lines
+                     "долг памяти 2026-09-02_1000: заметки встречи не видно ни в одном графе — ждёт"], lines
     assert calls[0].endswith("/forget") and len(calls) == 5
-    assert sorted(p.name for p in sent.glob("*.pending")) == ["2026-09-11_1533.pending"]
+    assert sorted(p.name for p in sent.glob("*.pending")) == ["2026-09-02_1000.pending", "2026-09-11_1533.pending"]
     assert mark.read_text(encoding="utf-8").startswith("sent 4/4\n")
 
 
@@ -375,26 +375,23 @@ def test_debts_are_kept_when_the_graph_meetings_folder_is_gone(tmp_path):
     debt.touch()
     lines = g.pay_brain_debts(tmp_path / "нет графа", sent, enabled=True, post=lambda *a, **k: _Resp(),
                               now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
-    assert debt.exists() and "нет каталога встреч" in lines[0]
+    assert debt.exists() and "ждёт" in lines[0]
 
 
 def test_a_debt_of_a_meeting_in_another_graph_is_paid_not_dropped(tmp_path, monkeypatch):
     """Финальный Opus C1 по №615 п. 8: каталог отметок один на установку, а проект уводит
     встречу в соседний граф — долг такой встречи оплачивается по её графу, а не снимается.
-    Заметки нет нигде: снимается при полном обходе (корня iCloud нет — vault там не заведён,
-    Sonnet C-1), ждёт при неполном (настроенный том ушёл; корень не читается — Haiku I1)."""
-    vault = tmp_path / "vault"
+    Заметки не видно нигде — долг ждёт: iCloud выключен, том ушёл, граф переехал от
+    «встречу забыли» не отличить (проверка правок Opus: Sonnet C-1, Haiku C-1, I-1)."""
     sent = tmp_path / "brain_sent"
     sent.mkdir()
-    here, there = vault / "А", vault / "Б"
+    here, there = tmp_path / "А", tmp_path / "Б"
     (here / "Встречи").mkdir(parents=True)
     (there / "Встречи").mkdir(parents=True)
     (there / "Встречи" / "2026-09-01_1000.md").write_text(BEFORE, encoding="utf-8")
     debt = sent / "2026-09-01_1000.pending"
     debt.touch()
-    no_icloud = tmp_path / "нет iCloud"
-    monkeypatch.setattr(g.graphs, "ICLOUD", no_icloud)
-    monkeypatch.setattr(g.graphs, "roots", lambda: [vault, no_icloud])
+    monkeypatch.setattr(g.graphs, "all_graphs", lambda marker: [here, there])
     calls: list[str] = []
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
     later = lambda: time.time() + g.DEBT_MIN_AGE + 1  # noqa: E731
@@ -402,16 +399,10 @@ def test_a_debt_of_a_meeting_in_another_graph_is_paid_not_dropped(tmp_path, monk
     assert calls and calls[0].endswith("/forget") and not debt.exists(), lines
 
     (there / "Встречи" / "2026-09-01_1000.md").unlink()
-    for gone in (tmp_path / "отключённый том", tmp_path / "файл, а не каталог"):
-        if gone.name.startswith("файл"):
-            gone.write_text("", encoding="utf-8")
-        debt.touch()
-        monkeypatch.setattr(g.graphs, "roots", lambda gone=gone: [vault, gone])
-        lines = g.pay_brain_debts(here, sent, enabled=True, post=ok, now=later)
-        assert debt.exists() and "ждёт" in lines[0], (gone, lines)
-    monkeypatch.setattr(g.graphs, "roots", lambda: [vault, no_icloud])
+    debt.touch()
+    calls.clear()
     lines = g.pay_brain_debts(here, sent, enabled=True, post=ok, now=later)
-    assert not debt.exists() and lines[0].endswith("снят"), lines
+    assert debt.exists() and not calls and lines[0].endswith("ждёт"), lines
 
 
 def test_a_rerun_fills_the_gap_but_leaves_an_ordered_debt_to_the_full_resend(tmp_path):

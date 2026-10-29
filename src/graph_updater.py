@@ -1307,27 +1307,6 @@ def owe_brain_resend(note: pathlib.Path, note_before: str, mark: pathlib.Path, *
         pass
 
 
-def _vault_graphs() -> tuple[list[pathlib.Path], bool]:
-    """Графы установки с каталогом «Встречи» и полнота обхода. Не `graphs.all_graphs`: он молча
-    пропускает нечитаемый корень, а здесь неполный обход снял бы долг живой встречи (проверка
-    правок Opus, Haiku I1). Корня нет: iCloud — vault там просто не заведён (Sonnet C-1),
-    настроенный граф — том ушёл, обход неполный."""
-    found: list[pathlib.Path] = []
-    complete = True
-    for root in graphs.roots():
-        if not root.exists():
-            complete = complete and root == graphs.ICLOUD
-            continue
-        try:
-            entries = list(os.scandir(root))
-        except OSError:
-            complete = False
-            continue
-        found += [pathlib.Path(e.path) for e in entries
-                  if not e.name.startswith(".") and (pathlib.Path(e.path) / "Встречи").is_dir()]
-    return found, complete
-
-
 def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: bool, skip: str = "",
                     limit: int = 3, post=None, now=time.time) -> list[str]:
     """Долги переотправки других встреч — при любом прогоне ревизии: без
@@ -1338,8 +1317,8 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
     первыми; неоплаченный долг сдвигается в конец очереди (DS r3 I3);
     долг моложе DEBT_MIN_AGE — у живого отправителя, его не трогаем, а
     замок отправителя не ждём (DS r3 I2, GLM r3 I1). Свою встречу (`skip`)
-    не трогаем: её долг гасит сам прогон. Заметки нет в графе — долг
-    снимается: платить не по чему. Возвращает строки для лога. Внешняя память выключена
+    не трогаем: её долг гасит сам прогон. Заметку ищем в графе прогона, потом во всех графах
+    установки; не видно нигде — долг ждёт (снимает forget_meeting). Возвращает строки для лога. Внешняя память выключена
     (`enabled`, №249) — долги не трогаем: они остаются списком неотправленного."""
     if not enabled:
         return []
@@ -1356,24 +1335,20 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
         if float(now()) - mtime >= DEBT_MIN_AGE:
             ripe.append((mtime, p))
     out: list[str] = []
-    vault: tuple[list[pathlib.Path], bool] | None = None
+    others: list[pathlib.Path] | None = None
     for _, debt in sorted(ripe)[:limit]:
         stamp = debt.stem
         note: pathlib.Path | None = graph / "Встречи" / f"{stamp}.md"
         if not note.is_file():
             # каталог отметок один на установку, а проект уводит встречу в соседний граф
             # (финальный Opus C1 по №615 п. 8) — обход графов один раз за вызов
-            vault = vault or _vault_graphs()
-            note = next((n for g in vault[0] if (n := g / "Встречи" / f"{stamp}.md").is_file()), None)
+            others = graphs.all_graphs("Встречи") if others is None else others
+            note = next((n for g in others if (n := g / "Встречи" / f"{stamp}.md").is_file()), None)
         if note is None:
-            # «заметки нет» значит «встречу забыли», только если обход полный и каталог встреч
-            # своего графа на месте: том ушёл посреди прогона — долг ждёт (out3 DS I3)
-            if vault and vault[1] and (graph / "Встречи").is_dir():
-                _settle_debt(debt.with_suffix(".txt"))
-                out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
-                continue
-            out.append(f"долг памяти {stamp}: заметки нет, но обход неполный (нет каталога встреч графа "
-                       "или vault не читается) — ждёт")
+            # Заметки не видно — долг ждёт, а не снимается: «не видно» не отличить от «забыли»
+            # (iCloud выключен, том ушёл, корень не читается, граф переехал — проверка правок
+            # Opus, Sonnet и Haiku). Забытую встречу снимает forget_meeting вместе с долгом.
+            out.append(f"долг памяти {stamp}: заметки встречи не видно ни в одном графе — ждёт")
             try:
                 debt.touch()
             except OSError:
