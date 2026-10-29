@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import functools
 import random
 import re
 import secrets
@@ -472,6 +473,7 @@ def _lemmas(m, word: str) -> tuple[set[str], set[tuple[str, str]]]:
     return lemmas, cases
 
 
+@functools.lru_cache(maxsize=65536)
 def same_lexeme(word: str, node_word: str) -> bool:
     """Слово текста — форма слова узла: «Петра» — «Пётр», «Петров» — нет (n793-out10 C1).
     Для `pii_mask.build_forms(lexeme=…)`: канон узла — только его падежам. Разборы — только
@@ -483,6 +485,21 @@ def same_lexeme(word: str, node_word: str) -> bool:
         ps = m.parse(w)
         return {_e(p.normal_form) for p in ([p for p in ps if "plur" not in p.tag] or ps)}
     return bool(one(word) & one(node_word))
+
+
+#: части речи, которыми имя не бывает: глагол, наречие, служебные, междометие, местоимение
+_SPEECH_POS = frozenset(("VERB", "INFN", "GRND", "PRTS", "ADVB", "PRCL", "INTJ", "CONJ", "PREP", "NUMR",
+                         "PRED", "COMP", "NPRO"))
+_NAME_TAGS = frozenset(("Name", "Surn", "Patr"))
+
+
+@functools.lru_cache(maxsize=65536)
+def speech_word(word: str) -> bool:
+    """Слово по грамматике — речь: первый разбор — глагол, наречие, служебное слово, междометие,
+    и ни один разбор не имя («Вроде», «Угу», «Попроси»). Для `pii_mask.build_forms(speech=…)`:
+    сито спанов модели (№828, замер 29.10: 24 из 154 групп модели на 8 встречах)."""
+    ps = _load().parse(word)
+    return bool(ps) and ps[0].tag.POS in _SPEECH_POS and not any(_NAME_TAGS & p.tag.grammemes for p in ps)
 
 
 def _cases(m, word: str, gender: str | None) -> set[tuple[str, str]]:
