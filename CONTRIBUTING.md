@@ -423,11 +423,13 @@ address on every commit, and runs the guard from the main checkout, so a branch
 cannot weaken the gate it is pushed through. `--range BASE..HEAD` runs the same
 per-commit check by hand. Media files (images, audio, PDF) are judged by name
 only: text inside their metadata (EXIF, PDF author, audio tags) is not checked.
-A file counts as media only when both its suffix and its first bytes say so; a
+A file counts as media only when git treats it as binary and both its suffix
+and its first bytes say so; a
 document renamed to `.jpg` is not media, and text under a picture name is read
-as text. Any other file git treats as binary (archives, office documents, `.icns`
-icons, a text file with a NUL byte) and text that is not UTF-8 (cp1251 and other code
-pages are not guessed) cannot be checked and are refused; the maintainer lets a
+as text. Any other file git treats as binary (archives, office documents,
+`.icns` icons, a text file with a NUL byte) and text that is not UTF-8 (cp1251
+and other code pages are not guessed; a PDF without a NUL byte counts here)
+cannot be checked and are refused; the maintainer lets a
 specific version through by adding its blob hash, which the refusal prints, to
 `~/.config/charoite/blob_allow.txt`. A file name that is not UTF-8 is refused
 everywhere: rename the file. The maintainer's hook does not fetch: when

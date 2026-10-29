@@ -130,8 +130,10 @@ def git(*args: str, stdin: bytes | None = None, own_repo: bool = False) -> bytes
     env = {k: v for k, v in os.environ.items() if k not in _FOREIGN_REPO_ENV} if own_repo else None
     p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin, env=env)
     if p.returncode != 0:
-        err = re.sub(r"//[^/@\s]*@", "//", p.stderr.decode("utf-8", "replace").strip())   # логин и токен адреса
-        raise GitError(f"git {' '.join(args[:2])}: {_clip(err, 300) or f'код {p.returncode}'}")
+        err = p.stderr.decode("utf-8", "replace").strip()
+        # логин и токен адреса — и в выводе git, и в аргументах (выход out2, I2)
+        raise GitError(re.sub(r"//[^/@\s]*@", "//",
+                              f"git {' '.join(args[:2])}: {_clip(err, 300) or f'код {p.returncode}'}"))
     return p.stdout
 
 
@@ -180,24 +182,31 @@ class NotUtf8(Exception):
 
 def tree_text(f: pathlib.Path, data: bytes) -> str | None:
     """Текст файла дерева для суда. UTF-8 — текст (нулевой байт не помеха: строки
-    читаются, вход №570 S-I5); медиа и двоичное (NUL в первых 8000 байт, как у git)
-    — None, в дереве как прежде: двоичное отказывает покоммитный страж. Иначе —
+    читаются, вход №570 S-I5); двоичное (NUL в первых 8000 байт, как у git) —
+    None, в дереве как прежде: двоичное и медиа решает покоммитный страж. Иначе —
     текст в чужой кодировке: `NotUtf8` с хешем блоба, если его версии нет в
-    списке владельца. Имя не в UTF-8 — `NotUtf8` всегда (выход out1 №570, C1).
-    Хеш считает git: формат объектов репозитория знает он (sha1 или sha256)."""
-    if opaque(str(f)):
-        raise NotUtf8(f"{clean(str(f))}: имя {NOT_UTF8} — переименуй")
+    списке владельца. Подпись медиа здесь не решает: подпись в начале и cp1251
+    за ней — текст, который никто не прочёл (выход out2, Haiku C1); PDF без NUL
+    выходит по хешу. Хеш считает git: формат объектов знает он (sha1 или sha256)."""
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         pass
-    if media(f.name, data[:MEDIA_HEAD]) or b"\0" in data[:8000]:
+    if b"\0" in data[:8000]:
         return None
     blob = git("hash-object", "--stdin", stdin=data).decode().strip()
     if blob in allowed_blobs():
         return None
     raise NotUtf8(f"{f}: {NOT_UTF8} — сопровождающий пропускает версию строкой {blob} "
                   f"в {blob_allow_path()}")
+
+
+def tree_read(f: pathlib.Path, read=lambda f: f.read_bytes()) -> str | None:
+    """`tree_text` файла дерева; имя не в UTF-8 — `NotUtf8` до чтения: такой путь
+    APFS не откроет, и `OSError` прятал бы файл (выход out2, M1)."""
+    if opaque(str(f)):
+        raise NotUtf8(f"{clean(str(f))}: имя {NOT_UTF8} — переименуй")
+    return tree_text(f, read(f))
 
 
 def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]:
@@ -211,7 +220,7 @@ def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]
     hits: list[str] = []
     for f in files:
         try:
-            text = tree_text(f, f.read_bytes())
+            text = tree_read(f)
         except OSError:
             continue        # удалённый файл — не наша забота
         except NotUtf8 as e:
@@ -269,7 +278,7 @@ def scan_public(files: list[pathlib.Path]) -> list[str]:
     texts: list[tuple[pathlib.Path, str]] = []
     for f in files:
         try:
-            text = tree_text(f, f.read_bytes())
+            text = tree_read(f)
         except OSError:
             continue
         except NotUtf8 as e:
@@ -631,7 +640,8 @@ def people_hits(records: list[tuple[str, str]]) -> list[tuple[int, int | None]]:
     gate = people_gate()
     if not gate.is_file():
         raise PeopleGateError(f"нет гейта имён {gate}")
-    payload = [[str(i), text] for i, (_place, text) in enumerate(records)]
+    # Путь и строка не в UTF-8 несут суррогаты — JSON их не кодирует (выход out2, I1).
+    payload = [[str(i), clean(text)] for i, (_place, text) in enumerate(records)]
     digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     try:
         p = subprocess.run([sys.executable, "-I", str(gate), "--people-scan"], input=json.dumps(payload),
@@ -756,8 +766,8 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         fresh = new_objects(revs) if fresh is None else fresh
         if blob not in fresh:
             continue                     # этот блоб уже опубликован
-        if media(name, blob_head(blob)):
-            continue                     # PDF без NUL git показывает текстом (out1 I1)
+        if why == "двоичный" and media(name, blob_head(blob)):
+            continue                     # подпись решает только для двоичного (out2, Haiku C1)
         allowed = allowed_blobs() if allowed is None else allowed
         if blob not in allowed:
             hits.append(f"{sha[:9]} {mask(name)} ({why}): содержимое не проверить — "
@@ -1042,7 +1052,7 @@ def _people_files(files: list[pathlib.Path], read, also_paths: list[pathlib.Path
         records.append(("", f.as_posix()))
         where.append((f, True))
         try:
-            text = tree_text(f, read(f))
+            text = tree_read(f, read)
         except (OSError, GitError, NotUtf8):
             continue        # удалённый файл; не-UTF-8 отказывает проход маркеров
         if text is not None:
@@ -1241,7 +1251,7 @@ def _run(a: argparse.Namespace) -> int:
                 hits.append(f"{clean(name)} ({NOT_UTF8}): объект в индексе не найден")
                 continue
             blob = git("rev-parse", f":{name}").decode().strip()
-            if blob not in allowed and not media(name, blob_head(blob)):
+            if blob not in allowed:
                 hits.append(f"{clean(name)} ({NOT_UTF8}): сопровождающий пропускает версию "
                             f"строкой {blob} в {blob_allow_path()}")
 

@@ -916,7 +916,9 @@ def test_unknown_patch_header_is_a_refusal():
         list(guard.parse_patch("diff --git a/x c/x\n+++ c/x\n@@ -0,0 +1 @@\n+y\n", "s"))
 
 
-def test_binary_whose_name_git_cannot_hand_back_is_a_refusal(repo):
+def test_binary_whose_name_is_not_utf8_is_refused_by_name_and_content(repo):
+    """Раньше имя с U+FFFD git не отдавал — отказ «не найден»; теперь путь без
+    потерь (выход out1 №570, C1): отказ по имени и по содержимому с хешем."""
     blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo.work, env=repo.env,
                           input=b"\x00bin", capture_output=True).stdout.decode().strip()
     subprocess.run(["git", "update-index", "--add", "--cacheinfo",
@@ -926,8 +928,8 @@ def test_binary_whose_name_git_cannot_hand_back_is_a_refusal(repo):
         env=repo.env)
     sha = repo.head()
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert p.returncode == 1 and f"{sha[:9]} " in p.stderr and "не найден" in p.stderr, \
-        p.stdout + p.stderr
+    assert p.returncode == 1 and f"{sha[:9]} имя файла" in p.stderr, p.stdout + p.stderr
+    assert "(двоичный): содержимое не проверить" in p.stderr and blob in p.stderr, p.stderr
 
 
 def test_tree_scan_normalizes_nfd(tmp_path, monkeypatch):
@@ -1209,9 +1211,9 @@ def test_non_utf8_path_in_a_patch_keeps_its_bytes():
 
 def test_git_error_does_not_show_url_credentials(repo, monkeypatch):
     monkeypatch.chdir(repo.work)
-    with pytest.raises(guard.GitError) as e:
+    with pytest.raises(guard.GitError) as e:     # адрес и в аргументах, и в выводе git
         guard.git("rev-parse", "https://" + "u:" + "tok" + "@example.com/r.git")
-    assert "tok" not in str(e.value) and "example.com" in str(e.value), str(e.value)
+    assert "tok" not in str(e.value) and "u:" not in str(e.value), str(e.value)
 
 
 def test_non_utf8_ref_name_on_stdin_is_a_finding(repo):
@@ -1264,7 +1266,10 @@ def test_non_utf8_file_name_in_a_commit_is_refused(repo):
     subprocess.run(["git", "update-index", "--add", "--cacheinfo",
                     b"100644," + blob.stdout.strip().encode() + b"," + name],
                    cwd=repo.work, env=repo.env, check=True, capture_output=True)
-    sha = repo.commit("cp1251 name")
+    # Без `add -A` хелпера: файла на диске нет, add снял бы запись из индекса.
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "commit", "-qm", "name",
+        env=repo.env)
+    sha = repo.head()
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
     assert p.returncode == 1, p.stderr
     assert f"{sha[:9]} имя файла" in p.stderr and guard.NOT_UTF8 in p.stderr, p.stderr
@@ -1283,17 +1288,44 @@ def test_non_utf8_file_name_in_the_tree_is_refused(repo):
     assert p.returncode == 1 and f"имя {guard.NOT_UTF8}" in p.stderr, p.stdout + p.stderr
 
 
-def test_pdf_without_nul_passes_every_mode(repo):
+def test_pdf_without_nul_is_refused_with_its_hash_and_allowed_by_it(repo):
     """git показывает текстом PDF без NUL; высокие байты заголовка — не UTF-8.
-    Медиа решает подпись в обоих путях (выход out1, I1: на ветке был отказ)."""
+    Подпись решает только для двоичного (выход out2, Haiku C1): PDF без NUL
+    выходит по хешу во всех режимах, а не по первым байтам, которые пишет автор."""
     (repo.work / "doc.pdf").write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< >>\nendobj\n")
-    git(repo.work, "add", "doc.pdf", env=repo.env)
-    p = guard_run(repo.work, env=repo.env)
-    assert p.returncode == 0, p.stdout + p.stderr
-    repo.commit("pdf")
+    sha = repo.commit("pdf")
+    for args in (("--range", f"{repo.base}..HEAD"), ("--all",)):
+        p = guard_run(repo.work, *args, env=repo.env)
+        assert p.returncode == 1 and "doc.pdf" in p.stderr, (args, p.stdout + p.stderr)
+    _allow(repo, git(repo.work, "rev-parse", f"{sha}:doc.pdf", env=repo.env).stdout.strip())
     for args in (("--range", f"{repo.base}..HEAD"), ("--all",)):
         p = guard_run(repo.work, *args, env=repo.env)
         assert p.returncode == 0, (args, p.stdout + p.stderr)
+
+
+def test_cp1251_behind_a_picture_signature_is_refused(repo):
+    """Подпись PNG в начале и cp1251 за ней, без NUL: на main и до out2 — код 0."""
+    (repo.work / "x.jpg").write_bytes(b"\x89PNG\r\n\x1a\n" + f"{MARKER}\n".encode("cp1251"))
+    repo.commit("fake png")
+    for args in (("--range", f"{repo.base}..HEAD"), ("--all",)):
+        p = guard_run(repo.work, *args, env=repo.env)
+        assert p.returncode == 1 and "x.jpg" in p.stderr, (args, p.stdout + p.stderr)
+
+
+def test_non_utf8_file_name_reaches_the_people_gate_without_a_traceback(repo):
+    """Суррогаты пути не кодируются в JSON гейта имён — трасса вместо находки
+    на каждом коммите владельца (выход out2, I1)."""
+    env = _owner_env(repo)
+    blob = git(repo.work, "hash-object", "-w", "--stdin", env=env)
+    subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                    b"100644," + blob.stdout.strip().encode() + b",x\xff.md"],
+                   cwd=repo.work, env=env, check=True, capture_output=True)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "commit", "-qm", "name", env=env)
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=env)
+    assert p.returncode == 1 and "Traceback" not in p.stderr, p.stderr
+    assert "имя файла" in p.stderr and guard.NOT_UTF8 in p.stderr, p.stderr
+    p = guard_run(repo.work, "--all", env=env)
+    assert p.returncode == 1 and "Traceback" not in p.stderr and f"имя {guard.NOT_UTF8}" in p.stderr, p.stderr
 
 
 def test_cp1251_text_under_an_mp3_name_is_refused(repo):
