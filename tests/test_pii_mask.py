@@ -1088,13 +1088,20 @@ def test_node_with_a_label_keeps_the_name_and_drops_the_label():
     assert not any("собесед" in e.words[0].lower() for e in forms.entries)
     m = pm.mask("Собеседник 3: да. Иван и Петров пришли", forms)
     assert m.text.startswith("Собеседник 3: да.") and m.replaced == 2
-    # вложенная скобка и пометка у системы (n828-out3 DS-I2, M1 всех голов)
-    forms = _forms(pm.NodeForms("Собеседник 4 (Аристарх (Чебуреков))"),
-                   pm.NodeForms("Собеседник 5, муж", person=False), known=_w("муж"))
+    # вложенная скобка (n828-out3 DS-I2)
+    forms = _forms(pm.NodeForms("Собеседник 4 (Аристарх (Чебуреков))"))
     # полноширинная запятая — та же метка (n828-out4 Sonnet I1, DS-I2)
     assert not any("собесед" in e.words[0] for e in _forms(pm.NodeForms("Собеседник 5，Иван")).entries)
     assert pm.mask("Аристарх и Чебуреков пришли", forms).replaced == 2
-    assert not any(e.words[0] == "муж" for e in forms.entries)
+
+
+@pytest.mark.parametrize("node", ["Спикер", "Участник", "Speaker"])
+def test_system_node_named_like_a_label_is_a_name_as_on_main(node):
+    # метку разбирают только у людей; система «Спикер» — имя, как на main 63f98d13 (n828-out6 Haiku C1:
+    # разбор метки у системы снял её единственную форму)
+    forms = _forms(pm.NodeForms(node, person=False))
+    assert [e.words for e in forms.entries if e.words[0].lower() == node.lower()]
+    assert pm.mask(f"{node} упал", forms).replaced == 1
 
 
 @pytest.mark.parametrize("node", ["Собеседник 5（Иван）", "Speaker 5 (Ivan）", "Иван（Собеседник 5）",
