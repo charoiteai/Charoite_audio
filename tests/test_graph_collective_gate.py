@@ -602,3 +602,141 @@ def test_the_debrief_is_the_one_model_call_named_by_main(tmp_path, monkeypatch):
     graph = _graph(tmp_path)
     _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Иван Петров")]}, llm=_Model)
     assert seen == [("untagged:graph_updater.main", "stack")]
+
+
+# --- №835: подстрока выбрала одного из тёзок ------------------------------------------
+# Имена не короче пяти букв: проход 3 короче не смотрит, и «Пётр» держится затвором и без №835.
+_NAMESAKES = ("Люди/Алексей Ан", "Люди/Алексей Воронцовский", "Люди/Лебедев Алексей")
+
+
+def test_substring_reports_that_it_guessed(tmp_path):
+    """Фильтр длины пропускает из трёх тёзок одного — поиск отдаёт его и говорит, что угадал;
+    точное имя, псевдоним и падеж угадыванием не считаются."""
+    graph = _graph(tmp_path, *_NAMESAKES)
+    _node(graph, "Люди/Коля")
+    _node(graph, "Люди/Иван Иванов", 'aliases: ["Ванечка"]\n')
+    guessed: list[bool] = []
+    assert g.find_canonical(graph, "Алексей", folder="Люди", guessed=guessed) == graph / "Люди" / "Алексей Ан.md"
+    assert guessed == [True]
+    for name, stem in (("Алексей Ан", "Алексей Ан"), ("Ванечка", "Иван Иванов"), ("Коль", "Коля")):
+        guessed = []
+        assert g.find_canonical(graph, name, folder="Люди", guessed=guessed) == graph / "Люди" / f"{stem}.md"
+        assert guessed == [], name
+    (graph / "Люди" / "Алексей Ан.md").write_text("# Алексей Ан → [[Люди/Нет]]\n", encoding="utf-8")
+    guessed = []
+    assert g.find_canonical(graph, "Алексей", folder="Люди", guessed=guessed) is None
+    assert guessed == [], "канон заглушки исчез — ответа нет, догадки тоже"
+
+
+def test_bare_name_guessed_among_namesakes_is_held(tmp_path):
+    """28.10: «Алексей» сел в узел того тёзки, чью фамилию пропустил фильтр длины.
+    Затвор судит входное имя — строка со всеми тёзками."""
+    graph = _graph(tmp_path, *_NAMESAKES)
+    assert _held(graph, ["Алексей"]) == {"алексей": sorted(_NAMESAKES)}
+
+
+def test_sole_namesake_found_by_substring_keeps_the_link(tmp_path):
+    """Фамилия при единственном её носителе — не догадка: «Петров» → «Иван Петров»."""
+    graph = _graph(tmp_path, "Люди/Иван Петров", "Люди/Иван Сидоров")
+    assert g.find_canonical(graph, "Петров", folder="Люди") == graph / "Люди" / "Иван Петров.md"
+    assert _held(graph, ["Петров"]) == {}
+
+
+def test_namesake_born_in_the_meeting_makes_the_guess_ambiguous(tmp_path):
+    """В графе один «Алексей Ан», но встреча принесла и «Алексей Сидоров» — тёзок двое."""
+    graph = _graph(tmp_path, "Люди/Алексей Ан")
+    assert _held(graph, ["Алексей"]) == {}
+    assert _held(graph, ["Алексей", "Алексей Сидоров"]) == {"алексей": ["Люди/Алексей Ан", "Люди/Алексей Сидоров"]}
+
+
+def test_guessed_namesake_and_owner(tmp_path):
+    """Угаданный тёзка и владелец — как голое имя без цели (test_owner_is_counted_once):
+    тёзка владельца делает имя сборным, в чей бы узел ни ушла подстрока (n835-out1 DS I1,
+    Haiku C1); угаданный узел владельца встаёт в кандидаты ссылкой (n835-out3 DS C1);
+    владелец без других тёзок — ссылка в его узел."""
+    pair = ("Люди/Алексей Ан", "Люди/Алексей Воронцовский")
+    graph = _graph(tmp_path, *pair)
+    assert g.find_canonical(graph, "Алексей", folder="Люди") == graph / "Люди" / "Алексей Ан.md"
+    for owner, cands in (("Алексей Воронцовский", ["Люди/Алексей Ан"]),
+                         ("Алексей Ан", list(pair)), ("", list(pair))):
+        got = g.collective_held(graph, [("Алексей", "Люди")], owner=owner, born=["Алексей"])
+        assert got == {("алексей", "Люди"): ("Алексей", cands, "")}, (owner, got)
+    # узел владельца — кандидат только когда поиск привёл в него: голое «Саша» без цели — как в №611
+    graph3 = _graph(tmp_path / "саша", "Люди/Саша Образцов", "Люди/Саша Сидоров")
+    assert _held(graph3, ["Саша"], owner="Саша Образцов") == {"саша": ["Люди/Саша Сидоров"]}
+    graph2 = _graph(tmp_path / "один", "Люди/Алексей Ан")
+    assert _held(graph2, ["Алексей"], owner="Алексей Ан") == {}
+
+
+def test_guess_does_not_release_a_collective_target(tmp_path):
+    """Подстрока угадала сборный «Алекс» (тёзка «Алекс Смит»), а единственного носителя
+    «Алексей» снял владелец: база держала цель, ветка не отпускает (n835-opus C1)."""
+    graph = _graph(tmp_path, "Люди/Алексей Воронцовский", "Люди/Алекс", "Люди/Алекс Смит")
+    assert g.find_canonical(graph, "Алексей", folder="Люди") == graph / "Люди" / "Алекс.md"
+    got = g.collective_held(graph, [("Алексей", "Люди")], owner="Алексей Воронцовский", born=["Алексей"])
+    assert got == {("алексей", "Люди"): ("Алексей", ["Люди/Алекс Смит"], "Люди/Алекс")}
+    # сборные оба: кандидаты — тёзки и входного имени, и цели (n835-s-after-opus I1)
+    _node(graph, "Люди/Алексей Ермолаев")
+    for owner, alexeys in (("Алексей Воронцовский", ["Люди/Алексей Ермолаев"]),
+                           ("", ["Люди/Алексей Воронцовский", "Люди/Алексей Ермолаев"])):
+        got = g.collective_held(graph, [("Алексей", "Люди")], owner=owner, born=["Алексей"])
+        assert got == {("алексей", "Люди"): ("Алексей", ["Люди/Алекс Смит", *alexeys], "Люди/Алекс")}, owner
+
+
+def test_guess_only_adds_to_the_hold_of_the_base(tmp_path, monkeypatch):
+    """Свойство №835: догадка подстроки только ДОБАВЛЯЕТ — что держал прежний путь (поиск без
+    признака `guessed`, то есть судим найденную цель), то держится и теперь, и каждая его ссылка
+    остаётся среди кандидатов. Перебор графов из шести узлов, трёх владельцев и трёх имён ловит
+    весь класс «потеряли против базы» (n835-opus C1, n835-s-after-opus I1)."""
+    import itertools
+    pool = ("Алексей Ан", "Алексей Воронцовский", "Лебедев Алексей", "Алекс", "Алекс Смит", "Смит")
+    owners = ("", "Алексей Ан", "Алексей Воронцовский")
+    inputs = ("Алексей", "Алекс", "Смит")
+    real = g.find_canonical
+
+    def base_find(graph, name, ambiguous=None, folder=None, guessed=None):
+        return real(graph, name, ambiguous, folder)
+
+    checked = grew = 0
+    for r in range(1, len(pool) + 1):
+        for nodes in itertools.combinations(pool, r):
+            graph = _graph(tmp_path / f"{r}-{'-'.join(nodes)}", *(f"Люди/{n}" for n in nodes))
+            pairs = [(n, "Люди") for n in inputs]
+            for owner in owners:
+                now = g.collective_held(graph, pairs, owner=owner, born=list(inputs))
+                with monkeypatch.context() as m:
+                    m.setattr(g, "find_canonical", base_find)
+                    before = g.collective_held(graph, pairs, owner=owner, born=list(inputs))
+                for k, (_, cands, _) in before.items():
+                    assert k in now, (nodes, owner, k, "удержание базы потеряно")
+                    assert set(cands) <= set(now[k][1]), (nodes, owner, k, cands, now[k][1])
+                checked += len(before)
+                grew += len(now) - len(before)
+    assert checked > 0 and grew > 0, "перебор пуст или догадка ничего не держит — свойство вакуумно"
+
+
+def test_alias_beats_namesakes(tmp_path):
+    """Псевдоним записал человек — это не догадка, затвор его не трогает."""
+    graph = _graph(tmp_path, "Люди/Алексей Воронцовский", "Люди/Лебедев Алексей")
+    _node(graph, "Люди/Алексей Ан", 'aliases: ["Алексей"]\n')
+    assert _held(graph, ["Алексей"]) == {}
+
+
+def test_guessed_target_outside_people_is_not_held(tmp_path):
+    """Подстрока без папки нашла систему: тёзки-люди её ссылку не отнимают."""
+    graph = _graph(tmp_path, "Системы/Сокол-М", "Люди/Сокол Александрович", "Люди/Сокол Валерьянович")
+    assert g.find_canonical(graph, "Сокол") == graph / "Системы" / "Сокол-М.md"
+    got = g.collective_held(graph, [("Сокол", None)], owner="")
+    assert got == {}
+
+
+def test_main_does_not_write_the_meeting_into_a_guessed_namesake(tmp_path, monkeypatch):
+    graph = _graph(tmp_path, *_NAMESAKES)
+    target = graph / "Люди" / "Алексей Ан.md"
+    before = target.read_bytes()
+    note = _meeting(tmp_path, monkeypatch, graph, {"люди": [_person("Алексей"), _person("Гоша")]})
+    assert target.read_bytes() == before, "чужой узел не тронут"
+    assert not (graph / "Люди" / "Алексей.md").exists(), "голого узла нет"
+    assert "- Алексей — разработчик: сроки релиза _(узел не выбран: голое имя при живых тёзках: " in note, \
+        "угаданный тёзка — в кандидатах, второй раз строка его не называет"
+    assert "\n- [[Люди/Алексей Ан|" not in note, "участник не ссылается на тёзку"

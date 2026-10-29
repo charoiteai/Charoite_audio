@@ -1876,16 +1876,16 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
 def held_note(cands: list[str], via: str = "") -> str:
     """Хвост строки участника со сборным именем: узла нет, кандидаты — ссылками,
     чтобы Obsidian связал встречу с ними, а не со сборным узлом (№611). `via` —
-    сборный узел, к которому поиск привёл другое написание («Владимир Попов» →
-    «Владимир»): без него причина «голое имя» не читается у полного имени
-    (n611-out2 DS M3). Причина в журнале не меняется — она ключ пары (№236)."""
+    узел, к которому привёл поиск, если его нет среди кандидатов: сборный, куда
+    пришло другое написание («Владимир Попов» → «Владимир»), — без него причина
+    «голое имя» не читается у полного имени (n611-out2 DS M3). Причина в журнале не меняется — она ключ пары (№236)."""
     tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
     return f"{_HELD_PERSON}{_held_lead(via)}{_HELD_WHY['collective']}{tail})_"
 
 
 def _held_lead(via: str) -> str:
-    """Начало причины удержания у имени, которое поиск привёл в сборный узел другим
-    написанием, — одно для участника и сущности (n611-out3 DS M2)."""
+    """Начало причины удержания у имени, которое поиск привёл в узел не из списка
+    кандидатов, — одно для участника и сущности (n611-out3 DS M2)."""
     return f"поиск ведёт в {via.split('/', 1)[-1]} — " if via else ""
 
 
@@ -1964,7 +1964,8 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> 
 
 def find_canonical(graph: pathlib.Path, name: str,
                    ambiguous: list[str] | None = None,
-                   folder: str | None = None) -> pathlib.Path | None:
+                   folder: str | None = None,
+                   guessed: list[bool] | None = None) -> pathlib.Path | None:
     """Ищет существующий узел: точное имя или имя-подстрока (система → ИС 1494 система).
 
     Если подходящих несколько — не гадаем и возвращаем None (новый узел): приклеить
@@ -1977,9 +1978,17 @@ def find_canonical(graph: pathlib.Path, name: str,
     ведёт к канону: по точному имени проход 1 находил именно заглушку, и
     `upsert_entity` дописывал встречу в мёртвый файл (DS F3, аудит памяти 07.09);
     для Ядер то же давно делает `resolve_core_path`. Канон заглушки исчез — узла нет.
+
+    `guessed` получает True, если ответ дала подстрока (проход 3), а не имя, ключ,
+    псевдоним или падеж: единственный кандидат там бывает и потому, что фильтр длины
+    отрезал остальных тёзок. Догадка ли это — судит затвор сборных имён (№835).
+    Ответа нет (канон заглушки исчез) — нет и догадки (n835-opus M1).
     """
-    p = _find_canonical_raw(graph, name, ambiguous, folder)
-    return follow_stubs(graph, p) if p is not None else None
+    p = _find_canonical_raw(graph, name, ambiguous, folder, guessed)
+    found = follow_stubs(graph, p) if p is not None else None
+    if found is None and guessed is not None:
+        guessed.clear()
+    return found
 
 
 def _journal_graph_event(kind: str, what: str, meeting_link: str) -> None:
@@ -2070,7 +2079,8 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path,
 
 def _find_canonical_raw(graph: pathlib.Path, name: str,
                         ambiguous: list[str] | None,
-                        folder: str | None) -> pathlib.Path | None:
+                        folder: str | None,
+                        guessed: list[bool] | None = None) -> pathlib.Path | None:
     n = safe_name(name).casefold()
     key = name_key(name)
     files = [f for place in NODE_FOLDERS if (graph / place).exists()
@@ -2156,6 +2166,8 @@ def _find_canonical_raw(graph: pathlib.Path, name: str,
         if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
             candidates.append(f)
     if len(candidates) == 1:
+        if guessed is not None:
+            guessed.append(True)
         return candidates[0]
     if candidates and ambiguous is not None:
         ambiguous.extend(f.stem for f in candidates)
@@ -2231,7 +2243,8 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
                     born: list[str] = (),
                     ) -> dict[tuple[str, str | None], tuple[str, list[str], str]]:
     """Имена встречи, которые не пишутся в узел: `(name_key, папка)` → (имя,
-    кандидаты «Люди/X», сборный узел поиска — если имя пришло в него другим написанием).
+    кандидаты «Люди/X», узел, куда привёл поиск, — если его ключ не равен входному и
+    в кандидатах его нет).
 
     Голое имя при живых тёзках — сборный узел: каждый «Саша» любой встречи садился
     в `Люди/Саша`, и под ним копились факты разных людей (№611; замер 27.10 — 42
@@ -2239,12 +2252,18 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
     (`names` — пары «имя, папка»: люди — «Люди», сущность — папка типа, конец
     связи — без папки), а судим найденную цель: «Саш», псевдоним на самом сборном и
     связь без папки приходят в сборный обходом, а не входным именем (n611-in2 S-C1,
-    n611-in3 S-C1, S-C3). Цели нет — судим входное имя: голый узел при живом
-    полном не рождается. Цель вне папок людей — как раньше, её видит доктор
+    n611-in3 S-C1, S-C3). Цели нет — судим входное имя: голый узел при живом полном
+    не рождается. Цель угадала подстрока (`guessed`), а у входного имени есть тёзки
+    кроме неё — тоже судим входное имя: голое имя не садится в узел одного из тёзок
+    (№835). Соперники цели — все живые носители имени, узел владельца тоже: владельца
+    снимает только порог `is_collective` (n835-out1 DS I1). Если подстрока угадала
+    узел владельца, он встаёт в кандидаты: встреча в него не пишется (№611), но
+    строка ссылается на него, и журнал его предлагает (n835-out3 DS C1, Haiku C1).
+    Цель вне папок людей — как раньше, её видит доктор
     (`people_in_systems`; n611-in3 DS C2). Порог — `is_collective`, один с доктором.
 
-    Таблица строится ДО записи встречи: `born` — многословные имена людей этой же
-    встречи, тёзки наравне с живыми узлами (n611-in3 Sonnet I1).
+    Таблица строится ДО записи встречи: `born` — имена людей этой же встречи;
+    многословные из них — тёзки наравне с живыми узлами (n611-in3 Sonnet I1).
 
     Ключ — с папкой места: поиск зависит от папки, и вердикт одного вхождения не
     снимает другое, у которого свой узел (n611-out1 DS I2 / Sonnet I1). Сущность,
@@ -2285,7 +2304,8 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
             if folder is not None and folder not in _PEOPLE_FOLDERS else ""
         if verdict == "resolved":
             continue
-        target = find_canonical(graph, clean, folder=folder)
+        guessed: list[bool] = []
+        target = find_canonical(graph, clean, folder=folder, guessed=guessed)
         if target is None and folder is not None and verdict in ("", "new", "existing"):
             # цепочка заглушки оборвана — писатель заведёт узел по её цели («Сашка →
             # [[Люди/Саша]]», а «Саша» разделён и удалён); судим этот узел (n611-final-opus C1).
@@ -2301,10 +2321,30 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
                 target = alt
         if target is not None and target.parent.name not in _PEOPLE_FOLDERS:
             continue
-        judged = target.stem if target is not None else clean
-        if is_collective(judged, index, owner=owner, tags=tags):
-            held[(key, folder)] = (clean, sorted(live[n] for n in bare_namesakes(judged, index, owner=owner, tags=tags)),
-                                   f"{target.parent.name}/{target.stem}" if name_key(judged) != key else "")
+        judged = [target.stem if target is not None else clean]
+        tpath = f"{target.parent.name}/{target.stem}" if target is not None else ""
+        rivals = {live[n] for n in bare_namesakes(clean, index, owner="", tags=tags)} if guessed else set()
+        if target is not None and rivals - {tpath}:
+            # подстрока выбрала одного из тёзок: «Алексей» при трёх «Алексей …» уходил в
+            # того, чью фамилию пропустил фильтр длины (№835). Единственный тёзка — сам
+            # найденный узел: фамилия «Петров» при одном «Иван Петров» — не догадка.
+            # Соперники цели считаются вместе с узлом владельца (n835-out1 DS I1): иначе
+            # при владельце «Алексей Воронцовский» единственным тёзкой оставался угаданный
+            # «Алексей Ан», и встреча шла в его узел. Держать ли — решает `is_collective`
+            # с владельцем, как для голого имени без цели. Входное имя судится ВДОБАВОК к
+            # цели: удержание только растёт — сборную цель («Алекс» при «Алекс Смит»)
+            # база держала, и соперник, которого снял владелец, её не отпускает (n835-opus C1)
+            judged.insert(0, clean)
+        hit = [j for j in judged if is_collective(j, index, owner=owner, tags=tags)]
+        if hit:
+            # сборные оба — кандидаты обоих: ссылки на тёзок цели, которые давала база,
+            # не теряются (n835-s-after-opus I1 / Haiku C1)
+            cands = sorted({live[n] for j in hit for n in bare_namesakes(j, index, owner=owner, tags=tags)})
+            if clean in hit and tpath in rivals and tpath not in cands:
+                # подстрока угадала узел владельца: порог его снял, а ссылка на него нужна
+                cands = sorted([*cands, tpath])
+            via = tpath if target is not None and name_key(target.stem) != key and tpath not in cands else ""
+            held[(key, folder)] = (clean, cands, via)
     return held
 
 
