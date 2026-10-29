@@ -645,6 +645,19 @@ def test_namesake_born_in_the_meeting_makes_the_guess_ambiguous(tmp_path):
     assert _held(graph, ["Алексей", "Алексей Сидоров"]) == {"алексей": ["Люди/Алексей Ан", "Люди/Алексей Сидоров"]}
 
 
+def test_guessed_namesake_and_owner(tmp_path):
+    """Угаданный тёзка и владелец — как голое имя без цели (test_owner_is_counted_once):
+    тёзка владельца делает имя сборным, в чей бы узел ни ушла подстрока (n835-out1 DS I1,
+    Haiku C1); владелец без других тёзок — ссылка в его узел."""
+    pair = ("Люди/Алексей Ан", "Люди/Алексей Воронцовский")
+    graph = _graph(tmp_path, *pair)
+    assert g.find_canonical(graph, "Алексей", folder="Люди") == graph / "Люди" / "Алексей Ан.md"
+    assert _held(graph, ["Алексей"], owner="Алексей Воронцовский") == {"алексей": ["Люди/Алексей Ан"]}
+    assert _held(graph, ["Алексей"], owner="Алексей Ан") == {"алексей": ["Люди/Алексей Воронцовский"]}
+    graph2 = _graph(tmp_path / "один", "Люди/Алексей Ан")
+    assert _held(graph2, ["Алексей"], owner="Алексей Ан") == {}
+
+
 def test_alias_beats_namesakes(tmp_path):
     """Псевдоним записал человек — это не догадка, затвор его не трогает."""
     graph = _graph(tmp_path, "Люди/Алексей Воронцовский", "Люди/Лебедев Алексей")

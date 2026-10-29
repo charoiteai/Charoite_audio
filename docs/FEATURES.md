@@ -210,7 +210,10 @@
    as a person, an entity or a link end: the meeting note keeps the line with
    the role, the contribution and links to the namesakes, and the name goes
    to `_Кандидаты.md`; the bare node itself stays as it was until a human
-   splits it. Speaker labels ("Собеседник N", "Speaker N") are
+   splits it. Nor does it land in the node of one namesake found only by a part
+   of the name ("Алексей" next to "Алексей Ан" and "Алексей Воронцовский"); a
+   surname that one person carries and an alias a human wrote still lead to
+   that person's node. Speaker labels ("Собеседник N", "Speaker N") are
    not people: they get neither a node nor a link, otherwise different people
    from different meetings would be glued into one file. Label nodes left by
    older versions are turned into plain text by
