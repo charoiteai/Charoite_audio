@@ -19,6 +19,7 @@ import pathlib
 import re
 import os
 import subprocess
+import time
 
 import pytest
 import yaml
@@ -726,13 +727,22 @@ def test_full_suite_helpers_read_the_run_lines():
     assert _pair(["-n", "4"], "-n", "4") and not _pair(["-n"], "-n", "4") and not _pair(["-n", "3"], "-n", "4")
 
 
-def test_macos_suite_runs_on_macos_and_its_retry_limit_is_defined():
+def test_macos_suite_runs_on_macos_and_its_retry_limit_works():
     """Mac-набор на PR (№832) держит то, ради чего заведён: раннер — macOS, а лимит
-    попытки `timeout N`, который читает сторож потолков, определён в самом шаге —
-    GNU `timeout` на macOS нет, и без функции цикл падал бы `command not found` под
-    видом «portaudio не поставился» (выходной круг n832-out1, Haiku M1, M3)."""
+    попытки `timeout N`, который читает сторож потолков, определён в самом шаге до
+    первого вызова и обрывает команду — GNU `timeout` на macOS нет, и без функции
+    цикл падал бы `command not found` под видом «portaudio не поставился»
+    (выходные круги n832-out1, Haiku M1, M3; n832-out2, Sonnet M1: судить поведение,
+    а не текст)."""
     job = _load("ci.yml")["jobs"]["tests-macos"]
     assert str(job["runs-on"]).startswith("macos-"), job["runs-on"]
-    step = next(s for s in job["steps"] if s.get("name") == "PortAudio")
-    assert re.search(r"\btimeout \d+", step["run"]), step["run"]
-    assert "timeout() {" in step["run"], "лимит попытки `timeout N` без своего определения"
+    step = next((s for s in job["steps"] if s.get("name") == "PortAudio"), None)
+    assert step, "в tests-macos нет шага PortAudio"
+    lines = step["run"].splitlines()
+    first_call = next(i for i, line in enumerate(lines) if re.search(r"\btimeout \d+", line))
+    defs = [line for line in lines[:first_call] if re.match(r"\s*timeout\s*\(\)\s*\{", line)]
+    assert len(defs) == 1, f"лимит попытки `timeout N` без своего определения выше вызова: {lines}"
+    started = time.monotonic()
+    out = subprocess.run(["bash", "-c", defs[0] + "\ntimeout 1 sleep 5"], capture_output=True, text=True,
+                         timeout=10)
+    assert out.returncode != 0 and time.monotonic() - started < 4, (out.returncode, out.stderr)
