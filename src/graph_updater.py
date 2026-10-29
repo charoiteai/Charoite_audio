@@ -1065,8 +1065,8 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
-    if covered == len(keyed):
-        _settle_debt(mark, own)
+    if covered == len(keyed) and own is not None:
+        _settle_debt(mark, own)    # долг не поставлен (OSError) — лежащий чужой (n615p8-key2, Haiku C-1)
     return n
 
 
@@ -1358,7 +1358,15 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
         stamp = debt.stem
         note = graph / "Встречи" / f"{stamp}.md"
         if not note.is_file():
-            _settle_debt(debt.with_suffix(".txt"))
+            # владельца перечитываем: пока шла очередь, отправитель мог увести долг в граф встречи
+            # (n615p8-key2, Sonnet I-1); mtime — до чтения, переписанный после него не снимется
+            try:
+                ns = debt.stat().st_mtime_ns
+            except OSError:
+                continue
+            if _debt_graph(debt) not in ("", key):
+                continue
+            _settle_debt(debt.with_suffix(".txt"), ns)
             out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
             continue
         out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(

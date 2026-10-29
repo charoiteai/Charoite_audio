@@ -459,3 +459,36 @@ def test_every_debt_writer_names_the_graph_and_the_debt_follows_the_meeting(tmp_
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
     assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=ok, graph=b) == 2
     assert len(calls) == 2 and not debt.exists(), "дославший всё повтор не погасил долг"
+
+
+def test_a_debt_led_away_mid_queue_or_left_unowned_by_a_failed_write_is_kept(tmp_path, monkeypatch):
+    """n615p8-key2. Sonnet I-1: владелец читался при сборе очереди, а снималось позже — отправитель
+    графа B успевал увести долг к себе, и граф A снимал его «заметки нет». Haiku C-1: долг отправителя
+    не поставлен (OSError) — полное покрытие не гасит лежащий чужой заказ."""
+    import os
+    sent = tmp_path / "brain_sent"
+    sent.mkdir()
+    a, b = tmp_path / "A", tmp_path / "B"
+    for graph in (a, b):
+        (graph / "Встречи").mkdir(parents=True)
+    (a / "Встречи" / "2026-09-01_1000.md").write_text(BEFORE.replace("2026-09-11_1533", "2026-09-01_1000"),
+                                                      encoding="utf-8")
+    first = g._set_debt(sent / "2026-09-01_1000.txt", a)
+    led = sent / "2026-09-02_1000.pending"
+    g._set_debt(led.with_suffix(".txt"), a)                     # встреча ушла в B, заметки в A нет
+    os.utime(sent / "2026-09-01_1000.pending", ns=(first - 10**9, first - 10**9))
+
+    def post(url, json, timeout):
+        if url.endswith("/forget"):
+            g._set_debt(led.with_suffix(".txt"), b)            # отправитель B посреди очереди A
+        return _Resp()
+
+    lines = g.pay_brain_debts(a, sent, enabled=True, post=post, now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
+    assert len(lines) == 1 and led.read_bytes() == (g._graph_key(b) + "\n").encode(), lines
+
+    mark = sent / "s.txt"
+    debt = mark.with_suffix(".pending")
+    g._set_debt(mark, a)                                        # заказ /forget ревизии
+    monkeypatch.setattr(g, "_set_debt", lambda *x, **k: None)
+    assert g.send_to_brain("s", "Т", [], [], ["D1"], mark, enabled=True, post=lambda *x, **k: _Resp(), graph=a) == 2
+    assert debt.exists(), "отправитель без своего долга снял чужой"
