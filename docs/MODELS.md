@@ -430,7 +430,8 @@ Rewordings of one decision (overlapping chunks, minutes read twice) are merged
 on the way out without a model call — `graph_decision_merge: true`, for
 `language: ru` only; off by default: short wordings can still merge different
 decisions. Both the merge and the second pass treat two lines as one decision only when
-their labels match exactly — numbers, 2–3-letter words like CRM and one-letter variants:
+their labels match exactly — numbers, 2–3-letter words like CRM and one-letter variants (except function letters such as
+«а», «в», «к», «с»: «option A» and «option B» still merge):
 a general line no longer swallows its refinements («… to CRM», «… to DWH»), at the cost of
 about 4 % more lines on the 17-meeting bench.
 
