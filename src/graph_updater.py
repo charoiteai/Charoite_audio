@@ -1077,14 +1077,13 @@ def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
 
 
 def _all_marked(mark: pathlib.Path, keyed: list[tuple[str, dict]]) -> bool:
-    """Весь состав уже в отметке нового формата — досылать нечего (выход n615p8-out3, DS I2)."""
+    """Весь состав уже в отметке — досылать нечего (выход n615p8-out3, DS I2). Ключи `id:` есть
+    только в отметке нового формата: прежние форматы и её отсутствие — «не всё»."""
     try:
-        lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
+        text = mark.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
-    if not (lines and lines[0].startswith("sent ")):
-        return False
-    done = {ln[3:] for ln in lines[1:] if ln.startswith("id:")}
+        text = ""
+    done = {ln[3:] for ln in text.splitlines() if ln.startswith("id:")}
     return all(k in done for k, _ in keyed)
 
 
@@ -1276,28 +1275,27 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     return f"память Чароита переотправлена после ревизии: снято решений {dropped}, ушло фактов {n}"
 
 
-def owe_brain_resend(note: pathlib.Path, note_before: str, mark: pathlib.Path, *, enabled: bool) -> bool:
+def owe_brain_resend(note: pathlib.Path, note_before: str, mark: pathlib.Path, *, enabled: bool) -> None:
     """Долг переотправки — в момент, когда ревизия изменила решения заметки, а не когда до
     отправки дойдёт очередь. Воркер ставит его под замком графа, сам шаг идёт после замка
     (выход n615p8-out1): сбой или kill между ними иначе терял переотправку без следа —
     этап ревизии уже «ok», и снятое решение оставалось в памяти (выход n615p8-out2, DS C1).
     Долг платит сам шаг (`resend_to_brain_after_review` видит `.pending`) или `pay_brain_debts`
-    следующего прогона. True — долг записан."""
+    следующего прогона. Долг записан — видно по файлу, возврата нет."""
     if not enabled:
-        return False
+        return
     try:
         after = note.read_text(encoding="utf-8")
     except OSError:
-        return False
+        return
     if note_decisions(note_before) == note_decisions(after):
-        return False
+        return
     pending = mark.with_suffix(".pending")
     try:
         pending.parent.mkdir(parents=True, exist_ok=True)
         pending.touch()
     except OSError:
-        return False
-    return True
+        pass
 
 
 def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: bool, skip: str = "",

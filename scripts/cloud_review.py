@@ -1762,7 +1762,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     except OSError as e:
                         lines.append(f"[cloud-review] указатель {folder} не записан ({e})\n")
                 checked = not v.failed
-                if published and note_path is not None:
+                if note_path is not None:
                     # долг памяти — сразу после записи заметки, а не через мост и доставку:
                     # смерть процесса между ними иначе оставляла ⛔ в графе без долга (out3, DS I1);
                     # второй вызов ниже ловит правки моста

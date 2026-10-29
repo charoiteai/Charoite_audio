@@ -3572,10 +3572,12 @@ def test_no_debt_when_the_review_left_decisions_alone_or_memory_is_off(tmp_path,
     note.write_text("## Решения\n- 📌 а\n", encoding="utf-8")
     mark = tmp_path / "sent" / "s.txt"
     owe = graph_updater.owe_brain_resend
-    assert owe(note, "## Решения\n- 📌 а\n", mark, enabled=True) is False
-    assert owe(note, "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=False) is False
+    owe(note, "## Решения\n- 📌 а\n", mark, enabled=True)
+    owe(note, "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=False)
+    owe(tmp_path / "нет.md", "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=True)
     assert not mark.with_suffix(".pending").exists()
-    assert owe(note, "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=True) is True
+    mark.parent.mkdir()                     # каталог отметок уже есть — не помеха долгу
+    owe(note, "## Решения\n- 📌 а\n- 📌 б\n", mark, enabled=True)
     assert mark.with_suffix(".pending").exists()
 
 
