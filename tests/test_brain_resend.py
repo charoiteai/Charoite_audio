@@ -294,3 +294,17 @@ def test_resend_after_review_sends_the_tail_appended_by_the_review(tmp_path):
     assert out == "память Чароита переотправлена после ревизии: снято решений 0, ушло фактов 9", out
     assert len(sent) == 9 and sent[-1].endswith("Дописанное решение 4"), sent
     assert mark.read_text(encoding="utf-8").startswith("sent 9/9\n")
+
+
+def test_rerun_of_a_meeting_sent_under_the_old_cut_sends_only_the_tail(tmp_path):
+    """Встреча, отправленная при срезе `[:6]`: повтор обработки досылает хвост решений по
+    ключам отметки, шапку (ключ `head`) второй раз не шлёт — не дубль (выход n615p8-out1)."""
+    decisions = [f"решение номер {i}" for i in range(9)]
+    keyed = g._meeting_facts("s", "Планёрка", [{"имя": "Иван"}], ["тема"], decisions)
+    mark = tmp_path / "s.txt"
+    mark.write_text("sent 7/7\n" + "".join(f"id:{k}\n" for k, _ in keyed[:7]) + "# Планёрка\n", encoding="utf-8")
+    sent: list[str] = []
+    n = g.send_to_brain("s", "Планёрка", [{"имя": "Иван"}], ["тема"], decisions, mark, enabled=True,
+                        post=lambda url, json, timeout: sent.append(json["text"]) or _Resp())
+    assert n == 3 and [t.rsplit(": ", 1)[1] for t in sent] == decisions[6:], sent
+    assert mark.read_text(encoding="utf-8").startswith("sent 10/10\n")

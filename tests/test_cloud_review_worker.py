@@ -3462,3 +3462,47 @@ def test_empty_workdir_refusal_is_an_error_code_and_sends_nothing(tmp_path, monk
     code, cap, rev, log = _masked_run(tmp_path, monkeypatch, graph, {"sufler": {"cloud_enrich": True}})
     assert code == cloud_review.RC_ERROR and "cmd" not in cap and not rev.exists()
     assert "маска не прошла" in log.read_text(encoding="utf-8")
+
+
+def test_resend_to_brain_runs_after_the_graph_lock_is_released(tmp_path, monkeypatch):
+    """Переотправка своей встречи в память — после замка графа (выход n615p8-out1, DS C1):
+    с №615 п. 8 в brain уходят все решения, и медленный эмбеддинг под замком держал бы
+    соседа дольше запаса LOCK_WAIT. Строка переотправки — в лог ревизии, как раньше."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    def resend(st, note, before, cfg):
+        with cloud_review.graph_lock(graph, wait=0) as free:
+            seen.append((st, note.name, free))
+        return "[cloud-review] память Чароита переотправлена после ревизии: проверка\n"
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    monkeypatch.setattr(cloud_review, "_resend_to_brain", resend)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "cloud_mask": False}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
+    assert seen == [(stamp, f"{stamp}.md", True)], "переотправка под замком графа или не вызвана"
+    assert "переотправлена после ревизии: проверка" in log.read_text(encoding="utf-8")
+
+
+def test_resend_failure_is_a_log_line_not_a_crash(tmp_path, monkeypatch):
+    log = tmp_path / "cloud.log"
+
+    def broken(*a):
+        raise OSError("диск")
+
+    monkeypatch.setattr(cloud_review, "_resend_to_brain", broken)
+    cloud_review._resend_and_log("s", tmp_path / "n.md", "", log, {})
+    assert log.read_text(encoding="utf-8") == "[cloud-review] память Чароита не переотправлена: диск\n"
+    monkeypatch.setattr(cloud_review, "_resend_to_brain", lambda *a: None)
+    cloud_review._resend_and_log("s", tmp_path / "n.md", "", log, {})
+    assert log.read_text(encoding="utf-8").count("\n") == 1, "память выключена — строки нет"
