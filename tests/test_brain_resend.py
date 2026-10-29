@@ -418,3 +418,23 @@ def test_a_rerun_fills_the_gap_but_leaves_an_ordered_debt_to_the_full_resend(tmp
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
     assert g.send_to_brain("s", "Т", [], [], ["D1", "D2"], mark, enabled=True, post=ok) == 1
     assert mark.read_text(encoding="utf-8").startswith("sent 3/3\n") and debt.exists()
+
+
+def test_a_debt_removed_by_forget_mid_walk_is_not_resurrected(tmp_path, monkeypatch):
+    """Третий круг Sonnet по правкам Opus (Sonnet I-1, Haiku C-1): forget_meeting снял долг,
+    пока шёл обход графов, — ветка «ждёт» не создаёт его заново."""
+    sent = tmp_path / "brain_sent"
+    sent.mkdir()
+    debt = sent / "2026-09-01_1000.pending"
+    debt.touch()
+    graph = tmp_path / "граф"
+    (graph / "Встречи").mkdir(parents=True)
+
+    def forgotten(marker):
+        debt.unlink()
+        return []
+
+    monkeypatch.setattr(g.graphs, "all_graphs", forgotten)
+    g.pay_brain_debts(graph, sent, enabled=True, post=lambda *a, **k: _Resp(),
+                      now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
+    assert not debt.exists(), "снятый forget долг воскрешён"

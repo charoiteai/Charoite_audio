@@ -1350,7 +1350,7 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
             # Opus, Sonnet и Haiku). Забытую встречу снимает forget_meeting вместе с долгом.
             out.append(f"долг памяти {stamp}: заметки встречи не видно ни в одном графе — ждёт")
             try:
-                debt.touch()
+                os.utime(debt)   # не touch: снятый соседом forget долг не воскрешать
             except OSError:
                 pass
             continue
@@ -1358,7 +1358,7 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
             stamp, note, "", debt.with_suffix(".txt"), post=post, enabled=enabled, lock_wait=0.0))
         if debt.exists():
             try:
-                debt.touch()          # не оплачен — в конец очереди, слот освобождается
+                os.utime(debt)        # не оплачен — в конец очереди; utime, а не touch: снятый долг не воскрешать
             except OSError:
                 pass
     return out
