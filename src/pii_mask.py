@@ -357,9 +357,9 @@ def build_forms(nodes: Iterable[NodeForms], *,
             capital = plain and words[0][:1].isupper() \
                 or kind == PERSON and not _distinctive(words[0], known)
             ent = Entry((base,), (tail,), kind, canon, capital=capital, exact=exact, source=(words[0],))
-            if kind == PERSON and not exact and base == _yo(words[0].lower()).rstrip("ь"):
-                # беглая гласная — у имени на согласную, с «ь» или без («Павел», «Журавель»); у «Веры»
-                # основа «вер» давала «вр» — «Вроде» (n828-opus C1)
+            if kind == PERSON and not exact and not _yo(words[0].lower()).endswith(tuple("аеиоуыэюя")):
+                # беглая гласная — по слову узла, не по обрезанной основе: у слова на гласную её нет
+                # («Вера» → «вр» ловило «Вроде»), у «Павел», «Журавель», «Евгений» — как на main (n828-opus C1)
                 for alt in _fleeting(base):
                     # запасная основа чужого имени — не форма этого («Олег» → «ольг» у «Ольги», n793-out2 C2);
                     # своя («Льва» псевдонимом у Льва) — уже форма узла, без узла её не дублировать (n793-out3 DS-M2)

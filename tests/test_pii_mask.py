@@ -590,6 +590,12 @@ def test_fleeting_vowel_before_soft_sign_is_masked(node, text, word):
     assert m.replaced == 1 and word not in m.text
 
 
+def test_no_fleeting_vowel_for_a_name_ending_in_a_vowel():
+    """«Вера» → запасная основа «вр» ловила «Вроде» — у слова на гласную беглой гласной нет; у «-ий» — как на main."""
+    assert pm.mask("Вроде пришли", _forms(pm.NodeForms("Вера"))).replaced == 0
+    assert ("евгн",) in {e.words for e in _forms(pm.NodeForms("Евгений")).entries}
+
+
 def test_name_word_in_the_middle_of_a_phrase_stays_a_name():
     """Гость «Вера» посреди фразы — имя, хоть «вера» и есть строчными (n793-out1 S-I5)."""
     t = pm.prepare("Пришла Вера, вера в успех. Вот так, вот.")
