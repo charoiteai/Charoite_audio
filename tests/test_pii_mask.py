@@ -1090,7 +1090,7 @@ def test_node_word_sees_a_second_source_of_the_same_form():
 
 
 def test_node_word_without_morphology_is_not_a_node():
-    """Словарь без лексемы — штатное состояние модуля: предикат не падает (n828-out8 DS-M3)."""
+    """Словарь без лексемы (тесты без pymorphy, поле `Forms.lexeme`): предикат не падает (n828-out8 DS-M3)."""
     forms = pm.build_forms([pm.NodeForms("Стори", person=False), pm.NodeForms("Стороны", person=False)],
                            known=_w("стороны"))
     assert not pm._node_word("сторон", forms)
