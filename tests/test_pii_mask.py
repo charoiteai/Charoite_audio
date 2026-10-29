@@ -1097,6 +1097,16 @@ def test_node_with_a_label_keeps_the_name_and_drops_the_label():
     assert not any(e.words[0] == "муж" for e in forms.entries)
 
 
+@pytest.mark.parametrize("node", ["Собеседник 5（Иван）", "Speaker 5 (Ivan）", "Иван（Собеседник 5）",
+                                  "Собеседник 5 (Иван", "Иван）, Собеседник 5"])
+def test_node_with_a_label_in_wide_or_hanging_brackets_keeps_only_the_name(node):
+    # полноширинная скобка при метке давала рекурсию без дна — отказ маски на чистом тексте,
+    # без метки — форму «собеседник»; висячая скобка — то же (n828-out5 C1 всех голов, Haiku I2)
+    forms = _forms(pm.NodeForms(node))
+    assert {e.words[0] for e in forms.entries} == {"ivan" if "Ivan" in node else "иван"}
+    assert pm.mask("Собеседник 3: да", forms).replaced == 0
+
+
 @pytest.mark.parametrize("line", ["- [ ] Вера пришла.", "2) Вера пришла.", "[10:41] Вера пришла."])
 def test_list_markup_at_line_start_is_not_evidence(line):
     forms = _forms(pm.NodeForms("Вера"), known=_w("вера"))

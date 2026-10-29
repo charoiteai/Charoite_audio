@@ -273,19 +273,25 @@ def build_forms(nodes: Iterable[NodeForms], *,
         # тоже её имя; пояснение строчными общими словами («(данные)», «(поле)») — нет, гейт
         # 26.10 дал на нём тысячи замен речи. У человека там чужие имена («Полина (упоминание
         # Светы)») — маскируются, но без узла: слить Свету с Полиной нельзя
-        inner = re.findall(r"\(([^()]*)\)|«([^«»]*)»", name)
+        # скобки обеих ширин, как `graph_names._LABEL_TAIL_RE`: ASCII-only оставлял «（Иван）» при
+        # метке, и `label` возвращал ту же строку — рекурсия без дна (n828-out5 C1)
+        paren = r"[(（]([^()（）]*)[)）]"
+        inner = re.findall(paren + r"|«([^«»]*)»", name)
         while inner:
             for a, b in inner:
                 if kind == PERSON or name_part(a or b, known):
                     add_name(a or b, kind, canon if kind == SYSTEM else None)
-            name = re.sub(r"\([^()]*\)|«[^«»]*»" if kind == PERSON else r"\([^()]*\)", " ", name)
+            name = re.sub(paren + r"|«[^«»]*»" if kind == PERSON else paren, " ", name)
             # вложенная скобка открывается, когда снята внутренняя: «Собеседник 4 (Аристарх
             # (Чебуреков))» терял «Аристарх» вместе с меткой (n828-out3 DS-I2)
-            inner = [(a, "") for a in re.findall(r"\(([^()]*)\)", name)]
-        rest = label(name) if label is not None else None
+            inner = [(a, "") for a in re.findall(paren, name)]
+        # висячая скобка после снятия парных — разделитель, как запятая: «Собеседник 5 (Иван»
+        # иначе не метка, и «Собеседник» шёл в имя
+        rest = label(re.sub(r"[()（）]", ",", name)) if label is not None else None
         if rest is not None:
             # метки и пометки диаризации долой, остальное — имя: «Собеседник 5, Иван» → «Иван»
-            # (n828-out2 I1); «Собеседник 5, муж» у системы давал форму «муж» (n828-out3 M1)
+            # (n828-out2 I1); «Собеседник 5, муж» у системы давал форму «муж» (n828-out3 M1).
+            # Часть всегда короче строки: скобок в ней нет, метка без скобки отброшена
             for part in rest:
                 add_name(part, kind, canon)
             # метка диаризации («Собеседник 5» заглушки «Коллега (Собеседник 5)») — не имя: форма
