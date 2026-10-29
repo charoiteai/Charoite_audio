@@ -161,9 +161,11 @@ def test_short_base_does_not_swallow_ordinary_words():
 
 
 def test_abbreviation_written_as_a_word_is_masked():
-    forms = _forms(pm.NodeForms("ОРИС", person=False))
+    forms = _forms(pm.NodeForms("ОРИС", person=False), known=_w("орисе"))
     m = pm.mask("в Орисе и в ОРИСа, но не в орисе", forms)
     assert m.replaced == 2
+    # без словаря строчное не подтверждено языком — маска (n828-out2 DS-I2)
+    assert pm.mask("в Орисе и в ОРИСа, но не в орисе", _forms(pm.NodeForms("ОРИС", person=False))).replaced == 3
 
 
 @pytest.mark.parametrize("text, word", [
@@ -1042,9 +1044,10 @@ def test_node_word_with_a_case_tail_is_always_the_node():
     # и обратно — «цод» при узле «ЦОДы»
     assert pm._inflected("спарками", "Спарк") and pm._inflected("цод", "ЦОДы")
     assert not pm._inflected("кору", "Кори")
-    forms = _forms(pm.NodeForms("Спарк", person=False), known=_w("спарками"))
-    entry = dataclasses.replace(forms.entries[0], capital=False)
-    assert not pm._other_word("спарками", entry, forms)
+    # узел-слово языка: строчный падеж — вхождение при заглавной посреди фразы, словарь лексем
+    # его может не узнать (n828-out2 DS-M6)
+    forms = _forms(pm.NodeForms("Спарк", person=False), known=_w("спарками"), lexeme=lambda _a, _b: False)
+    assert pm.mask("Вчера Спарк упал, спарками довольны", forms).replaced == 2
 
 
 def test_system_word_written_lowercase_follows_its_capital_in_the_text():
@@ -1055,12 +1058,21 @@ def test_system_word_written_lowercase_follows_its_capital_in_the_text():
     assert "а маяк снова" in pm.mask("Маяк упал. а маяк снова", forms).text
 
 
-@pytest.mark.parametrize("label,masked", [("Собеседник 1, муж", False), ("Собеседник 5, Иван", True)])
+@pytest.mark.parametrize("label,masked", [("Собеседник 1, муж", False), ("Собеседник 5, Иван", True),
+                                         ("Собеседник 5, саша", True), ("Собеседник 5 (Иван)", True)])
 def test_label_with_a_note_is_a_label_but_with_a_name_is_not(label, masked):
-    # запятая не делает меткой соседнее имя (n828-out1 DS-M7, Haiku I2)
+    # метка снимается, только если спан ею покрыт целиком (n828-out1 DS-M7, n828-out2 DS-M3, DS-M4)
     m = pm.mask(f"{label}: да", _forms(), [(0, len(label), pm.PERSON)])
-    assert ("Иван" not in m.text) if masked else m.text.startswith(label)
-    assert pm.mask("Петров пришёл", _forms(pm.NodeForms("Петров, участник"))).replaced == 1
+    assert (m.replaced == 1) if masked else m.text.startswith(label)
+
+
+def test_node_with_a_label_keeps_the_name_and_drops_the_label():
+    # «Собеседник 5, Иван» — имя «Иван», слово метки формой не становится (n828-out2 I1 всех голов)
+    forms = _forms(pm.NodeForms("Собеседник 5, Иван"), pm.NodeForms("Петров, участник"),
+                   known=_w("собеседник"))
+    assert not any("собесед" in e.words[0].lower() for e in forms.entries)
+    m = pm.mask("Собеседник 3: да. Иван и Петров пришли", forms)
+    assert m.text.startswith("Собеседник 3: да.") and m.replaced == 2
 
 
 @pytest.mark.parametrize("line", ["- [ ] Вера пришла.", "2) Вера пришла.", "[10:41] Вера пришла."])

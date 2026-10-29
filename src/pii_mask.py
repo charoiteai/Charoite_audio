@@ -206,6 +206,12 @@ def _words(name: str) -> list[str]:
     return _WORD.findall(_nfc(name))
 
 
+def common_key(line: str) -> str:
+    """Строка файла владельца `_маска_общие.md` — ключ сравнения: слова через пробел, ё → е.
+    Одна нормализация на `build_forms` и `abbrev_spans` (n828-out2 DS-M7)."""
+    return _yo(" ".join(_words(line)))
+
+
 def same_name(a: str, b: str) -> bool:
     """Одно ли это имя с точностью до падежа: «Ивану» и «Иван», «Анне Беловой»
     и «Анна Белова». Слово к слову по основе `_base`."""
@@ -241,11 +247,11 @@ def build_forms(nodes: Iterable[NodeForms], *,
     только его падеж, «Петров» при узле «Пётр» — другое слово (n793-out10 C1). `speech` —
     слово по грамматике речь (`pii_fake.speech_word`), для сита спанов модели. `label` — метка
     диаризации (`graph_names.is_label_tag`): не форма и не имя в спане модели. Без `known`
-    словаря нет: сборка считает, что общих слов нет, а правила, которым нужно «слово языка»
-    (строчная аббревиатура, сито речи), выключены (n828-out1 DS-I4).
+    словаря нет: ни одно слово не подтверждено языком — маскируется больше, а правила, которые
+    снимают маску по «слову языка» (М2, сито речи), молчат (n828-out2 DS-I2).
     """
     policy_known, known = known, known or (lambda _w: False)
-    common_l = {_yo(" ".join(_words(c)).lower()) for c in common}
+    common_l = {common_key(c).lower() for c in common}
     nodes = list(nodes)
     if owner and not any(n.person and n.name == owner for n in nodes):
         nodes.append(NodeForms(owner))
@@ -273,7 +279,11 @@ def build_forms(nodes: Iterable[NodeForms], *,
                 if kind == PERSON or name_part(a or b, known):
                     add_name(a or b, kind, canon if kind == SYSTEM else None)
             name = re.sub(r"\([^()]*\)|«[^«»]*»" if kind == PERSON else r"\([^()]*\)", " ", name)
-        if _is_label(name, label):
+        if label is not None and label(name):
+            # части-метки долой, остальное — имя: «Собеседник 5, Иван» → «Иван» (n828-out2 I1)
+            for part in name.split(","):
+                if part.strip() and not label(part.strip()):
+                    add_name(part, kind, canon)
             # метка диаризации («Собеседник 5» заглушки «Коллега (Собеседник 5)») — не имя: форма
             # «собеседник» маскировала каждую реплику (n828-in1 DS-C1); имя в скобках при метке
             # («Собеседник 2 (Саша)») уже добавлено выше
@@ -436,16 +446,18 @@ def _occurs(word: str, entry: Entry, forms: Forms) -> bool:
     if entry.uncommon:
         # «абв» при узле «АБВ» — если самого слова нет в языке; не `_common_form`: Navec знает
         # «дап», «пак», и «дапа» при узле «ДАП» уходил открытым (опыт n828-in1)
-        return forms.known is not None \
-            and _word_fits(word.lower(), entry.words[0], entry.tails[0], False) \
-            and not forms.known(word.lower())
+        # без словаря слово не подтверждено языком — маска (n828-out2 DS-I2: умолчание маскирует больше)
+        return _word_fits(word.lower(), entry.words[0], entry.tails[0], False) \
+            and not (forms.known is not None and forms.known(word.lower()))
     if not _word_fits(word, entry.words[0], entry.tails[0], entry.exact):
         return False
     if entry.capital and not word[:1].isupper():
         # строчная запись имени-слова — только если в этом тексте оно же стоит именем (`attest`),
         # и это падеж того же слова: «веру» при «… Веру …», но не «верой» при «Верочке»
-        return entry.attested and forms.lexeme is not None \
-            and any(forms.lexeme(word, n) for n in (*entry.source[:1], *entry.alts))
+        nodes = (*entry.source[:1], *entry.alts)
+        return entry.attested and (
+            entry.kind == SYSTEM and any(_inflected(word, n) for n in nodes)
+            or forms.lexeme is not None and any(forms.lexeme(word, n) for n in nodes))
     return not _other_word(word, entry, forms)
 
 
@@ -568,12 +580,18 @@ def _ner_noise(text: str, start: int, stop: int, kind: str, forms: Forms | None 
     return False
 
 
+#: пометки при метке реплики, которые пишет диаризация («Собеседник 1, муж»)
+_LABEL_NOTES = frozenset(("муж", "жен", "м", "ж", "male", "female"))
+
+
 def _is_label(s: str, label: Callable[[str], bool] | None) -> bool:
-    """Метка диаризации целиком: «Собеседник 5», «Собеседник 1, муж». Часть через запятую с
-    заглавной — имя, а не пометка: «Собеседник 5, Иван», «Петров, участник» — не метка
-    (n828-out1 DS-M7, Haiku I2)."""
+    """Спан целиком — метка диаризации: «Собеседник 5», «Собеседник 1, муж». Имя рядом — нет, в
+    любом регистре и в скобках: «Собеседник 5, Иван», «Собеседник 5, саша», «Собеседник 5 (Иван)»
+    (n828-out1 DS-M7, n828-out2 DS-M3, DS-M4)."""
+    if label is None or re.search(r"[(（]", s):
+        return False
     parts = [x.strip() for x in s.split(",")]
-    return label is not None and label(s) and all(label(x) or not any(c.isupper() for c in x) for x in parts)
+    return all(label(x) or x.lower().rstrip(".") in _LABEL_NOTES for x in parts) and label(parts[0])
 
 
 def _never_a_name(text: str, start: int, stop: int, kind: str, forms: Forms | None) -> bool:
@@ -643,8 +661,7 @@ def abbrev_spans(text: str, known: Callable[[str], bool],
     """Аббревиатура кириллицей 3–6 букв, которой нет в общем словаре («ЖЗИК»), — система без
     узла: Slovnet такие не видит (замер 29.10: 19 на 8 встречах, все доменные; «ИНН», «СМС», «ЦОД»
     — в словаре). Свои общие владелец снимает файлом `_маска_общие.md` (`common`)."""
-    # строку файла — как `build_forms`: «ЖЗИК.» и «ЖЗИК» одно и то же (n828-out1 DS-M5)
-    skip = {_yo(" ".join(_words(c))).upper() for c in common}
+    skip = {common_key(c).upper() for c in common}
     return [(m.start(), m.end(), SYSTEM) for m in _WORD.finditer(text)
             if 3 <= len(m.group(0)) <= 6 and _is_abbrev(m.group(0))
             and all("А" <= c <= "Я" or c == "Ё" for c in m.group(0))
