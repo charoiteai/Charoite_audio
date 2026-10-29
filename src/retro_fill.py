@@ -160,7 +160,7 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
     if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
         out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
                        "Не выдумывай факты.", source.speech, DEBRIEF_PROMPT, note=source.recording_note)
-        out = meeting_source.finish_debrief(out, source) if out else out
+        out = meeting_source.finish_debrief(out, source)
         _built(made, skipped, "разбор", out,
                lambda: _write_derivative(f, dpath, "debrief", NOTE + out + "\n", source_sha,
                                          expect=d_before, expect_absent=d_before is None))

@@ -515,9 +515,10 @@ def _list_item(tail: str, who: str = "Участник А", what: str = "сда�
     ("– **Участник А** – сдать отчёт – до 30.11", True),
     ("- Участник А — сдать отчёт — до 30.11", True),    # имя не обязано быть жирным — как у минуток
     ("- [ ] **Участник А** — сдать отчёт — до 30.11", True),
-    ("- [x] **Участник А** — сдать отчёт — до 30.11", False),             # решённый статус
-    (_list_item("до 30.11 📅 2026-11-30"), False),       # поле хвоста — поставил человек или плагин
-    (_list_item("до 30.11 _(снято по сроку 29.10)_"), False),
+    # ящик, поле и пометку контроля в разборе пишет модель — судится (DS I1 out1)
+    ("- [x] **Участник А** — сдать отчёт — до 30.11", True),
+    (_list_item("до 30.11 📅 2026-11-30"), True),
+    (_list_item("до 30.11 _(снято по сроку 29.10)_"), True),
     ("**Участник А** — сдать отчёт — до 30.11", False),  # не пункт списка
 ])
 def test_debrief_tasks_are_judged_like_minutes(line, marked):
@@ -537,6 +538,8 @@ def test_debrief_other_sections_are_not_judged():
 @pytest.mark.parametrize("heading,inside", [
     ("## Задачи (кто/что/срок)", True),                 # хвост после слова (DS I3 in1)
     ("### Задачи", True),
+    ("## ЗАДАЧИ", True),                                # регистр и число (Sonnet M1 out1)
+    ("## Задача", True),
     ("## Задачи2", True),
     ("## Задачник", False),
     ("##Задачи", False),
@@ -557,6 +560,20 @@ def test_debrief_section_ends_at_a_heading_of_its_level_not_below():
     marked = item + " — " + MARK
     assert out == ["## Задачи", "### Участник А", marked, "## Другое", item, "# Конец", item,
                    "### Задачи", marked, "# Ещё", item]
+
+
+def test_debrief_nested_tasks_heading_keeps_the_open_level():
+    """Вложенный «### Задачи» уровень открытого «## Задачи» не меняет: «### Прочее»
+    раздел не закрывает (DS I2, Haiku I1 out1); раздел уровня 3 закрывает заголовок
+    уровня 3 и выше, а не только 1–2 (Sonnet M3 out1, мутант уровня-константы)."""
+    item = _list_item("до 30.11")
+    marked = item + " — " + MARK
+    doc = f"## Задачи\n### Задачи\n### Прочее\n{item}\n## Другое\n{item}"
+    assert action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY).split("\n") == [
+        "## Задачи", "### Задачи", "### Прочее", marked, "## Другое", item]
+    doc = f"### Задачи\n#### Участник А\n{item}\n### Другое\n{item}"
+    assert action_items.check_debrief_deadlines(doc, SPEECH_DEBRIEF, DAY).split("\n") == [
+        "### Задачи", "#### Участник А", marked, "### Другое", item]
 
 
 def test_debrief_last_line_and_repeat_pass():
@@ -585,15 +602,16 @@ def test_finish_debrief_judges_by_speech_and_note_then_adds_the_note():
 
 
 def test_finish_debrief_keeps_an_empty_answer_empty():
-    """Пустой ответ модели с оговоркой не становится файлом из одной оговорки (DS I2 in1)."""
+    """Пустой ответ модели с оговоркой не становится файлом из одной оговорки (DS I2 in1);
+    пробельный — пустая строка, писатель скажет «модель не ответила» (Haiku C1 out1)."""
     src = meeting_source.live(SPEECH_DEBRIEF, "📋 запись неполная", day=DAY)
     assert meeting_source.finish_debrief("", src) == ""
-    assert meeting_source.finish_debrief(" \n", src) == " \n"
+    assert meeting_source.finish_debrief(" \n", src) == ""
 
 
 def test_retro_debrief_goes_through_the_entry(tmp_path, monkeypatch):
     """Ретро-обход пишет разбор через `finish_debrief`: невыдуманный срок цел,
-    выдуманный — с пометкой, паспорт по итоговым байтам."""
+    выдуманный — с пометкой."""
     import live_sidecar
     import retro_fill
     tdir = tmp_path / "transcripts"

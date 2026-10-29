@@ -1391,8 +1391,8 @@ The post-meeting debrief gets the same gate (№829): its "## Задачи" sect
 ("- **Who** — what — deadline", no checkbox) is marked by
 `action_items.check_debrief_deadlines` through one entry for both debrief
 writers, `meeting_source.finish_debrief` (the live `graph_updater` path and
-`retro_fill`): the gate, then the recording note; an empty model answer stays
-empty. The section runs to the next heading of its level or higher; other
+`retro_fill`): the gate, then the recording note; an empty or blank model
+answer becomes an empty string. The section runs to the next heading of its level or higher; other
 sections (questions, recommendations) are the model's proposals and are not
 judged. The debrief is not the task canon (the Tasks tab does not read it), but
 a person reads it: in October 19 of 159 debrief deadlines were not in the

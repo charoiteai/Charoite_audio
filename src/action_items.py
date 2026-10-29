@@ -624,8 +624,9 @@ _LIST_HEAD = re.compile(_BULLET.pattern + r"(?:" + task_line.BOX + r"\s*)?")
 _HEADING = re.compile(r"^(#{1,6})\s")
 # Заголовок раздела задач оба промпта разбора задают одинаково — «## Задачи»
 # (509 из 510 разборов владельца 29.10, ни одного подзаголовка внутри); хвост
-# после слова («## Задачи (кто/что/срок)») раздел не отменяет (DS I3 in1).
-_DEBRIEF_TASKS = re.compile(r"^(#{1,6})\s+Задачи(?![^\W\d_])")
+# после слова («## Задачи (кто/что/срок)») раздел не отменяет (DS I3 in1),
+# регистр и единственное число — тоже (Sonnet M1 out1).
+_DEBRIEF_TASKS = re.compile(r"^(#{1,6})\s+Задач[аи](?![^\W\d_])", re.IGNORECASE)
 
 
 def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -> str:
@@ -636,12 +637,13 @@ def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -
     фактами (замер октября: 19 сроков из 159 речь не подтверждает).
 
     Раздел — от заголовка «Задачи» до заголовка того же или более высокого
-    уровня (Sonnet I2 in1): подзаголовок внутри раздела его не закрывает.
+    уровня (Sonnet I2 in1): подзаголовок внутри раздела его не закрывает, и
+    вложенный «Задачи» уровень открытого раздела не меняет (DS I2 out1).
     Прочие разделы разбора не судятся: в «Рекомендациях» сроки — предложения
-    модели по построению. Пункт с ящиком судится по тем же правилам, что в
-    минутках (`check_deadline_item`), без ящика — как пункт с открытым ящиком;
-    пункт с полями хвоста или пометкой контроля не трогается. Язык пометки —
-    русский: промпты разбора русские."""
+    модели по построению. Судится каждый пункт списка раздела, с ящиком и
+    без: ящик, поле хвоста и пометку контроля в разборе ставит не человек и
+    не плагин, а модель (DS I1 out1). Язык пометки — русский: промпты разбора
+    русские."""
     if not speech.strip():
         return text
     out: list[str] = []
@@ -652,7 +654,7 @@ def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -
             if len(heading.group(1)) <= level:
                 level = 0
             tasks = _DEBRIEF_TASKS.match(line)
-            if tasks:
+            if tasks and not level:
                 level = len(tasks.group(1))
         elif level:
             line = _check_debrief_item(line, speech, day)
@@ -662,7 +664,6 @@ def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -
 
 def _check_debrief_item(line: str, speech: str, day: datetime.date | None) -> str:
     head = _LIST_HEAD.match(line)
-    if (head is None or task_line.settled(line) or task_line.fields(line)
-            or task_line.CONTROL_MARK.search(line)):
+    if head is None:
         return line
     return _mark_unheard(line, head.end(), speech, day, "ru")

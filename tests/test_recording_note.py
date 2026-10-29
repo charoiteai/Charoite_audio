@@ -318,8 +318,8 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     assert gen.index("transcript[:24000]") < gen.index("client.recording_block(note)") < gen.index("+ task")
     assert rf.count("note=source.recording_note") == 2 and "source_sha = source.sha()" in rf and "speech_sha" not in rf
     assert rf.count("meeting_source.with_note(out, source.recording_note)") == 1, "строка итога у тезисов (DS круга 2)"
-    assert rf.count("meeting_source.finish_debrief(out, source) if out else out") == 1, \
-        "разбор — входом разбора (гейт срока №829 + строка итога); пустой ответ пустым"
+    assert rf.count("out = meeting_source.finish_debrief(out, source)\n") == 1, \
+        "разбор — входом разбора (гейт срока №829 + строка итога)"
     assert "meeting_source.of(f, text)" in rf and "meeting_source.of(f, text, bare)" not in rf, \
         "источник — по прямому сайдкару, штамп bare читателю не передаётся (Critical DS/GLM круга 1)"
     # MCP-сборщик проверяется поведением, а не текстом исходника (№663):
