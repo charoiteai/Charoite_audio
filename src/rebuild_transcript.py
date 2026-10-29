@@ -1270,61 +1270,24 @@ def live_session_names(meta: dict) -> dict[str, str]:
     d = meta.get("names")
     if not isinstance(d, dict):
         return {}
-    # Снятые судом пересборки (№830) — не принятые: единственная точка чтения живых
-    # имён, через неё их берут перенос по времени, минутки и ретро-проход.
-    vetoed = vetoed_names(meta)
     return {k: v.strip() for k, v in d.items()
-            if isinstance(k, str) and isinstance(v, str) and v.strip() and v.strip() not in vetoed}
+            if isinstance(k, str) and isinstance(v, str) and v.strip()}
 
 
-#: Ключ сайдкара: живые имена, которые пересборка сняла судом пары «метка — имя» (№830).
-VETOED_KEY = "names_vetoed"
-
-
-def vetoed_names(meta: dict) -> frozenset[str]:
-    """Снятые пересборкой живые имена из сайдкара. Мусор вместо списка — пусто:
-    сайдкар правят руками, и битый ключ не должен ронять пересборку."""
-    raw = meta.get(VETOED_KEY) if isinstance(meta, dict) else None
-    if not isinstance(raw, list):
-        return frozenset()
-    return frozenset(v.strip() for v in raw if isinstance(v, str) and v.strip())
-
-
-def judge_live_names(live: pathlib.Path, meta: dict, names: dict[str, str], evidence: str,
-                     owner_name: str) -> tuple[dict[str, str], dict]:
+def judge_live_names(names: dict[str, str], evidence: str, owner_name: str) -> dict[str, str]:
     """Перенесённые по времени живые имена — через суд пары «метка — имя» по
-    полной итоговой стенограмме (`speaker_names.verify_names`, №830).
+    полной итоговой стенограмме (`speaker_names.verify_names`, №830). Каждое
+    снятие — строка журнала с причиной из `REASON_TEXT`.
 
-    Возвращает оставленные имена и `meta` этого прохода: снятые имена в нём уже
-    лежат под `VETOED_KEY`, так что `minutes_names(meta)` в `_finish` их не
-    отдаст, даже если сайдкар не записался. Каждое снятие — строка журнала с
-    причиной из `REASON_TEXT`."""
+    Решение не хранится: оно — свойство пары в нумерации пересборки и в тексте
+    этого STT, и каждый проход выносит его заново по своему тексту. Запись
+    по значению имени в live.json снимала бы верное имя у живой метки другой
+    нумерации и не отменялась бы при новом STT (n830-out1 Sonnet I2/I3,
+    DS I2/I4)."""
     kept, vetoed = speaker_names.verify_names(names, sample=evidence, owner_name=owner_name)
     for k, verdict in vetoed.items():
         log(f"имена из живой сессии: {speaker_names.refusal_line(k, verdict)}")
-    if vetoed:
-        meta = _remember_vetoed(live, meta, [v.said for v in vetoed.values()])
-    return kept, meta
-
-
-def _remember_vetoed(live: pathlib.Path, meta: dict, names: list[str]) -> dict:
-    """Снятые имена — в сайдкар (слиянием, к прежним) и в `meta` этого прохода.
-
-    Решение пишется туда, откуда живые имена читают все: иначе минутки
-    (`_finish`, ветка правленого финала), ретро-проход и следующая пересборка
-    снова взяли бы имя из `names` live.json (n830-in1 Sonnet C1, DS I1/I2).
-    Сайдкар не записался — минутки этого прохода всё равно его не получат
-    (`meta` в памяти), а строка журнала скажет, что следующий проход может."""
-    merged = sorted(vetoed_names(meta) | {n.strip() for n in names if n and n.strip()})
-    meta = dict(meta or {})
-    meta[VETOED_KEY] = merged
-    try:
-        ok = live_sidecar.merge(live, {VETOED_KEY: merged})
-    except OSError:
-        ok = False
-    if not ok:
-        log("⚠️ снятые имена не записаны в сайдкар — следующий проход может вернуть их в минутки")
-    return meta
+    return kept
 
 
 #: Сколько голосов живой сессии пересборка вообще готова принять за правду:
@@ -1917,11 +1880,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
                           exclude=no_names) if allowed else {}
     # Перенос по времени — подпись без доказательства: живое имя судили по хвосту
     # ленты, а здесь оно ляжет на всю встречу. Суд пары «метка — имя» по полной
-    # итоговой стенограмме (№830); снятое имя — в сайдкар, чтобы минутки,
-    # ретро-проход и следующая пересборка его не вернули.
+    # итоговой стенограмме (№830).
     user_name = str((cfg.get("sufler") or {}).get("user_name") or "")
     evidence = "\n".join(_sample_line(spk, text) for _, _, spk, text in lines if text)
-    names, meta = judge_live_names(live, meta, names, evidence, user_name)
+    names = judge_live_names(names, evidence, user_name)
     if names:
         log("имена из живой сессии: " + ", ".join(f"{k}→{v}" for k, v in names.items()))
     # Безымянными считаются только НЕЙТРАЛЬНЫЕ метки: владелец имя по

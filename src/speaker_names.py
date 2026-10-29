@@ -204,18 +204,10 @@ def heard_forms(name: str, sample: str) -> tuple[str, ...]:
         if _instrumental_like(word):
             heard = re.search(r"(?<!\w)со?\s+$", sample[max(0, m.start() - 4):m.start()], re.I) is not None
         else:
-            heard = _addressed_at(sample, m.end())
+            heard = re.match(r"\s*(?:[,!?…—–:;.-]|\n|$)", sample[m.end():m.end() + 3]) is not None
         if heard and word.casefold() not in forms:
             forms.append(word.casefold())
     return tuple(forms)
-
-
-def _addressed_at(text: str, end: int) -> bool:
-    """Слово, кончающееся на `end`, стоит так, как звучит обращение: за ним знак
-    или конец строки («Коль, ты тут?», «Саш!», «…спроси, Тань»). Одна проверка
-    на `heard_forms` и вето самообращения — два теста одного понятия разошлись
-    бы (n830-in1 Haiku V1)."""
-    return re.match(r"\s*(?:[,!?…—–:;.-]|\n|$)", text[end:end + 3]) is not None
 
 
 def _instrumental_like(word: str) -> bool:
@@ -265,6 +257,27 @@ def _label_lines(sample: str, label: str) -> list[str]:
 _INTRO_BEFORE = re.compile(r"(?<!\w)(?:это|я|меня\s+зовут)[\s,—–-]+$", re.I)
 
 
+def _vocative_at(body: str, start: int, end: int) -> bool:
+    """Слово `body[start:end]` — обращение ко второму лицу, узко: с заглавной,
+    не в кавычках, за ним «, ! ? …» («Коль, ты тут?», «Саш!») или оно
+    замыкает реплику после запятой («Спасибо, Маша.»).
+
+    Уже, чем позиция в `heard_forms`, намеренно: там лишняя форма только
+    разрешает имя, здесь — снимает его. Третье лицо в конце фразы («Смету
+    готовит Мария.»), нарицательное («Есть надежда.»), «Мария — наш
+    бухгалтер» и цитата чужой речи вето не дают (n830-out1 Sonnet I1, DS I3,
+    Haiku I-1)."""
+    if not body[start:end][:1].isupper():
+        return False
+    before = body[:start]
+    if before.count("«") > before.count("»") or before.count('"') % 2:
+        return False
+    after = body[end:end + 3]
+    if re.match(r"\s*[,!?…]", after):
+        return True
+    return re.search(r",\s*$", before) is not None and re.match(r"\s*(?:\.|$)", after) is not None
+
+
 def addresses_self(name: str, sample: str, label: str,
                    forms: tuple[str, ...] | None = None) -> bool:
     """Метка в СВОИХ репликах зовёт этим именем — значит, имя не её (№830).
@@ -274,7 +287,7 @@ def addresses_self(name: str, sample: str, label: str,
     отдал звательную форму. Правило 2 модуля (`_own_lines_only`) ловит только
     случай, когда имя звучит ИСКЛЮЧИТЕЛЬНО в репликах метки; самообращение
     снимает имя, даже если его произносят и другие. Каждое вхождение судится
-    по позиции (`_addressed_at`): упоминание в третьем лице («Маша обещала
+    по позиции (`_vocative_at`): упоминание в третьем лице («Маша обещала
     прислать») и творительный («с Сашей») обращением не считаются,
     представление в той же реплике («да, я Маша.») снимает подозрение.
 
@@ -293,7 +306,7 @@ def addresses_self(name: str, sample: str, label: str,
         for f in forms:
             for m in re.finditer(rf"(?<!\w){re.escape(f)}(?!\w)", body, re.I):
                 # творительный — только у выведенной формы: «Андрей» сам кончается на «-ей»
-                if (f != own and _instrumental_like(m.group(0))) or not _addressed_at(body, m.end()):
+                if (f != own and _instrumental_like(m.group(0))) or not _vocative_at(body, m.start(), m.end()):
                     continue
                 if _INTRO_BEFORE.search(body[:m.start()]):
                     continue
@@ -404,12 +417,15 @@ def judge_label(name: str, *, sample: str, label: str, owner_name: str = "") -> 
     модели, а из живой сессии или прошло `judge_name`, падеж уже приведён.
     «Не звучало» здесь не судится — живое имя слышно в живой ленте, а итоговое
     распознавание может его не дать (замер 29.10: из 7 таких снятий 4 — верные
-    имена). Правила — владелец, «только в своих репликах» и самообращение.
+    имена). Правила — метка вместо имени, владелец, «только в своих репликах»
+    и самообращение.
     Живой цикл демона этот суд не зовёт: его выборка — скользящий хвост, вердикт
     по окну менялся бы от такта к такту (n830-in1 Sonnet I1, DS I3)."""
     said = (name or "").strip()     # не `_clean`: capitalize() испортил бы «Мария Ветрова»
     if not said:
         return NameVerdict(None, REASON_EMPTY, said, said)
+    if said.casefold() == label.casefold() or said.casefold().startswith("собеседник"):
+        return NameVerdict(None, REASON_LABEL, said, said)   # руками правленный live.json (n830-out1 Haiku M-3)
     if is_owner(said, owner_name):
         return NameVerdict(None, REASON_OWNER, said, said)
     forms = heard_forms(said, sample)
@@ -432,7 +448,7 @@ def verify_names(names: dict[str, str], *, sample: str, owner_name: str = "",
         verdict = judge_label(name, sample=sample, label=label, owner_name=owner_name)
         if verdict.name:
             kept[label] = name
-        else:
+        elif is_refusal(verdict):     # пустое — ответ «имени нет», не отказ
             refused[label] = verdict
     return kept, refused
 

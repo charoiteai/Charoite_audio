@@ -630,9 +630,8 @@ code path is shared.
    through the full trust guard (`speaker_names`). Names the live session found
    are carried over by time and judged again on the whole final transcript
    (`speaker_names.judge_label`, the same check for the LLM's guesses): a label
-   that itself addresses the name in its own lines does not get it. A removed
-   name is written to the sidecar (`names_vetoed`), so the minutes and the next
-   rebuild do not bring it back. The live version is kept
+   that itself addresses the name in its own lines does not get it. The
+   verdict is not stored: each rebuild judges its own text again. The live version is kept
    as a draft.
 
 ## Post-meeting pipeline (src/graph_updater.py)
