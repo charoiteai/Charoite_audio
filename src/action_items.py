@@ -623,11 +623,12 @@ def check_deadlines(text: str, speech: str, day: datetime.date | None, lang: str
 _LIST_HEAD = re.compile(_BULLET.pattern + r"(?:" + task_line.BOX + r"\s*)?")
 _HEADING = re.compile(r"^(#{1,6})\s")
 # Заголовок раздела задач оба промпта разбора задают одинаково — «## Задачи»
-# (509 из 510 разборов владельца 29.10, ни одного подзаголовка внутри); хвост
-# после слова («## Задачи (кто/что/срок)») раздел не отменяет (DS I3 in1),
-# регистр — тоже (Sonnet M1 out1). Единственное число раздел не открывает:
-# «### Задача для …» внутри «Рекомендаций» судился бы (Haiku M1 out2).
-_DEBRIEF_TASKS = re.compile(r"^(#{1,6})\s+Задачи(?![^\W\d_])", re.IGNORECASE)
+# (509 из 510 разборов владельца 29.10, все — ровно эта строка, ни одного
+# подзаголовка внутри). Допустимы только скобки («## Задачи (кто/что/срок)», DS
+# I3 in1), двоеточие и регистр (Sonnet M1 out1); другое слово после «Задачи»
+# — уже не этот раздел: «### Задачи для …» внутри «Рекомендаций» судился бы
+# (Haiku M1 out2, Sonnet I1 out3).
+_DEBRIEF_TASKS = re.compile(r"^(#{1,6})\s+Задачи\s*(?:\(.*\))?\s*:?\s*$", re.IGNORECASE)
 
 
 def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -> str:
@@ -643,10 +644,11 @@ def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -
     Прочие разделы разбора не судятся: в «Рекомендациях» сроки — предложения
     модели по построению. Пункт с ящиком судится по тем же правилам, что в
     минутках (`check_deadline_item`), без ящика — как пункт с открытым ящиком;
-    пункт с полями хвоста или пометкой контроля не трогается, как в минутках:
-    дата поля («📅 2026-11-05» даёт «11.05») и тире внутри пометки контроля
-    пошли бы в суд срока (DS C1, Haiku I1 out2; в разборах таких строк 0 из
-    2494). Язык пометки — русский: промпты разбора русские."""
+    пункт с полем плагина (в любом месте строки, не только в хвосте: за полем
+    бывает ещё часть, DS I1 out3) или пометкой контроля не трогается: дата
+    поля («📅 2026-11-05» даёт «11.05») и тире внутри пометки контроля пошли
+    бы в суд срока (DS C1, Haiku I1 out2; в разборах таких строк 0 из 2494).
+    Язык пометки — русский: промпты разбора русские."""
     if not speech.strip():
         return text
     out: list[str] = []
@@ -667,7 +669,7 @@ def check_debrief_deadlines(text: str, speech: str, day: datetime.date | None) -
 
 def _check_debrief_item(line: str, speech: str, day: datetime.date | None) -> str:
     head = _LIST_HEAD.match(line)
-    if (head is None or task_line.settled(line) or task_line.fields(line)
-            or task_line.CONTROL_MARK.search(line)):
+    if (head is None or task_line.settled(line) or task_line.CONTROL_MARK.search(line)
+            or any(field in line for field in task_line.FIELDS.values())):
         return line
     return _mark_unheard(line, head.end(), speech, day, "ru")
