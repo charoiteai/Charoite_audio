@@ -282,10 +282,15 @@ inside a graph topics without a dossier come first, then the longest-unbuilt,
 then the largest. The step holds a time budget (`--budget-s`, 40 minutes); the
 rest of the queue waits for the next night and every graph's index stays
 complete. The old cap of 12 topics across all graphs gave the night to the
-large graph while small ones went months without a fresh dossier. Once a week
-(the Sunday run) every dossier is rebuilt: `--full` ignores a manual
-`--limit` and runs under its own budget (`DOSSIER_FULL_BUDGET`, two hours);
-unchanged topics it did not reach wait for the next Sunday. Under the night
+large graph while small ones went months without a fresh dossier. Sunday is
+the same incremental night with a longer budget (`DOSSIER_SUNDAY_BUDGET`, two
+hours, never shorter than the weekday one) to work off the backlog of changed
+topics. A full rebuild (`--full`) is manual only — `NIGHTLY_DOSSIER_FULL=1`
+after a change of the dossier prompt, limits or model: a topic whose sources
+did not change gets the same model input, so a retelling brings no new facts
+and erases the cloud review of its body. `--full` ignores a manual `--limit`
+and runs under its own budget (`DOSSIER_FULL_BUDGET`, two hours); unchanged
+topics it did not reach wait for the next manual run. Under the night
 ceiling the step checks the wall clock before every topic and stops while the
 steps after it still have their half hour. Writes
 take the shared graph lock — the same one the meeting pipeline and the cloud

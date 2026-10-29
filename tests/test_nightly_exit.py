@@ -104,7 +104,7 @@ def _run(tmp_path: pathlib.Path, stub: str, **env_extra: str) -> subprocess.Comp
     env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
     env.pop("CHAROITE_SLOT", None)
     env.pop("NIGHT_GATE", None)
-    for name in ("DOSSIER_BUDGET", "DOSSIER_FULL_BUDGET", "NIGHTLY_DOSSIER_FULL"):
+    for name in ("DOSSIER_BUDGET", "DOSSIER_FULL_BUDGET", "DOSSIER_SUNDAY_BUDGET", "NIGHTLY_DOSSIER_FULL"):
         env.pop(name, None)       # окружение разработчика не решает за тест (выход out1 №749, DS M4)
     env.update(env_extra)
     return subprocess.run([LAUNCHD_BASH, str(tmp_path / "scripts" / "nightly.sh")],
@@ -523,23 +523,29 @@ def _dossier_args(tmp_path: pathlib.Path) -> list[str]:
     return (tmp_path / "dossier_args").read_text().split()
 
 
-@pytest.mark.parametrize("dow, full_flag, full_budget, mode, expected", [
-    ("7", None, None, "--full", "7200"),        # воскресенье: свой бюджет полной пересборки
-    ("7", None, "мусор", "--full", "7200"),     # свой санитайз, не будничные 2400 (вход in1, DS I2)
-    ("7", None, "0", "--full", "7200"),
-    ("7", None, "007", "--full", "7200"),
-    ("7", None, "5400", "--full", "5400"),
-    ("3", "1", None, "--full", "7200"),         # выбор по режиму, не по дню (вход in1, DS I3)
-    ("3", None, "5400", "", "2400"),            # будни: полный бюджет не путается с будним
+@pytest.mark.parametrize("dow, full_flag, budget, full_budget, sunday_budget, mode, expected", [
+    ("7", None, None, None, None, "", "7200"),          # воскресенье: инкремент с длинным бюджетом, без --full (№809)
+    ("7", None, None, None, "мусор", "", "7200"),       # свой санитайз, не будничные 2400 (вход in1 №749, DS I2)
+    ("7", None, None, None, "0", "", "7200"),
+    ("7", None, None, None, "007", "", "7200"),
+    ("7", None, None, None, "5400", "", "5400"),
+    ("7", None, "10800", None, None, "", "10800"),      # не короче будней: будничный бюджет владельца длиннее (№809)
+    ("7", None, None, "5400", None, "", "7200"),        # бюджет ручного --full воскресенье не задаёт
+    ("3", "1", None, None, None, "--full", "7200"),     # --full — только по руке, свой бюджет
+    ("7", "1", None, "5400", "9000", "--full", "5400"),  # и в воскресенье по руке — бюджет ручного режима
+    ("3", None, None, "5400", "9000", "", "2400"),      # будни: длинные бюджеты не путаются с будним
 ])
-def test_dossier_budget_follows_the_mode(tmp_path, dow, full_flag, full_budget, mode, expected):
+def test_dossier_budget_follows_the_mode(tmp_path, dow, full_flag, budget, full_budget, sunday_budget,
+                                         mode, expected):
     """№749: полная пересборка шла без бюджета до потолка ночи, хвост ночи — в
-    «(поздно)». Таблица «режим × переменная → бюджет» на обе ветки."""
+    «(поздно)». №809: воскресенье больше не включает --full — та же
+    инкрементальная ночь с длинным бюджетом. Таблица «день × режим ×
+    переменная → аргументы»."""
     extra = {"PATH": _weekday(tmp_path, dow)}
-    if full_flag is not None:
-        extra["NIGHTLY_DOSSIER_FULL"] = full_flag
-    if full_budget is not None:
-        extra["DOSSIER_FULL_BUDGET"] = full_budget
+    for name, value in (("NIGHTLY_DOSSIER_FULL", full_flag), ("DOSSIER_BUDGET", budget),
+                        ("DOSSIER_FULL_BUDGET", full_budget), ("DOSSIER_SUNDAY_BUDGET", sunday_budget)):
+        if value is not None:
+            extra[name] = value
     _run(tmp_path, RECORD_DOSSIER_ARGS, **extra)
     args = _dossier_args(tmp_path)
     assert ("--full" in args) == (mode == "--full"), args
