@@ -44,7 +44,8 @@ def model(monkeypatch):
 
 def _cfg(**sufler):
     # Второй проход выключен: дубль первого прохода — фикстура без него (вход n824-in1, Haiku V1).
-    return {"sufler": {"graph_second_pass": False, **sufler}}
+    # Склейка по умолчанию выключена (n824-out5) — здесь включена явно.
+    return {"sufler": {"graph_second_pass": False, "graph_decision_merge": True, **sufler}}
 
 
 def test_minutes_read_twice_by_the_first_pass_give_one_decision(model, capsys):
@@ -58,25 +59,29 @@ def test_minutes_read_twice_by_the_first_pass_give_one_decision(model, capsys):
 
 
 @pytest.mark.parametrize("sufler", [
-    {"graph_decision_merge": False}, {"graph_decision_merge": "нет"}, {"graph_decision_merge": "fasle"},
+    {"graph_decision_merge": None}, {"graph_decision_merge": False}, {"graph_decision_merge": "нет"},
+    {"graph_decision_merge": "fasle"},
     {"language": "en"}, {"language": "zh"}, {"language": "en", "graph_decision_merge": True},
 ])
 def test_merge_off_by_key_or_language(model, sufler):
-    """Ключ выключает склейку; порог мерен на русском — en и zh не клеят даже с явным `true`."""
+    """Без ключа склейки нет (n824-out5), ключ выключает; порог мерен на русском — en и zh не клеят даже с явным `true`."""
     model.answers[1] = {"решения": [MINUTES_A]}
     model.answers[2] = {"решения": [MINUTES_B]}
     assert g.extract(_cfg(**sufler), LONG)["решения"] == [MINUTES_A, MINUTES_B]
 
 
 @pytest.mark.parametrize("sufler, on", [
-    ({}, True), ({"graph_decision_merge": None}, True), ({"graph_decision_merge": " "}, True),
-    ({"graph_decision_merge": "да"}, True), ({"graph_decision_merge": "off"}, False),
-    ({"graph_decision_merge": "fasle"}, False), ({"language": " RU "}, True), ({"language": "en-US"}, False),
-    ({"language": "ru-RU"}, False), ({"language": "ru_RU"}, False),
+    ({}, False), ({"graph_decision_merge": None}, False), ({"graph_decision_merge": " "}, False),
+    ({"graph_decision_merge": "да"}, True), ({"graph_decision_merge": True}, True),
+    ({"graph_decision_merge": "off"}, False), ({"graph_decision_merge": "fasle"}, False),
+    ({"graph_decision_merge": True, "language": " RU "}, True),
+    ({"graph_decision_merge": True, "language": "en-US"}, False),
+    ({"graph_decision_merge": True, "language": "ru-RU"}, False),
+    ({"graph_decision_merge": True, "language": "ru_RU"}, False),
 ])
 def test_merge_key_is_read_like_the_second_pass(sufler, on):
     assert install_profile.graph_decision_merge_enabled({"sufler": sufler}) is on
-    assert install_profile.graph_decision_merge_enabled({}) is True
+    assert install_profile.graph_decision_merge_enabled({}) is False
 
 
 @pytest.mark.parametrize("first, second", [

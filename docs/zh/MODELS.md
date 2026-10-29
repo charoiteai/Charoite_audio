@@ -332,7 +332,7 @@ Ollama 上的 `qwen3.6:35b-mlx` 且 `language: ru`（决定覆盖率 57–65 % �
 每场会议多 2–2.5 分钟模型时间）。由守护进程根据 `llm.model` 决定；您在配置中
 设置的 `graph_second_pass: true` 或 `false` 始终优先。
 同一决定的不同表述（分块重叠、纪要被读两次）会在解析输出时合并，不调用模型——
-`graph_decision_merge`，默认仅对 `language: ru` 开启。
+`graph_decision_merge: true`，仅对 `language: ru` 有效；默认关闭：简短表述仍可能把不同决定合并。
 
 **对话标注与轻量配置。** 在段落内部划分发言边界的回路要求逐字不改：校验会
 比对词序列，只要模型改动了任何一个字就丢弃该结果。4B 比 gemma 更常改词，

@@ -141,7 +141,8 @@ sufler:
   # graph_second_pass: true
   # Merge rewordings of one decision across the whole extraction list (chunks overlap and the
   # minutes land in two chunks): no model call; measured on 28.10 it removed 5 of 25 extra lines
-  # with no false merges. On by default, Russian meetings only (language: ru); false turns it off.
+  # with no false merges. Off by default: short wordings can still merge different decisions.
+  # true turns it on, Russian meetings only (language: ru).
   # graph_decision_merge: true
   # Link byte-identical copies of meeting documents (the original under
   # "Документация", the copy under "Встречи-архив" for Finder) with hard

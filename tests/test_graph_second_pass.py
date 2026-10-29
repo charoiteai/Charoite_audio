@@ -18,6 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graph_updater as g  # noqa: E402
 
 ON = {"sufler": {"graph_second_pass": True}}
+MERGE_ON = {"sufler": {"graph_second_pass": True, "graph_decision_merge": True}}   # склейка выключена по умолчанию (n824-out5)
 OFF = {"sufler": {"graph_second_pass": False}}
 
 
@@ -135,7 +136,7 @@ def test_rewording_inside_the_second_pass_is_merged_on_the_way_out(model):
     model.answers[2] = lambda n: {"решения": ["Заказать стенд нагрузочного тестирования к среде",
                                               "Стенд нагрузочного тестирования заказать к среде",
                                               "Отдельное дело по закупке"]}
-    data = g.extract(ON, LONG)
+    data = g.extract(MERGE_ON, LONG)
     assert data["решения"] == _first()["решения"] + ["Заказать стенд нагрузочного тестирования к среде",
                                                     "Отдельное дело по закупке"]
 
@@ -462,7 +463,7 @@ def test_final_merge_failure_keeps_every_decision(model, monkeypatch, capsys):
         raise ZeroDivisionError("division by zero")
 
     monkeypatch.setattr(g, "_merge_decisions", broken)
-    data = g.extract(ON, LONG)
+    data = g.extract(MERGE_ON, LONG)
     assert data["решения"] == _first()["решения"] + ["Собрать стенд нагрузки к среде"]
     assert "склейка решений упала (ZeroDivisionError" in capsys.readouterr().out
 
