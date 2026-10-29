@@ -403,6 +403,9 @@ def _with_second_pass(cfg: dict, data: dict, parts: list[str], project_rule: str
         # Строка вместо списка дописала бы решения по букве (выход n821-out1, DS I, Sonnet I1).
         if isinstance(got_decisions, list):
             found.extend(d for d in got_decisions if isinstance(d, str) and d.strip())
+        elif got_decisions is not None:
+            print(f"граф: часть {n}/{total} второго прохода: решения — "
+                  f"{type(got_decisions).__name__}, а не список — пропущено")
     # Счётчик в статусе — до конца, как бы проход ни кончился (выход n821-out2, DS M6).
     _report(total, total)
     added = _second_pass_decisions(first, _dedup(found))
@@ -491,7 +494,9 @@ def _same_fingerprint(a: tuple, b: tuple) -> bool:
     n824-out1: DS C1, Sonnet I1). Метка и голое число («15го» и «15», «2ТБ» и «2», «Q3» и
     «3») — разные токены и не склеиваются: недосклейка, безопасная сторона (выход n824-out4,
     Haiku I1; долг №615)."""
-    return _same_decision(a[0], b[0]) and (a[1] <= b[1] or b[1] <= a[1])
+    # Вложенность — методом, не `<=`: у `a <= b or b <= a` оба мутанта `<=` → `<` эквивалентны
+    # (перебор всех пар подмножеств {1,2,3}: ноль расхождений), тестом их не убить (CI мутаций #871).
+    return _same_decision(a[0], b[0]) and (a[1].issubset(b[1]) or b[1].issubset(a[1]))
 
 
 def _final_decisions(cfg: dict, data: dict | None) -> dict | None:

@@ -260,13 +260,15 @@ def test_russian_named_explicitly_keeps_second_pass(model, lang):
     assert data["решения"][-1] == "Новое решение по бюджету"
 
 
-@pytest.mark.parametrize("said", ["Новое решение по бюджету", "В этой части решений нет"])
-def test_second_pass_string_instead_of_list_adds_nothing(model, said):
+@pytest.mark.parametrize("said", ["Новое решение по бюджету", "В этой части решений нет", {"текст": "x"}, 5])
+def test_second_pass_string_instead_of_list_adds_nothing(model, said, capsys):
     """Строка вместо списка дописала бы решения по букве; целиком она чаще пояснение модели,
-    чем решение, — второй проход её не берёт (выход n824-out3, DS I2, Haiku I1)."""
+    чем решение, — второй проход её не берёт (выход n824-out3, DS I2, Haiku I1), но говорит
+    об этом в лог (выход n824-out4, Sonnet M3, Haiku M1)."""
     model.answers[1] = lambda n: _first()
     model.answers[2] = lambda n: {"решения": said}
     assert g.extract(ON, LONG) == _first()
+    assert f"решения — {type(said).__name__}, а не список — пропущено" in capsys.readouterr().out
 
 
 def test_junk_with_the_same_text_does_not_eat_the_decision(model):
