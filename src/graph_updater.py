@@ -2335,16 +2335,16 @@ def collective_held(graph: pathlib.Path, names: list[tuple[str, str | None]], *,
             # цели: удержание только растёт — сборную цель («Алекс» при «Алекс Смит»)
             # база держала, и соперник, которого снял владелец, её не отпускает (n835-opus C1)
             judged.insert(0, clean)
-        for name in judged:
-            if not is_collective(name, index, owner=owner, tags=tags):
-                continue
-            cands = sorted(live[n] for n in bare_namesakes(name, index, owner=owner, tags=tags))
-            if name == clean and tpath in rivals and tpath not in cands:
+        hit = [j for j in judged if is_collective(j, index, owner=owner, tags=tags)]
+        if hit:
+            # сборные оба — кандидаты обоих: ссылки на тёзок цели, которые давала база,
+            # не теряются (n835-s-after-opus I1 / Haiku C1)
+            cands = sorted({live[n] for j in hit for n in bare_namesakes(j, index, owner=owner, tags=tags)})
+            if clean in hit and tpath in rivals and tpath not in cands:
                 # подстрока угадала узел владельца: порог его снял, а ссылка на него нужна
                 cands = sorted([*cands, tpath])
             via = tpath if target is not None and name_key(target.stem) != key and tpath not in cands else ""
             held[(key, folder)] = (clean, cands, via)
-            break
     return held
 
 

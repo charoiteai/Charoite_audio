@@ -675,6 +675,12 @@ def test_guess_does_not_release_a_collective_target(tmp_path):
     assert g.find_canonical(graph, "Алексей", folder="Люди") == graph / "Люди" / "Алекс.md"
     got = g.collective_held(graph, [("Алексей", "Люди")], owner="Алексей Воронцовский", born=["Алексей"])
     assert got == {("алексей", "Люди"): ("Алексей", ["Люди/Алекс Смит"], "Люди/Алекс")}
+    # сборные оба: кандидаты — тёзки и входного имени, и цели (n835-s-after-opus I1)
+    _node(graph, "Люди/Алексей Ермолаев")
+    for owner, alexeys in (("Алексей Воронцовский", ["Люди/Алексей Ермолаев"]),
+                           ("", ["Люди/Алексей Воронцовский", "Люди/Алексей Ермолаев"])):
+        got = g.collective_held(graph, [("Алексей", "Люди")], owner=owner, born=["Алексей"])
+        assert got == {("алексей", "Люди"): ("Алексей", ["Люди/Алекс Смит", *alexeys], "Люди/Алекс")}, owner
 
 
 def test_alias_beats_namesakes(tmp_path):
