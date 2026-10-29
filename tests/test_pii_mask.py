@@ -26,7 +26,7 @@ def _forms(*nodes, **kw):
     # лексема — как `cloud_door._forms`: иначе тесты судят перечень хвостов, которого в
     # продукте нет (n793-out11 DS-M6, H-M3)
     kw.setdefault("lexeme", pii_fake.same_lexeme)
-    kw.setdefault("label", graph_names.is_label_tag)
+    kw.setdefault("label", graph_names.split_label)
     return pm.build_forms(nodes, **kw)
 
 
@@ -1052,6 +1052,10 @@ def test_node_word_with_a_case_tail_is_always_the_node():
     # у узла из слова языка «узел + хвост» — не падеж: «пол» при «Поле» (n828-out3 S-I1, H-I1)
     forms = _forms(pm.NodeForms("Поле", person=False), known=_w("поле", "пол"), lexeme=lambda _a, _b: False)
     assert "какой пол" in pm.mask("Вчера Поле упало, какой пол", forms).text
+    # а наращение узла-слова — падеж, даже если лексема его не узнала: «графы», «маяка»
+    # (n828-out4 DS-C1, Sonnet I2, Haiku I2)
+    forms = _forms(pm.NodeForms("Маяк", person=False), known=_w("маяк", "маяка"), lexeme=lambda _a, _b: False)
+    assert pm.mask("Маяк упал. Вчера Маяк лежал, а маяка нет", forms).replaced == 3
 
 
 def test_system_word_written_lowercase_follows_its_capital_in_the_text():
@@ -1064,12 +1068,15 @@ def test_system_word_written_lowercase_follows_its_capital_in_the_text():
 
 @pytest.mark.parametrize("label,masked", [("Собеседник 1, муж", False), ("Собеседник 1, мужчина", False),
                                          ("муж, Собеседник 4", False), ("Собеседник 3 (модератор)", False),
-                                         ("Собеседник 3 (12:30)", False), ("Собеседник 5, Иван", True),
+                                         ("Собеседник 3 (12:30)", False), ("Собеседник 3 (модератор) (12:30)", False),
+                                         ("Собеседник 5, Иван", True), ("Собеседник 5，Иван", True),
                                          ("Собеседник 5, саша", True), ("Собеседник 5 (Иван)", True),
-                                         ("Собеседник 3 (владелец ЗЛК)", True)])
+                                         ("Собеседник 3 (владелец ЗЛК)", True), ("Собеседник 3 (张伟)", True),
+                                         ("Собеседник 2, М.", True), ("Speaker 4, Man", True)])
 def test_label_with_a_note_is_a_label_but_with_a_name_is_not(label, masked):
     # метка снимается, только если спан ею покрыт целиком (n828-out1 DS-M7, n828-out2 DS-M3, DS-M4);
-    # скобка без заглавной — роль, не имя (n828-out3 DS-I1: «(main)», «(модератор)» в графе владельца)
+    # скобка без заглавной — роль, не имя (n828-out3 DS-I1: «(main)», «(модератор)» в графе владельца);
+    # иероглиф, инициал и пометка с заглавной — имя (n828-out4 Sonnet M1, M2, Haiku M1, DS-M2)
     m = pm.mask(f"{label}: да", _forms(), [(0, len(label), pm.PERSON)])
     assert (m.replaced == 1) if masked else m.text.startswith(label)
 
@@ -1084,6 +1091,8 @@ def test_node_with_a_label_keeps_the_name_and_drops_the_label():
     # вложенная скобка и пометка у системы (n828-out3 DS-I2, M1 всех голов)
     forms = _forms(pm.NodeForms("Собеседник 4 (Аристарх (Чебуреков))"),
                    pm.NodeForms("Собеседник 5, муж", person=False), known=_w("муж"))
+    # полноширинная запятая — та же метка (n828-out4 Sonnet I1, DS-I2)
+    assert not any("собесед" in e.words[0] for e in _forms(pm.NodeForms("Собеседник 5，Иван")).entries)
     assert pm.mask("Аристарх и Чебуреков пришли", forms).replaced == 2
     assert not any(e.words[0] == "муж" for e in forms.entries)
 

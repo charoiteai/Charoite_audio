@@ -83,7 +83,7 @@ def _forms(cfg: dict, graph: pathlib.Path,
     owner = str((cfg.get("sufler") or {}).get("user_name") or "").strip()
     return pii_mask.build_forms(nodes, stubs=stubs, owner=owner, common=_common(graph),
                                 known=known, lexeme=lexeme, speech=speech,
-                                label=graph_names.is_label_tag), notes
+                                label=graph_names.split_label), notes
 
 
 def empty_workdir() -> pathlib.Path:

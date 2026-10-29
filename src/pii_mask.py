@@ -96,9 +96,9 @@ class Forms:
     known: Callable[[str], bool] | None = dataclasses.field(default=None, compare=False)
     #: слово по грамматике — речь, а не имя (`pii_fake.speech_word`): сито спанов модели
     speech: Callable[[str], bool] | None = dataclasses.field(default=None, compare=False)
-    #: метка диаризации («Собеседник 5»), не имя (`graph_names.is_label_tag`; маска графа не
+    #: метка диаризации («Собеседник 5»), не имя (`graph_names.split_label`; маска графа не
     #: импортирует — слой `cloud` ниже `graph`)
-    label: Callable[[str], bool] | None = dataclasses.field(default=None, compare=False)
+    label: Callable[[str], list[str] | None] | None = dataclasses.field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         for e in self.entries:
@@ -232,7 +232,7 @@ def build_forms(nodes: Iterable[NodeForms], *,
                 known: Callable[[str], bool] | None = None,
                 lexeme: Callable[[str, str], bool] | None = None,
                 speech: Callable[[str], bool] | None = None,
-                label: Callable[[str], bool] | None = None) -> Forms:
+                label: Callable[[str], list[str] | None] | None = None) -> Forms:
     """Формы маски из узлов графа.
 
     `stubs` — заглушки слияния: (имя заглушки, канон живого узла или None — цель не
@@ -245,8 +245,8 @@ def build_forms(nodes: Iterable[NodeForms], *,
     и какие слова длинного имени системы маскируются ещё и поодиночке. `lexeme` — одна ли
     лексема у слова текста и слова узла (pymorphy, `pii_fake.same_lexeme`): канон узла получает
     только его падеж, «Петров» при узле «Пётр» — другое слово (n793-out10 C1). `speech` —
-    слово по грамматике речь (`pii_fake.speech_word`), для сита спанов модели. `label` — метка
-    диаризации (`graph_names.is_label_tag`): не форма и не имя в спане модели. Без `known`
+    слово по грамматике речь (`pii_fake.speech_word`), для сита спанов модели. `label` — разбор
+    метки диаризации (`graph_names.split_label`): метка не форма и не имя в спане модели. Без `known`
     словаря нет: ни одно слово не подтверждено языком — маскируется больше, а правила, которые
     снимают маску по «слову языка» (М2, сито речи), молчат (n828-out2 DS-I2).
     """
@@ -282,12 +282,12 @@ def build_forms(nodes: Iterable[NodeForms], *,
             # вложенная скобка открывается, когда снята внутренняя: «Собеседник 4 (Аристарх
             # (Чебуреков))» терял «Аристарх» вместе с меткой (n828-out3 DS-I2)
             inner = [(a, "") for a in re.findall(r"\(([^()]*)\)", name)]
-        if label is not None and label(name):
-            # части-метки и пометки диаризации долой, остальное — имя: «Собеседник 5, Иван» →
-            # «Иван» (n828-out2 I1); «Собеседник 5, муж» у системы давал форму «муж» (n828-out3 M1)
-            for part in re.split(r"[,，]", name):
-                if part.strip() and not label(part.strip()) and not _is_note(part):
-                    add_name(part, kind, canon)
+        rest = label(name) if label is not None else None
+        if rest is not None:
+            # метки и пометки диаризации долой, остальное — имя: «Собеседник 5, Иван» → «Иван»
+            # (n828-out2 I1); «Собеседник 5, муж» у системы давал форму «муж» (n828-out3 M1)
+            for part in rest:
+                add_name(part, kind, canon)
             # метка диаризации («Собеседник 5» заглушки «Коллега (Собеседник 5)») — не имя: форма
             # «собеседник» маскировала каждую реплику (n828-in1 DS-C1); имя в скобках при метке
             # («Собеседник 2 (Саша)») уже добавлено выше
@@ -423,12 +423,12 @@ def _word_fits(word: str, base: str, tail: int, exact: bool) -> bool:
     return w.startswith(base) and len(w) - len(base) <= tail
 
 
-def _inflected(word: str, node_word: str) -> bool:
+def _inflected(word: str, node_word: str, grown: bool = False) -> bool:
     """Слово и слово узла — одно с падежным хвостом («Спарка» при «Спарк», «цод» при «ЦОДы»):
     падеж, что бы ни думал о лексеме словарь. Опыт n828-in1: без обратного направления
-    «ЦОДы → цод» снимался как чужое слово."""
+    «ЦОДы → цод» снимался как чужое слово. `grown` — только слово длиннее узла."""
     w, n = _yo(word.lower()), _yo(node_word.lower())
-    short, long_ = sorted((w, n), key=len)
+    short, long_ = (n, w) if grown else sorted((w, n), key=len)
     return long_.startswith(short) and long_[len(short):] in _CASE_TAILS
 
 
@@ -463,10 +463,12 @@ def _occurs(word: str, entry: Entry, forms: Forms) -> bool:
         # и это падеж того же слова: «веру» при «… Веру …», но не «верой» при «Верочке»
         nodes = (*entry.source[:1], *entry.alts)
         return entry.attested and (
-            # «узел + хвост» — только у узла не из слова языка: у «Поле» строчное «пол» —
-            # другая лексема, её решает словарь (n828-out3 S-I1, H-I1)
-            entry.kind == SYSTEM and any(_inflected(word, n) for n in nodes) and not (
-                forms.known is not None and any(forms.known(_yo(n.lower())) for n in nodes))
+            # у узла из слова языка «узел + хвост» — только наращением: «маяка», «графы» при
+            # «Маяк», «Граф» (лексема без множественного их не знает, n828-out4 DS-C1), но не
+            # «пол» при «Поле» (n828-out3 S-I1, H-I1)
+            entry.kind == SYSTEM and any(
+                _inflected(word, n, grown=forms.known is not None and forms.known(_yo(n.lower())))
+                for n in nodes)
             or forms.lexeme is not None and any(forms.lexeme(word, n) for n in nodes))
     return not _other_word(word, entry, forms)
 
@@ -590,31 +592,11 @@ def _ner_noise(text: str, start: int, stop: int, kind: str, forms: Forms | None 
     return False
 
 
-#: пометки при метке реплики, которые пишет диаризация («Собеседник 1, муж»)
-_LABEL_NOTES = frozenset(("муж", "жен", "м", "ж", "мужчина", "женщина",
-                          "male", "female", "man", "woman", "男", "女"))
-#: скобка в конце метки: «Собеседник 3 (модератор)», «Собеседник 2 (Саша)»
-_LABEL_PAREN = re.compile(r"\s*[(（]([^()（）]*)[)）]\s*$")
-
-
-def _is_note(part: str) -> bool:
-    return part.strip().lower().rstrip(".") in _LABEL_NOTES
-
-
-def _is_label(s: str, label: Callable[[str], bool] | None) -> bool:
-    """Спан целиком — метка диаризации: «Собеседник 5», «Собеседник 1, муж», «Собеседник 3
-    (модератор)» — в скобке ни одной заглавной (роли в графе владельца: «main», «ведущий»,
-    «12:30»). Имя рядом — нет: «Собеседник 5, Иван», «Собеседник 5, саша», «Собеседник 5 (Иван)»
-    (n828-out1 DS-M7, n828-out2 DS-M3, DS-M4, n828-out3 DS-I1)."""
-    if label is None:
-        return False
-    tail = _LABEL_PAREN.search(s)
-    if tail and not any(c.isupper() for c in tail.group(1)):
-        s = s[:tail.start()]
-    if re.search(r"[(（]", s):
-        return False
-    parts = [x.strip() for x in re.split(r"[,，]", s) if x.strip()]
-    return all(label(x) or _is_note(x) for x in parts) and any(label(x) for x in parts)
+def _is_label(s: str, label: Callable[[str], list[str] | None] | None) -> bool:
+    """Спан целиком — метка диаризации: разбор метки ничего, кроме метки, не оставил
+    («Собеседник 1, муж», «Собеседник 3 (модератор)»). Имя рядом — нет: «Собеседник 5, Иван»,
+    «Собеседник 5 (Иван)» (n828-out1 DS-M7, out2 DS-M4, out3 DS-I1; правило — `graph_names`)."""
+    return label is not None and label(s) == []
 
 
 def _never_a_name(text: str, start: int, stop: int, kind: str, forms: Forms | None) -> bool:
