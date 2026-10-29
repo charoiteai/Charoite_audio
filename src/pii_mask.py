@@ -274,15 +274,19 @@ def build_forms(nodes: Iterable[NodeForms], *,
         # 26.10 дал на нём тысячи замен речи. У человека там чужие имена («Полина (упоминание
         # Светы)») — маскируются, но без узла: слить Свету с Полиной нельзя
         inner = re.findall(r"\(([^()]*)\)|«([^«»]*)»", name)
-        if inner:
+        while inner:
             for a, b in inner:
                 if kind == PERSON or name_part(a or b, known):
                     add_name(a or b, kind, canon if kind == SYSTEM else None)
             name = re.sub(r"\([^()]*\)|«[^«»]*»" if kind == PERSON else r"\([^()]*\)", " ", name)
+            # вложенная скобка открывается, когда снята внутренняя: «Собеседник 4 (Аристарх
+            # (Чебуреков))» терял «Аристарх» вместе с меткой (n828-out3 DS-I2)
+            inner = [(a, "") for a in re.findall(r"\(([^()]*)\)", name)]
         if label is not None and label(name):
-            # части-метки долой, остальное — имя: «Собеседник 5, Иван» → «Иван» (n828-out2 I1)
-            for part in name.split(","):
-                if part.strip() and not label(part.strip()):
+            # части-метки и пометки диаризации долой, остальное — имя: «Собеседник 5, Иван» →
+            # «Иван» (n828-out2 I1); «Собеседник 5, муж» у системы давал форму «муж» (n828-out3 M1)
+            for part in re.split(r"[,，]", name):
+                if part.strip() and not label(part.strip()) and not _is_note(part):
                     add_name(part, kind, canon)
             # метка диаризации («Собеседник 5» заглушки «Коллега (Собеседник 5)») — не имя: форма
             # «собеседник» маскировала каждую реплику (n828-in1 DS-C1); имя в скобках при метке
@@ -459,7 +463,10 @@ def _occurs(word: str, entry: Entry, forms: Forms) -> bool:
         # и это падеж того же слова: «веру» при «… Веру …», но не «верой» при «Верочке»
         nodes = (*entry.source[:1], *entry.alts)
         return entry.attested and (
-            entry.kind == SYSTEM and any(_inflected(word, n) for n in nodes)
+            # «узел + хвост» — только у узла не из слова языка: у «Поле» строчное «пол» —
+            # другая лексема, её решает словарь (n828-out3 S-I1, H-I1)
+            entry.kind == SYSTEM and any(_inflected(word, n) for n in nodes) and not (
+                forms.known is not None and any(forms.known(_yo(n.lower())) for n in nodes))
             or forms.lexeme is not None and any(forms.lexeme(word, n) for n in nodes))
     return not _other_word(word, entry, forms)
 
@@ -584,17 +591,30 @@ def _ner_noise(text: str, start: int, stop: int, kind: str, forms: Forms | None 
 
 
 #: пометки при метке реплики, которые пишет диаризация («Собеседник 1, муж»)
-_LABEL_NOTES = frozenset(("муж", "жен", "м", "ж", "male", "female"))
+_LABEL_NOTES = frozenset(("муж", "жен", "м", "ж", "мужчина", "женщина",
+                          "male", "female", "man", "woman", "男", "女"))
+#: скобка в конце метки: «Собеседник 3 (модератор)», «Собеседник 2 (Саша)»
+_LABEL_PAREN = re.compile(r"\s*[(（]([^()（）]*)[)）]\s*$")
+
+
+def _is_note(part: str) -> bool:
+    return part.strip().lower().rstrip(".") in _LABEL_NOTES
 
 
 def _is_label(s: str, label: Callable[[str], bool] | None) -> bool:
-    """Спан целиком — метка диаризации: «Собеседник 5», «Собеседник 1, муж». Имя рядом — нет, в
-    любом регистре и в скобках: «Собеседник 5, Иван», «Собеседник 5, саша», «Собеседник 5 (Иван)»
-    (n828-out1 DS-M7, n828-out2 DS-M3, DS-M4)."""
-    if label is None or re.search(r"[(（]", s):
+    """Спан целиком — метка диаризации: «Собеседник 5», «Собеседник 1, муж», «Собеседник 3
+    (модератор)» — в скобке ни одной заглавной (роли в графе владельца: «main», «ведущий»,
+    «12:30»). Имя рядом — нет: «Собеседник 5, Иван», «Собеседник 5, саша», «Собеседник 5 (Иван)»
+    (n828-out1 DS-M7, n828-out2 DS-M3, DS-M4, n828-out3 DS-I1)."""
+    if label is None:
         return False
-    parts = [x.strip() for x in s.split(",")]
-    return all(label(x) or x.lower().rstrip(".") in _LABEL_NOTES for x in parts) and label(parts[0])
+    tail = _LABEL_PAREN.search(s)
+    if tail and not any(c.isupper() for c in tail.group(1)):
+        s = s[:tail.start()]
+    if re.search(r"[(（]", s):
+        return False
+    parts = [x.strip() for x in re.split(r"[,，]", s) if x.strip()]
+    return all(label(x) or _is_note(x) for x in parts) and any(label(x) for x in parts)
 
 
 def _never_a_name(text: str, start: int, stop: int, kind: str, forms: Forms | None) -> bool:
