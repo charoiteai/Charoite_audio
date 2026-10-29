@@ -163,7 +163,7 @@ def _main_full(nd, tmp_path, monkeypatch, graph, *extra):
     return nd.main()
 
 
-def test_sunday_full_leaves_the_night_tail_its_time(nd, tmp_path, monkeypatch, capsys):
+def test_full_leaves_the_night_tail_its_time(nd, tmp_path, monkeypatch, capsys):
     """№749, сценарий ночи: потолок через «резерв хвоста + 100 с», --full без
     бюджета. Шаг обязан остановиться по бюджету, урезанному до потолка минус
     резерв, — а не дойти до потолка и отдать хвост ночи в «(поздно)». Окно
@@ -741,7 +741,7 @@ def test_clean_theme_without_changes_is_not_counted_as_labeled(nd, tmp_path):
 
 
 def test_full_leaves_a_labeled_theme_alone(nd, tmp_path, capsys):
-    """Воскресный `--full` меченую тему тоже не трогает (n815-out7 Haiku I3) и
+    """Ручной `--full` меченую тему тоже не трогает (n815-out7 Haiku I3) и
     показывает её строкой и счётчиком (DS M2); чистые темы `--full` собирает,
     как на базе (`test_full_without_budget_ignores_the_limit_and_takes_unchanged_themes`)."""
     graph, path = _labeled_graph(nd, tmp_path)

@@ -527,7 +527,6 @@ def _dossier_args(tmp_path: pathlib.Path) -> list[str]:
     ("7", None, None, None, None, "", "7200"),          # воскресенье: инкремент с длинным бюджетом, без --full (№809)
     ("7", None, None, None, "мусор", "", "7200"),       # свой санитайз, не будничные 2400 (вход in1 №749, DS I2)
     ("7", None, None, None, "0", "", "7200"),
-    ("7", None, None, None, "007", "", "7200"),
     ("7", None, None, None, "5400", "", "5400"),
     ("7", None, "10800", None, None, "", "10800"),      # не короче будней: будничный бюджет владельца длиннее (№809)
     ("7", None, None, "5400", None, "", "7200"),        # бюджет ручного --full воскресенье не задаёт
@@ -539,8 +538,11 @@ def _dossier_args(tmp_path: pathlib.Path) -> list[str]:
     ("3", "1", None, "0", None, "--full", "7200"),
     ("3", None, "мусор", None, None, "", "2400"),
     ("3", None, "0", None, None, "", "2400"),
-    ("3", None, "08", None, None, "", "2400"),          # ведущий ноль — не восемь секунд
-    ("7", None, None, None, "123456789", "", "7200"),   # больше восьми цифр — умолчание, не переполнение `[ -gt ]`
+    ("3", None, "00", None, None, "", "2400"),
+    ("3", None, "08", None, None, "", "8"),             # десятичное, как NIGHTLY_MAX_H (выход out2 №809)
+    ("3", "1", None, "007", None, "--full", "7"),
+    ("7", None, None, None, "12345678", "", "12345678"),  # восемь цифр — ещё число
+    ("7", None, None, None, "123456789", "", "7200"),   # девять — умолчание, не переполнение `$((10#…))`
 ])
 def test_dossier_budget_follows_the_mode(tmp_path, dow, full_flag, budget, full_budget, sunday_budget,
                                          mode, expected):
@@ -553,7 +555,10 @@ def test_dossier_budget_follows_the_mode(tmp_path, dow, full_flag, budget, full_
                         ("DOSSIER_FULL_BUDGET", full_budget), ("DOSSIER_SUNDAY_BUDGET", sunday_budget)):
         if value is not None:
             extra[name] = value
-    _run(tmp_path, RECORD_DOSSIER_ARGS, **extra)
+    r = _run(tmp_path, RECORD_DOSSIER_ARGS, **extra)
     args = _dossier_args(tmp_path)
     assert ("--full" in args) == (mode == "--full"), args
     assert args[args.index("--budget-s") + 1] == expected, args
+    if dow == "7" and not mode:   # лог называет, чей бюджет победил
+        won = "(будничный не короче)" if expected == (budget or "2400") else "(воскресный)"
+        assert won in r.stdout, r.stdout
