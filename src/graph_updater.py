@@ -481,9 +481,31 @@ def _numbers(text: str) -> frozenset[str]:
     return frozenset(_NUMBER_TOKEN.findall(str(text).lower().replace("ё", "е")))
 
 
-def _fingerprint(text: str) -> tuple[set[str], frozenset[str]]:
-    """Отпечаток решения для склейки: основы слов (порог) и числовые метки (сторож)."""
-    return _stems(text), _numbers(text)
+# Короткие слова (2–3 буквы), которые `_stems` отбрасывает, а они различают решения: системы
+# (CRM и DWH), короткие имена (Оля и Яна). Служебные — мимо: они не различают дела.
+_SHORT_STOP = frozenset(
+    "в во на по до для при все всё его её ее их так от из за к ко с со у о об обо и а но да ли же бы "
+    "то что как кто это мы вы он она оно они мне нам вам там тут уже еще ещё или под над про раз чем "
+    "где тот эта эти вот был нас вас ему ей им the to of in on at by is it an and or for".split())
+# Отрицание переворачивает решение: «перенести» и «не переносить» — противоположные дела.
+_NEGATION = frozenset({"не", "ни", "нельзя", "без"})
+
+
+def _short_words(text: str) -> frozenset[str]:
+    words = re.findall(r"[а-яёa-z]+", str(text).lower().replace("ё", "е"))
+    return frozenset(w for w in words if 2 <= len(w) <= 3 and w not in _SHORT_STOP and w not in _NEGATION)
+
+
+def _negated(text: str) -> bool:
+    return bool(_NEGATION & set(re.findall(r"[а-яёa-z]+", str(text).lower())))
+
+
+def _fingerprint(text: str) -> tuple[set[str], frozenset[str], bool]:
+    """Отпечаток решения для склейки: основы слов (порог), метки — числовые и короткие слова
+    (сторож вложенностью) и отрицание (сторож равенством). Слова короче четырёх букв `_stems`
+    теряет, и без меток и отрицания склеивались CRM и DWH, «перенести» и «не переносить» —
+    в том числе между проходами на main (финальный Opus №824, C1)."""
+    return _stems(text), _numbers(text) | _short_words(text), _negated(text)
 
 
 def _same_fingerprint(a: tuple, b: tuple) -> bool:
@@ -491,12 +513,14 @@ def _same_fingerprint(a: tuple, b: tuple) -> bool:
     и «стенд 2», «за Q3» и «за Q4», «на 12.12» и «на 12.01»), даже когда остальные слова общие;
     число только с одной стороны — уточнение того же дела. Замер 28.10 и эталон №800: все
     склейки с числами — одно дело, числа одной стороны входят в числа другой (№824, выход
-    n824-out1: DS C1, Sonnet I1). Метка и голое число («15го» и «15», «2ТБ» и «2», «Q3» и
+    n824-out1: DS C1, Sonnet I1). Короткое слово — та же метка («к CRM» и «к DWH» — разные дела),
+    отрицание с одной стороны — противоположное решение. Метка и голое число («15го» и «15», «2ТБ» и «2», «Q3» и
     «3») — разные токены и не склеиваются: недосклейка, безопасная сторона (выход n824-out4,
     Haiku I1; долг №615)."""
     # Вложенность — методом, не `<=`: у `a <= b or b <= a` оба мутанта `<=` → `<` эквивалентны
     # (перебор всех пар подмножеств {1,2,3}: ноль расхождений), тестом их не убить (CI мутаций #871).
-    return _same_decision(a[0], b[0]) and (a[1].issubset(b[1]) or b[1].issubset(a[1]))
+    return (_same_decision(a[0], b[0]) and (a[1].issubset(b[1]) or b[1].issubset(a[1]))
+            and a[2] == b[2])
 
 
 def _final_decisions(cfg: dict, data: dict | None) -> dict | None:
