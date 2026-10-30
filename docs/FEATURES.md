@@ -156,8 +156,8 @@
   mutual entailment; a refinement carrying a new fact is not a duplicate).
   The layer is optional: with no model in `models/nli/` it is simply off —
   see src/nli.py.
-- **Live draft minutes** — refreshed every ~2.5 minutes; the final protocol
-  on demand or after stop.
+- **Live draft minutes** — refreshed every ~10 minutes; the final protocol
+  on demand, or rebuilt from the final transcript after stop.
 - **Ask the assistant** — type a question mid-meeting: the answer is built
   first from the live transcript, then graph memory, then model knowledge
   (with the source labeled).

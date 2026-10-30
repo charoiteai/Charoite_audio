@@ -96,3 +96,21 @@ def test_auto_node_lookup_reads_speech_not_the_labelled_tail():
     call = call[:call.index(")") + 1]
     assert "tr.speech_tail(" in call and "tr.tail(" not in call, call
 
+
+
+def test_minutes_draft_waits_a_long_tick_only_while_the_draft_is_fresh():
+    # №808: черновик раз в 600 с, а не 150 — минуты основной модели и замок подсказок
+    assert re.search(r"^MINUTES_EVERY = 600(\.0)?\b", SRC, re.M)
+    assert re.search(r"^MINUTES_RETRY = 150(\.0)?\b", SRC, re.M)
+    body = _body("minutes_loop")
+    # сон — через stop: после стопа цикл не зовёт модель ради выброшенного черновика
+    assert "if stop.wait(due):" in body and "time.sleep(" not in body
+    # первого черновика нет — короткий такт: короткой встрече иначе нечем
+    # перештамповаться, когда модель на пересборке легла (Haiku I1)
+    assert "due = MINUTES_RETRY\n" in body.split("while not stop.is_set():")[0]
+    # уступка (слот занят или ручной запрос) — снова короткий такт, а не дыра в 20 минут (Sonnet I1)
+    for gate in ("if not got:", "if out is None:"):
+        tail = body.split(gate, 1)[1].lstrip()
+        assert tail.startswith("due = MINUTES_RETRY"), gate
+    # длинный такт — только после удачной генерации, рядом со сдвигом seen
+    assert "seen = grown\n                due = MINUTES_EVERY" in body
