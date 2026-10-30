@@ -332,6 +332,40 @@ def test_stub_is_never_gone(tmp_path, stub):
     assert p.gone == (OLD,), p
 
 
+def test_deleted_stub_leaves_with_the_next_snapshot(tmp_path):
+    """Под замком удалённая заглушка — skip, следующий снимок видит уход; отпечаток
+    удаления не замечает (out5 Haiku C1)."""
+    g = _graph(tmp_path)
+    stub = g / "Встречи" / "Старое имя.md"
+    stub.write_text("# Старое имя\n\nДубль. Смерджен в канон.\n", encoding="utf-8")
+    before = dossier.scan_snapshot(g, schema=CHAROITE)
+    text = dossier.with_composition(_dossier(before, [THEME, OLD]), [OLD, "Старое имя"])
+    stub.unlink()
+    assert _plan(text, [THEME, OLD], before, on_disk=True) == dossier.Plan("skip", "same")
+    after = dossier.scan_snapshot(g, schema=CHAROITE)
+    p = _plan(text, [THEME, OLD], after)
+    assert (p.action, p.gone) == ("rebuild", ("Старое имя",))
+    assert (dossier.fingerprint([THEME, OLD], before.files)
+            == dossier.fingerprint([THEME, OLD], after.files))
+
+
+def test_deleted_node_of_any_kind_in_composition_is_gone(world):
+    """Имя без файла и без заглушки — уход любого вида (out5 Haiku M1)."""
+    snap, built, members = world
+    text = dossier.with_composition(_dossier(snap, built), [OLD, "Пётр"])
+    del snap.files["Пётр"]
+    assert _plan(text, members, snap).gone == ("Пётр",)
+
+
+@pytest.mark.xfail(strict=True, reason="№607: scalar_field не срезает YAML-комментарий, база так же")
+def test_revision_with_comment_holds(world):
+    snap, _, members = world
+    text = dossier.with_revision(_dossier(snap, members), "2026-07-23")
+    text = text.replace('"2026-07-23"', '"2026-07-23" # проверил')
+    snap.files[NEW]["path"].unlink()
+    assert _plan(text, members, snap, on_disk=True).action == "hold"
+
+
 def test_stub_pointing_to_a_fork_is_not_gone(tmp_path):
     """A → B, B — развилка: цепочка кончается на заглушке, не уход (out3 I1)."""
     g = _graph(tmp_path)
