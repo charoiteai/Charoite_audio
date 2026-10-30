@@ -638,6 +638,9 @@ def test_forget_names_a_dossier_copy_the_night_never_rebuilds(tmp_path):
     assert any(c.startswith("Досье/.backup/2026-10-18_030000/Тема.md: ссылка на встречу осталась") for c in p.check), p.check
     # и живое: «ночь пересоберёт» верно, только пока тема остаётся кластером (круг n841-opus-fix DS I4)
     assert any(c.startswith("Досье/Тема.md: ссылка на встречу осталась") for c in p.check), p.check
+    assert any(c.startswith("Досье/.backup/2026-10-18_030000/Тема.md: нет отпечатка ночи — пересказ")
+               for c in p.check), p.check
+    assert any(c.startswith("Досье/Тема.md: нет отпечатка ночи — пересказ") for c in p.check), p.check
 
 
 def test_forget_names_a_link_form_it_cannot_cut(tmp_path):
@@ -2456,3 +2459,307 @@ def test_forget_takes_the_same_lock_as_the_dossier_review(tmp_path, память
     monkeypatch.setattr(forget.file_locks, "graph_lock", spy)
     assert forget.apply(forget.plan(STAMP, root, graph), yes=True) is True
     assert charoite_paths.graph_backups(graph, "cloud_backup", root=root).parent in taken
+
+
+# ── №845: пункт о встрече уходит блоком; №844: досье ночи уходит целиком ──
+
+def _core(graph: pathlib.Path, text: str) -> pathlib.Path:
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(text, encoding="utf-8")
+    return node
+
+
+def test_forget_drops_the_wrapped_text_and_subitems_of_a_meeting_item(tmp_path):
+    """Перенос текста пункта и его подпункты — тот же факт встречи (№845): у
+    5 853 из 17 685 пунктов владельца продолжение — перенос текста, замер 30.10."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — выбрали ЮPay,\n  комиссия 2.8%\n"
+                        "  - срок: 1 августа\n\n    абзац пункта\n\n- другое\n  - его подпункт\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "\n- другое\n  - его подпункт\n", p.edit.get(node)
+
+
+def test_forget_meeting_subitem_takes_only_its_own_block(tmp_path):
+    """Подпункт о встрече уходит со своими строками; родитель и соседи — нет."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- тема\n  - [[Встречи/{STAMP}]] — факт\n\t  перенос\n  - сосед\nабзац\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "- тема\n  - сосед\nабзац\n", p.edit.get(node)
+
+
+def test_forget_block_after_a_blank_needs_the_column_of_the_item_text(tmp_path):
+    """После пустой строки пункт продолжает только строка от колонки его текста;
+    абзац с одним пробелом — вне списка и остаётся (n845-in1 Sonnet I3)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"1.  [[Встречи/{STAMP}]] — факт\n\n   мелко\n\n    глубже\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "\n   мелко\n\n    глубже\n", p.edit.get(node)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — факт\n\n абзац\n\n  перенос\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "\n абзац\n\n  перенос\n", p.edit.get(node)
+
+
+@pytest.mark.parametrize("marker", ["*", "+", "1.", "2)", "-\t"])
+def test_forget_knows_every_list_marker_of_markdown(tmp_path, marker):
+    """Пункт списка Markdown с любым маркером уходит блоком, а не остаётся с
+    пометкой (n845-in1 Sonnet C2, DS C5)."""
+    root, graph = _world(tmp_path)
+    sep = "" if marker.endswith("\t") else " "
+    node = _core(graph, f"{marker}{sep}[[Встречи/{STAMP}]] — факт\n   перенос\n- другое\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "- другое\n", p.edit.get(node)
+
+
+@pytest.mark.parametrize("marker", ["•", "—", "–"])
+def test_forget_prose_with_a_bullet_or_dash_loses_only_the_link(tmp_path, marker):
+    """`•` и тире — проза для Obsidian, а не пункт списка: строка теряет ссылку,
+    следующая строка владельца остаётся (out1 Sonnet M4, Haiku I5)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"{marker} [[Встречи/{STAMP}]] — решили ЮPay\n  согласна\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f"{marker} {forget.REMOVED_NOTE} — решили ЮPay\n  согласна\n", p.edit.get(node)
+    # факт у пометки остался — не молча (out2 Haiku C1, Sonnet I2)
+    assert "Ядра/Срок.md: у пометки остался текст встречи (1) — проверь сам" in p.check, p.check
+
+
+@pytest.mark.parametrize("text, left", [
+    (" - [[Люди/Мария]] — обещала договор\n- другое\n", " - [[Люди/Мария]] — обещала договор\n- другое\n"),
+    ("комиссия 2.8%\n- другое\n", "- другое\n"),
+    ("  комиссия 2.8%\n# Заголовок\nабзац\n", "# Заголовок\nабзац\n"),
+    (" > цитата\n", " > цитата\n"),
+])
+def test_forget_block_stops_at_a_sibling_and_takes_a_lazy_line(tmp_path, text, left):
+    """Без пустой строки соседний пункт, заголовок, цитата — свои блоки, их отступ
+    меньше колонки текста; строка текста без отступа — ленивое продолжение пункта
+    (out1 DS C1, I2, Sonnet I2, Haiku I2, I3)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — выбрали ЮPay,\n{text}")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == left, p.edit.get(node)
+    lazy = [c for c in p.check if "снята строка без отступа" in c]
+    assert lazy == ([f"Ядра/Срок.md: с пунктом о встрече снята строка без отступа (1) — проверь сам, "
+                     f"копия в {forget.BACKUP_DIR}/{STAMP}"] if text.startswith("комиссия") else []), p.check
+
+
+def test_forget_block_ends_at_a_crlf_rule_and_heading(tmp_path):
+    """`$` не видит `\r`: черта и заголовок с CRLF тоже свои блоки (out2 Sonnet I1, Haiku I2)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — факт\r\n---\r\n#\r\n<details>\r\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "---\r\n#\r\n<details>\r\n", p.edit.get(node)
+
+
+def test_forget_item_naming_other_meetings_loses_only_its_link(tmp_path):
+    """Пункт «Источники» с другой встречей (и голым штампом) — не только её след:
+    блок остаётся, ссылка заменена пометкой (out1 Haiku I1, Sonnet M3)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- **Встречи:** [[Встречи/{STAMP}]] · [[{OTHER}]]\n  - деталь\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f"- **Встречи:** {forget.REMOVED_NOTE} · [[{OTHER}]]\n  - деталь\n", p.edit.get(node)
+
+
+def test_forget_names_other_meetings_that_leave_with_the_block(tmp_path):
+    """Ссылка на другую встречу в блоке уходит вместе с ним — человек видит её
+    в «проверь сам» (n845-in1 DS C4, Sonnet I2)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — итог\n  - [[Встречи/{OTHER}|16 июля]] — перенесли\n"
+                        f"  - и [[{OTHER}]]\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "", p.edit.get(node)
+    assert [c for c in p.check if c.startswith("Ядра/Срок.md: с пунктом о встрече ушли ссылки")] == [
+        f"Ядра/Срок.md: с пунктом о встрече ушли ссылки на другие встречи — {OTHER}"], p.check
+
+
+def _night_dossier(path: pathlib.Path, *, manual: str = "—", nl: str = "\n", extra: str = "") -> pathlib.Path:
+    """Досье, как его пишет ночь (`dossier.render`)."""
+    text = dossier_mod.render("Платёж", f"## Сейчас\n- выбрали ЮPay [[Встречи/{STAMP}]]",
+                              [f"Встречи/{STAMP}", f"Встречи/{OTHER}"],
+                              {f"Встречи/{STAMP}": {"kind": "Встречи"}, f"Встречи/{OTHER}": {"kind": "Встречи"}},
+                              "abc123", "2026-10-30")
+    text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n") + extra
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.replace("\n", nl).encode("utf-8"))
+    return path
+
+
+@pytest.mark.parametrize("rel", ["Досье/Платёж.md", "Досье/.backup/2026-10-29_030000/Платёж.md"])
+def test_forget_deletes_a_night_dossier_that_cites_the_meeting(tmp_path, rel):
+    """Тема из ядра и двух встреч после «забыть» — 2 < MIN_CLUSTER, ночь её не
+    посетит: досье ночи и его копия ночи уходят целиком, без правки (№844), с
+    копией в .forget_backup — правку тела без следа не видно (out1 Sonnet I1, Haiku C1)."""
+    root, graph = _world(tmp_path)
+    path = _night_dossier(graph / rel)
+    before = path.read_bytes()
+    p = forget.plan(STAMP, root, graph)
+    assert path in p.delete and path not in p.edit
+    assert any(n.startswith(f"{rel}: досье ночи пересказывает встречу — удаляется") for n in p.notes), p.notes
+    forget.apply(p, yes=True)
+    assert not path.exists()
+    assert (graph / forget.BACKUP_DIR / STAMP / rel).read_bytes() == before
+
+
+def test_forget_deletes_nothing_when_a_dossier_copy_has_nowhere_to_go(tmp_path, monkeypatch):
+    """Копия удаляемого досье не легла — `apply` не удаляет ничего (out2 Sonnet I3, Haiku I3)."""
+    root, graph = _world(tmp_path)
+    path = _night_dossier(graph / "Досье/Платёж.md")
+    p = forget.plan(STAMP, root, graph)
+    assert path in p.copy_first
+    monkeypatch.setattr(forget, "_backup", lambda *a, **k: None)
+    assert forget.apply(p, yes=True) is False and p.refused
+    assert path.exists() and all(q.exists() for q in p.delete)
+    p = forget.plan(STAMP, root, graph)
+
+    def denied(*a, **k):
+        raise PermissionError("нет прав")
+    monkeypatch.setattr(forget, "_backup", denied)
+    assert forget.apply(p, yes=True) is False and p.refused     # OSError — тот же отказ (out3 Haiku I1)
+    assert path.exists() and all(q.exists() for q in p.delete)
+
+
+def test_forget_deletes_nothing_when_an_edit_copy_fails(tmp_path, monkeypatch):
+    """Копия правки упала — до первого удаления, а не после: встреча не забыта
+    наполовину (out4 Haiku I2)."""
+    root, graph = _world(tmp_path)
+    core = _core(graph, f"- [[Встречи/{STAMP}]] — срок 15 июля\n")
+    before = core.read_bytes()
+    p = forget.plan(STAMP, root, graph)
+    assert core in p.edit and not p.copy_first
+
+    def denied(*a, **k):
+        raise PermissionError("нет прав")
+    monkeypatch.setattr(forget, "_backup", denied)
+    assert forget.apply(p, yes=True) is False and p.refused
+    assert all(q.exists() for q in p.delete) and core.read_bytes() == before
+
+
+def test_forget_deletes_nothing_when_an_edit_write_fails(tmp_path, monkeypatch):
+    """Запись правки упала — до первого удаления: файлы встречи на месте, временных
+    файлов нет (out5 Haiku C1)."""
+    root, graph = _world(tmp_path)
+    core = _core(graph, f"- [[Встречи/{STAMP}]] — срок 15 июля\n")
+    before = core.read_bytes()
+    p = forget.plan(STAMP, root, graph)
+    assert core in p.edit and p.delete
+    real = pathlib.Path.write_text
+
+    def full(self, *a, **k):
+        if self.name.endswith(".tmp"):
+            raise OSError(28, "нет места")
+        return real(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "write_text", full)
+    assert forget.apply(p, yes=True) is False and p.refused
+    assert all(q.exists() for q in p.delete) and core.read_bytes() == before
+    assert not list(graph.rglob("*.tmp"))
+
+
+def test_forget_names_an_edit_that_did_not_land(tmp_path, monkeypatch, capsys):
+    """`os.replace` правки упал после удалений — «не поправлено», отказ, `.tmp` убран
+    (out6 Sonnet M1, M2)."""
+    root, graph = _world(tmp_path)
+    core = _core(graph, f"- [[Встречи/{STAMP}]] — срок 15 июля\n")
+    p = forget.plan(STAMP, root, graph)
+    assert core in p.edit
+    real = pathlib.Path.replace
+
+    def stuck(self, target):
+        if self.name.endswith(".tmp"):
+            raise PermissionError("нет прав")
+        return real(self, target)
+    monkeypatch.setattr(pathlib.Path, "replace", stuck)
+    forget.apply(p, yes=True)
+    out = capsys.readouterr().out
+    assert p.refused and "не поправлено" in out and str(core) in out, out
+    assert not list(graph.rglob("*.tmp"))
+
+
+def test_forget_refuses_an_edit_inside_a_deleted_folder(tmp_path):
+    """Правка внутри удаляемого каталога — отказ до удалений (out6 Haiku I1)."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    victim = next((q for q in p.delete if q.is_dir()), None) or p.delete[0].parent
+    if victim not in p.delete:
+        p.delete.append(victim)     # каталог в плане — как снимок с манифестом
+    inside = victim / "manifest.tsv"
+    inside.write_text("x\n", encoding="utf-8")
+    p.edit[inside] = "y\n"
+    assert forget.apply(p, yes=True) is False and p.refused
+    assert all(q.exists() for q in p.delete) and inside.read_text(encoding="utf-8") == "x\n"
+
+
+def test_forget_left_on_disk_is_a_refusal(tmp_path, monkeypatch, capsys):
+    """Не удалилось — не «забыто» и не код 0 (out4 Haiku C1)."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    assert p.delete
+
+    def denied(self, *a, **k):
+        raise PermissionError("нет прав")
+    monkeypatch.setattr(pathlib.Path, "unlink", denied)
+    monkeypatch.setattr(forget.shutil, "rmtree", lambda *a, **k: None)
+    forget.apply(p, yes=True)
+    out = capsys.readouterr().out
+    assert p.refused and "НЕ удалено" in out and "забыто НЕ всё" in out, out
+
+
+@pytest.mark.parametrize("line, named", [
+    (f"## [[Встречи/{STAMP}]] — выбрали ЮPay", True),
+    (f"**[[Встречи/{STAMP}]]** — комиссия 2.8%", True),
+    (f"[[Встречи/{STAMP}]] — выбрали ЮPay", True),
+    (f"> [[Встречи/{STAMP}]] — цитата", True),
+    (f"| [[Встречи/{STAMP}]] | выбрали |", True),
+    (f"Решили, как на [[Встречи/{STAMP}]], ждать.", False),
+    (f"• [[Встречи/{STAMP}]]", False),
+    (f"__[[Встречи/{STAMP}]]__", False),
+    (f"1. [[Встречи/{STAMP}]], [[Встречи/2026-07-14_1000]]", False),
+    (f"## {forget.REMOVED_NOTE} [[Встречи/{STAMP}]]", False),
+    (f"[[Встречи/{STAMP}]] 5)", True),
+])
+def test_forget_names_a_chronicle_line_that_keeps_text_at_the_note(tmp_path, line, named):
+    """Заголовок, жирное начало, ссылка первой, цитата, таблица — хроника: текст у
+    пометки назван; ссылка внутри фразы — как на базе; без текста — нечего называть
+    (out3 Haiku C1, Sonnet I1, M1)."""
+    root, graph = _world(tmp_path)
+    _core(graph, line + "\n")
+    p = forget.plan(STAMP, root, graph)
+    assert any(c.startswith("Ядра/Срок.md: у пометки остался текст встречи") for c in p.check) == named, p.check
+
+
+@pytest.mark.parametrize("case", ["manual", "manual_crlf", "revision", "nested", "snapshot"])
+def test_forget_keeps_a_dossier_a_human_touched_and_names_it(tmp_path, case):
+    """Правки автора (и при CRLF — n845-in1 DS C1), `ревизия:`, вложенная папка,
+    снимок — не вывод ночи: правка ссылок как раньше, файл остаётся; живое досье
+    с рукой человека — в «проверь сам» (Sonnet C1, DS C2)."""
+    root, graph = _world(tmp_path)
+    rel = {"nested": "Досье/Архив/Платёж.md"}.get(case, "Досье/Платёж.md")
+    if case == "snapshot":
+        base = charoite_paths.graph_backups(graph, "cloud_backup", root=root) / "2026-07-20_0300"
+    else:
+        base = graph
+    path = _night_dossier(base / rel, manual="мой вывод" if case.startswith("manual") else "—",
+                          nl="\r\n" if case == "manual_crlf" else "\n")
+    if case == "revision":
+        path.write_text(dossier_mod.with_revision(path.read_text(encoding="utf-8"), "2026-10-18"), encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert path not in p.delete and path in p.edit, (p.delete, p.check)
+    why = {"manual": "есть правки автора", "manual_crlf": "есть правки автора",
+           "revision": "тело правила облачная ревизия"}.get(case, "этот путь ночь не пересобирает")
+    if case == "snapshot":
+        rel = path.relative_to(charoite_paths.graph_backups(graph, "cloud_backup", root=root)).as_posix() + " (снимок)"
+    named = [c for c in p.check if "пересказ встречи в теле проверь сам" in c]
+    assert named == [f"{rel}: {why} — пересказ встречи в теле проверь сам"], p.check
+
+
+def test_kept_from_night_names_each_mark_of_a_human_hand(tmp_path):
+    """Каждый признак по отдельности держит тело от удаления (out1 Sonnet M5, Haiku M3)."""
+    night = _night_dossier(tmp_path / "Платёж.md").read_text(encoding="utf-8")
+    assert dossier_mod.kept_from_night(night) == ""
+    fp = next(ln for ln in night.splitlines() if ln.startswith("отпечаток"))
+    cases = {
+        "нет отпечатка ночи": night.replace(fp + "\n", ""),
+        "нет раздела «Источники» или «Правки автора»": night[:night.index("## Правки автора")],
+        "есть правки автора": night.replace("## Правки автора\n\n—\n", "## Правки автора\n\nмой вывод\n"),
+        "тело правила облачная ревизия": dossier_mod.with_revision(night, "2026-10-18"),
+        "в теле метка диаризации": night.replace("- выбрали ЮPay", "- Собеседник 2 выбрал ЮPay"),
+    }
+    for why, text in cases.items():
+        assert dossier_mod.kept_from_night(text) == why, (why, text)

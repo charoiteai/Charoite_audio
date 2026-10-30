@@ -70,7 +70,7 @@ import privacy  # noqa: E402
 import deps  # noqa: E402
 import live_sidecar  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
-from charoite_graph import dossier, safe_write  # noqa: E402
+from charoite_graph import dossier, graph_names, safe_write  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 
 
@@ -148,8 +148,15 @@ def _in_cloud_snapshot(path: pathlib.Path) -> bool:
         return False
 
 
-# «- [[Встречи/2026-07-15_1400]] — выбрали ЮPay» — строка хроники целиком.
-_LINE = "- "
+# «- [[Встречи/2026-07-15_1400]] — выбрали ЮPay» — пункт хроники. Блоком (перенос,
+# подпункты) уходит только пункт списка Markdown — `-`, `*`, `+`, `1.`, `1)`: у них
+# отступ и есть граница. Строка с `•` или тире — проза для Obsidian, её `task_line`
+# считает пунктом статуса, а здесь она теряет только ссылку (out1 Sonnet M4, Haiku I5)
+_ITEM = re.compile(r"[ \t]*(?:[-*+]|\d+[.)])(?:[ \t]|$)")
+# строка, которая открывает свой блок и потому не ленивое продолжение пункта
+_OPENS = re.compile(r"[ \t]*(?:(?:[-*+]|\d+[.)])(?:[ \t]|$)|#{1,6}(?:[ \t]|$)|>|```|~~~|\||<|\$\$|%%|\[\^|"
+                    r"(?:[-*_][ \t]*){3,}$)")
+_BLANK = " \t\r\n"
 
 
 @dataclasses.dataclass
@@ -173,6 +180,11 @@ class Plan:
     # Как план решил, чьи посекундные файлы минуты: человек проверяет довод
     # ДО необратимого удаления (критика DS r4 по #499)
     notes: list[str] = dataclasses.field(default_factory=list)
+    # Удаляемые с копией в `.forget_backup` до первого удаления: досье ночи, чьё
+    # тело человек мог править без следа (out1 Sonnet I1, Haiku C1, I4)
+    copy_first: list[pathlib.Path] = dataclasses.field(default_factory=list)
+    # apply отказал до первого удаления — код возврата 1 (out3 Haiku I1)
+    refused: bool = False
     # Досягаемое, но не тронутое: следы под минутой встречи, чья минута не
     # доказана, и папки архива того же дня, чья принадлежность не доказана
     # вовсе (остаток дня, №398). Это не «не дотянется» — удалить их можно,
@@ -1082,7 +1094,39 @@ def plan(stamp: str, root: pathlib.Path,
             cited = dossier.cites(text, keys)
             revised = in_dossier and cited and bool(dossier.revision(text))
             linked = bool(link.search(text))
-            fixed = _strip_meeting(text, link) if linked else text
+            # Досье ночи без руки человека — `Досье/<тема>.md` и его копия ночи
+            # `Досье/.backup/<прогон>/<тема>.md` — уходит целиком: тема пересоберётся
+            # без встречи, а выпавшая из кластеров (< MIN_CLUSTER) не оставит
+            # пересказа навсегда (№844). Тело с рукой человека — правкой и в
+            # «проверь сам» (n845-in1 Sonnet C1, DS C2)
+            night_file = in_dossier and not in_snap and (
+                len(parts) == 2 or (len(parts) == 4 and parts[1] == dossier.BACKUP_DIR))
+            kept = dossier.kept_from_night(text) if night_file else "этот путь ночь не пересобирает"
+            if cited and night_file and not kept:
+                # с копией в `.forget_backup`: правку тела без следов в шапке и
+                # «Правках автора» предикат не видит (out1 Sonnet I1, Haiku C1)
+                p.delete.append(f)
+                p.copy_first.append(f)
+                p.snaps[f] = seen     # ревизия, записавшая тело после плана, — не удалять (гейт #881)
+                p.notes.append(f"{where}: досье ночи пересказывает встречу — удаляется, копия в {BACKUP_DIR}/{p.stamp}")
+                continue
+            lost: list[str] = []
+            told: list[str] = []
+            fixed = _strip_meeting(text, link, lost, keys, told) if linked else text
+            if lost:
+                p.check.append(f"{where}: с пунктом о встрече ушли ссылки на другие встречи — "
+                               + ", ".join(dict.fromkeys(lost)))
+            # молчать нельзя ни о факте, оставленном у пометки, ни о строке владельца,
+            # снятой как ленивое продолжение (out2 Haiku C1, I1, Sonnet I2)
+            if told.count("пометка"):
+                p.check.append(f"{where}: у пометки остался текст встречи ({told.count('пометка')}) — проверь сам")
+            if told.count("ленивая"):
+                # копию правки снимка `apply` не снимает — бэкап бэкапа (out3 Sonnet I2, Haiku I2)
+                p.check.append(f"{where}: с пунктом о встрече снята строка без отступа ({told.count('ленивая')})"
+                               " — проверь сам" + ("" if in_snap else f", копия в {BACKUP_DIR}/{p.stamp}"))
+            if cited and in_dossier:
+                # любое досье графа и снимка, не только `Досье/<тема>.md` (out1 DS I1, out3 Haiku C2)
+                p.check.append(f"{where}: {kept} — пересказ встречи в теле проверь сам")
             if revised:
                 fixed = dossier.without_revision(fixed)
             if dossier.cites(fixed, keys):
@@ -1131,28 +1175,103 @@ def plan(stamp: str, root: pathlib.Path,
     return p
 
 
-def _strip_meeting(text: str, link: re.Pattern[str]) -> str:
+def _indent(line: str) -> int:
+    """Отступ строки Markdown в колонках: пробел — одна, таб — до кратной четырём."""
+    n = 0
+    for ch in line:
+        if ch == " ":
+            n += 1
+        elif ch == "\t":
+            n += 4 - n % 4
+        else:
+            break
+    return n
+
+
+def _other_meetings(text: str, keys: typing.Iterable[str]) -> list[str]:
+    """Штампы других встреч, на которые ссылается текст, — грамматикой ссылок
+    досье (`dossier.LINK_RE`, голый штамп тоже: out1 Sonnet M3, DS M1)."""
+    own = set(keys)
+    stems = (graph_names.link_target_stem(m.group(1)) for m in dossier.LINK_RE.finditer(text))
+    return [s for s in stems if meeting_stamp.is_stamp(s) and s not in own]
+
+
+# строка хроники, у которой пометка оставляет текст встречи: проза с `•`/тире,
+# цитата, строка таблицы, заголовок, жирное начало или ссылка первой (out2 Haiku C1,
+# Sonnet I2; out3 Haiku C1, Sonnet I1) — не ссылка внутри фразы, как на базе
+_ENTRY = re.compile(r"[ \t]*(?:[•–—⁃‣▪>|#]|\*\*|__|\[\[)")
+
+
+def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = None,
+                   keys: typing.Iterable[str] = (), told: list[str] | None = None) -> str:
     """Убрать следы встречи из текста узла, который остаётся жить.
 
-    Строка-пункт, ссылающаяся на встречу, — это её след целиком (хроника
-    Ядра: «- [[Встречи/…]] — выбрали ЮPay»), и уходит она вместе с фактом.
-    Ссылка внутри фразы заменяется пометкой: удалить полфразы было бы
-    хуже, чем оставить видимый пробел.
+    Пункт списка, ссылающийся на встречу, — это её след целиком (хроника
+    Ядра: «- [[Встречи/…]] — выбрали ЮPay»), и уходит он блоком: перенос его
+    текста и подпункты — строки с отступом больше, чем у пункта (пустая строка
+    внутри — если за ней снова такой отступ). Замер 30.10: у 6 446 из 17 685
+    пунктов о встрече есть продолжение, у 5 853 это перенос текста (№845).
+    Ссылки на ДРУГИЕ встречи, ушедшие с блоком, — в `lost`: человек видит их в
+    «проверь сам» (n845-in1 DS C4, Sonnet I2). Ссылка внутри фразы заменяется
+    пометкой: удалить полфразы было бы хуже, чем оставить видимый пробел.
     """
     out = []
     # разделители строк — как были: `"\n".join` менял U+2028 и `\x0b` (out5 DS I5),
     # а одиночный `\r` склеивал файл в один пункт (out6 Haiku I2)
-    for line in _MD_LINE.findall(text):
+    lines = _MD_LINE.findall(text)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         if not link.search(line):
             out.append(line)
+            i += 1
             continue
-        if line.lstrip(" \t").startswith(_LINE):     # отступ Markdown, не `isspace` (out8 Sonnet M1)
-            continue    # пункт списка = запись о встрече
-        out.append(link.sub(REMOVED_NOTE, line))
+        # пункт, который называет и другие встречи («Источники» досье), — не только
+        # её след: теряет ссылку, а не блок (out1 Haiku I1)
+        if (not _ITEM.match(line.rstrip("\r\n"))     # отступ Markdown, не `isspace` (out8 Sonnet M1)
+                or _other_meetings(link.sub("", line), keys)):
+            out.append(link.sub(REMOVED_NOTE, line))
+            # слово остатка — буква или цифра без маркера пункта: `1. [[A]], [[B]]` и
+            # `__[[A]]__` — пусто (out4 Haiku M4)
+            if told is not None and (_ITEM.match(line) or _ENTRY.match(line)):
+                bare = line.replace(REMOVED_NOTE, "")      # пометка прошлого раза — не текст (out5 Haiku M1)
+                head = _ITEM.match(bare)                   # маркер — только в начале строки (out5 Haiku M2)
+                if re.search(r"[^\W_]", dossier.LINK_RE.sub("", bare[head.end():] if head else bare)):
+                    told.append("пометка")
+            i += 1
+            continue
+        base, j = _indent(line), i + 1
+        # после пустой строки пункт продолжает только строка от колонки его текста,
+        # мельче — абзац вне списка, как в CommonMark (n845-in1 Sonnet I3)
+        head = _ITEM.match(line.rstrip("\r\n")).end()
+        head += len(line[head:]) - len(line[head:].lstrip(" \t"))
+        body = max(len(line[:head].rstrip("\r\n").expandtabs(4)), base + 1)
+        while j < len(lines):
+            if lines[j].strip(_BLANK):
+                # без пустой строки пункт продолжает строка от колонки его текста или
+                # ленивое продолжение — текст, который не открывает свой блок; сосед
+                # « - другой» с отступом в колонку — свой пункт (out1 DS C1, Haiku I3)
+                if _indent(lines[j]) < body:
+                    if _OPENS.match(lines[j].rstrip("\r\n")):     # `$` не видит `\r` (out2 Sonnet I1)
+                        break
+                    if told is not None:
+                        told.append("ленивая")
+                j += 1
+                continue
+            k = j
+            while k < len(lines) and not lines[k].strip(_BLANK):
+                k += 1
+            if k < len(lines) and _indent(lines[k]) >= body:
+                j = k
+                continue
+            break
+        if lost is not None:
+            lost += [m for gone in lines[i:j] for m in _other_meetings(link.sub("", gone), keys)]
+        i = j
     return "".join(out)
 
 
-def _backup(path: pathlib.Path, stamp: str) -> None:
+def _backup(path: pathlib.Path, stamp: str) -> pathlib.Path | None:
     """Копия узла до правки — рядом с графом, в скрытой папке."""
     for parent in path.parents:
         if (parent / MEETINGS_DIR).is_dir() or (parent / ARCHIVE_DIR).is_dir():
@@ -1161,7 +1280,8 @@ def _backup(path: pathlib.Path, stamp: str) -> None:
             dest = parent / BACKUP_DIR / stamp / path.relative_to(parent)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
-            return
+            return dest
+    return None
 
 
 def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_explicit: bool = False) -> bool:
@@ -1171,7 +1291,15 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
         return False
     if not yes:
         print("\nничего не сделано. Повторите с --yes, если это то, что нужно:\n"
-              "  удаление стенограмм, записи, папки архива и узла встречи необратимо")
+              "  удаление стенограмм, записи, папки архива и узла встречи необратимо;\n"
+              "  досье темы, пересказавшие встречу, уйдут с копией в " + BACKUP_DIR)
+        return False
+    # правка внутри удаляемого — её `.tmp` сотрёт удаление: отказ до всего, а не
+    # «не поправлено» после (out6 Haiku I1; манифесты обходят гейт `.md` в plan)
+    clash = [e for e in p.edit if any(e == d or d in e.parents for d in p.delete)]
+    if clash:
+        print("НЕ сделано ничего: правка внутри удаляемого — " + ", ".join(str(e) for e in clash))
+        p.refused = True
         return False
     # Путь записи — лексический (симлинк в графе пишется как файл графа), поэтому сверяем
     # и его, и его цель: `resolve()` одного уводил симлинк за граф, замок не брался
@@ -1190,13 +1318,18 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
             if not taken:
                 print("\nничего не сделано: граф занят разбором встречи или ревизией досье "
                       "(или замок недоступен) — повторите позже")
+                p.refused = True    # отказ дня не прячется за успехом соседки
                 return False
         for path, seen in p.snaps.items():
             if safe_write.stat_snapshot(path) != seen:
                 print(f"\nничего не сделано: {path} сменился после плана — запустите снова")
+                p.refused = True    # отказ дня не прячется за успехом соседки
                 return False
-        left = _apply_locked(p)
-    _report_and_forget_brain(p, left, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
+        done = _apply_locked(p)
+    if done is None:
+        p.refused = True
+        return False
+    _report_and_forget_brain(p, *done, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
     return True
 
 
@@ -1206,10 +1339,53 @@ def _under(path: pathlib.Path, *roots: pathlib.Path) -> bool:
     return any(q.is_relative_to(r) for q in forms for root in roots for r in (root, root.resolve()))
 
 
-def _apply_locked(p: Plan) -> list[pathlib.Path]:
-    """Удаление и правки — под замками графов; отдаёт неудалённое. Память Чароита и
-    печать — после замка: `/forget` в brain до 30 с на ключ держал бы ревизию и разбор
+def _apply_locked(p: Plan) -> tuple[list[pathlib.Path], list[pathlib.Path]] | None:
+    """Копии, удаление и правки — под замками графов; отдаёт неудалённое и
+    непоправленное, `None` — отказ до первого удаления. Память Чароита и печать —
+    после замка: `/forget` в brain до 30 с на ключ держал бы ревизию и разбор
     встречи (n841-opus-fix2 Sonnet M1)."""
+    # копии — до первого удаления: упавшая копия не оставит удалённого без копии
+    # (out1 Haiku I4)
+    # копии правок — тоже до удалений: упавшая копия правки после них оставляла
+    # встречу забытой наполовину (out4 Haiku I2); снимки не копируются, как прежде
+    for path in [*p.copy_first, *(e for e in p.edit if not _in_cloud_snapshot(e))]:
+        try:
+            dest = _backup(path, p.stamp)
+        except OSError as e:                    # права, диск — тоже до первого удаления (out3 Haiku I1)
+            why = str(e)
+        else:
+            # без копии удаляемого досье не удалять (out2 Sonnet I3); правка вне
+            # раскладки графа и без копии — как на базе (№848)
+            if dest is not None or path not in p.copy_first:
+                continue
+            why = "некуда положить"
+        print(f"НЕ сделано ничего: копия {path} не легла ({why}) — повтори, когда граф на месте")
+        return None
+    # правки пишутся во временные файлы до удалений: упавшая запись после них
+    # оставляла встречу удалённой наполовину и память Чароита нетронутой (out5 Haiku C1)
+    staged = []
+    for path, text in p.edit.items():
+        # копии внутри снимка правим (там те же строки хроники), но бэкап
+        # бэкапа не снимаем: он воскресил бы то, что человек забывает.
+        # Имён два: старое `.cloud_backup` внутри графа и новое `cloud_backup`
+        # в данных — снимки уехали из iCloud 21.08.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        staged.append((tmp, path))
+        try:
+            tmp.write_text(text, encoding="utf-8")
+        except OSError as e:
+            for t, _ in staged:
+                with contextlib.suppress(OSError):
+                    t.unlink(missing_ok=True)
+            print(f"НЕ сделано ничего: правка {path} не записалась ({e}) — повтори, когда граф на месте")
+            return None
+        # Права узла — как были: конвейер пишет граф под harden_umask (0600),
+        # а write_text давал 0644 по umask вызывающего — поправленный узел
+        # становился читаемым для всех (аудит DeepSeek 16.08).
+        try:
+            tmp.chmod(stat.S_IMODE(path.stat().st_mode))
+        except OSError:
+            pass
     left = []
     for path in p.delete:
         try:
@@ -1221,33 +1397,26 @@ def _apply_locked(p: Plan) -> list[pathlib.Path]:
             pass
         if os.path.lexists(path):
             left.append(path)      # права/занятый том — сказать, а не «забыто»
-    if left:
-        print("НЕ удалено (проверь права и повтори): "
-              + ", ".join(str(q) for q in left))
-    for path, text in p.edit.items():
-        # копии внутри снимка правим (там те же строки хроники), но бэкап
-        # бэкапа не снимаем: он воскресил бы то, что человек забывает.
-        # Имён два: старое `.cloud_backup` внутри графа и новое `cloud_backup`
-        # в данных — снимки уехали из iCloud 21.08.
-        if not _in_cloud_snapshot(path):
-            _backup(path, p.stamp)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        # Права узла — как были: конвейер пишет граф под harden_umask (0600),
-        # а write_text давал 0644 по umask вызывающего — поправленный узел
-        # становился читаемым для всех (аудит DeepSeek 16.08).
+    unedited = []
+    for tmp, path in staged:
         try:
-            tmp.chmod(stat.S_IMODE(path.stat().st_mode))
+            tmp.replace(path)
         except OSError:
-            pass
-        tmp.replace(path)
-    return left
+            unedited.append(path)  # правка не легла — тоже не «забыто»
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)       # не оставлять поправленную копию рядом (out6 Sonnet M1)
+    return left, unedited
 
 
-def _report_and_forget_brain(p: Plan, left: list[pathlib.Path], *, brain_enabled: bool,
-                             brain_explicit: bool) -> None:
-    done = "забыто частично (см. «проверь сам»)" if p.check else "забыто"
-    print(f"\n{done}: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
+def _report_and_forget_brain(p: Plan, left: list[pathlib.Path], unedited: list[pathlib.Path], *,
+                             brain_enabled: bool, brain_explicit: bool) -> None:
+    if left or unedited:
+        print("НЕ удалено или не поправлено (проверь права и повтори): "
+              + ", ".join(str(q) for q in left + unedited))
+        p.refused = True      # остаток на диске — не «забыто» и не код 0 (out4 Haiku C1)
+    done = ("забыто НЕ всё (см. «НЕ удалено или не поправлено»)" if left or unedited
+            else "забыто частично (см. «проверь сам»)" if p.check else "забыто")
+    print(f"\n{done}: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit) - len(unedited)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
     # улика отправки — свойство встречи, а не ключа: у владельца минуты ключей два, отметка под
     # одним, и по ключу выходили две строки, противоречащие друг другу (Opus M2 круга 2 №249)
@@ -1352,14 +1521,15 @@ def main() -> int:
     if len(found) > 1:
         print(f"за {args.target} встреч несколько: {', '.join(found)}\n")
     brain = _brain_flags(_root())
-    done = False
+    done = refused = False
     day_named: set[pathlib.Path] = set()      # папку дня называет план первой встречи дня
     for stamp in found:
-        done |= apply(plan(stamp, _root(), graph, keep_graph=args.keep_graph,
-                           import_folder=args.import_folder, day_named=day_named),
-                      yes=args.yes, **brain)
+        p = plan(stamp, _root(), graph, keep_graph=args.keep_graph,
+                 import_folder=args.import_folder, day_named=day_named)
+        done |= apply(p, yes=args.yes, **brain)
+        refused |= p.refused     # отказ одной встречи дня не прячется за успехом другой (out3 Haiku I1)
         print()
-    return 0 if (done or not args.yes) else 1
+    return 1 if refused else 0 if (done or not args.yes) else 1
 
 
 if __name__ == "__main__":

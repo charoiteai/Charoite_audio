@@ -384,10 +384,21 @@ folder of that day the plan does not remove and no sound manifest gives to
 another meeting (no manifest; a broken one — unreadable, not JSON, or a meeting_id that is not a meeting stamp; a name without « — ») is named under
 «проверь сам» with the reason — and next to «не найдена» when a date has no
 meeting at all; with `--keep-graph` the graph stays whole and the list is not printed. A link inside a sentence becomes a
-«(встреча удалена)» note instead of a dangling wiki-link. By default it prints
+«(встреча удалена)» note instead of a dangling wiki-link. A list item with the
+link goes as a block — its wrapped text, lazy continuation and sub-items with it;
+an item that also names other meetings only loses the link, and links to other
+meetings that leave with a block are named under «проверь сам». A line with `•`
+or a dash is prose, not a list item: it only loses the link and is named under
+«проверь сам», as is a line without indent taken as a lazy continuation. A
+night-built dossier that retells the meeting (`Досье/<topic>.md` and its night
+copies in `Досье/.backup/`) is deleted with a copy in `.forget_backup`, and
+nothing is deleted if that copy fails (the night rebuilds a live topic); one a
+human edited, revised or labelled, or any other dossier path, keeps its body and
+is named under «проверь сам» with the reason. By default it prints
 the plan: deletion is irreversible and needs `--yes`. Edits to nodes that stay
-alive are backed up into `.forget_backup/<stamp>/` — we delete a meeting, not
-someone's notes. Transcript and recording only, leaving the graph alone:
+alive are backed up into `.forget_backup/<stamp>/` before the first deletion — we
+delete a meeting, not someone's notes. A failed copy or a file left on disk exits 1,
+not «забыто». Transcript and recording only, leaving the graph alone:
 `--keep-graph`.
 
 **Nightly loop** (`scripts/nightly.sh`, cron/launchd it): wait for a meeting
