@@ -148,6 +148,33 @@ def test_refresh_picks_up_appended_line(tmp_path):
     assert any("21 день" in ln for ln in idx.digest(node))
 
 
+def test_refresh_sees_a_rewrite_that_keeps_mtime_and_size(tmp_path):
+    """`copy_if_changed` пишет через tmp+replace и сохраняет mtime источника: при том же
+    размере кэш по mtime+size отдавал старый узел (финальный Opus n853 M1)."""
+    import os
+    from charoite_graph import safe_write
+    g = _graph(tmp_path)
+    idx = NodeIndex(g, schema=CHAROITE)
+    idx.refresh()
+    p = g / "Ядра" / "Ретеншн.md"
+    text = p.read_text(encoding="utf-8")
+    line = "- [[Встречи/2026-08-15_1200]] — сдвинули на 21 день\n"
+    old = text.replace("## Хроника\n", "## Хроника\n" + "x" * (len(line.encode()) - 1) + "\n", 1)
+    new = text.replace("## Хроника\n", "## Хроника\n" + line, 1)
+    assert len(old.encode()) == len(new.encode())
+    p.write_text(old, encoding="utf-8")
+    idx.refresh()
+    st = p.stat()
+    src = tmp_path / "src.md"
+    src.write_text(new, encoding="utf-8")
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert safe_write.copy_if_changed(src, p)
+    assert (p.stat().st_mtime_ns, p.stat().st_size) == (st.st_mtime_ns, st.st_size)
+    idx.refresh()
+    node = idx.lookup("ретеншн решили\nретеншн опять", limit=1)[0]
+    assert any("21 день" in ln for ln in idx.digest(node))
+
+
 def test_ambiguous_name_is_silent_in_strict(tmp_path):
     g = _graph(tmp_path)
     (g / "Системы" / "Шлюз.md").write_text("# Шлюз\n", encoding="utf-8")
