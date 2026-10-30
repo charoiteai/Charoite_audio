@@ -39,12 +39,12 @@ import re
 import shutil
 import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 from charoite_graph import frontmatter, graph_names
 from charoite_graph.graph_schema import GraphSchema, name_date
-from charoite_graph.redirects import is_merged as _is_merged, stub_info as _stub_info, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
+from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
 # Сколько источников максимум уходит в один запрос к модели. Больше — сводка
 # начинает терять детали, а генерация упирается в контекст.
@@ -149,13 +149,14 @@ def _title(p: pathlib.Path) -> str:
 @dataclass(frozen=True)
 class GraphSnapshot:
     """Один обход графа: файлы, обратные ссылки, стрелки заглушек alias → канон и
-    все цели каждой заглушки слияния (у развилки их несколько). Составу досье нужны
-    цели: встреча, ставшая заглушкой, жива, пока жива хоть одна цель (n843-in3 I4,
-    out1 Haiku I1, out2 Haiku C2)."""
+    имена всех заглушек слияния. Встреча, ставшая заглушкой (развилкой, без цели —
+    тоже), не ушла (n843-in3 I4, out1 Haiku I1). Цели заглушки не судим: три круга
+    подряд их разбор давал ложный уход (out2 C2, out3 C1, I1) — уход встречи по
+    заглушке без живых целей остаётся «забыть встречу» (часть 2)."""
     files: dict[str, dict]
     backlinks: dict[str, set[str]]
     redirects: dict[str, str]
-    stubs: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    stubs: frozenset[str] = frozenset()
 
 
 def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
@@ -176,7 +177,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
     backlinks: dict[str, set[str]] = defaultdict(set)
     # alias → канон: заглушки сами не темы, но входящие ссылки на них живые
     redirects: dict[str, str] = {}
-    stubs: dict[str, tuple[str, ...]] = {}
+    stubs: set[str] = set()
 
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -208,7 +209,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
             # цель — из первой строки заголовка (redirects.stub_target), а не
             # первая [[ссылка]] в файле: та могла быть из frontmatter (luna I5)
             target = _stub_target(text)
-            stubs[_title(p)] = tuple(graph_names.link_target_stem(x) for x in _stub_info(text).targets)
+            stubs.add(_title(p))
             if target:
                 redirects[_title(p)] = target.rsplit("/", 1)[-1].removesuffix(".md").strip()
             continue
@@ -265,7 +266,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
         who = backlinks.pop(alias, set())
         if who and canon in files:
             backlinks[canon] |= who - {canon}
-    return GraphSnapshot(files, dict(backlinks), redirects, stubs)
+    return GraphSnapshot(files, dict(backlinks), redirects, frozenset(stubs))
 
 
 def meeting_date(meta: dict, *, schema: GraphSchema) -> str | None:
@@ -726,7 +727,7 @@ def composition(text: str | None, *, schema: GraphSchema) -> list[str] | None:
         names = frontmatter.list_field(text, COMPOSITION_FIELD)
         # пустой состав пишется только `[]`; пустое значение, `null`, комментарий —
         # не «встреч нет», а «не читается»: иначе все встречи темы стали бы новыми (out2 Haiku I2)
-        if not names and frontmatter.scalar_field(text, COMPOSITION_FIELD) != "[]":
+        if not names and not re.fullmatch(r"\[\s*\](?:\s+#.*)?", frontmatter.scalar_field(text, COMPOSITION_FIELD)):
             return None
         return [graph_names.link_target_stem(n) for n in names]
     sources = split_dossier(text or "")[2]
@@ -754,9 +755,9 @@ def membership_delta(composed: list[str], rejected: list[str], members: list[str
                      on_disk: bool) -> tuple[list[str], list[str]]:
     """(новые встречи темы, ушедшие встречи состава). Ушла — файла нет в снимке, при
     `on_disk=True` (сверка под замком) и на диске, или живая встреча выпала из темы:
-    ссылку на ядро сняли, тело её пересказывать не вправе (out1 Haiku I2); своё ядро
-    темы меняло состав 2 раза из 814 смен за неделю (замер 30.10), общие узлы — 68 %, и
-    они встречу не уводят. Заглушка слияния жива, пока жива хоть одна её цель.
+    ссылку на ядро сняли, тело её пересказывать не вправе (out1 Haiku I2). Редко: за
+    неделю состав кластера сменился у 92 тем из 906, у остальных 814 правки ядер и общих
+    узлов встреч не уводили (замер №842, 30.10). Заглушка слияния — не уход.
     Узлы других видов уходом не считаются, новое ядро без новой встречи — не новое
     (n843-in2 C1, I5)."""
     had = {_canon(n, snap) for n in composed}
@@ -764,16 +765,12 @@ def membership_delta(composed: list[str], rejected: list[str], members: list[str
     meetings = {m for m in members
                 if m in snap.files and schema.is_meeting_folder(snap.files[m].get("kind", ""))}
     new = sorted(meetings - skip)
-    def live(n: str) -> bool:
-        return n in snap.files and not (on_disk and not snap.files[n]["path"].exists())
-
     def left(n: str) -> bool:
         if n in snap.files:     # живой файл раньше одноимённой заглушки (out2 Haiku I1)
-            if not live(n):
+            if on_disk and not snap.files[n]["path"].exists():
                 return True
             return n not in meetings and schema.is_meeting_folder(snap.files[n].get("kind", ""))
-        targets = snap.stubs.get(n)
-        return targets is None or not any(live(_canon(t, snap)) for t in targets)
+        return n not in snap.stubs
     return new, sorted(n for n in had if left(n))
 
 
@@ -791,8 +788,9 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
     - новых встреч нет — skip: смена текста прежних членов тело не трогает;
     - новые есть: метка в теле — rebuild (n843-in3 I1), тело выросло бы за
       `GROW_LIMIT` — rebuild (I8), с ревизией оба — hold; иначе add, а у
-      повреждённого файла (UTF-8 с заменой) — rebuild под охраной «Правок автора»,
-      с ревизией hold: дописка вернула бы в тело знаки замены (out1 Haiku C1).
+      повреждённого файла (UTF-8 с заменой) — rebuild, с ревизией hold: дописка
+      вернула бы в тело знаки замены (out1 Haiku C1). «Правки автора» на rebuild
+      держит ночь (`preserve_manual`), её разбор заголовка — №856, до вызова `plan`.
     """
     if loaded.state == "missing":
         return Plan("rebuild", "new")

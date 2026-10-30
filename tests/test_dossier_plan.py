@@ -262,14 +262,14 @@ def test_fork_stub_is_not_gone(tmp_path):
     (g / "Встречи" / "Старое имя.md").write_text(
         f"# Старое имя → [[Встречи/{OLD}]] · [[Встречи/{NEW}]]\n", encoding="utf-8")
     snap = dossier.scan_snapshot(g, schema=CHAROITE)
-    assert snap.stubs["Старое имя"] == (OLD, NEW) and "Старое имя" not in snap.redirects
+    assert "Старое имя" in snap.stubs and "Старое имя" not in snap.redirects
     text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, "Старое имя"])
     assert _plan(text, [THEME, OLD], snap) == dossier.Plan("skip", "same")
 
 
 def test_stub_ring_does_not_hang(world):
     snap, built, _ = world
-    ring = dossier.GraphSnapshot(snap.files, snap.backlinks, {"A": "B", "B": "A"}, {"A": ("B",), "B": ("A",)})
+    ring = dossier.GraphSnapshot(snap.files, snap.backlinks, {"A": "B", "B": "A"}, frozenset())
     text = dossier.with_composition(_dossier(snap, built), [OLD, "A"])
     p = _plan(text, built, ring)
     assert (p.action, p.gone) == ("rebuild", ("A",))
@@ -313,18 +313,31 @@ def test_has_field_and_set_list_field_keep_crlf():
     assert frontmatter.list_field(out, dossier.COMPOSITION_FIELD) == ["a", "b"]
 
 
-def test_fork_stub_with_every_target_gone_is_gone(tmp_path):
-    """Развилка жива, пока жива хоть одна цель; обе забыты — уход (out2 Haiku C2)."""
+@pytest.mark.parametrize("stub", [
+    "# Старое имя\n\nДубль. Смерджен в канон.\n",                       # заглушка без цели
+    f"# Старое имя → [[Встречи/{OLD}]] · [[Встречи/{NEW}]]\n",           # развилка, цели забыты
+])
+def test_stub_is_never_gone(tmp_path, stub):
+    """Цели заглушки не судим: заглушка в составе — не уход (out3 C1)."""
     g = _graph(tmp_path)
-    (g / "Встречи" / "Старое имя.md").write_text(
-        f"# Старое имя → [[Встречи/{OLD}]] · [[Встречи/{NEW}]]\n", encoding="utf-8")
+    (g / "Встречи" / "Старое имя.md").write_text(stub, encoding="utf-8")
     snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    assert "Старое имя" in snap.stubs and "Старое имя" not in snap.files
     text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, "Старое имя"])
-    snap.files[NEW]["path"].unlink()
-    assert _plan(text, [THEME, OLD], snap, on_disk=True).action == "skip"
-    snap.files[OLD]["path"].unlink()
+    for name in (NEW,):
+        snap.files[name]["path"].unlink()
     p = _plan(text, [THEME, OLD], snap, on_disk=True)
-    assert (p.action, p.gone) == ("rebuild", (OLD, "Старое имя"))
+    assert "Старое имя" not in p.gone, p
+
+
+def test_stub_pointing_to_a_fork_is_not_gone(tmp_path):
+    """A → B, B — развилка: цепочка кончается на заглушке, не уход (out3 I1)."""
+    g = _graph(tmp_path)
+    (g / "Встречи" / "A.md").write_text("# A → [[Встречи/B]]\n", encoding="utf-8")
+    (g / "Встречи" / "B.md").write_text(f"# B → [[Встречи/{OLD}]] · [[Встречи/{NEW}]]\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD, NEW]), [OLD, NEW, "A"])
+    assert _plan(text, [THEME, OLD, NEW], snap) == dossier.Plan("skip", "same")
 
 
 def test_live_file_named_like_a_stub_can_be_gone(tmp_path):
@@ -365,3 +378,10 @@ def test_composition_of_other_kind_leaving_is_not_gone(world):
     snap, built, _ = world
     text = dossier.with_composition(_dossier(snap, built), [OLD, "Пётр"])
     assert _plan(text, [THEME, OLD], snap) == dossier.Plan("skip", "same")
+
+
+@pytest.mark.parametrize("value", ["[ ]", "[] # потом"])
+def test_empty_composition_with_spaces_or_comment_is_empty(world, value):
+    snap, built, members = world
+    text = _dossier(snap, built).replace("tags:", f"{dossier.COMPOSITION_FIELD}: {value}\ntags:", 1)
+    assert dossier.composition(text, schema=CHAROITE) == []
