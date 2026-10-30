@@ -1044,6 +1044,21 @@ retelling would erase the cloud review's edits. It is skipped, logged and counte
 replaced in memory by `graph_names.unlabel_speakers` — one detector shared with
 `has_speaker_actor` — on the model's input (`dossier.source_text`) and on its
 answer before the format check; graph files are never rewritten.
+A body the cloud review has edited carries `ревизия: <date>` in its front matter
+(`dossier.with_revision`, set by `nightly_dossier_review.py` when it applies an edit).
+The night leaves such a dossier alone — `--full` and new sources included, checked
+before the classes and once more on the snapshot taken to the model
+(`dossier.revision`): a model retelling cut a reviewed body by 80 % on 25.10 and nobody
+would repeat the review. A topic whose sources changed is logged (`⏭ … источники
+сменились`). The night itself never lifts the hold: reading the dossier's own sources
+back from markdown gave a false "source gone" three review rounds in a row. Forgetting
+a meeting lifts it instead — `forget_meeting.py` drops the field
+(`dossier.without_revision`) from every dossier that links the meeting in any form
+(`[[stamp]]` as `render` writes it, with the folder, `.md`, `#` or `|`), and the topic is
+rebuilt without it: the retelling must not outlive its source. Any other change is
+lifted by hand — delete the `ревизия:` line. A topic that drops out of the clusters
+altogether (fewer than three members left) is not visited by the night at all, with or
+without the field.
 
 **Index lookup** (`Досье/_index.json`) is lexical, over word stems with
 prefix matching, so `qwen` finds `qwen3-32b`. No embeddings and no running

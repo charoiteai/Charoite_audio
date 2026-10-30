@@ -132,6 +132,16 @@ def _match(qkey: str, key: str) -> bool:
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 
 
+def cites(text: str | None, keys: list[str]) -> bool:
+    """Ссылается ли текст на узел под одним из ключей — или на его производный
+    файл `<ключ>_…` (минутки, разбор). Грамматика ссылки — `LINK_RE`, та же, что
+    у `scan`: третья рукописная регулярка рядом с ней пропускала `\\|` таблиц,
+    которыми пишет тела ревизия (выход n841-out4 Haiku C1, Sonnet M2, DS M3).
+    Цель — `graph_names.link_target_stem`, своей нормализации нет (out5 Haiku C1)."""
+    targets = {graph_names.link_target_stem(m.group(1)) for m in LINK_RE.finditer(text or "")}
+    return any(t == k or t.startswith(k + "_") for t in targets for k in keys)
+
+
 def _title(p: pathlib.Path) -> str:
     return p.stem
 
@@ -316,6 +326,27 @@ def fingerprint(members: list[str], files: dict[str, dict]) -> str:
         # и досье не пересобиралось никогда (аудит графа 26.08, Codex).
         h.update(f"{meta['mtime']:.6f}".encode())
     return h.hexdigest()[:16]
+
+
+def fingerprint_on_disk(members: list[str], files: dict[str, dict]) -> str:
+    """Тот же отпечаток, но время правки — с диска сейчас, а не из снимка скана.
+
+    Скан ночи и ревизии живёт часами: источник, удалённый или поправленный после
+    него («забыть встречу» посреди прогона), снимок не видит, и тело с пересказом
+    ушедшей встречи сходило за собранное по составу. Удалённый член выпадает,
+    правленный меняет время (круг n841-opus-fix: Sonnet C1–C2, DeepSeek C1 и I2).
+    Совпал с `fingerprint` по снимку — тексты снимка те же, что на диске.
+    """
+    now = {}
+    for m in members:
+        meta = files.get(m)
+        if not meta:
+            continue
+        try:
+            now[m] = {**meta, "mtime": pathlib.Path(meta["path"]).stat().st_mtime}
+        except OSError:
+            continue
+    return fingerprint(members, now)
 
 
 # ─────────────────────────── генерация ───────────────────────────
@@ -569,6 +600,31 @@ def labeled_body(text: str) -> bool:
     return graph_names.has_speaker_actor(split_dossier(text or "")[1])
 
 
+REVISION_FIELD = "ревизия"
+
+
+_REVISION_VALUE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def revision(text: str | None) -> str:
+    """Дата облачной ревизии тела из шапки (`ревизия:`); `""` — поля нет. Держит
+    только дата, как её пишет ревизия: `~`, `нет`, `false` не замораживают (Opus M2)."""
+    v = frontmatter.scalar_field(text or "", REVISION_FIELD)
+    return v if _REVISION_VALUE.fullmatch(v) else ""
+
+
+def with_revision(text: str, date: str) -> str:
+    """Поставить дату ревизии в шапку: заменой поля, без второй строки."""
+    return frontmatter.with_field(text, REVISION_FIELD, date)
+
+
+def without_revision(text: str) -> str:
+    """Снять поле ревизии: тело снова отдаётся ночной пересборке. Зовёт
+    «забыть встречу» у досье, которое на неё ссылается: пересказ не вправе
+    пережить источник (вход n841-in1 S-C1, выход out3 DS C2 и Haiku C1)."""
+    return frontmatter.without_field(text, REVISION_FIELD)
+
+
 @dataclass(frozen=True)
 class DossierLoad:
     state: Literal["ok", "damaged", "unreadable", "missing"]
@@ -602,6 +658,13 @@ def read_fingerprint(source: pathlib.Path | DossierLoad) -> str:
     head = (loaded.text or "")[:600]
     m = re.search(r"^отпечаток:\s*(\S+)", head, re.M)
     return m.group(1) if m else ""
+
+
+def in_sync(loaded: DossierLoad, fp: str) -> bool:
+    """Тело собрано по нынешнему составу источников: ночи — SAME, ревизии — можно
+    править и ставить `ревизия:` (тело, отставшее от «забыть встречу», не замораживается;
+    финальный круг n841 Opus C1)."""
+    return loaded.state != "missing" and read_fingerprint(loaded) == fp
 
 
 # ─────────────────────────── индекс ───────────────────────────

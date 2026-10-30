@@ -23,6 +23,7 @@
        а не чужие заметки.
     5. Повторный запуск — не авария: забывать больше нечего.
 """
+import contextlib
 import pathlib
 
 import pytest
@@ -33,6 +34,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 import forget_meeting as forget  # noqa: E402
 import charoite_paths  # noqa: E402
+from charoite_graph import dossier as dossier_mod  # noqa: E402
 
 STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
@@ -441,6 +443,240 @@ def test_link_inside_a_sentence_becomes_a_note_not_a_dangling_link(tmp_path):
     assert f"Встречи/{STAMP}" not in dossier
     assert "Выбран ЮPay" in dossier, "текст досье не должен рассыпаться"
     assert forget.REMOVED_NOTE in dossier, "человек должен понимать, почему тут пробел"
+
+
+def _revised_dossier(graph: pathlib.Path, sources: str) -> pathlib.Path:
+    """Досье, тело которого правила облачная ревизия (`ревизия:`, №841);
+    источники — голыми именами узлов, как пишет `render`."""
+    path = graph / "Досье" / "Ревизия.md"
+    path.write_text("---\nтема: Ревизия\nревизия: 2026-10-18\n---\n# Ревизия\n\n"
+                    "Выбран ЮPay ⚠ срок не сходится.\n\n## Источники\n"
+                    f"- **Встречи:** {sources}\n\n## Правки автора\n\n—\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("link", [f"[[{STAMP}]]", f"[[Встречи/{STAMP}.md]]", f"[[{STAMP}|15 июля]]",
+                                  f"[[{STAMP}#Итог]]", f"[[{STAMP}\\|15 июля]]", f"[[ {STAMP} ]]",
+                                  f"[[{STAMP}^итог]]", f"[[{STAMP}_минутки]]"])
+def test_forget_lifts_the_revision_of_a_dossier_that_cites_the_meeting(tmp_path, link):
+    """Ночь не пересобирает досье с ревизией (№841): забытая встреча снимает
+    поле — иначе её пересказ пережил бы её. Строка «Источники» с другими
+    встречами остаётся (выход n841-out3 DS C2, Haiku C1)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"{link} · [[2026-07-01_1000]]")
+    p = forget.plan(STAMP, root, graph)
+    assert path in p.edit and dossier_mod.revision(p.edit[path]) == "", p.edit.get(path)
+    forget.apply(p, yes=True)
+    text = path.read_text(encoding="utf-8")
+    assert dossier_mod.revision(text) == "" and "тема: Ревизия" in text
+    assert "[[2026-07-01_1000]]" in text and "⚠ срок не сходится" in text
+
+
+def test_forget_keeps_the_revision_of_a_dossier_about_other_meetings(tmp_path):
+    """Соседний штамп той же минуты и чужая встреча — не наша ссылка: поле стоит."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}05]] · [[{STAMP}-1]] · [[2026-07-01_1000]]")
+    before = path.read_text(encoding="utf-8")
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_forget_does_not_touch_a_dossier_without_a_revision_for_a_bare_link(tmp_path):
+    """Без поля — правка как раньше: голую ссылку пересборка уберёт сама."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_text(path.read_text(encoding="utf-8").replace("ревизия: 2026-10-18\n", ""), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    assert path.read_text(encoding="utf-8") == before
+
+
+
+def test_forget_keeps_an_own_revision_field_outside_the_dossier_folder(tmp_path):
+    """`ревизия:` узла людей или документа — поле владельца, не защита досье:
+    «забыть» снимает только поле досье (выход n841-out4 DS I2)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Люди" / "Мария Соколова.md"
+    node.parent.mkdir(exist_ok=True)
+    node.write_text(f"---\nревизия: 2026-10-01\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "2026-10-01", p.edit.get(node)
+
+
+def test_forget_lifts_the_revision_without_touching_the_body(tmp_path):
+    """Досье с полем и голой ссылкой: снимается только поле, тело как было —
+    U+2028 и `\\x0b` в теле не трогаются (out4 Sonnet M1)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_text(path.read_text(encoding="utf-8").replace("ЮPay ", "ЮPay\u2028\x0b"), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert path in p.edit and p.edit[path] == dossier_mod.without_revision(before), p.edit.get(path)
+
+
+def test_forget_names_a_revised_dossier_it_cannot_read(tmp_path):
+    """Досье не в UTF-8 целиком: переписать нельзя, кириллическое имя поля не
+    прочитать, но промолчать — значит держать пересказ вечно; владелец видит
+    путь файла в «проверь сам» (out4 DS M2, out5 DS C1)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_bytes(path.read_text(encoding="utf-8").encode("cp1251", "replace"))
+    p = forget.plan(STAMP, root, graph)
+    assert path not in p.edit
+    assert any("Досье/Ревизия.md" in line and "ревизия" in line for line in p.check), p.check
+
+
+def test_forget_survives_a_file_that_vanishes_while_read(tmp_path, monkeypatch):
+    """Одно чтение на файл: исчез между обходом и чтением — пропуск, а не
+    трейсбек посреди забывания (out5 DS I4, Sonnet M1)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_bytes(path.read_text(encoding="utf-8").encode("cp1251", "replace"))
+    real = pathlib.Path.read_bytes
+
+    reads = []
+
+    def gone(self):
+        if self.name == path.name:
+            reads.append(self)
+            raise FileNotFoundError(self)
+        return real(self)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", gone)
+    p = forget.plan(STAMP, root, graph)
+    assert path not in p.edit and len(reads) == 1, reads     # одно чтение (out6 Haiku M4)
+
+
+@pytest.mark.parametrize("where", ["nested", "ancestor"])
+def test_forget_asks_the_schema_whether_a_file_is_a_dossier(tmp_path, where):
+    """Досье — первая папка пути внутри графа, как у `scan`: папка «Досье»
+    глубже или выше графа поля узла не снимает (out5 DS C2, Sonnet I1, Haiku I1)."""
+    root, graph = _world(tmp_path / "Досье" if where == "ancestor" else tmp_path)
+    node = graph / "Люди" / ("Досье" if where == "nested" else "") / "Мария Соколова.md"
+    node.parent.mkdir(parents=True, exist_ok=True)
+    node.write_text(f"---\nревизия: 2026-10-01\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "2026-10-01", p.edit.get(node)
+
+
+@pytest.mark.parametrize("place", ["data", "graph"])
+def test_forget_drops_revision_of_a_dossier_copy_in_a_snapshot(tmp_path, place):
+    """Путь снимка начинается со штампа прогона (в данных) или с
+    `.cloud_backup/<штамп>` (в графе): досье в копии остаётся досье, поле
+    `ревизия:` снимается и там (out6 DS C1, Haiku C1)."""
+    root, graph = _world(tmp_path)
+    base = (charoite_paths.graph_backups(graph, "cloud_backup", root=root) if place == "data"
+            else graph / forget.CLOUD_BACKUP_DIR)
+    copy = base / "2026-07-20_0300" / "Досье" / "Платёжный провайдер.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(f"---\nревизия: 2026-10-01\n---\n## Сейчас\n- выбрали ЮPay\n"
+                    f"## Источники\n- [[{STAMP}]]\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert copy in p.edit and not dossier_mod.revision(p.edit[copy]), p.edit.get(copy)
+
+
+def test_forget_strips_a_meeting_line_without_splitting_others(tmp_path):
+    """Разделители, которые не конец строки Markdown (U+2028, `\\x0b`), в
+    соседних строках остаются дословно (out5 DS I5, out7 DS M2)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Выбор платёжного провайдера.md"
+    before = node.read_text(encoding="utf-8")
+    node.write_text(before + "ЮPay\u2028срок\x0bпозже\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert "ЮPay\u2028срок\x0bпозже\n" in p.edit[node], p.edit.get(node)
+
+
+@pytest.mark.parametrize("sep", ["\r", "\n", "\r\n"])
+def test_forget_drops_only_the_meeting_item_whatever_ends_the_line(tmp_path, sep):
+    """Конец строки Markdown — `\\r`, `\\n`, `\\r\\n`: уходит пункт о встрече,
+    соседний пункт и разделители остаются (out6 Haiku I2, Sonnet M2, DS M1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_bytes(f"- [[Встречи/{STAMP}]] — факт{sep}- срок: 1 августа{sep}".encode("utf-8"))
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f"- срок: 1 августа{sep}", p.edit.get(node)
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\x0b", "\x0c", "\x85"])
+def test_forget_keeps_a_meeting_item_whole_across_a_non_markdown_break(tmp_path, sep):
+    """U+2028, `\\x0c`, `\\x85` — не конец строки Markdown: пункт о встрече
+    уходит целиком, с хвостом; ссылка внутри фразы после них — пометкой, без
+    потери начала фразы (out7 Haiku C1, Sonnet I1, DS I2)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(f"- [[Встречи/{STAMP}]] — факт{sep}продолжение\nСрок{sep}- [[Встречи/{STAMP}]] — "
+                    "перенесли\n- другое\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f"Срок{sep}- {forget.REMOVED_NOTE} — перенесли\n- другое\n", p.edit.get(node)
+
+
+def test_forget_never_cuts_across_lines(tmp_path):
+    """`[[…]]` через перевод строки Obsidian ссылкой не считает: текст владельца
+    между ней и следующей `]]` не вырезается, остаток — в «проверь сам»
+    (финальный n841 Opus I1, out8 DS I1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    before = f"- см. [[Встречи/{STAMP}|незакрытый\nАбзац владельца про сроки.\n- [[Люди/Мария]] — решение\n"
+    node.write_text(before, encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert node not in p.edit, p.edit.get(node)
+    two = graph / "Ядра" / "Платёж.md"
+    two.write_text(f"см. [[Встречи/{STAMP}|тема\nплатёж]]\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert two not in p.edit and "Ядра/Платёж.md: ссылка на встречу осталась после правки — убери руками" in p.check, p.check
+
+
+def test_forget_names_a_dossier_copy_the_night_never_rebuilds(tmp_path):
+    """Копию досье (`Досье/.backup`, снимок) ночь не пересобирает: пересказ с
+    голой ссылкой — в «проверь сам» (финальный n841 Opus M1)."""
+    root, graph = _world(tmp_path)
+    copy = graph / "Досье" / ".backup" / "2026-10-18_030000" / "Тема.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(f"- выбрали ЮPay [[{STAMP}]]\n", encoding="utf-8")
+    live = graph / "Досье" / "Тема.md"
+    live.write_text(f"- выбрали ЮPay [[{STAMP}]]\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert any(c.startswith("Досье/.backup/2026-10-18_030000/Тема.md: ссылка на встречу осталась") for c in p.check), p.check
+    # и живое: «ночь пересоберёт» верно, только пока тема остаётся кластером (круг n841-opus-fix DS I4)
+    assert any(c.startswith("Досье/Тема.md: ссылка на встречу осталась") for c in p.check), p.check
+
+
+def test_forget_names_a_link_form_it_cannot_cut(tmp_path):
+    """`[[Встречи/<штамп>#якорь]]` `_link_re` не знает (у владельца 16 таких
+    ссылок, замер 30.10) — путь в «проверь сам», не молча (out8 Haiku I2)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(f"- [[Встречи/{STAMP}#Решение]] — выбрали ЮPay\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert "Ядра/Срок.md: ссылка на встречу осталась после правки — убери руками" in p.check, p.check
+
+
+def test_forget_names_any_unreadable_file_that_carries_the_stamp(tmp_path):
+    """Не в UTF-8 и не досье: штамп ASCII виден и в cp1251 — путь в «проверь
+    сам» (out8 Sonnet I1, Haiku I1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_bytes(f"- [[Встречи/{STAMP}]] — факт\n".encode("cp1251"))
+    p = forget.plan(STAMP, root, graph)
+    assert any(c.startswith("Ядра/Срок.md: ссылается на встречу, но не в UTF-8") for c in p.check), p.check
+
+
+def test_forget_names_a_snapshot_copy_with_its_run(tmp_path):
+    """Копий в снимках до десяти: строка «проверь сам» несёт штамп прогона,
+    иначе их не различить (out8 DS M2)."""
+    root, graph = _world(tmp_path)
+    for run in ("2026-07-20_0300", "2026-07-21_0300"):
+        copy = charoite_paths.graph_backups(graph, "cloud_backup", root=root) / run / "Ядра" / "Срок.md"
+        copy.parent.mkdir(parents=True)
+        copy.write_text(f"- [[Встречи/{STAMP}#Решение]] — факт\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert {c.split(":")[0] for c in p.check if "Срок.md" in c} == {
+        "2026-07-20_0300/Ядра/Срок.md (снимок)", "2026-07-21_0300/Ядра/Срок.md (снимок)"}, p.check
+
+
+@pytest.mark.parametrize("text", ["", "a", "a\n", "a\r", "a\r\r\n", "\n\n", "a\u2028\x0b\x0c\x85\n", "—"])
+def test_markdown_lines_keep_the_text_byte_for_byte(text):
+    """Деление на строки Markdown ничего не теряет и не добавляет (out8 DS M4)."""
+    assert "".join(forget._MD_LINE.findall(text)) == text
 
 
 def test_surviving_nodes_are_backed_up_before_editing(tmp_path):
@@ -2069,3 +2305,154 @@ def test_forget_preserves_backups_of_same_named_notes(tmp_path):
     for rel in originals:
         assert "Собственная заметка." in (graph / rel).read_text(encoding="utf-8")
         assert f"Встречи/{STAMP}" not in (graph / rel).read_text(encoding="utf-8")
+
+
+def test_forget_item_marker_is_indented_by_markdown_blanks_only(tmp_path):
+    """Пункт списка — после пробелов и табуляций, не после U+2028: такая строка —
+    фраза, ссылка в ней заменяется пометкой (out8 Sonnet M1, Haiku M1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(f" - [[Встречи/{STAMP}]] — факт\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f" - {forget.REMOVED_NOTE} — факт\n", p.edit.get(node)
+
+
+def test_forget_waits_for_the_graph_lock_and_does_nothing_when_busy(tmp_path, память, monkeypatch):
+    """Сосед (ревизия досье, разбор встречи) держит замок графа: «забыть» не пишет
+    поверх его записи и не удаляет ничего, пока замок не взят (круг n841-opus-fix Sonnet C2)."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    assert p.lock_dirs, "план знает замки графов, которые правит"
+    seen = []
+
+    @contextlib.contextmanager
+    def busy(lock_dir, wait, **kw):
+        seen.append(lock_dir)
+        yield False
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", busy)
+    assert forget.apply(p, yes=True) is False
+    assert seen and (root / "transcripts" / f"{STAMP}.md").exists()
+    assert f"[[Встречи/{STAMP}" in (graph / "Досье" / "Платёжный провайдер.md").read_text(encoding="utf-8")
+    assert память == []
+
+
+def test_forget_does_not_overwrite_a_file_changed_after_the_plan(tmp_path, память):
+    """Файл правки сменился между планом и записью (ревизия записала досье): правка
+    плана затёрла бы чужую запись — ничего не делаем, человек повторит."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    dossier_path = graph / "Досье" / "Платёжный провайдер.md"
+    assert dossier_path in p.edit
+    dossier_path.write_text(dossier_path.read_text(encoding="utf-8") + "\nправка ревизии\n",
+                            encoding="utf-8")
+    assert forget.apply(p, yes=True) is False
+    assert (root / "transcripts" / f"{STAMP}.md").exists()
+    assert "правка ревизии" in dossier_path.read_text(encoding="utf-8")
+
+
+def test_forget_applies_to_a_crlf_file(tmp_path, память):
+    """Файл правки с CRLF: сверка «сменился после плана» — по байтам, не по тексту
+    `read_text` (тот переводит строки, и «забыть» отказывало всегда — n841-opus-fix2 C1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_bytes(f"- [[Встречи/{STAMP}]] — факт\r\nдругое\r\n".encode("utf-8"))
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit
+    assert forget.apply(p, yes=True) is True
+    assert f"Встречи/{STAMP}" not in node.read_text(encoding="utf-8")
+    assert not (root / "transcripts" / f"{STAMP}.md").exists()
+
+
+def test_forget_does_not_wait_for_a_graph_it_does_not_touch(tmp_path, память, monkeypatch):
+    """Замок — только у графов, которые план правит: занятый чужой граф не отменяет
+    «забыть» (n841-opus-fix2 DS I1)."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    elsewhere = tmp_path / "чужой" / "замок"
+    p.lock_dirs[elsewhere] = tmp_path / "vault" / "Чужой"
+    taken = []
+    real = forget.file_locks.graph_lock
+
+    @contextlib.contextmanager
+    def spy(lock_dir, wait, **kw):
+        taken.append(pathlib.Path(lock_dir))
+        if pathlib.Path(lock_dir) == elsewhere:
+            yield False
+            return
+        with real(lock_dir, wait, **kw) as ok:
+            yield ok
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", spy)
+    assert forget.apply(p, yes=True) is True
+    assert elsewhere not in taken and taken
+
+
+def test_forget_locks_a_graph_whose_node_is_a_symlink_outside(tmp_path, память, monkeypatch):
+    """Узел графа — симлинк на файл вне графа: запись идёт по пути в графе, значит и замок
+    этого графа берётся (n841-opus-fix3 Sonnet I1 = Haiku I1)."""
+    root, graph = _world(tmp_path)
+    outside = tmp_path / "снаружи.md"
+    outside.write_text(f"- [[Встречи/{STAMP}]] — факт\n", encoding="utf-8")
+    node = graph / "Ядра" / "Срок.md"
+    node.unlink(missing_ok=True)
+    node.symlink_to(outside)
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit
+    p.delete[:] = []
+    p.edit = {node: p.edit[node]}
+    p.snaps = {node: p.snaps[node]}
+    seen = []
+
+    @contextlib.contextmanager
+    def busy(lock_dir, wait, **kw):
+        seen.append(lock_dir)
+        yield False
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", busy)
+    assert forget.apply(p, yes=True) is False
+    assert seen, "замок графа с симлинком не взят"
+
+
+def test_forget_does_nothing_when_the_graph_lock_cannot_be_taken(tmp_path, память, monkeypatch):
+    """Замок не взять (`OSError` каталога замка): ничего не удалено и не правлено."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+
+    def broken(lock_dir, wait, **kw):
+        raise OSError("нет прав на каталог замка")
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", broken)
+    assert forget.apply(p, yes=True) is False
+    assert (root / "transcripts" / f"{STAMP}.md").exists()
+    assert f"[[Встречи/{STAMP}" in (graph / "Досье" / "Платёжный провайдер.md").read_text(encoding="utf-8")
+    assert память == []
+
+
+def test_forget_names_an_old_place_snapshot_copy(tmp_path):
+    """Копия в старом месте снимков (`<граф>/.cloud_backup/<штамп>/…`) — тоже снимок:
+    владельцу путь с пометкой «(снимок)»."""
+    root, graph = _world(tmp_path)
+    old = graph / forget.CLOUD_BACKUP_DIR / "2026-10-01_030000" / "Ядра" / "Срок.md"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(f"Срок [[Встречи/{STAMP}]]\n".encode("cp1251"))
+    p = forget.plan(STAMP, root, graph)
+    line = next(c for c in p.check if "не в UTF-8" in c)
+    assert "(снимок)" in line, p.check
+
+
+def test_forget_takes_the_same_lock_as_the_dossier_review(tmp_path, память, monkeypatch):
+    """Замок — тот же каталог, что у ревизии и ночной сборки: родитель снимков графа."""
+    root, graph = _world(tmp_path)
+    taken = []
+    real = forget.file_locks.graph_lock
+
+    @contextlib.contextmanager
+    def spy(lock_dir, wait, **kw):
+        taken.append(pathlib.Path(lock_dir))
+        with real(lock_dir, wait, **kw) as ok:
+            yield ok
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", spy)
+    assert forget.apply(forget.plan(STAMP, root, graph), yes=True) is True
+    assert charoite_paths.graph_backups(graph, "cloud_backup", root=root).parent in taken

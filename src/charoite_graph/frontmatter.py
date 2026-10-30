@@ -174,7 +174,19 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
     merged = list(dict.fromkeys(merged))
     if merged == current:
         return text
-    line = f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]"
+    return _put_line(text, key, f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]")
+
+
+_BOM = "\ufeff"
+
+
+def _put_line(text: str, key: str, line: str) -> str:
+    """Поле `key:` шапки заменить строкой `line` (нет поля — дописать, нет
+    шапки — завести): замена по позициям YAML, без второго экземпляра поля.
+    BOM перед шапкой остаётся на месте, второй шапки над ним не будет (выход
+    n841-out1 DS I1)."""
+    if text.startswith(_BOM):
+        return _BOM + _put_line(text[1:], key, line)
     fm, body = split(text)
     if fm is None:
         if text.startswith("---"):
@@ -191,6 +203,50 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
     if not fm2.endswith(nl):
         fm2 = fm2.rstrip("\r\n") + nl
     return "---" + fm2 + "---" + nl + body
+
+
+def scalar_field(text: str, key: str) -> str:
+    """Скалярное поле шапки как записано (`""` — поля нет). Значение берётся
+    из текста строки, а не из YAML: `2026-10-18` YAML прочёл бы датой, а
+    шапка с чужим незакавыченным двоеточием не разобралась бы вовсе (вход
+    n841-in1 DS C1). Значение строкой ниже ключа тоже читается (выход out1
+    Haiku M1), BOM перед шапкой не мешает (DS I1)."""
+    fm, _ = split((text or "").removeprefix(_BOM))
+    span = _field_span(fm, key) if fm is not None else None
+    if not span:
+        return ""
+    raw = fm[span[0]:span[1]].split(":", 1)[1].strip().split("\n", 1)[0].strip()
+    if raw.startswith('"'):
+        try:
+            return str(json.loads(raw))
+        except ValueError:
+            pass
+    return raw.strip("\"'")
+
+
+def with_field(text: str, key: str, value: str) -> str:
+    """Скалярное поле шапки: заменить или дописать одной строкой."""
+    return _put_line(text, key, f"{key}: {yaml_str(value)}")
+
+
+def without_field(text: str, key: str) -> str:
+    """Убрать поле `key:` из шапки вместе со значением (границы — `_field_span`);
+    поля или шапки нет — текст как был. BOM остаётся на месте."""
+    bom = _BOM if text.startswith(_BOM) else ""
+    fm, body = split(text[len(bom):])
+    span = _field_span(fm, key) if fm is not None else None
+    if not span:
+        return text
+    nl = "\r\n" if "\r\n" in fm else "\n"
+    fm2 = fm
+    while span:     # каждое вхождение: второе `ревизия:` держало бы тему (out4 DS M1)
+        fm2 = fm2[:span[0]] + fm2[span[1]:]
+        span = _field_span(fm2, key)
+    if not fm2.startswith(nl):
+        fm2 = nl + fm2.lstrip("\r\n")
+    if not fm2.endswith(nl):
+        fm2 = fm2.rstrip("\r\n") + nl
+    return bom + "---" + fm2 + "---" + nl + body
 
 
 def with_aliases(text: str, names: list[str]) -> str:

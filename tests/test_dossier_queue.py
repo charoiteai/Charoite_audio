@@ -770,3 +770,127 @@ def test_model_label_is_written_clean_and_author_edits_stay(nd, tmp_path, monkey
     assert not dossier.labeled_body(text)
 
 
+
+
+def _revised_graph(nd, tmp_path, meetings=2):
+    """Тема собрана, потом облачная ревизия правила тело и поставила `ревизия:`."""
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    for i in range(3, meetings + 1):
+        (graph / "Встречи" / f"тема_{i}.md").write_text(
+            "# Встреча\n[[Ядра/тема]] источник\n", encoding="utf-8")
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    text = path.read_text(encoding="utf-8").replace("новое тело", "тело ревизии ⚠️ срок прошёл")
+    path.write_text(dossier.with_revision(text, "2026-10-18"), encoding="utf-8")
+    nd.calls.clear()
+    return graph, path
+
+
+def _new_meeting(graph, name="тема_новая"):
+    (graph / "Встречи" / f"{name}.md").write_text(
+        "# Встреча\n[[Ядра/тема]] новый источник\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_revised_theme_with_the_same_sources_is_left_alone(nd, tmp_path, capsys, full):
+    """№841: тело правила ревизия — ночь не пересказывает его моделью; и
+    `--full` (сценарий 25.10, выход out1 Sonnet T1)."""
+    graph, path = _revised_graph(nd, tmp_path)
+    before = path.read_bytes()
+    r = nd.run(graph, {}, full=full, dry=False, limit=None)
+    out = capsys.readouterr().out
+    assert nd.calls == [] and r["собрано"] == 0, r
+    assert r["ревизия"] == 1 and r["пропущено"] == 1 and r["без_изменений"] == 0, r
+    assert "⏭" not in out, "тема не отстаёт от графа — строки лога нет"
+    assert "ревизия 1" in out
+    assert path.read_bytes() == before
+    assert not (graph / CHAROITE.dossier_dir / ".backup").exists()
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_new_source_does_not_rebuild_a_revised_theme(nd, tmp_path, capsys, full):
+    """CHANGED и воскресный `--full` (вход n841-in1 DS M1): новый источник
+    тему с ревизией не пересобирает, отставание видно строкой лога, тема
+    остаётся в индексе."""
+    graph, path = _revised_graph(nd, tmp_path)
+    before = path.read_bytes()
+    _new_meeting(graph)
+    r = nd.run(graph, {}, full=full, dry=False, limit=None)
+    out = capsys.readouterr().out
+    assert nd.calls == [] and r["ревизия"] == 1, r
+    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники сменились" in out
+    assert path.read_bytes() == before
+    [entry] = dossier.load_index(graph / CHAROITE.dossier_dir)
+    assert entry["тема"] == "тема", entry
+
+
+def test_gone_source_holds_until_the_field_is_lifted(nd, tmp_path, capsys):
+    """Источник ушёл — ночь сама защиту не снимает: состав по разделу
+    «Источники» три круга давал ложный уход (n841-out3). Снимает поле «забыть
+    встречу» (`dossier.without_revision`) — тогда тема пересобирается без неё."""
+    graph, path = _revised_graph(nd, tmp_path, meetings=3)
+    before = path.read_bytes()
+    (graph / "Встречи" / "тема_3.md").unlink()
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert nd.calls == [] and r["ревизия"] == 1 and path.read_bytes() == before, r
+    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники сменились" in capsys.readouterr().out
+    path.write_text(dossier.without_revision(path.read_text(encoding="utf-8")), encoding="utf-8")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert nd.calls == ["тема"] and r["собрано"] == 1 and r["ревизия"] == 0, r
+    text = path.read_text(encoding="utf-8")
+    assert dossier.revision(text) == "" and "тема_3" not in text
+
+
+def test_revision_set_after_the_scan_is_read_before_the_build(nd, tmp_path, monkeypatch, capsys):
+    """Вход n841-in1 S-I1: ревизия поставила поле, пока тема ждала очереди."""
+    graph = _graph(tmp_path, "Г", {"первая": None, "вторая": "2026-07-20"})
+    path = graph / CHAROITE.dossier_dir / "вторая.md"
+    seen = []
+
+    def generate(theme, *a, **k):
+        seen.append(theme)
+        if theme == "первая":
+            text = path.read_text(encoding="utf-8").replace(
+                "## Правки автора", "## Источники\n- **Встречи:** [[вторая_1]] · [[вторая_2]]\n- **Ядра:** [[вторая]]\n\n## Правки автора")
+            path.write_text(dossier.with_revision(text, "2026-10-30"), encoding="utf-8")
+        return GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    after = path.read_bytes()
+    assert seen == ["первая"] and r["собрано"] == 1 and r["ревизия"] == 1, r
+    assert "· вторая: ревизия 2026-10-30 — ночь не трогает" in capsys.readouterr().out
+    assert dossier.revision(after.decode("utf-8")) == "2026-10-30"
+    assert {e["тема"] for e in dossier.load_index(graph / CHAROITE.dossier_dir)} == {"первая", "вторая"}
+
+
+def test_edited_source_is_logged_without_a_rebuild(nd, tmp_path, capsys):
+    """Правка прежнего источника — отпечаток разошёлся: строка лога, без
+    пересборки (выход out1 DS M1)."""
+    graph, path = _revised_graph(nd, tmp_path)
+    before = path.read_bytes()
+    src = graph / "Встречи" / "тема_1.md"
+    src.write_text(src.read_text(encoding="utf-8") + "дописано\n", encoding="utf-8")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    out = capsys.readouterr().out
+    assert nd.calls == [] and r["ревизия"] == 1, r
+    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники сменились" in out
+    assert path.read_bytes() == before
+
+
+def test_merged_source_keeps_the_revision(nd, tmp_path, capsys):
+    """Источник слит в другой узел (заглушка tier3) — тот же узел под новым
+    именем, не ушедший: ревизия держится (выход out1 DS C1, Sonnet I1)."""
+    graph, path = _revised_graph(nd, tmp_path)
+    before = path.read_bytes()
+    meetings = graph / "Встречи"
+    (meetings / "тема_1б.md").write_text("# Встреча\n[[Ядра/тема]] источник\n", encoding="utf-8")
+    (meetings / "тема_1.md").write_text(
+        "---\ntags: [дубль, redirect]\n---\n# тема_1 → [[Встречи/тема_1б]]\n\n"
+        "⚠️ **Дубль. Смерджен Tier3-NLI.**\n", encoding="utf-8")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    out = capsys.readouterr().out
+    assert nd.calls == [] and r["ревизия"] == 1, (r, out)
+    assert "снята" not in out and path.read_bytes() == before
+    keys = dossier.load_index(graph / CHAROITE.dossier_dir)[0]["ключи"]
+    assert dossier.keywords("тема_1б")[0] in keys, "канон после слияния ищется по имени (n841-out2 DS M3)"

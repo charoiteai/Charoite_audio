@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import importlib.util
 import pathlib
 from collections import Counter
@@ -143,7 +144,7 @@ def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     reasons = (result["без_изменений"] + result["сверх_лимита"]
                + result["занят"] + result["не_успели"]
                + result["правки_повреждены"] + result["досье_изменилось"]
-               + result["метка_в_теле"])
+               + result["метка_в_теле"] + result["ревизия"])
     assert reasons == result["пропущено"]
     _all_index(folder)
     _account(result, counts, paths, capsys, verified=(paths["Альфа"], paths["Гамма"]))
@@ -186,7 +187,7 @@ def test_dossier_edited_during_generation_is_not_overwritten(night, monkeypatch,
         reasons = (result["без_изменений"] + result["сверх_лимита"]
                    + result["занят"] + result["не_успели"]
                    + result["правки_повреждены"] + result["досье_изменилось"]
-               + result["метка_в_теле"])
+               + result["метка_в_теле"] + result["ревизия"])
         assert reasons == result["пропущено"]
         assert paths["Бета"].read_bytes() == edited["bytes"]
         assert "правка во время генерации" in paths["Бета"].read_text(encoding="utf-8")
@@ -420,3 +421,29 @@ def test_closed_window_falls_back_to_each_theme_fingerprint(night, monkeypatch, 
     assert all(entries[t]["собрано"] == date.today().isoformat() for t in THEMES)
     _account(result, counts, paths, capsys)
     assert calls == []
+
+
+def test_source_changed_during_generation_is_not_written(night, monkeypatch, capsys):
+    """Источник поправлен или удалён после скана («забыть встречу» посреди ночи): тело
+    собрано по снимку с текстом ушедшей встречи — не пишем, тема уйдёт на следующую
+    ночь (круг n841-opus-fix DS I2)."""
+    nd, graph, folder, paths, calls = night
+    before = paths["Бета"].read_bytes()
+
+    def generate(theme, members, files, c, **kw):
+        calls.append((theme, list(members), files))
+        if theme == "Бета":
+            src = pathlib.Path(files[sorted(members)[0]]["path"])
+            st = src.stat()
+            os.utime(src, (st.st_atime, st.st_mtime + 5))
+        return GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
+    out = nd.run_all([graph], {}, full=False, dry=False, limit=12)
+    result = out.graphs[0].result()
+    assert result["досье_изменилось"] == 1
+    # тема — пропуск, а модель звали: попытка считается (мутанты CI по 3e8a49f3)
+    assert result["пропущено"] == 1
+    assert out.attempts == len(calls) == 3
+    assert paths["Бета"].read_bytes() == before
+    assert "источники изменились за время генерации" in capsys.readouterr().out

@@ -771,3 +771,105 @@ def test_split_dossier_sections_end_on_the_next_header():
         "# Т\n", "## Сейчас\nа", None, "моё")
     for tail in ("## Источники\n- [[x]]\n\n## Правки автора\nмоё", "## Правки автора\nмоё\n\n## Источники\n- [[x]]"):
         assert dossier.split_dossier(f"# Т\n## Сейчас\nа\n\n{tail}\n") == ("# Т\n", "## Сейчас\nа", "- [[x]]", "моё"), tail
+
+
+@pytest.mark.parametrize("head, want", [
+    ("ревизия: 2026-10-18", "2026-10-18"),
+    ('ревизия: "2026-10-18"', "2026-10-18"),
+    ("ревизия: '2026-10-18'", "2026-10-18"),
+    ("тема: x", ""),
+])
+def test_revision_reads_the_scalar_field(head, want):
+    text = f"---\nтема: т\n{head}\n---\n# т\n"
+    assert dossier.revision(text) == want
+    assert dossier.revision(text.replace("\n", "\r\n")) == want
+
+
+def test_revision_of_a_broken_or_missing_head_is_empty():
+    assert dossier.revision("# без шапки\nревизия: 2026-10-18\n") == ""
+    assert dossier.revision("---\nтема: [не закрыт\n---\n") == ""
+    assert dossier.revision("") == ""
+    for v in ("~", "null", "false", "нет", "2026-10", "2026-10-18 ночь"):   # держит только дата (Opus M2)
+        assert dossier.revision(f"---\nревизия: {v}\n---\n") == "", v
+
+
+def test_with_revision_replaces_the_field_without_a_duplicate():
+    text = "---\nтема: т\nсобрано: 2026-10-01\n---\n# т\nтело\n"
+    once = dossier.with_revision(text, "2026-10-18")
+    twice = dossier.with_revision(once, "2026-10-30")
+    assert twice.count("ревизия:") == 1 and dossier.revision(twice) == "2026-10-30"
+    assert twice.endswith("---\n# т\nтело\n") and "собрано: 2026-10-01" in twice
+
+
+def test_revision_survives_a_head_yaml_cannot_parse():
+    """Чужое незакавыченное двоеточие ломает YAML шапки — поле всё равно
+    читается (`frontmatter.parse` отдал бы {}; выход out1 DS M3)."""
+    text = "---\nописание: а: б\nревизия: 2026-10-18\n---\n# т\n"
+    assert dossier.frontmatter.parse(text) == {}
+    assert dossier.revision(text) == "2026-10-18"
+
+
+def test_revision_value_on_the_next_line_is_read():
+    assert dossier.revision("---\nревизия:\n  2026-10-18\nтема: т\n---\n# т\n") == "2026-10-18"
+
+
+def test_with_revision_keeps_one_head_after_a_bom():
+    """BOM перед шапкой: второй шапки над ним нет, поле видно (выход out1 DS I1)."""
+    text = "\ufeff---\nтема: т\n---\n# т\n## Сейчас\nx\n"
+    out = dossier.with_revision(text, "2026-10-18")
+    assert out.startswith("\ufeff---\n") and out.count("---\n") == 2, out
+    assert dossier.revision(out) == "2026-10-18"
+
+
+def test_without_revision_drops_only_the_field():
+    """Снять поле (зовёт «забыть встречу», №841): шапка и тело — как были,
+    BOM и CRLF на месте; поля нет — текст тот же."""
+    text = "---\nтема: т\nревизия: 2026-10-18\nсобрано: 2026-10-01\n---\n# т\nтело\n"
+    assert dossier.without_revision(text) == "---\nтема: т\nсобрано: 2026-10-01\n---\n# т\nтело\n"
+    last = "---\nтема: т\nревизия: 2026-10-18\n---\n# т\n"
+    assert dossier.without_revision(last) == "---\nтема: т\n---\n# т\n"
+    crlf = text.replace("\n", "\r\n")
+    assert dossier.without_revision(crlf) == "---\r\nтема: т\r\nсобрано: 2026-10-01\r\n---\r\n# т\r\nтело\r\n"
+    bom = "\ufeff" + last
+    assert dossier.without_revision(bom) == "\ufeff---\nтема: т\n---\n# т\n"
+    for same in ("# без шапки\nревизия: 2026-10-18\n", "---\nтема: т\n---\n# т\n"):
+        assert dossier.without_revision(same) == same
+    assert dossier.revision(dossier.without_revision(dossier.with_revision(text, "2026-10-30"))) == ""
+    twice = "---\nревизия: 2026-10-01\nтема: т\nревизия: 2026-10-18\n---\n# т\n"
+    assert dossier.without_revision(twice) == "---\nтема: т\n---\n# т\n"       # out4 DS M1
+
+
+@pytest.mark.parametrize("text,cites", [
+    ("[[2026-07-15_1400]]", True), ("[[Встречи/2026-07-15_1400.md|июль]]", True),
+    ("| [[2026-07-15_1400\\|июль]] |", True), ("[[ 2026-07-15_1400 ]]", True),
+    ("[[2026-07-15_1400^блок]]", True), ("[[2026-07-15_1400#Итог]]", True),
+    ("[[2026-07-15_1400_минутки]]", True),
+    ("[[2026-07-15_140005]]", False), ("[[2026-07-15_1400-1]]", False),
+    ("[[Встречи/x2026-07-15_1400]]", False), ("2026-07-15_1400", False),
+])
+def test_cites_reads_links_by_the_graph_grammar(text, cites):
+    """«Ссылается ли текст на узел» — по `LINK_RE` и цели как имени файла: таблица
+    Obsidian экранирует `|` (`\\|`), блок — `^`; производные встречи — `<ключ>_…`
+    (выход n841-out4 Haiku C1, Sonnet M2, DS M3)."""
+    assert dossier.cites(text, ["2026-07-15_1400"]) is cites
+
+
+def test_fingerprint_on_disk_follows_the_disk_not_the_scan(tmp_path):
+    """Отпечаток по диску: совпадает со снимком, пока источники те же; правка или
+    удаление источника после скана его меняет (круг n841-opus-fix)."""
+    import os as _os
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    for f in (a, b):
+        f.write_text("x\n", encoding="utf-8")
+    files = {f.stem: {"path": f, "text": "x\n", "mtime": f.stat().st_mtime, "kind": "встреча"}
+             for f in (a, b)}
+    members = ["a", "b"]
+    snap = dossier.fingerprint(members, files)
+    assert dossier.fingerprint_on_disk(members, files) == snap
+    st = a.stat()
+    _os.utime(a, (st.st_atime, st.st_mtime + 5))
+    touched = dossier.fingerprint_on_disk(members, files)
+    assert touched != snap
+    b.unlink()
+    assert dossier.fingerprint_on_disk(members, files) not in (snap, touched)
+    assert dossier.fingerprint(members, files) == snap, "снимок не меняется"
