@@ -103,24 +103,15 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
             continue  # нечитаемое ядро не роняет ночь всех графов (n628-opus M1)
         if _is_merged(text):
             continue  # уже сведён прошлой ревизией
-        # С №628 заголовок решает, судится ли ядро вообще: хвостовой пробел,
-        # CRLF и лишние пробелы после «##» не должны снимать рукописную суть
-        # с суда (n628-opus I2, тот же класс — graph_updater._revise_meeting_cores).
-        flat = text.replace("\r\n", "\n")
-
         def sect(title: str) -> str:
-            m = re.search(rf"^##[ \t]+{title}[ \t]*\n(.*?)(?=\n##[ \t]|\Z)", flat, re.M | re.S)
+            m = re.search(rf"## {title}\n(.*?)(?=\n## |\Z)", text, re.S)
             return " ".join(m.group(1).split()) if m else ""
         status = sect("Статус")
         # «## Суть» пишет только человек: upsert_core собирает ядро из
         # «## Статус» и «## Хроники». Без запасного варианта repr сводился к
         # имени файла, и NLI судил пары голых заголовков — ровно та слепота,
         # ради ухода от которой сюда и ставили эмбеддинги с NLI.
-        # Канон прошлого слияния несёт рукописную суть дубля в «## Суть дубля «X»»
-        # (`_merge`): это тоже своя суть, иначе канон выпал бы из суда (n628-opus I1).
-        written = sect("Суть") or sect("Задача одной фразой") or " ".join(
-            " ".join(m.group(1).split()) for m in re.finditer(
-                r"^##[ \t]+Суть дубля «[^»]+»[ \t]*\n(.*?)(?=\n##[ \t]|\Z)", flat, re.M | re.S))
+        written = sect("Суть") or sect("Задача одной фразой")
         essence = written or _plain(status)
         dm = re.search(r"обновлено (\d{4}-\d{2}-\d{2})", status)
         chron = re.findall(r"^- \[\[.*", text, re.M)
