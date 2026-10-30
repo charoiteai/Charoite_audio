@@ -134,6 +134,9 @@ enum ProbeTurn {
         /// на другой хост отказывает (n752-in1, Sonnet I4)
         let local: Bool
         let server: String
+        /// окно при записи: выдача в пачке уже подрезана им, и выросшее окно
+        /// повтор не воспроизведёт (n752-out2, Haiku I-1)
+        let window: Int
         let q: String
         /// судья — тот, что при записи: правка набора не переписывает «при записи» (DS I2)
         let must: [String]
@@ -157,6 +160,7 @@ enum ProbeTurn {
             model = ProbeTurn.model
             local = ProbeTurn.inferenceIsLocal
             server = ProbeTurn.server
+            window = ChatRetrieval.Window.input
             self.q = q
             self.must = must
             self.abstain = abstain

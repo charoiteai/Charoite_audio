@@ -258,9 +258,12 @@ final class MemoryBench: XCTestCase {
             guard p.answer != nil || !(p.abstain || !p.text.isEmpty) else {
                 throw ProbeTurn.SetupError(description: "пачка записана при молчащей модели — эталоном не годится: «\(p.q)»")
             }
-            guard p.local == ProbeTurn.inferenceIsLocal, p.model == ProbeTurn.model, p.server == ProbeTurn.server else {
-                throw ProbeTurn.SetupError(description: "пачка записана при \(p.model) на \(p.server) — сейчас "
-                                           + "\(ProbeTurn.model) на \(ProbeTurn.server): повтор не тот ход")
+            // «?» — адрес не разобрался: сверка по нему ничего не доказывает (n752-out2, Haiku m-2)
+            guard p.local == ProbeTurn.inferenceIsLocal, p.model == ProbeTurn.model, p.server == ProbeTurn.server,
+                  !p.server.contains("?"), p.window == ChatRetrieval.Window.input else {
+                throw ProbeTurn.SetupError(description: "пачка записана при \(p.model) на \(p.server), окно \(p.window) — "
+                                           + "сейчас \(ProbeTurn.model) на \(ProbeTurn.server), окно "
+                                           + "\(ChatRetrieval.Window.input): повтор не тот ход")
             }
             outcomes.append(try p.outcome())
         }
