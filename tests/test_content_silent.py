@@ -319,3 +319,91 @@ def test_no_status_line_when_the_trace_closes_mid_pass(monkeypatch):
     monkeypatch.setattr(hub, "_channel_event", lambda *args, **kw: setattr(hub, "_channel_closed", True))
     hub._check_content(now)
     assert not any("не пишется" in s for s in said), said
+
+
+_NOW = 1_000_000.0          # точная арифметика границ: разность ровно 600.0
+
+
+def _wired(hub):
+    """События и потери, поданные в `_channel_event`: поля `Loss` в событие
+    не все доходят, контракт — значение, которое хаб подаёт."""
+    got, losses = [], []
+    real = hub._channel_event
+
+    def spy(kind, label, at, stopped_at, silent_s, loss):
+        losses.append(loss)
+        return real(kind, label, at, stopped_at, silent_s, loss)
+
+    hub.on_channel = got.append
+    hub._channel_event = spy
+    return got, losses
+
+
+def test_without_the_call_fact_dead_content_is_silence_of_a_room(monkeypatch):
+    """Свежий хаб звонка не знает: без `set_call` нули канала — законная тишина
+    очной встречи, тревоги нет (мутант `_call = True`)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got, _ = _wired(hub)
+    hub._content_ts["blackhole"] = _NOW - 2 * a.CONTENT_SILENT_S
+    hub._mic_speech.extend(_NOW - i for i in range(200))
+    hub._check_content(_NOW)
+    assert got == []
+
+
+def test_content_age_exactly_the_threshold_is_an_alarm(monkeypatch):
+    """Ровно 600 с нулей — уже тревога: граница включительная (мутант `<` → `<=`)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got, _ = _wired(hub)
+    _dead_call(hub, _NOW, age=a.CONTENT_SILENT_S)
+    hub._check_content(_NOW)
+    assert [e.kind for e in got] == [a.CH_SILENT]
+
+
+def test_mic_share_exactly_the_threshold_is_an_alarm(monkeypatch):
+    """Доля микрофона ровно 20 % — звонок жив (мутант `<` → `<=`)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got, _ = _wired(hub)
+    hub.set_call()
+    hub._content_ts["blackhole"] = _NOW - 700
+    step = speech_gate.step_seconds(hub.chunk_s, hub.overlap_s)
+    n = round(a.CONTENT_MIC_SHARE * a.CONTENT_SILENT_S / step)
+    hub._mic_speech.extend(_NOW - 1 - i for i in range(n))
+    assert n * step / a.CONTENT_SILENT_S == a.CONTENT_MIC_SHARE
+    hub._check_content(_NOW)
+    assert [e.kind for e in got] == [a.CH_SILENT]
+
+
+def test_mic_moment_on_the_window_edge_is_inside(monkeypatch):
+    """Кусок микрофона ровно на левом краю окна в окне: без него доля ниже
+    порога (мутант обрезки `<` → `<=`)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got, _ = _wired(hub)
+    hub.set_call()
+    hub._content_ts["blackhole"] = _NOW - 700
+    step = speech_gate.step_seconds(hub.chunk_s, hub.overlap_s)
+    n = round(a.CONTENT_MIC_SHARE * a.CONTENT_SILENT_S / step)
+    hub._mic_speech.append(_NOW - a.CONTENT_SILENT_S)
+    hub._mic_speech.extend(_NOW - 1 - i for i in range(n - 1))
+    hub._check_content(_NOW)
+    assert [e.kind for e in got] == [a.CH_SILENT]
+
+
+def test_silent_and_audible_carry_the_content_duration_and_a_final_loss(monkeypatch):
+    """`silent` — от границы содержимого до прохода, `audible` — длина серии;
+    обе потери окончательные: сторож канал не перезапускает, канал жил
+    (мутанты длительности и флагов `Loss`)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got, losses = _wired(hub)
+    _dead_call(hub, _NOW, age=700)
+    hub._check_content(_NOW)
+    hub._content_ts["blackhole"] = _NOW + 50
+    hub._check_content(_NOW + 55)
+    assert [(e.kind, e.stopped_at, e.silent_s, e.died) for e in got] == [
+        (a.CH_SILENT, _NOW - 700, 700.0, True),
+        (a.CH_AUDIBLE, _NOW - 700, 750.0, True)]
+    assert [(x.retriable, x.died) for x in losses] == [(False, True), (False, True)]
