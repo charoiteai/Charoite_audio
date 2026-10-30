@@ -1082,8 +1082,6 @@ def plan(stamp: str, root: pathlib.Path,
             cited = dossier.cites(text, keys)
             revised = in_dossier and cited and bool(dossier.revision(text))
             linked = bool(link.search(text))
-            if not linked and not cited:
-                continue
             fixed = _strip_meeting(text, link) if linked else text
             if revised:
                 fixed = dossier.without_revision(fixed)

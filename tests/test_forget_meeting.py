@@ -2414,6 +2414,33 @@ def test_forget_locks_a_graph_whose_node_is_a_symlink_outside(tmp_path, памя
     assert seen, "замок графа с симлинком не взят"
 
 
+def test_forget_does_nothing_when_the_graph_lock_cannot_be_taken(tmp_path, память, monkeypatch):
+    """Замок не взять (`OSError` каталога замка): ничего не удалено и не правлено."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+
+    def broken(lock_dir, wait, **kw):
+        raise OSError("нет прав на каталог замка")
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", broken)
+    assert forget.apply(p, yes=True) is False
+    assert (root / "transcripts" / f"{STAMP}.md").exists()
+    assert f"[[Встречи/{STAMP}" in (graph / "Досье" / "Платёжный провайдер.md").read_text(encoding="utf-8")
+    assert память == []
+
+
+def test_forget_names_an_old_place_snapshot_copy(tmp_path):
+    """Копия в старом месте снимков (`<граф>/.cloud_backup/<штамп>/…`) — тоже снимок:
+    владельцу путь с пометкой «(снимок)»."""
+    root, graph = _world(tmp_path)
+    old = graph / forget.CLOUD_BACKUP_DIR / "2026-10-01_030000" / "Ядра" / "Срок.md"
+    old.parent.mkdir(parents=True)
+    old.write_bytes("Срок ".encode("cp1251") + f"[[Встречи/{STAMP}]]\n".encode("ascii"))
+    p = forget.plan(STAMP, root, graph)
+    line = next(c for c in p.check if "не в UTF-8" in c)
+    assert "(снимок)" in line, p.check
+
+
 def test_forget_takes_the_same_lock_as_the_dossier_review(tmp_path, память, monkeypatch):
     """Замок — тот же каталог, что у ревизии и ночной сборки: родитель снимков графа."""
     root, graph = _world(tmp_path)

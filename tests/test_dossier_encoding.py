@@ -439,7 +439,11 @@ def test_source_changed_during_generation_is_not_written(night, monkeypatch, cap
         return GOOD
 
     monkeypatch.setattr(nd, "generate", generate)
-    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    out = nd.run_all([graph], {}, full=False, dry=False, limit=12)
+    result = out.graphs[0].result()
     assert result["досье_изменилось"] == 1
+    # тема — пропуск, а модель звали: попытка считается (мутанты CI по 3e8a49f3)
+    assert result["пропущено"] == 1
+    assert out.attempts == len(calls) == 3
     assert paths["Бета"].read_bytes() == before
     assert "источники изменились за время генерации" in capsys.readouterr().out
