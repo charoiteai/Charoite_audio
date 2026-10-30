@@ -208,7 +208,8 @@
    existing node, or matches several nodes: the name stays as text in the
    meeting note with links to the candidates, and the candidate goes to
    `_Кандидаты.md` at the graph root — confirm with an alias in the node or
-   create the node by hand. On a Russian-language graph a new node is not
+   create the node by hand. When the parse fills fields in Russian (any profile
+   language but en and zh), a new node is not
    created when the parse gives a type outside the known ones (system, project,
    team, document, model; case and spaces ignored) — "человек", "задача",
    "инцидент": the name stays as text in the meeting note marked "тип вне
