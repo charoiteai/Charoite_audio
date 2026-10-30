@@ -423,10 +423,22 @@ address on every commit, and runs the guard from the main checkout, so a branch
 cannot weaken the gate it is pushed through. `--range BASE..HEAD` runs the same
 per-commit check by hand. Media files (images, audio, PDF) are judged by name
 only: text inside their metadata (EXIF, PDF author, audio tags) is not checked.
-Any other file git treats as binary (archives, office documents, icons, a text
-file with a NUL byte) cannot be checked and is refused; the maintainer lets a
+A file counts as media only when git treats it as binary and both its suffix
+and its first bytes say so; a
+document renamed to `.jpg` is not media, and text under a picture name is read
+as text. Any other file git treats as binary (archives, office documents,
+`.icns` icons, a text file with a NUL byte) and text that is not UTF-8 (cp1251
+and other code pages are not guessed; a PDF without a NUL byte counts here)
+cannot be checked and are refused; the maintainer lets a
 specific version through by adding its blob hash, which the refusal prints, to
-`~/.config/charoite/blob_allow.txt`.
+`~/.config/charoite/blob_allow.txt`. Two prices of judging media by its first bytes:
+an mp3 without an ID3 tag and an `.onnx` model whose first byte is not `0x08` are refused
+the same way. Binary files have no added lines, so their content is judged only by the
+per-commit check at push. CI (`--public-only`) has no hash list: it warns about a text file that
+is not UTF-8, still runs the patterns on it with the bytes replaced and prints what they find as warnings (PR annotations), without failing — CI has no way to let such a file through; the local hook judges it. With the bytes replaced only ASCII formats are visible (e-mail, host, a Latin path); a binary file that is not UTF-8 is not judged in CI at all. A file name that is not UTF-8 is refused
+everywhere: rename the file. The maintainer's hook does not fetch: when
+the server has commits the clone has not seen (a squash merge on GitHub), a
+refusal adds `git fetch <remote>` — fetch and push again.
 
 The hook checks **two** things: the lines a commit adds, and the whole tracked
 tree. The second one matters because a marker added to the list *later* leaves

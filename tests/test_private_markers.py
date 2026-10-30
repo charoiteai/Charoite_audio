@@ -59,10 +59,21 @@ def test_scan_reports_place_without_quoting_the_marker(tmp_path):
 
 
 def test_binary_and_missing_files_do_not_break_the_scan(tmp_path):
+    # Настоящий PNG: длина чанка IHDR даёт NUL в первых байтах — git считает его двоичным.
     binary = tmp_path / "logo.png"
-    binary.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe not text at all")
+    binary.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe not text at all")
     missing = tmp_path / "deleted.py"
     assert guard.scan_files(guard.build_pattern(list(FAKE)), [binary, missing]) == []
+
+
+def test_picture_signature_without_nul_is_not_media_for_the_tree(tmp_path, monkeypatch):
+    """Подпись в начале без NUL — текст в чужой кодировке, которого никто не
+    прочёл: отказ с хешем блоба (№570, выход out2)."""
+    monkeypatch.setenv("HOME", str(tmp_path))     # допуски владельца тесту не судья (out4 M1)
+    fake = tmp_path / "logo.png"
+    fake.write_bytes(b"\x89PNG\r\n\x1a\n" + "ВнутренняяСистемаЫЪ".encode("cp1251"))
+    hits = guard.scan_files(guard.build_pattern(list(FAKE)), [fake])
+    assert len(hits) == 1 and guard.NOT_UTF8 in hits[0] and "blob_allow.txt" in hits[0], hits
 
 
 def test_the_tree_of_this_repository_is_clean():
