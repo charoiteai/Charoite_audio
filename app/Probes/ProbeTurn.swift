@@ -242,7 +242,9 @@ enum ProbeTurn {
     static func factRank(_ fact: String, in parts: [ArchiveSearch.Part]?,
                          norm: (String) -> String) -> Int? {
         let needle = norm(fact)
-        return (parts ?? []).filter { norm(pieceBody($0.text)).contains(needle) }.map(\.rank).min()
+        let ranks = (parts ?? []).filter { norm(pieceBody($0.text)).contains(needle) }.map(\.rank)
+        // −1 гейта не перекрывает настоящий ранг: «гейт» — только когда факт лишь в слоте гейта (n752-out5, Haiku I1)
+        return ranks.filter { $0 >= 0 }.min() ?? ranks.min()
     }
 
     /// Тело куска без шапки — только для рангов факта. false_refusal судит вся
