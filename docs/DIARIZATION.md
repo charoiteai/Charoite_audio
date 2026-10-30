@@ -280,8 +280,11 @@ a meeting of six into one label — so the room microphone merges pair by pair
 under a veto: two groups never join while any pair between them is below
 `VETO_BELOW` (0.46). On calls the veto is off.
 
-A threshold changes only through the bench (section 9): a new value comes with
-a DER on the fixtures and on a real recording, and the fix log keeps the old
+The bench (section 9) does not run this pass: its `sherpa` engine
+(`diar_bench.run_sherpa`) builds sherpa-onnx with the library's clustering
+default and other duration settings, without the shard merge, the veto or the
+participant floor. A new value for a threshold of `diarize.py` is measured on
+`diarize.diarize` itself, on a real recording, and the fix log keeps the old
 number next to the new one.
 
 ## 8. Known limits
@@ -312,7 +315,7 @@ reference first.
 
 ```bash
 .venv/bin/python scripts/diar_bench.py --make                    # synthetic dialogue + reference
-.venv/bin/python scripts/diar_bench.py                           # live, live-split, sherpa
+.venv/bin/python scripts/diar_bench.py                           # live, live-split, bench sherpa (not the production pass)
 .venv/bin/python scripts/diar_bench.py --wav recordings/<stamp>_blackhole.wav --engine compare
 .venv/bin/python scripts/diar_bench.py --wav fragment.wav --truth fragment.txt --engine compare
 ```
@@ -327,13 +330,13 @@ replayed over a recording by `scripts/nemotron_shadow_replay.py` and judged by
 `--make --crosstalk` builds a fixture where replies overlap by 0.8–1.5 s; DER
 is then scored the NIST way (a frame may hold several voices).
 
-Numbers on an M1 Max, 28 September 2026, mlx-audio 0.5.6, model loading
-included. AMI test meetings (Mix-Headset, four speakers, English), strict
+Numbers on an M1 Max, 28 September 2026, mlx-audio 0.5.6 (the pin is newer
+— see «Version»; the numbers were not re-taken), model loading included. AMI test meetings (Mix-Headset, four speakers, English), strict
 word-level reference, no collar:
 
 | Engine | ES2004a (17.5 min) | IS1009a (14.0 min) | RTF |
 |---|---|---|---|
-| post-meeting pass, sherpa (production) | 0.606 · 3 voices | 0.453 · 4 voices | 0.35–0.36 |
+| post-meeting pass, `diarize.diarize` (production, not the bench's `sherpa`) | 0.606 · 3 voices | 0.453 · 4 voices | 0.35–0.36 |
 | live-split (daemon slicing) | 0.676 · 8 voices | 0.541 · 9 voices | 0.06–0.07 |
 | Nemotron, whole file | **0.269** · 4 voices | **0.277** · 4 voices | 0.003 |
 | Nemotron stream (`low`, 1.04 s) | 0.273 · 5 voices | 0.273 · 4 voices | 0.04 |
