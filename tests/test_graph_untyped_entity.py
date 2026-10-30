@@ -177,3 +177,11 @@ def test_prompt_types_are_keys_of_the_folder_map():
     assert m, "строка сущностей в промпте _extract изменила вид — обнови тест"
     listed = m.group(1).split("|")
     assert listed and set(listed) <= set(g.ENT_FOLDER), "перечень промпта и карта папок разошлись"
+
+
+def test_without_the_flag_the_old_birth_stays(tmp_path):
+    """Умолчание `typed=False` — старое поведение для вызовов мимо `main` (выживший мутант
+    `False → True` в CI #885)."""
+    graph = _graph(tmp_path)
+    held = g.apply_entities(graph, [{"имя": "Иван Петров", "тип": "человек", "суть": "x"}], LINK)
+    assert held == {} and (graph / "Системы" / "Иван Петров.md").exists()
