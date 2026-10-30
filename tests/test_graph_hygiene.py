@@ -2518,17 +2518,18 @@ def test_same_day_meeting_still_refines_top(tmp_path):
     встаёт наверх (охрана строго «<», мутант Lt → LtE, CI #882)."""
     graph = tmp_path / "g"
     g.upsert_entity(graph, "Люди", "Двухвстречный", "person", "аналитик", "Встречи/2026-09-10_1000", "")
+    assert "_(последнее упоминание: 2026-09-10)_" in (graph / "Люди" / "Двухвстречный.md").read_text(encoding="utf-8")
     g.upsert_entity(graph, "Люди", "Двухвстречный", "person", "аналитик данных", "Встречи/2026-09-10_1500", "")
     text = (graph / "Люди" / "Двухвстречный.md").read_text(encoding="utf-8")
     assert "# Двухвстречный\nаналитик данных\n" in text and text.count("_(было:") == 1, text
 
 
 def test_fact_words_drop_one_letter_tokens():
-    """Однобуквенные слова («в», «и», «ч» после «15») — не слова факта, в том числе
-    скелет «#» от числа без букв нет (мутант 2 → 0, CI #882)."""
+    """Однобуквенные слова («в», «и», «ч» после «15») — не слова факта, двухбуквенное
+    «не» — слово (мутант 2 → 0, CI #882; граница длины, n846-mut)."""
     assert g._fact_words("в отпуске и в офисе") == ({"отпуске", "офисе"}, ())
     assert g._fact_words("подключится в 15 ч") == ({"подключится"}, ("15",))
-    assert g._fact_words("Qwen 32B") == ({"qwen", "#b"}, ("32",))
+    assert g._fact_words("не участвует") == ({"не", "участвует"}, ())
 
 
 def test_seen_day_bounds(monkeypatch):
