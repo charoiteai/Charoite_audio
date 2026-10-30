@@ -136,17 +136,20 @@ final class MemoryBench: XCTestCase {
             // Слой 1: где в выдаче руки стоит каждый факт — ранг куска, «гейт» или «нет»
             let ranks = c.must.map { fact -> String in
                 switch ProbeTurn.factRank(fact, in: outcome.parts, norm: norm) {
-                case nil: return "\(fact)→нет"
-                case -1?: return "\(fact)→гейт"
-                case let r?: return "\(fact)→\(r)"
+                case .none: return "\(fact)→нет"
+                case .some(-1): return "\(fact)→гейт"
+                case .some(let r): return "\(fact)→\(r)"
                 }
             }
             // длины кусков — рука pN не равна N кускам по 1000: упаковщик режет (n752-out1, Haiku C1)
             let lengths = (outcome.parts ?? []).map(\.text.count)
-            report += "\n  ранги: \(ranks.joined(separator: ", ")); кусков \(lengths.count)"
-                + (lengths.isEmpty ? "" : " длиной \(lengths.min()!)–\(lengths.max()!) зн.") + ", "
-                + "оценка промпта \(ChatRetrieval.messageTokens(ProbeTurn.system(question: c.q, outcome: outcome)) + ChatRetrieval.messageTokens(c.q)) ток."
-                + (reply?.promptTokens.map { ", промпт у Ollama \($0) ток." } ?? "")
+            let estimate: Int = ChatRetrieval.messageTokens(ProbeTurn.system(question: c.q, outcome: outcome))
+                + ChatRetrieval.messageTokens(c.q)
+            var rankLine = "\n  ранги: \(ranks.joined(separator: ", ")); кусков \(lengths.count)"
+            if let lo = lengths.min(), let hi = lengths.max() { rankLine += " длиной \(lo)–\(hi) зн." }
+            rankLine += ", оценка промпта \(estimate) ток."
+            if let tokens = reply?.promptTokens { rankLine += ", промпт у Ollama \(tokens) ток." }
+            report += rankLine
             if withModel {
                 // судья прежний — вся выдача с шапками, как до №752: ранг судит только тела (n752-out3, Haiku I1)
                 let inFound = c.must.filter { norm(outcome.text).contains(norm($0)) }.count
