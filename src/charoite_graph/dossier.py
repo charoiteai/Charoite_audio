@@ -530,6 +530,7 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
 
 
 KEEP_RE = re.compile(r"## Правки автора\n(.*?)$", re.S)
+BACKUP_DIR = ".backup"       # копии досье до пересборки и ревизии: `Досье/.backup/<штамп>/`
 
 
 def backup(folder: pathlib.Path, stamp: str, path: pathlib.Path, keep: int = 40) -> pathlib.Path | None:
@@ -542,12 +543,12 @@ def backup(folder: pathlib.Path, stamp: str, path: pathlib.Path, keep: int = 40)
     каталог общий у пересборки и ревизии, штатная ночь — два штампа (GLM M3)."""
     if not path.exists():
         return None
-    bdir = folder / ".backup" / stamp
+    bdir = folder / BACKUP_DIR / stamp
     bdir.mkdir(parents=True, exist_ok=True)
     dst = bdir / path.name
     shutil.copy2(path, dst)
     try:
-        backups = sorted((folder / ".backup").iterdir(), reverse=True)
+        backups = sorted((folder / BACKUP_DIR).iterdir(), reverse=True)
     except OSError:
         return dst
     for old in backups[keep:]:
@@ -684,6 +685,30 @@ def read_fingerprint(source: pathlib.Path | DossierLoad) -> str:
     head = (loaded.text or "")[:600]
     m = re.search(r"^отпечаток:\s*(\S+)", head, re.M)
     return m.group(1) if m else ""
+
+
+def kept_from_night(text: str | None) -> str:
+    """Почему тело досье — не голый вывод ночи; пусто — вывод ночи без руки
+    человека, ночь соберёт тему заново из графа. Признаки `render` — отпечаток в
+    шапке, раздел «Источники» и раздел «Правки автора» (его `render` пишет
+    всегда: нет раздела — его снял человек, out1 Sonnet I1); рука человека —
+    непустые «Правки автора», поле `ревизия:`, метка в теле. Правку тела без
+    этих следов не видно — поэтому «забыть» удаляет досье с копией. Переводы
+    строк — как у `load_dossier`: CRLF не прячет правки автора (вход n845-in1
+    DS C1); заголовок раздела — любого уровня, как у `split_dossier`."""
+    t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    _, _, sources, manual = split_dossier(t)
+    if not read_fingerprint(DossierLoad("ok", t)):
+        return "нет отпечатка ночи"
+    if sources is None or manual is None:
+        return "нет раздела «Источники» или «Правки автора»"
+    if manual not in ("", "—"):
+        return "есть правки автора"
+    if revision(t):
+        return "тело правила облачная ревизия"
+    if labeled_body(t):
+        return "в теле метка диаризации"
+    return ""
 
 
 def in_sync(loaded: DossierLoad, fp: str) -> bool:
