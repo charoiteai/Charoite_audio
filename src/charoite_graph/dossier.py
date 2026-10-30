@@ -132,19 +132,13 @@ def _match(qkey: str, key: str) -> bool:
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 
 
-def link_target(raw: str) -> str:
-    """Цель ссылки из `LINK_RE` как имя файла: последний сегмент пути, без `.md`,
-    без блока `^…` и без `\\` — им таблица Obsidian экранирует `|` алиаса."""
-    t = raw.split("^", 1)[0].strip().rstrip("\\").strip()
-    return t.split("/")[-1].strip().removesuffix(".md").strip()
-
-
 def cites(text: str | None, keys: list[str]) -> bool:
     """Ссылается ли текст на узел под одним из ключей — или на его производный
     файл `<ключ>_…` (минутки, разбор). Грамматика ссылки — `LINK_RE`, та же, что
     у `scan`: третья рукописная регулярка рядом с ней пропускала `\\|` таблиц,
-    которыми пишет тела ревизия (выход n841-out4 Haiku C1, Sonnet M2, DS M3)."""
-    targets = {link_target(m.group(1)) for m in LINK_RE.finditer(text or "")}
+    которыми пишет тела ревизия (выход n841-out4 Haiku C1, Sonnet M2, DS M3).
+    Цель — `graph_names.link_target_stem`, своей нормализации нет (out5 Haiku C1)."""
+    targets = {graph_names.link_target_stem(m.group(1)) for m in LINK_RE.finditer(text or "")}
     return any(t == k or t.startswith(k + "_") for t in targets for k in keys)
 
 

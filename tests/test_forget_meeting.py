@@ -515,14 +515,56 @@ def test_forget_lifts_the_revision_without_touching_the_body(tmp_path):
 
 
 def test_forget_names_a_revised_dossier_it_cannot_read(tmp_path):
-    """Досье с полем не в UTF-8: переписать нельзя, но промолчать — значит
-    держать пересказ вечно; владелец видит файл в «проверь сам» (out4 DS M2)."""
+    """Досье не в UTF-8 целиком: переписать нельзя, кириллическое имя поля не
+    прочитать, но промолчать — значит держать пересказ вечно; владелец видит
+    путь файла в «проверь сам» (out4 DS M2, out5 DS C1)."""
     root, graph = _world(tmp_path)
     path = _revised_dossier(graph, f"[[{STAMP}]]")
-    path.write_bytes(path.read_bytes().replace("Выбран".encode("utf-8"), "Выбран".encode("cp1251")))
+    path.write_bytes(path.read_text(encoding="utf-8").encode("cp1251", "replace"))
     p = forget.plan(STAMP, root, graph)
     assert path not in p.edit
-    assert any(path.name in line and "ревизия" in line for line in p.check), p.check
+    assert any("Досье/Ревизия.md" in line and "ревизия" in line for line in p.check), p.check
+
+
+def test_forget_survives_a_file_that_vanishes_while_read(tmp_path, monkeypatch):
+    """Одно чтение на файл: исчез между обходом и чтением — пропуск, а не
+    трейсбек посреди забывания (out5 DS I4, Sonnet M1)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_bytes(path.read_text(encoding="utf-8").encode("cp1251", "replace"))
+    real = pathlib.Path.read_bytes
+
+    def gone(self):
+        if self.name == path.name:
+            raise FileNotFoundError(self)
+        return real(self)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", gone)
+    p = forget.plan(STAMP, root, graph)
+    assert path not in p.edit
+
+
+@pytest.mark.parametrize("where", ["nested", "ancestor"])
+def test_forget_asks_the_schema_whether_a_file_is_a_dossier(tmp_path, where):
+    """Досье — первая папка пути внутри графа, как у `scan`: папка «Досье»
+    глубже или выше графа поля узла не снимает (out5 DS C2, Sonnet I1, Haiku I1)."""
+    root, graph = _world(tmp_path / "Досье" if where == "ancestor" else tmp_path)
+    node = graph / "Люди" / ("Досье" if where == "nested" else "") / "Мария Соколова.md"
+    node.parent.mkdir(parents=True, exist_ok=True)
+    node.write_text(f"---\nревизия: 3\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "3", p.edit.get(node)
+
+
+def test_forget_strips_a_meeting_line_without_splitting_others(tmp_path):
+    """`_strip_meeting` режет только по `\\n`: U+2028 и `\\x0b` в соседних
+    строках остаются (out5 DS I5)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Выбор платёжного провайдера.md"
+    before = node.read_text(encoding="utf-8")
+    node.write_text(before + "ЮPay\u2028срок\x0bпозже\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert "ЮPay\u2028срок\x0bпозже\n" in p.edit[node], p.edit.get(node)
+
 
 def test_surviving_nodes_are_backed_up_before_editing(tmp_path):
     """Удаляем встречу, а не чужие заметки: правка Ядра обратима."""

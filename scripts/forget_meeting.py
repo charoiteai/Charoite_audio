@@ -1025,24 +1025,29 @@ def plan(stamp: str, root: pathlib.Path,
             # Досье с полем `ревизия:` ночь не пересобирает (№841): поле снимаем,
             # иначе пересказ забытой встречи пережил бы её — тема пересоберётся
             # без неё, состав кластера уже другой. Только у досье: у узла людей
-            # или документа это поле владельца (выход n841-out4 DS I2)
-            in_dossier = CHAROITE.dossier_dir in f.parts
+            # или документа это поле владельца (выход n841-out4 DS I2). Досье ли
+            # это — решает схема по пути внутри графа, как у `scan` (out5 DS C2)
+            base = snap if f.is_relative_to(snap) else g
+            rel = f.relative_to(base).as_posix()
+            in_dossier = CHAROITE.is_dossier(rel)
             try:
-                text = f.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                seen = f.read_bytes().decode("utf-8", "replace")
-                if in_dossier and dossier.revision(seen) and dossier.cites(seen, keys):
-                    # переписать нечитаемое нельзя, промолчать — держать пересказ вечно (out4 DS M2)
-                    p.check.append(f"{f.name}: досье ссылается на встречу, но не в UTF-8 — "
-                                   "сними строку «ревизия:» из шапки руками, иначе ночь его не пересоберёт")
-                continue
+                raw = f.read_bytes()        # одно чтение: файл не исчезнет между двумя (out5 DS I4)
             except OSError:
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # переписать нечитаемое нельзя, промолчать — держать пересказ вечно (out4 DS M2);
+                # кириллическое имя поля без UTF-8 не прочесть — довольно ссылки (out5 DS C1)
+                if in_dossier and dossier.cites(raw.decode("utf-8", "replace"), keys):
+                    where = f"{rel} (снимок)" if base == snap else rel
+                    p.check.append(f"{where}: досье ссылается на встречу, но не в UTF-8 — проверь "
+                                   "шапку руками: строка «ревизия:» не даст ночи его пересобрать")
                 continue
             revised = in_dossier and bool(dossier.revision(text)) and dossier.cites(text, keys)
             linked = bool(link.search(text))
             if not linked and not revised:
                 continue
-            # строки — только по своей ссылке: иначе CRLF досье сменился бы на LF (out4 Sonnet M1)
             fixed = _strip_meeting(text, link) if linked else text
             if revised:
                 fixed = dossier.without_revision(fixed)
@@ -1094,14 +1099,15 @@ def _strip_meeting(text: str, link: re.Pattern[str]) -> str:
     хуже, чем оставить видимый пробел.
     """
     out = []
-    for line in text.splitlines():
+    # только по `\n`: `splitlines` режет и по U+2028, `\x0b`, `\x85` (out5 DS I5)
+    for line in text.split("\n"):
         if not link.search(line):
             out.append(line)
             continue
         if line.lstrip().startswith(_LINE):
             continue    # пункт списка = запись о встрече
         out.append(link.sub(REMOVED_NOTE, line))
-    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    return "\n".join(out)
 
 
 def _backup(path: pathlib.Path, stamp: str) -> None:

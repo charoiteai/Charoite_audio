@@ -364,10 +364,12 @@ def test_review_refuses_to_apply_when_the_revision_field_cannot_be_set(tmp_path,
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
         "Идёт пилот", "Пилот ⚠️ идёт")
-    monkeypatch.setattr(ndr, "review", lambda *a, **k: (fixed, ""))
+    called = []
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: called.append(1) or (fixed, ""))
     cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
     ndr.run(graph, cfg, dry=False, limit=6)
     assert path.read_text(encoding="utf-8") == before
+    assert not called, "облачный вызов до проверки, что правку можно записать (out5 Sonnet I2, Haiku I4)"
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
     assert "**Платёжный провайдер** — сбой: поле `ревизия:` не ставится" in report, report
 

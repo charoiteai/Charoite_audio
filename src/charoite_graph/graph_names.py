@@ -161,7 +161,7 @@ def _speaker_spans(text: str) -> list[tuple[int, int]]:
 
     def link(m: re.Match) -> str:
         t0, t1 = m.span("target")      # цель — из исходного текста: в маске скобки уже «\0»
-        if is_placeholder_node(_link_target_stem(text[t0:t1])):
+        if is_placeholder_node(link_target_stem(text[t0:t1])):
             spans.append(m.span())
             return _MASK * len(m.group(0))
         return _MASK * (t1 - m.start()) + masked[t1:m.end()]
@@ -188,9 +188,11 @@ _SENTENCE_START_RE = re.compile(r"(?:\n|[.!?…»]\s)[\s\-*>#\d.)\[\]«\"_:]*\Z"
 _SENTENCE_LOOKBACK = 40
 
 
-def _link_target_stem(target: str) -> str:
-    """Цель ссылки как имя узла: последний сегмент без якоря и `.md` (как `dossier.scan`)."""
-    return re.split(r"[#^]", target)[0].split("/")[-1].strip().removesuffix(".md").strip()
+def link_target_stem(target: str) -> str:
+    """Цель ссылки как имя узла: последний сегмент без якоря, `.md` и `\\`, которым
+    таблица Obsidian экранирует `|` алиаса (как `graph_links.LinkResolver.resolve`)."""
+    t = re.split(r"[#^]", target)[0].strip().rstrip("\\").strip()
+    return t.split("/")[-1].strip().removesuffix(".md").strip()
 
 
 def unlabel_speakers(text: str) -> str:
