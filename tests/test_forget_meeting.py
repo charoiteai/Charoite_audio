@@ -2435,7 +2435,7 @@ def test_forget_names_an_old_place_snapshot_copy(tmp_path):
     root, graph = _world(tmp_path)
     old = graph / forget.CLOUD_BACKUP_DIR / "2026-10-01_030000" / "Ядра" / "Срок.md"
     old.parent.mkdir(parents=True)
-    old.write_bytes("Срок ".encode("cp1251") + f"[[Встречи/{STAMP}]]\n".encode("ascii"))
+    old.write_bytes(f"Срок [[Встречи/{STAMP}]]\n".encode("cp1251"))
     p = forget.plan(STAMP, root, graph)
     line = next(c for c in p.check if "не в UTF-8" in c)
     assert "(снимок)" in line, p.check
