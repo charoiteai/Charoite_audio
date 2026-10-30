@@ -696,7 +696,7 @@ ADD_CHARS = 1_300                  # замер пилота 30.10: стольк
 
 Action = Literal["skip", "add", "rebuild", "hold"]
 Reason = Literal["new", "forced", "unreadable", "unparsed", "no_composition", "gone", "same",
-                 "labeled", "grown", "damaged", "meetings"]
+                 "labeled", "grown", "damaged", "appendable"]
 
 
 @dataclass(frozen=True)
@@ -812,7 +812,7 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
         return Plan("hold" if held else "rebuild", "grown", tuple(new))
     if loaded.state == "damaged":
         return Plan("hold" if held else "rebuild", "damaged", tuple(new))
-    return Plan("add", "meetings", tuple(new))
+    return Plan("add", "appendable", tuple(new))
 
 
 # ─────────────────────────── индекс ───────────────────────────

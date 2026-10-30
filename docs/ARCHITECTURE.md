@@ -1060,6 +1060,18 @@ lifted by hand — delete the `ревизия:` line. A topic that drops out of 
 altogether (fewer than three members left) is not visited by the night at all, with or
 without the field.
 
+`dossier.plan` (№843, not yet called by the night) is the one decision these checks
+are moving to: skip, add, rebuild or hold, from the meetings the body was built from
+rather than from the members' mtimes — 68 % of a week's rebuilds were a shared node
+rewriting its own description with no new meeting. The composition is the front-matter
+field `состав:`, or the meetings of the «Источники» section for a dossier built before
+the field (`dossier.composition`). A new meeting of the topic, not in the composition
+and not in `не_принято:`, is appended — under a review too. A meeting of the
+composition whose file is gone, or which left the topic, sends the body to a rebuild,
+or to a hold under a review; a merge stub (`GraphSnapshot.stubs`) is not gone. The body
+is never appended to when the file is damaged, has no «## Сейчас», carries a
+diarization label, or would grow past `GROW_LIMIT`.
+
 **Index lookup** (`Досье/_index.json`) is lexical, over word stems with
 prefix matching, so `qwen` finds `qwen3-32b`. No embeddings and no running
 Ollama required; semantics is layered on top. The dossier body in an answer

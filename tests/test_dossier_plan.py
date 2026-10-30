@@ -93,7 +93,7 @@ def test_same_meetings_skip_even_if_other_members_changed(world):
 
 def test_new_meeting_is_added(world):
     snap, built, members = world
-    assert _plan(_dossier(snap, built), members, snap) == dossier.Plan("add", "meetings", (NEW,))
+    assert _plan(_dossier(snap, built), members, snap) == dossier.Plan("add", "appendable", (NEW,))
 
 
 def test_new_meeting_is_added_under_revision(world):
@@ -203,7 +203,7 @@ def test_composition_survives_bom(world):
     text = dossier.with_composition("\ufeff" + _dossier(snap, built), [OLD])
     assert text.startswith("\ufeff---")
     assert dossier.composition(text, schema=CHAROITE) == [OLD]
-    assert _plan(text, members, snap) == dossier.Plan("add", "meetings", (NEW,))
+    assert _plan(text, members, snap) == dossier.Plan("add", "appendable", (NEW,))
 
 
 @pytest.mark.parametrize("value", ["", "~", "null"])
