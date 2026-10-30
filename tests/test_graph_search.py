@@ -1772,6 +1772,47 @@ def test_dossier_blocks_read_the_generation_not_the_disk(tmp_path, monkeypatch):
     assert r.sources[0] == f"{CHAROITE.dossier_dir}/Платёжный шлюз.md", r.sources   # досье — первым источником
 
 
+def test_dossier_block_cap_covers_the_header_and_cuts_on_a_word():
+    """Потолок полосы досье — на весь блок вместе с шапкой «📁 Досье «тема»»:
+    длинная тема не раздувает блок (входной круг Sonnet I4 по №855). Пробелы
+    схлопнуты до среза, обрыв — по границе слова с «…». Без потолка вид прежний:
+    тело `snippet_chars * 3` знаков до схлопывания — так видят MCP и человек."""
+    body = "строка факта\n    вложенная строка\n" * 200
+    for theme in ("Шлюз", "т" * 200):
+        b = gs.dossier_block(theme, body, 500, 550)
+        assert len(b) <= 550 and b.startswith("📁 Досье «"), theme
+    b = gs.dossier_block("Шлюз", body, 500, 550)
+    assert b.endswith("…") and "  " not in b.split("\n  ", 1)[1], "схлопнуто до среза, обрыв помечен"
+    assert b[:-1].rsplit(" ", 1)[1] in ("строка", "факта", "вложенная"), "обрыв по границе слова"
+    assert len(b) >= 550 - len("вложенная") - 1, "потолок использован, а не съеден схлопыванием"
+    short = gs.dossier_block("Шлюз", "пилот, провайдер ЮPay", 500, 550)
+    assert short == "📁 Досье «Шлюз»\n  пилот, провайдер ЮPay", "короткое тело — без «…»"
+    assert gs.dossier_block("Шлюз", body, 500) == "📁 Досье «Шлюз»\n  " + " ".join(body[:1500].split())
+    head = "📁 Досье «т»\n  "
+    assert gs.dossier_block("т", "аа бб вв", 500, len(head) + 6) == head + "аа бб…", "целое слово на границе не теряется"
+    assert gs.dossier_block("т", "аабб", 500, len(head) + 3) == head + "аа…", "слово без пробела — по знаку"
+    assert gs.dossier_block("т" * 100, "x", 5, 20) == "" and gs.dossier_block("т", "x", 5, 0) == "", \
+        "потолок без места под тело — блока нет, а не обрезок шапки"
+
+
+def test_dossier_limit_takes_the_next_theme_when_the_first_is_not_in_the_snapshot(tmp_path):
+    """`dossier_limit` набирается из годных тем: лучшая тема индекса, сводки
+    которой ещё нет в снимке, не оставляет секцию пустой — берётся следующая
+    (входной круг Sonnet I1 по №855: срез индекса шёл до отсева)."""
+    s = _search(tmp_path)
+    folder = s.graph / CHAROITE.dossier_dir
+    folder.mkdir()
+    (folder / "Шлюз.md").write_text("---\ntype: досье\n---\n# Шлюз\nпилот, провайдер ЮPay\n", encoding="utf-8")
+    s.refresh(force=True)
+    (folder / "Платёжный шлюз.md").write_text("---\ntype: досье\n---\n# Платёжный шлюз\nещё не в снимке\n",
+                                              encoding="utf-8")
+    dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз"], "источников": 3,
+                                  "собрано": "2026-08-02"},
+                                 {"тема": "Шлюз", "ключи": ["шлюз"], "источников": 1, "собрано": "2026-08-02"}])
+    r = s.search("что с платёжным шлюзом", limit=2, semantic=False, dossier_limit=1, dossier_chars=550)
+    assert len(r.dossiers) == 1 and r.dossiers[0].startswith("📁 Досье «Шлюз»"), r.dossiers
+
+
 def test_hops_lead_to_primary_notes_only(tmp_path):
     """Переход из узла ведёт к первичной заметке: сводка досье — производное,
     показывать её фрагментом графа значило бы выдавать пересказ за источник."""
