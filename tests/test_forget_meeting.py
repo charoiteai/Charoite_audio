@@ -455,7 +455,8 @@ def _revised_dossier(graph: pathlib.Path, sources: str) -> pathlib.Path:
 
 
 @pytest.mark.parametrize("link", [f"[[{STAMP}]]", f"[[Встречи/{STAMP}.md]]", f"[[{STAMP}|15 июля]]",
-                                  f"[[{STAMP}#Итог]]"])
+                                  f"[[{STAMP}#Итог]]", f"[[{STAMP}\\|15 июля]]", f"[[ {STAMP} ]]",
+                                  f"[[{STAMP}^итог]]", f"[[{STAMP}_минутки]]"])
 def test_forget_lifts_the_revision_of_a_dossier_that_cites_the_meeting(tmp_path, link):
     """Ночь не пересобирает досье с ревизией (№841): забытая встреча снимает
     поле — иначе её пересказ пережил бы её. Строка «Источники» с другими
@@ -473,7 +474,7 @@ def test_forget_lifts_the_revision_of_a_dossier_that_cites_the_meeting(tmp_path,
 def test_forget_keeps_the_revision_of_a_dossier_about_other_meetings(tmp_path):
     """Соседний штамп той же минуты и чужая встреча — не наша ссылка: поле стоит."""
     root, graph = _world(tmp_path)
-    path = _revised_dossier(graph, f"[[{STAMP}05]] · [[2026-07-01_1000]]")
+    path = _revised_dossier(graph, f"[[{STAMP}05]] · [[{STAMP}-1]] · [[2026-07-01_1000]]")
     before = path.read_text(encoding="utf-8")
     forget.apply(forget.plan(STAMP, root, graph), yes=True)
     assert path.read_text(encoding="utf-8") == before
@@ -488,6 +489,40 @@ def test_forget_does_not_touch_a_dossier_without_a_revision_for_a_bare_link(tmp_
     forget.apply(forget.plan(STAMP, root, graph), yes=True)
     assert path.read_text(encoding="utf-8") == before
 
+
+
+def test_forget_keeps_an_own_revision_field_outside_the_dossier_folder(tmp_path):
+    """`ревизия:` узла людей или документа — поле владельца, не защита досье:
+    «забыть» снимает только поле досье (выход n841-out4 DS I2)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Люди" / "Мария Соколова.md"
+    node.parent.mkdir(exist_ok=True)
+    node.write_text(f"---\nревизия: 3\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "3", p.edit.get(node)
+
+
+def test_forget_lifts_the_revision_without_touching_the_body(tmp_path):
+    """Досье с полем и голой ссылкой: снимается только поле, тело как было —
+    `_strip_meeting` (`splitlines`) режет и по U+2028, и по `\\x0b`, поэтому
+    строки он правит, лишь когда в тексте есть его ссылка (out4 Sonnet M1)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_text(path.read_text(encoding="utf-8").replace("ЮPay ", "ЮPay\u2028\x0b"), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert path in p.edit and p.edit[path] == dossier_mod.without_revision(before), p.edit.get(path)
+
+
+def test_forget_names_a_revised_dossier_it_cannot_read(tmp_path):
+    """Досье с полем не в UTF-8: переписать нельзя, но промолчать — значит
+    держать пересказ вечно; владелец видит файл в «проверь сам» (out4 DS M2)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_bytes(path.read_bytes().replace("Выбран".encode("utf-8"), "Выбран".encode("cp1251")))
+    p = forget.plan(STAMP, root, graph)
+    assert path not in p.edit
+    assert any(path.name in line and "ревизия" in line for line in p.check), p.check
 
 def test_surviving_nodes_are_backed_up_before_editing(tmp_path):
     """Удаляем встречу, а не чужие заметки: правка Ядра обратима."""

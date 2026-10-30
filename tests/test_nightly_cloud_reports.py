@@ -347,6 +347,30 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
     assert not ndr.dossier.revision(rejected.read_text(encoding="utf-8"))
 
 
+
+def test_review_refuses_to_apply_when_the_revision_field_cannot_be_set(tmp_path, monkeypatch):
+    """Незакрытая шапка: поле не ставится, а без поля ночь перескажет правку —
+    значит и правку не пишем, в отчёте сбой (выход n841-out4 DS I1)."""
+    ndr = _load("nightly_dossier_review")
+    graph = tmp_path / "g"
+    folder = graph / ndr.CHAROITE.dossier_dir
+    folder.mkdir(parents=True)
+    path = folder / "Платёжный провайдер.md"
+    before = (_DOSSIER.replace("---\nтип: досье\n---\n", "---\nтип: досье\n")
+              + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n")
+    path.write_text(before, encoding="utf-8")
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Платёжный провайдер": ["a"]})
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
+    fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
+        "Идёт пилот", "Пилот ⚠️ идёт")
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (fixed, ""))
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
+    ndr.run(graph, cfg, dry=False, limit=6)
+    assert path.read_text(encoding="utf-8") == before
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "**Платёжный провайдер** — сбой: поле `ревизия:` не ставится" in report, report
+
 def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
     """Досье с пятью разделами, но без «## Источники» раньше роняло весь
     прогон IndexError на сборке файла (круг-1 по #382, DeepSeek)."""

@@ -833,3 +833,20 @@ def test_without_revision_drops_only_the_field():
     for same in ("# без шапки\nревизия: 2026-10-18\n", "---\nтема: т\n---\n# т\n"):
         assert dossier.without_revision(same) == same
     assert dossier.revision(dossier.without_revision(dossier.with_revision(text, "2026-10-30"))) == ""
+    twice = "---\nревизия: 2026-10-01\nтема: т\nревизия: 2026-10-18\n---\n# т\n"
+    assert dossier.without_revision(twice) == "---\nтема: т\n---\n# т\n"       # out4 DS M1
+
+
+@pytest.mark.parametrize("text,cites", [
+    ("[[2026-07-15_1400]]", True), ("[[Встречи/2026-07-15_1400.md|июль]]", True),
+    ("| [[2026-07-15_1400\\|июль]] |", True), ("[[ 2026-07-15_1400 ]]", True),
+    ("[[2026-07-15_1400^блок]]", True), ("[[2026-07-15_1400#Итог]]", True),
+    ("[[2026-07-15_1400_минутки]]", True),
+    ("[[2026-07-15_140005]]", False), ("[[2026-07-15_1400-1]]", False),
+    ("[[Встречи/x2026-07-15_1400]]", False), ("2026-07-15_1400", False),
+])
+def test_cites_reads_links_by_the_graph_grammar(text, cites):
+    """«Ссылается ли текст на узел» — по `LINK_RE` и цели как имени файла: таблица
+    Obsidian экранирует `|` (`\\|`), блок — `^`; производные встречи — `<ключ>_…`
+    (выход n841-out4 Haiku C1, Sonnet M2, DS M3)."""
+    assert dossier.cites(text, ["2026-07-15_1400"]) is cites

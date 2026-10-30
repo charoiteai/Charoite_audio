@@ -70,6 +70,7 @@ import deps  # noqa: E402
 import live_sidecar  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 from charoite_graph import dossier  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 
 
 def _root() -> pathlib.Path:
@@ -200,15 +201,6 @@ def _link_re(stamps: str | list[str]) -> re.Pattern[str]:
     keys = [stamps] if isinstance(stamps, str) else list(stamps)
     alt = "|".join(re.escape(k) for k in keys)
     return re.compile(rf"\[\[{MEETINGS_DIR}/(?:{alt})(?:\|[^\]]*)?\]\]")
-
-
-def _cited_re(keys: list[str]) -> re.Pattern[str]:
-    """Ссылка на встречу в любом виде: с папкой и без (`render` досье пишет
-    голое имя узла, `[[<ключ>]]`), с `.md`, `#якорем` или `|алиасом`. Только
-    для решения «снять ревизию» — шире `_link_re` нарочно: лишнее совпадение
-    стоит пересборки темы, пропуск — пересказа забытой встречи (№841)."""
-    alt = "|".join(re.escape(k) for k in keys)
-    return re.compile(rf"\[\[(?:[^\]\[|#]*/)?(?:{alt})(?:\.md)?(?:[|#][^\]]*)?\]\]")
 
 
 def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
@@ -929,7 +921,6 @@ def plan(stamp: str, root: pathlib.Path,
         # не быть, а строки Ядер и досье ссылаются ключом графа (минутой),
         # и с одним посекундным штампом они переживали «забыть» (круг 2 DS по #622).
         link = _link_re(keys)
-        cited = _cited_re(keys)
         if node is not None:
             node_seen = True
             p.delete.append(node)
@@ -1031,17 +1022,28 @@ def plan(stamp: str, root: pathlib.Path,
                 continue
             if any(real.is_relative_to(d) for d in doomed_dirs):
                 continue
-            try:
-                text = f.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
             # Досье с полем `ревизия:` ночь не пересобирает (№841): поле снимаем,
             # иначе пересказ забытой встречи пережил бы её — тема пересоберётся
-            # без неё, состав кластера уже другой
-            revised = bool(cited.search(text)) and bool(dossier.revision(text))
-            if not link.search(text) and not revised:
+            # без неё, состав кластера уже другой. Только у досье: у узла людей
+            # или документа это поле владельца (выход n841-out4 DS I2)
+            in_dossier = CHAROITE.dossier_dir in f.parts
+            try:
+                text = f.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                seen = f.read_bytes().decode("utf-8", "replace")
+                if in_dossier and dossier.revision(seen) and dossier.cites(seen, keys):
+                    # переписать нечитаемое нельзя, промолчать — держать пересказ вечно (out4 DS M2)
+                    p.check.append(f"{f.name}: досье ссылается на встречу, но не в UTF-8 — "
+                                   "сними строку «ревизия:» из шапки руками, иначе ночь его не пересоберёт")
                 continue
-            fixed = _strip_meeting(text, link)
+            except OSError:
+                continue
+            revised = in_dossier and bool(dossier.revision(text)) and dossier.cites(text, keys)
+            linked = bool(link.search(text))
+            if not linked and not revised:
+                continue
+            # строки — только по своей ссылке: иначе CRLF досье сменился бы на LF (out4 Sonnet M1)
+            fixed = _strip_meeting(text, link) if linked else text
             if revised:
                 fixed = dossier.without_revision(fixed)
             if fixed != text:

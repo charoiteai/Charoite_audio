@@ -238,7 +238,10 @@ def without_field(text: str, key: str) -> str:
     if not span:
         return text
     nl = "\r\n" if "\r\n" in fm else "\n"
-    fm2 = fm[:span[0]] + fm[span[1]:]
+    fm2 = fm
+    while span:     # каждое вхождение: второе `ревизия:` держало бы тему (out4 DS M1)
+        fm2 = fm2[:span[0]] + fm2[span[1]:]
+        span = _field_span(fm2, key)
     if not fm2.startswith(nl):
         fm2 = nl + fm2.lstrip("\r\n")
     if not fm2.endswith(nl):
