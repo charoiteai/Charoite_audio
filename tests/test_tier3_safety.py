@@ -20,6 +20,12 @@
 не тронув дефолт apply, автомат начнёт сливать не вслепую, а уверенно —
 и станет опаснее, чем был.
 
+3) С №628 ядро с одним автостатусом не судится вовсе: «запасная» суть из
+   статуса дала 0 явных дублей из 10 уверенных пар (05.10), а ночь с ревизией
+   шла втрое дольше. Решение 19.08 «требовать «## Суть» — значит выключить
+   --apply молча» отменено замером; молчания нет — исход «no_work» называет,
+   у скольких ядер своя суть.
+
 NLI и Ollama здесь не поднимаются: обе внешние зависимости подменены на
 «уверенный дубль». Тест проверяет поведение автомата, а не качество модели.
 """
@@ -146,22 +152,6 @@ tags: [ядро, авто]
 - [[Встречи/2026-07-21|2026-07-21]] — уточнили объём
 """
 
-CORE_F = """---
-type: ядро
-вид: задача
-tags: [ядро, авто]
----
-# Мобильное приложение
-
-## Статус
-Собираем требования, ждём макеты от дизайна _(обновлено 2026-07-21)_
-
-## Хроника
-- [[Встречи/2026-07-20|2026-07-20]] — завели тему
-- [[Встречи/2026-07-21|2026-07-21]] — уточнили объём
-"""
-
-
 #: Сила следования, которую отдаёт судья-подделка текущего теста. Раньше здесь
 #: стояли четыре подмены модульных атрибутов; теперь способности приезжают в
 #: `revise` значениями, и тесту достаточно сказать, каким он хочет судью.
@@ -216,8 +206,9 @@ def _snapshot(graph: pathlib.Path) -> dict[str, str]:
             for p in (graph / "Ядра").glob("*.md")}
 
 
-def test_revise_is_read_only_by_default(graph):
+def test_revise_is_read_only_by_default(graph_with_essence):
     """Вызов без apply не имеет права трогать граф."""
+    graph = graph_with_essence
     before = _snapshot(graph)
     report = tier3.revise(graph, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     assert report["dups"], "дубль не найден — тест ничего не проверяет"
@@ -269,80 +260,122 @@ def test_mark_marks_nesting_too(tmp_path, monkeypatch):
     assert all("Tier3-NLI" in t for t in texts.values()), "ссылки-подсказки не вписаны"
 
 
-def test_merge_works_on_cores_the_product_actually_writes(graph):
-    """Слияние обязано работать на ядрах из upsert_core, а не только в тесте.
+def _counting_embedder(calls: list):
+    """Подделка эмбеддера, которая считает, сколько текстов ей отдали."""
+    from charoite_graph.model_seam import Embedder
 
-    «## Суть» не пишет ни экстрактор, ни meeting_archive, ни один демо-граф:
-    у ядра от продукта её нет никогда. Требовать её для слияния — значит
-    выключить --apply, ночную джобу и sufler.tier3_auto_apply целиком, причём
-    молча: пометки в графе появляются и выглядят как работа, а сведения ядер
-    не происходит никогда и совет «свести — scripts/tier3_cores.py --apply»
-    ведёт в тупик.
+    def run(texts, timeout):
+        calls.append(list(texts))
+        return [[1.0, 0.0] for _ in texts]
+
+    return Embedder(run, "test-fake")
+
+
+def test_a_single_core_is_named_as_such(tmp_path):
+    """Одно ядро — «ядер меньше двух», а не «своя суть у 1 из 1»: причина должна
+    назвать настоящую нехватку (n628-out2, выживший мутант `< 2 → < 0`)."""
+    (tmp_path / "Ядра").mkdir()
+    (tmp_path / "Ядра" / "Одно.md").write_text("## Суть\nодна тема\n", encoding="utf-8")
+    report = tier3.revise(tmp_path, embedder=_counting_embedder([]), judge=fake_judge(),
+                          may_continue=_open)
+    assert report["status"] == "no_work" and report["reason"] == "ядер меньше двух", report
+
+
+def test_cores_with_only_autostatus_are_not_judged(graph):
+    """Ядра от upsert_core (один «## Статус») не судятся вовсе (№628).
+
+    Автостатус шаблонный, у разных тем он следует друг из друга на 0.93–1.00:
+    замер 05.10 — явных дублей 0 из 10 уверенных пар. Судья здесь уверен на
+    0.99, и всё равно: ни правки, ни бэкапа, ни вызова эмбеддера, а исход
+    называет причину словами — не молчание и не «лежит Ollama».
     """
-    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
-    assert report["log"], "уверенная пара ядер продукта не слита"
-    assert any("Дубль. Смерджен" in t for t in _snapshot(graph).values()), \
-        "redirect-заглушки нет — слияние недостижимо на реальных данных"
+    calls: list = []
+    before = _snapshot(graph)
+    report = tier3.revise(graph, apply=True, mark=True, embedder=_counting_embedder(calls),
+                          judge=fake_judge(p=0.99), may_continue=_open)
+    assert report["status"] == "no_work", report
+    assert "«## Суть»" in report["reason"] and "0 из 2" in report["reason"], report["reason"]
+    assert not calls, "эмбеддер разбужен ради ядер, которые не судятся"
+    assert _snapshot(graph) == before
+    assert not (graph / "Ядра" / ".tier3_backup").exists()
+    assert not report["dups"] and not report["nests"] and not report["pending_merges"]
 
 
-def test_weak_evidence_needs_a_higher_bar(tmp_path, monkeypatch):
-    """Суть из автостатуса — основание слабее: планка выше, а не запрет.
-
-    Статус переписывает каждая встреча, и у двух активных задач одного
-    проекта он похож сам по себе («ждём аудит», «в очереди»). 0.85 по такому
-    тексту хватает на обратимую пометку, но не на перезапись файла.
-    """
-    graph = _pair(tmp_path, monkeypatch, CORE_A, CORE_B, 0.85)
-    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
-    texts = _snapshot(graph)
-    assert not any("Дубль. Смерджен" in t for t in texts.values()), \
-        "слияние по автостатусу на средней уверенности"
-    assert all("возможный дубль" in t for t in texts.values()), \
-        "понижение до пометки обязано оставить след в графе"
-    assert any("автостатус" in line for line in report["dups"]), \
-        f"в отчёте не сказано, чего именно не хватило: {report['dups']}"
+def test_a_core_without_own_essence_never_enters_a_pair(tmp_path, monkeypatch):
+    """Смешанная пара (своя суть и автостатус) не судится: судимых ядер одно."""
+    graph = _pair(tmp_path, monkeypatch, CORE_C, CORE_B, 0.99)
+    calls: list = []
+    report = tier3.revise(graph, apply=True, embedder=_counting_embedder(calls),
+                          judge=fake_judge(p=0.99), may_continue=_open)
+    assert report["status"] == "no_work", report
+    assert "1 из 2" in report["reason"], report["reason"]
+    assert not calls
 
 
-def test_written_essence_lowers_the_bar_back(tmp_path, monkeypatch):
+def test_only_cores_with_own_essence_reach_the_embedder(tmp_path, monkeypatch):
+    """Эмбеддер получает только судимые ядра, пары строятся только из них."""
+    folder = tmp_path / "Ядра"
+    folder.mkdir()
+    for text in (CORE_C, CORE_D, CORE_E):
+        name = re.search(r"^# (.+)$", text, re.M).group(1)
+        (folder / f"{name}.md").write_text(text, encoding="utf-8")
+    calls: list = []
+    report = tier3.revise(tmp_path, mark=True, embedder=_counting_embedder(calls),
+                          judge=fake_judge(p=0.99), may_continue=_open)
+    assert [len(c) for c in calls] == [2], calls
+    assert not any("Личный кабинет" in t for c in calls for t in c), calls
+    assert (report["judged_cores"], report["cores_total"]) == (2, 3)
+    assert "Tier3-NLI" not in (folder / "Личный кабинет.md").read_text(encoding="utf-8")
+
+
+def test_focus_without_own_essence_is_no_work(tmp_path, monkeypatch):
+    """После встречи фокус — её ядра; без своей сути у них судить нечего, и
+    эмбеддер не будится ради ядер, которых встреча не касалась."""
+    folder = tmp_path / "Ядра"
+    folder.mkdir()
+    for text in (CORE_C, CORE_D, CORE_E):
+        name = re.search(r"^# (.+)$", text, re.M).group(1)
+        (folder / f"{name}.md").write_text(text, encoding="utf-8")
+    calls: list = []
+    report = tier3.revise(tmp_path, only_names=["Личный кабинет"], mark=True,
+                          embedder=_counting_embedder(calls), judge=fake_judge(p=0.99),
+                          may_continue=_open)
+    assert report["status"] == "no_work", report
+    assert not calls
+
+
+def test_nothing_to_judge_wins_over_a_missing_judge(graph):
+    """Граф из одних автостатусов на установке без NLI-модели — «судить нечего»,
+    а не «судья отказал»: иначе ночь красилась бы в сбой там, где судить нечего
+    при любом судье (n628-in1, DS C1)."""
+    report = tier3.revise(graph, embedder=fake_embedder(),
+                          judge=fake_judge(refused="нет модели"), may_continue=_open)
+    assert report["status"] == "no_work", report
+
+
+def test_written_essence_merges_at_the_common_bar(tmp_path, monkeypatch):
     """Формулировку темы писал человек — по ней 0.85 уже основание слить."""
     graph = _pair(tmp_path, monkeypatch, CORE_C, CORE_D, 0.85)
     assert tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)["log"], \
         "написанная руками суть не должна судиться строже автостатуса"
 
 
-def test_two_threads_of_one_project_are_marked_not_merged(tmp_path, monkeypatch):
-    """Общая хроника — довод ПРОТИВ слияния, а не за.
-
-    Двойники рождаются из разных встреч: в июне тему назвали одним именем, в
-    июле другим — хроники дополняют друг друга. А два живых потока одного
-    проекта ходят по одним и тем же встречам, и статус у них общий на вид.
-    Пара с пересекающейся хроникой и сутью из автостатуса — та самая, на
-    которой автомату верить нельзя даже при 0.99.
-    """
-    graph = _pair(tmp_path, monkeypatch, CORE_E, CORE_F, 0.99)
-    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
-    texts = _snapshot(graph)
-    assert not any("Дубль. Смерджен" in t for t in texts.values()), \
-        "слиты два потока одного проекта: хроника общая, тема разная"
-    assert all("возможный дубль" in t for t in texts.values())
-    assert any("одних встречах" in line for line in report["dups"]), \
-        f"в отчёте не сказано, почему пару понизили: {report['dups']}"
-
-
-def test_apply_advice_appears_only_when_apply_would_do_something(graph):
+def test_apply_advice_appears_only_when_apply_would_do_something(graph_with_essence):
     """«свести — scripts/tier3_cores.py --apply» печатается по этому полю.
 
     Совет, который на данных пользователя ничего не делает, хуже молчания:
     человек его выполняет, ничего не происходит, доверие к автомату уходит.
     """
+    graph = graph_with_essence
     assert tier3.revise(graph, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)["pending_merges"], \
         "уверенная пара осталась несведённой, а поле пустое"
     assert not tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)["pending_merges"], \
         "пара слита — советовать --apply больше нечего"
 
 
-def test_merging_clears_the_stale_manual_merge_request(graph):
+def test_merging_clears_the_stale_manual_merge_request(graph_with_essence):
     """Пометка «свести вручную» отработала — она не должна пережить слияние."""
+    graph = graph_with_essence
     tier3.revise(graph, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     canon = [t for t in _snapshot(graph).values() if "Дубль. Смерджен" not in t]
@@ -456,11 +489,12 @@ def test_handwritten_essence_of_a_duplicate_survives_the_merge(graph_with_essenc
     assert any("Суть дубля" in t for t in canon), canon
 
 
-def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
+def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph_with_essence):
     """После слияния имя дубля и его псевдонимы живут в шапке канона: иначе
     следующее упоминание короткого псевдонима заводит дубль заново (GLM,
     круг-1 #451); заглушка псевдонимов не несёт."""
     from charoite_graph import frontmatter
+    graph = graph_with_essence
     for p in sorted(graph.glob("Ядра/*.md")):
         text = frontmatter.with_aliases(p.read_text(encoding="utf-8"), [f"псевдоним {p.stem}"])
         p.write_text(frontmatter.with_list_field(text, frontmatter.AUTO_ALIASES, [f"след {p.stem}"]), encoding="utf-8")

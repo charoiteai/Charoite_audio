@@ -87,6 +87,16 @@ def _save_stamp(graph: pathlib.Path, ts: float,
                       encoding="utf-8")
 
 
+def _coverage(r: dict) -> str:
+    """Хвост «чисто»: сколько ядер судилось из скольких. Судятся только ядра со
+    своей сутью (№628), и «чисто» без счёта читалось бы как «весь граф без
+    дублей» (n628-in1, Haiku I3)."""
+    judged, total = r.get("judged_cores"), r.get("cores_total")
+    if judged is None or total is None or judged == total:
+        return ""
+    return f" — судились {judged} ядер со своей сутью из {total}"
+
+
 def run(graph: pathlib.Path, apply: bool, mark: bool = False,
         since_last: bool = False) -> str:
     """Ревизия одного графа -> исход: «complete», «stopped», «no_work» или
@@ -149,8 +159,13 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     took = time.time() - started
     status = r.get("status") or ("complete" if r["ran"] else "unavailable")
     if status == "no_work":
-        # Судить нечего (одно ядро, нет папки) — это не сбой и не «лежит
-        # Ollama» (входной круг №358, Codex I4).
+        # Судить нечего (одно ядро, нет папки, нет ядер со своей сутью) — это не
+        # сбой и не «лежит Ollama» (входной круг №358, Codex I4). Отметка идёт
+        # вперёд, как у ветки «свежих ядер нет»: иначе граф из одних автостатусов
+        # каждую ночь заново читался бы полным прогоном с растущим фокусом
+        # (n628-in1, DS C2 и Sonnet I2). Долг и досуженные пары переносятся: ядро с
+        # долгом, потерявшее «## Суть», не должно стереть долг молча (n628-out1, M4).
+        _save_stamp(graph, started, set(_pending(graph)), _judged(graph))
         print(f"{graph.name}: ревизовать нечего — {r.get('reason')} ({took:.0f} с)", flush=True)
         return "no_work"
     if not r["ran"]:
@@ -167,7 +182,7 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
         if r.get("stopped"):
             print(f"{graph.name}: до потолка ночи находок нет ({took:.0f} с)", flush=True)
             return "stopped"
-        print(f"{graph.name}: чисто ({took:.0f} с)", flush=True)
+        print(f"{graph.name}: чисто{_coverage(r)} ({took:.0f} с)", flush=True)
         return "complete"
     print(f"=== {graph.name} ({took:.0f} с)")
     for k, title in (("dups", "ДУБЛИ"), ("nests", "ВЛОЖЕНИЯ"), ("border", "ГРАНИЦА")):
