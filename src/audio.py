@@ -2061,6 +2061,8 @@ class AudioHub:
         self._channel_event(CH_SILENT, label, now, ts, now - ts,
                             Loss("звонок идёт, а содержимого нет", retriable=False, died=True,
                                  cause="silent_content"))
+        if self._channel_closed:
+            return                    # след закрыт посреди прохода — статус молчит с ним (Minor Haiku out2)
         self._say(f"⚠️ системный звук не пишется с {time.strftime('%H:%M', time.localtime(ts))} — "
                   "собеседники слышны только через микрофон")
 

@@ -306,3 +306,16 @@ def test_a_quiet_restart_does_not_close_a_dead_content_series(monkeypatch):
     assert [e.kind for e in got] == [a.CH_SILENT, a.CH_GAP]
     note = channel_trace.summary_of([e.as_dict() for e in got]) or ""
     assert "не писался" in note, note
+
+
+def test_no_status_line_when_the_trace_closes_mid_pass(monkeypatch):
+    """След закрыт между проверкой флага и событием — строка статуса не уходит (Minor Haiku out2)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    said = []
+    hub.on_status = said.append
+    now = time.time()
+    _dead_call(hub, now)
+    monkeypatch.setattr(hub, "_channel_event", lambda *args, **kw: setattr(hub, "_channel_closed", True))
+    hub._check_content(now)
+    assert not any("не пишется" in s for s in said), said
