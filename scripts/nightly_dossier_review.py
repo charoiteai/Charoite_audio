@@ -322,8 +322,10 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     if why == NO_EDITS and not _same_text(labeled_body, out):
         # облако ничего не правило, но тело в файле с метками: чистку пишем без поля —
         # иначе метку не снимет никто, ночь такое тело не трогает (Sonnet I2, DS M7)
+        # пишем прежнее тело без меток, не ответ: `_same_text` прощает пробелы и пустые
+        # строки, вёрстку облака без поля не берём (n841-opus-fix2 Sonnet M2)
         print(f"  ○ {theme}: {LABELS_ONLY}")
-        return out, LABELS_ONLY
+        return old_body, LABELS_ONLY
     if why:
         print(f"  ⚠️ {theme}: отклонено — {why}")
         return None, why

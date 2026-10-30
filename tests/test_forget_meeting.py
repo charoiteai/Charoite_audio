@@ -2319,7 +2319,7 @@ def test_forget_item_marker_is_indented_by_markdown_blanks_only(tmp_path):
 
 def test_forget_waits_for_the_graph_lock_and_does_nothing_when_busy(tmp_path, память, monkeypatch):
     """Сосед (ревизия досье, разбор встречи) держит замок графа: «забыть» не пишет
-    поверх его записи и не удаляет ничего — всё или ничего (круг n841-opus-fix Sonnet C2)."""
+    поверх его записи и не удаляет ничего, пока замок не взят (круг n841-opus-fix Sonnet C2)."""
     root, graph = _world(tmp_path)
     p = forget.plan(STAMP, root, graph)
     assert p.lock_dirs, "план знает замки графов, которые правит"
@@ -2349,6 +2349,43 @@ def test_forget_does_not_overwrite_a_file_changed_after_the_plan(tmp_path, па�
     assert forget.apply(p, yes=True) is False
     assert (root / "transcripts" / f"{STAMP}.md").exists()
     assert "правка ревизии" in dossier_path.read_text(encoding="utf-8")
+
+
+def test_forget_applies_to_a_crlf_file(tmp_path, память):
+    """Файл правки с CRLF: сверка «сменился после плана» — по байтам, не по тексту
+    `read_text` (тот переводит строки, и «забыть» отказывало всегда — n841-opus-fix2 C1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_bytes(f"- [[Встречи/{STAMP}]] — факт\r\nдругое\r\n".encode("utf-8"))
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit
+    assert forget.apply(p, yes=True) is True
+    assert f"Встречи/{STAMP}" not in node.read_text(encoding="utf-8")
+    assert not (root / "transcripts" / f"{STAMP}.md").exists()
+
+
+def test_forget_does_not_wait_for_a_graph_it_does_not_touch(tmp_path, память, monkeypatch):
+    """Замок — только у графов, которые план правит: занятый чужой граф не отменяет
+    «забыть» (n841-opus-fix2 DS I1)."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    elsewhere = tmp_path / "чужой" / "замок"
+    p.lock_dirs[elsewhere] = tmp_path / "vault" / "Чужой"
+    taken = []
+    real = forget.file_locks.graph_lock
+
+    @contextlib.contextmanager
+    def spy(lock_dir, wait, **kw):
+        taken.append(pathlib.Path(lock_dir))
+        if pathlib.Path(lock_dir) == elsewhere:
+            yield False
+            return
+        with real(lock_dir, wait, **kw) as ok:
+            yield ok
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", spy)
+    assert forget.apply(p, yes=True) is True
+    assert elsewhere not in taken and taken
 
 
 def test_forget_takes_the_same_lock_as_the_dossier_review(tmp_path, память, monkeypatch):

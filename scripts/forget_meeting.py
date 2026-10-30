@@ -70,7 +70,7 @@ import privacy  # noqa: E402
 import deps  # noqa: E402
 import live_sidecar  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
-from charoite_graph import dossier  # noqa: E402
+from charoite_graph import dossier, safe_write  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 
 
@@ -116,6 +116,7 @@ def _forget_in_manifests(p: "Plan", run: pathlib.Path, rels: list[str]) -> None:
         manifest = run / name
         if not manifest.is_file():
             continue
+        seen = safe_write.stat_snapshot(manifest)      # до чтения: гейт apply (n841-opus-fix2 DS I2)
         try:
             text = manifest.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -125,6 +126,7 @@ def _forget_in_manifests(p: "Plan", run: pathlib.Path, rels: list[str]) -> None:
         kept = [ln for ln in lines if not any(r in ln for r in rels)]
         if len(kept) != len(lines):
             p.edit[manifest] = "\n".join(kept)
+            p.snaps[manifest] = seen
 
 
 def _in_cloud_snapshot(path: pathlib.Path) -> bool:
@@ -179,10 +181,14 @@ class Plan:
     # Замок графа — тот же, что у ревизии и ночной сборки досье: каталог данных графа
     # (родитель снимков). Без него правка «забыть» между сверкой соседа и его записью
     # затиралась, и ссылка с полем `ревизия:` возвращалась (круг n841-opus-fix Sonnet C2).
-    lock_dirs: list[pathlib.Path] = dataclasses.field(default_factory=list)
-    # Текст файла, по которому построена правка: под замком сверяем — сменился после
-    # плана (ревизия записала) — не затираем, ничего не делаем
-    orig: dict[pathlib.Path, str] = dataclasses.field(default_factory=dict)
+    # Каталог замка → граф: замок берётся только у графов, которые план трогает
+    # (n841-opus-fix2 DS I1 — занятый чужой граф отменял всё)
+    lock_dirs: dict[pathlib.Path, pathlib.Path] = dataclasses.field(default_factory=dict)
+    # Снимок `safe_write.stat_snapshot` файла правки, взятый до чтения: под замком
+    # сверяем — сменился после плана (ревизия записала) — не затираем, ничего не делаем.
+    # Байты, а не текст: `read_text` переводит CRLF, и сверка отказывала всегда
+    # (n841-opus-fix2 Sonnet C1 = DS C2 = Haiku C1)
+    snaps: dict[pathlib.Path, tuple[int, int] | None] = dataclasses.field(default_factory=dict)
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
@@ -1032,8 +1038,7 @@ def plan(stamp: str, root: pathlib.Path,
         # PR #363, GLM+DeepSeek: старое место правилось, новое — нет).
         snap = charoite_paths.graph_backups(
             g, CLOUD_BACKUP_DIR.lstrip("."), root=root)
-        if snap.parent not in p.lock_dirs:
-            p.lock_dirs.append(snap.parent)
+        p.lock_dirs[snap.parent] = g
         editable = sorted(g.rglob("*.md")) + (
             sorted(snap.rglob("*.md")) if snap.is_dir() else [])
         for f in editable:
@@ -1060,6 +1065,7 @@ def plan(stamp: str, root: pathlib.Path,
             # владельцу — путь со штампом прогона: копий в снимках до десяти (out8 DS M2)
             where = (f.relative_to(snap) if f.is_relative_to(snap) else f.relative_to(g)).as_posix() \
                 + (" (снимок)" if in_snap else "")
+            seen = safe_write.stat_snapshot(f)     # до чтения — гейт apply
             try:
                 raw = f.read_bytes()        # одно чтение: файл не исчезнет между двумя (out5 DS I4)
             except OSError:
@@ -1089,7 +1095,7 @@ def plan(stamp: str, root: pathlib.Path,
                 p.check.append(f"{where}: ссылка на встречу осталась после правки — убери руками")
             if fixed != text:
                 p.edit[f] = fixed
-                p.orig[f] = text
+                p.snaps[f] = seen
     # Сами факты (тема, участники, решения) живут в памяти-компаньоне
     # (brain :8100): забываем их там по ключу, а не говорим «вне
     # досягаемости» (аудит 16.08 п.1 → карточка №41). Отметка brain_sent
@@ -1169,8 +1175,11 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
         print("\nничего не сделано. Повторите с --yes, если это то, что нужно:\n"
               "  удаление стенограмм, записи, папки архива и узла встречи необратимо")
         return False
+    acts = [q.resolve() for q in [*p.delete, *p.edit]]
+    needed = sorted(d for d, g in p.lock_dirs.items()
+                    if any(q.is_relative_to(g.resolve()) or q.is_relative_to(d.resolve()) for q in acts))
     with contextlib.ExitStack() as stack:
-        for d in sorted(set(p.lock_dirs)):
+        for d in needed:
             try:
                 taken = stack.enter_context(
                     file_locks.graph_lock(charoite_paths.secure_dir(d), LOCK_WAIT))
@@ -1181,19 +1190,19 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
                 print("\nничего не сделано: граф занят разбором встречи или ревизией досье "
                       "(или замок недоступен) — повторите позже")
                 return False
-        for path, was in p.orig.items():
-            try:
-                now = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                now = None
-            if now != was:
+        for path, seen in p.snaps.items():
+            if safe_write.stat_snapshot(path) != seen:
                 print(f"\nничего не сделано: {path} сменился после плана — запустите снова")
                 return False
-        return _apply_locked(p, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
+        left = _apply_locked(p)
+    _report_and_forget_brain(p, left, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
+    return True
 
 
-def _apply_locked(p: Plan, *, brain_enabled: bool, brain_explicit: bool) -> bool:
-    """Тело apply под замками графов: удаление и правки — одной фазой."""
+def _apply_locked(p: Plan) -> list[pathlib.Path]:
+    """Удаление и правки — под замками графов; отдаёт неудалённое. Память Чароита и
+    печать — после замка: `/forget` в brain до 30 с на ключ держал бы ревизию и разбор
+    встречи (n841-opus-fix2 Sonnet M1)."""
     left = []
     for path in p.delete:
         try:
@@ -1225,6 +1234,11 @@ def _apply_locked(p: Plan, *, brain_enabled: bool, brain_explicit: bool) -> bool
         except OSError:
             pass
         tmp.replace(path)
+    return left
+
+
+def _report_and_forget_brain(p: Plan, left: list[pathlib.Path], *, brain_enabled: bool,
+                             brain_explicit: bool) -> None:
     done = "забыто частично (см. «проверь сам»)" if p.check else "забыто"
     print(f"\n{done}: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
@@ -1241,7 +1255,6 @@ def _apply_locked(p: Plan, *, brain_enabled: bool, brain_explicit: bool) -> bool
         print(f"  и ещё: {line}")
     for line in p.check:
         print(f"  проверь сам (не тронуто): {line}")
-    return True
 
 
 BRAIN = "http://127.0.0.1:8100"
