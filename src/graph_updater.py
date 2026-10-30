@@ -2868,9 +2868,10 @@ def _supersede_description(text: str, desc: str, meeting_link: str,
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
     # встреча старше последнего упоминания (долг встреч, импорт) верх не трогает:
     # иначе запоздалый разбор откатывал верх, а эпизоды после №846 его не сменят (Opus I1)
-    # будущей даты в строке нет — её не ставят писатели строки (`_seen_day`, n846-opus-fix2)
+    # будущую дату писатели не ставят (`_seen_day`), а лежащую в узле (ручная правка,
+    # откат часов) охрана не читает: иначе верх замерзал (n846-opus-fix, n846-opus-fix3)
     seen = _LAST_SEEN_RE.search(text, _body_at(text))
-    if (when and seen and day < seen.group(1)) or not _refines(old, new):
+    if (when and seen and _seen_day(seen.group(1)) and day < seen.group(1)) or not _refines(old, new):
         return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _clip(new)
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
     event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")

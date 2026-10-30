@@ -2497,6 +2497,27 @@ def test_future_meeting_sets_no_last_seen(tmp_path):
     text = (graph / "Люди" / "Будущий.md").read_text(encoding="utf-8")
     assert "# Будущий\nв отпуске до 2026-09-27\n" in text, text
     assert "_(последнее упоминание: 2026-09-10)_" in text and text.count("_(было:") == 1, text
+    g.upsert_entity(graph, "Люди", "Будущий", "person", "", "Встречи/2099-02-01_1000", "")   # второй писатель
+    text = (graph / "Люди" / "Будущий.md").read_text(encoding="utf-8")
+    assert "_(последнее упоминание: 2026-09-10)_" in text and "2099-02" not in text.split("## Встречи")[0], text
+
+
+def test_future_last_seen_in_node_does_not_freeze_top(tmp_path):
+    """Будущая дата, уже лежащая в узле (ручная правка, откат часов), охрану поздней
+    встречи не включает: уточнение встаёт наверх (n846-opus-fix3)."""
+    node = tmp_path / "g" / "Люди" / "Ручной.md"
+    node.parent.mkdir(parents=True)
+    node.write_text("# Ручной\nаналитик\n\n_(последнее упоминание: 2099-01-01)_\n\n## Встречи\n"
+                    "- [[Встречи/2026-09-01_1000]]\n", encoding="utf-8")
+    g.upsert_entity(tmp_path / "g", "Люди", "Ручной", "person", "аналитик данных", "Встречи/2026-09-02_1000", "")
+    assert "# Ручной\nаналитик данных\n" in node.read_text(encoding="utf-8"), node.read_text(encoding="utf-8")
+
+
+def test_seen_day_bounds(monkeypatch):
+    """`_seen_day`: дата не позже сегодняшней; граница «сегодня» — годна (n846-opus-fix3 M2)."""
+    monkeypatch.setattr(g.time, "strftime", lambda fmt: "2026-10-30")
+    assert g._seen_day("2026-10-29") and g._seen_day("2026-10-30")
+    assert not g._seen_day("2026-10-31") and not g._seen_day("2026-10-3x") and not g._seen_day("")
 
 
 def test_supersede_without_title_leaves_node_as_is():
