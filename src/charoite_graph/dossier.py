@@ -424,15 +424,28 @@ PROMPT = """Ниже — узлы графа встреч по теме «{theme
 VALID_RE = re.compile(r"^\s*##\s*Сейчас", re.M)
 
 
+SECTIONS = ("## Сейчас", "## Как пришли", "## Решено", "## Открыто", "## Кто в теме")
+# Любая строка, начинающаяся с «#», — заголовок: «# Важное», «### Правки автора»
+# и «##Сейчас» считаются наравне с «## …» (грамматика `check_revision` ревизии)
+_HEADING_RE = re.compile(r"(?m)^\s*#.*$")
+
+
+def foreign_headings(body: str) -> list[str]:
+    """Заголовки тела не из пяти разделов. Тело пишет только модель по формату, и
+    чужой заголовок в нём — рука владельца: «## Правки автора:», битый знаком замены
+    заголовок правок; пересборка стёрла бы текст под ним (n856-out3 Haiku C1, C2)."""
+    heads = (re.sub(r"\s+", " ", h.strip()) for h in _HEADING_RE.findall(body or ""))
+    return [h for h in heads if h not in SECTIONS]
+
+
 def looks_valid(body: str) -> bool:
     """Брак ловим до записи: без этого в граф попадают «Принято, что дальше?».
-    Заголовок «Источники» или «Правки автора» в теле — тоже брак: резка по нему
-    молча теряла бы хвост тела, а файл с двумя такими заголовками ночь больше не
-    пересобирает (`layout_problem`, n856-in2 Sonnet I2)."""
-    if not VALID_RE.search(body or "") or _PROTECTED_RE.search(body):
+    Заголовок не из пяти разделов в теле — тоже брак: «Источники» или «Правки
+    автора» молча резали бы хвост тела, а файл с чужим заголовком в теле ночь не
+    пересобирает (`layout_problem`, n856-in2 Sonnet I2, out3)."""
+    if not VALID_RE.search(body or "") or foreign_headings(body):
         return False
-    have = sum(1 for h in ("## Сейчас", "## Как пришли", "## Решено",
-                           "## Открыто", "## Кто в теме") if h in body)
+    have = sum(1 for h in SECTIONS if h in body)
     return have >= 4
 
 
@@ -583,26 +596,30 @@ def layout_problem(text: str) -> str:
     (n856-in1 S-C1, out2 Haiku I1, Opus I1, I2). Иначе правки выше «Сейчас» уносили тело, «Правки автора» в теле
     уводили настоящие правки, лишний «Источники» в теле — хвост тела (n856-in1, in2).
     Замер 30.10: из 1070 досье графов владельца держит 5 — все собраны руками, без
-    отпечатка ночи (без «Сейчас» 3, без «Источников» 2)."""
+    отпечатка ночи (без «Сейчас» 3, чужой заголовок в теле 2)."""
     t = text or ""
-    head = VALID_RE.search(t)
-    if not head:
+    if not VALID_RE.search(t):
         return "нет раздела «Сейчас»"
     # первый заголовок правок — граница, как в `split_dossier`: свой «### Правки
     # автора» владельца внутри правок — их текст (n856-out2 Haiku I1)
     manual = list(_MANUAL_RE.finditer(t))[:1]
-    if manual and manual[0].start() < head.start():
+    # «Сейчас» ищем в тексте до заголовка: сравнение позиций давало мутанта `<` → `<=`,
+    # которого не отличить — два заголовка с одной позиции не начинаются (n856 мутации)
+    if manual and not VALID_RE.search(t[:manual[0].start()]):
         return "«Правки автора» выше «Сейчас»"
     end = manual[0].start() if manual else len(t)
     sources = [m.start() for m in _SOURCES_RE.finditer(t, 0, end)]
     if len(sources) > 1:
         return f"до «Правок автора» заголовков «Источники» {len(sources)}"
-    if sources and sources[0] < head.start():
+    if sources and not VALID_RE.search(t[:sources[0]]):
         return "«Источники» выше «Сейчас»"
     if manual and not sources and _SOURCES_RE.search(t, manual[0].end()):
         # `split_dossier` берёт первый «Источники» — он внутри правок и обрезал бы
         # их хвост, а ревизия унесла бы его в источники (n856-out1 Haiku C1)
         return "«Источники» после «Правок автора»"
+    alien = foreign_headings(split_dossier(t)[1])
+    if alien:
+        return f"в теле заголовок не из пяти разделов: «{alien[0][:40]}»"
     if sources:
         # раздел «Источники» пересборка пишет заново: в нём только пункты списка,
         # как у `render`; иначе там текст под непризнанным заголовком правок
@@ -887,7 +904,8 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
     rejected = [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, REJECTED_FIELD)]
     new, gone = membership_delta(composed, rejected, members, snap, schema=schema, on_disk=on_disk)
     # ушедшее идёт в план и при hold: отчёт обязан назвать забытое (out2 Haiku C3)
-    if not VALID_RE.search(text):
+    if layout_problem(text):
+        # раскладку судит тот же предикат, что у ночи и ревизии (n856-out3 Haiku I2)
         return Plan("hold", "unparsed", tuple(new), tuple(gone))
     if gone:
         return Plan("hold" if held else "rebuild", "gone", tuple(new), tuple(gone))

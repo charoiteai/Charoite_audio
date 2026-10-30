@@ -122,10 +122,11 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
         # `_scan` такую тему не берёт; здесь — файл, переписанный после скана
         return False, None, -1
     if loaded.state == "damaged":
-        # знак замены за телом — в правках или в «Источниках», где мог стоять битый
-        # заголовок правок (n856 Opus I1); правок не найти — тоже отказ
-        _, _, sources, manual = dossier.split_dossier(text)
-        if manual is None or "\ufffd" in (sources or "") + manual:
+        # битый заголовок правок в теле или в «Источниках» держит `layout_problem`
+        # (чужой заголовок, не пункт списка) — здесь знак замены в самих правках;
+        # правок не найти — тоже отказ (n856 Opus I1, out3 Sonnet M1)
+        manual = dossier.split_dossier(text)[3]
+        if manual is None or "\ufffd" in manual:
             print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
             return False, None, 0
     return True, dossier.preserve_manual(text), 0

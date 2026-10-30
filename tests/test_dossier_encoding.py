@@ -132,6 +132,18 @@ def test_damaged_author_text_refuses_before_model(night, monkeypatch, capsys, wh
     assert not list((folder / ".backup").glob("*/Бета.md"))
 
 
+def test_damaged_source_link_still_rebuilds(night, monkeypatch, capsys):
+    """Знак замены в ссылке «Источников» — не повод держать: раздел пересборка пишет
+    заново, правки целы (n856-out3 Sonnet M1); main такой файл чинил пересборкой."""
+    nd, graph, folder, paths, calls = night
+    _damage(paths["Бета"], "## Правки автора", "## Источники\n- **Встречи:** [[x".encode() + b"\xff"
+            + "]]\n\n## Правки автора".encode())
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["собрано"] == 3 and result["правки_повреждены"] == 0 and result["раскладка"] == 0
+    text = paths["Бета"].read_text(encoding="utf-8")
+    assert "новое тело" in text and "оставить решение автора" in text and "\ufffd" not in text
+
+
 def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     """Отказ из-за битых «Правок автора» — пропуск темы, а не отказ модели."""
     nd, graph, folder, paths, calls = night
@@ -212,6 +224,29 @@ def test_layout_changed_after_scan_is_held_without_a_refusal(night, monkeypatch,
     assert "в теле" in paths["Бета"].read_text(encoding="utf-8")
     assert not list((folder / ".backup").glob("*/Бета.md"))
     _all_index(folder)
+    # причина — по свежему снимку, а не по пустому тексту (мутант `or` → `and`)
+    assert "Бета: «Источники» после «Правок автора» — ночь не трогает" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("edit, suffix", [("damaged_now", True), ("damaged_other", False),
+                                          ("clean_no_now", False)])
+def test_layout_skip_names_the_replacement_char_only_when_it_hid_the_now(night, capsys, edit, suffix):
+    """Пометка «знак замены» — только когда он спрятал «Сейчас»: битый байт в теле
+    при другой причине и чистое досье без «Сейчас» её не получают (n856 мутации)."""
+    nd, graph, folder, paths, calls = night
+    p = paths["Бета"]
+    if edit == "damaged_now":
+        _damage(p, "Сейчас", b"\xff")
+    elif edit == "damaged_other":
+        p.write_text(p.read_text(encoding="utf-8").replace("# Бета\n", "# Бета\n## Источники\n- [[x]]\n"),
+                     encoding="utf-8")
+        _damage(p, "старое", b"\xff")
+    else:
+        p.write_text(p.read_text(encoding="utf-8").replace("## Сейчас\n", ""), encoding="utf-8")
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["раскладка"] == 1 and [c[0] for c in calls] == ["Альфа", "Гамма"]
+    line = next(x for x in capsys.readouterr().out.splitlines() if "Бета: " in x and "ночь не трогает" in x)
+    assert ("знак замены" in line) is suffix
 
 
 def test_damaged_manual_refusal_is_not_a_model_failure(night, monkeypatch, capsys):

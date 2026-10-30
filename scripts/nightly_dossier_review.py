@@ -58,7 +58,7 @@ MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
 BACKUP_KEEP = 40      # каталог .backup/ общий с пересборкой: два штампа за ночь (GLM M3 по #561)
 KEEP_REPORTS = 14       # служебных отчётов в корне графа
 DEFAULT_LIMIT = 6       # досье за прогон: облако не бесплатное по времени
-SECTIONS = ("## Сейчас", "## Как пришли", "## Решено", "## Открыто", "## Кто в теме")
+SECTIONS = dossier.SECTIONS
 # Ревизия короче 60% прежнего тела — не правка, а потеря: модель ответила
 # обрывком, «подытожила» или выбросила разделы. Вверх не ограничиваем —
 # настоящая ревизия растёт (замер 22.08: 4,2 → 11,4 КБ, 25 пометок ⚠️).
@@ -68,7 +68,7 @@ MIN_KEEP = 0.6
 # Раскладка досье (защищённые разделы, тело) — в `dossier.py`: её читают и
 # ночная сборка, и доктор графа (n815-in2 DS C2, Sonnet I5).
 PROTECTED_HEADINGS = dossier.PROTECTED_HEADINGS
-_HEADING_RE = re.compile(r"(?m)^\s*#.*$")
+_HEADING_RE = dossier._HEADING_RE
 strip_protected = dossier.strip_protected
 split_dossier = dossier.split_dossier
 
