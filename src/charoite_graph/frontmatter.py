@@ -177,6 +177,20 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
     return _put_line(text, key, f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]")
 
 
+def has_field(text: str, key: str) -> bool:
+    """Поле `key:` в шапке есть (пустое `[]` — тоже есть): отличает «состав не
+    записан» от «состав пуст» (n843-in3 I3)."""
+    fm, _ = split((text or "").removeprefix(_BOM))
+    return fm is not None and _field_span(fm, key) is not None
+
+
+def set_list_field(text: str, key: str, names: list[str]) -> str:
+    """Поле-список `key:` заменить ровно этими именами (порядок и дубли — как
+    у `with_list_field`); `with_list_field` только дописывает (n843-in3 M2)."""
+    clean = list(dict.fromkeys(n.strip() for n in names if n and n.strip()))
+    return _put_line(text, key, f"{key}: [" + ", ".join(yaml_str(m) for m in clean) + "]")
+
+
 _BOM = "\ufeff"
 
 

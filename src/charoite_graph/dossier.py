@@ -146,7 +146,22 @@ def _title(p: pathlib.Path) -> str:
     return p.stem
 
 
+@dataclass(frozen=True)
+class GraphSnapshot:
+    """Один обход графа: файлы, обратные ссылки и стрелки заглушек alias → канон.
+    Стрелки нужны и составу досье: встреча, ставшая заглушкой, не ушла (n843-in3 I4)."""
+    files: dict[str, dict]
+    backlinks: dict[str, set[str]]
+    redirects: dict[str, str]
+
+
 def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
+    """Все .md графа → карта файлов и обратные ссылки (`scan_snapshot` без стрелок)."""
+    snap = scan_snapshot(graph, schema=schema)
+    return snap.files, snap.backlinks
+
+
+def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
     """Все .md графа → карта файлов и обратные ссылки.
 
     Возвращает (files, backlinks): files[title] = {path, text, mtime, kind},
@@ -245,7 +260,7 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], 
         who = backlinks.pop(alias, set())
         if who and canon in files:
             backlinks[canon] |= who - {canon}
-    return files, dict(backlinks)
+    return GraphSnapshot(files, dict(backlinks), redirects)
 
 
 def meeting_date(meta: dict, *, schema: GraphSchema) -> str | None:
@@ -665,6 +680,118 @@ def in_sync(loaded: DossierLoad, fp: str) -> bool:
     править и ставить `ревизия:` (тело, отставшее от «забыть встречу», не замораживается;
     финальный круг n841 Opus C1)."""
     return loaded.state != "missing" and read_fingerprint(loaded) == fp
+
+
+
+# ─────────────────────────── состав и план ночи ───────────────────────────
+
+COMPOSITION_FIELD = "состав"       # встречи, по которым собрано тело
+REJECTED_FIELD = "не_принято"      # встречи, чью добавку отверг гейт: в «новые» не возвращаются
+GROW_LIMIT = 12_000                # тело длиннее после добавки — пересобрать, а не дописывать
+ADD_CHARS = 1_300                  # замер пилота 30.10: столько добавляет одна встреча
+
+Action = Literal["skip", "add", "rebuild", "hold"]
+Reason = Literal["new", "forced", "unreadable", "no_composition", "gone", "same", "labeled",
+                 "grown", "meetings"]
+
+
+@dataclass(frozen=True)
+class Plan:
+    action: Action
+    reason: Reason
+    new: tuple[str, ...] = ()
+    gone: tuple[str, ...] = ()
+
+
+def _source_meetings(sources: str, schema: GraphSchema) -> list[str]:
+    """Встречи из раздела «Источники» в виде `render`: `- **Вид:** [[a]] · [[b]]`."""
+    out = []
+    for line in sources.splitlines():
+        m = re.match(r"\s*-\s*\*\*([^*]+):\*\*", line)
+        if m and schema.is_meeting_folder(m.group(1).strip()):
+            out += [graph_names.link_target_stem(x.group(1)) for x in LINK_RE.finditer(line)]
+    return [x for x in out if x]
+
+
+def composition(text: str | None, *, schema: GraphSchema) -> list[str] | None:
+    """Встречи, по которым собрано тело: поле `состав:`, без поля — встречи раздела
+    «Источники» (досье, собранные до поля). None — состав не читается: досье без
+    «Источников» собрано руками (n843-in3 I3)."""
+    if text and frontmatter.has_field(text, COMPOSITION_FIELD):
+        return [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, COMPOSITION_FIELD)]
+    sources = split_dossier(text or "")[2]
+    return None if sources is None else _source_meetings(sources, schema)
+
+
+def with_composition(text: str, meetings: list[str]) -> str:
+    """Записать состав тела; зовёт только та запись, что и так пишет досье (n843-in3 M5)."""
+    return frontmatter.set_list_field(text, COMPOSITION_FIELD, sorted(meetings))
+
+
+def _canon(name: str, snap: GraphSnapshot) -> str:
+    """Имя встречи → живой узел: цепочка заглушек до живого файла, кольцо не вешает."""
+    seen = {name}
+    while name not in snap.files and name in snap.redirects:
+        name = snap.redirects[name]
+        if name in seen:
+            break
+        seen.add(name)
+    return name
+
+
+def membership_delta(composed: list[str], rejected: list[str], members: list[str],
+                     snap: GraphSnapshot, *, schema: GraphSchema,
+                     on_disk: bool) -> tuple[list[str], list[str]]:
+    """(новые встречи темы, ушедшие встречи состава). Ушла — файла нет: в снимке
+    (`on_disk=False`) или на диске (`on_disk=True`, сверка под замком). Узлы других
+    видов уходом не считаются, новое ядро без новой встречи — не новое (n843-in2 C1, I5)."""
+    had = {_canon(n, snap) for n in composed}
+    skip = had | {_canon(n, snap) for n in rejected}
+    meetings = {m for m in members
+                if m in snap.files and schema.is_meeting_folder(snap.files[m].get("kind", ""))}
+    new = sorted(meetings - skip)
+    gone = sorted(n for n in had
+                  if n not in snap.files or (on_disk and not snap.files[n]["path"].exists()))
+    return new, gone
+
+
+def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema: GraphSchema,
+         on_disk: bool, force: bool = False) -> Plan:
+    """Судьба тела досье этой ночью — одно решение на сборку, сверку под замком и
+    ревизию (до него — пять мест по отпечатку с mtime, n843-in2). Первая подходящая
+    строка:
+
+    - файла нет — rebuild;
+    - не читается — hold; без читаемого состава (руками) — rebuild, с ревизией hold;
+    - ушла встреча состава — rebuild, с ревизией hold (снимает «забыть» или владелец);
+    - `force` (`--full`) — rebuild, кроме тела с ревизией или меткой (n815-out7 I3);
+    - новых встреч нет — skip: смена текста прежних членов тело не трогает;
+    - новые есть: метка в теле — rebuild (n843-in3 I1), тело выросло бы за
+      `GROW_LIMIT` — rebuild (I8), с ревизией оба — hold; иначе add.
+    """
+    if loaded.state == "missing":
+        return Plan("rebuild", "new")
+    if loaded.state == "unreadable":
+        return Plan("hold", "unreadable")
+    text = loaded.text or ""
+    held = bool(revision(text))
+    composed = composition(text, schema=schema)
+    if composed is None:
+        return Plan("hold" if held else "rebuild", "no_composition")
+    rejected = [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, REJECTED_FIELD)]
+    new, gone = membership_delta(composed, rejected, members, snap, schema=schema, on_disk=on_disk)
+    if gone:
+        return Plan("hold" if held else "rebuild", "gone", tuple(new), tuple(gone))
+    labeled = labeled_body(text)
+    if force and not held and not labeled:
+        return Plan("rebuild", "forced", tuple(new))
+    if not new:
+        return Plan("skip", "same")
+    if labeled:
+        return Plan("hold" if held else "rebuild", "labeled", tuple(new))
+    if len(split_dossier(text)[1]) + ADD_CHARS * len(new) > GROW_LIMIT:
+        return Plan("hold" if held else "rebuild", "grown", tuple(new))
+    return Plan("add", "meetings", tuple(new))
 
 
 # ─────────────────────────── индекс ───────────────────────────
