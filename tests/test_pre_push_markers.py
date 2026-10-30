@@ -1213,9 +1213,20 @@ def test_public_only_stderr_carries_no_workflow_command_from_a_file_name(repo):
     repo.commit("cp1251")
     p = guard_run(repo.work, "--public-only", env=repo.env)
     assert p.returncode == 0, p.stdout + p.stderr
-    assert not any(ln.startswith("::") for ln in p.stderr.splitlines()), p.stderr
-    assert all(ln.startswith("::warning file=") for ln in p.stdout.splitlines() if ln.startswith("::")), p.stdout
+    assert not any(ln.lstrip().startswith("::") for ln in p.stderr.splitlines()), p.stderr
+    assert all(ln.startswith("::warning file=") for ln in p.stdout.splitlines() if ln.lstrip().startswith("::")), p.stdout
     assert "⚠ 100% готово.txt" in p.stderr, p.stderr
+
+
+def test_public_only_finding_line_never_starts_with_a_file_name(repo):
+    """Находка в UTF-8 печатается путём: без своего знака впереди строка
+    `  ::error::x.txt:1: …` после снятия пробелов — команда (opus-fix2, Sonnet I1, Haiku I1)."""
+    repo.write("::error::pwn.txt", "jane.doe" + "@" + "mail-host" + ".ru\n")
+    repo.commit("leak")
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert "pwn.txt" in p.stderr, p.stderr
+    assert not any(ln.lstrip().startswith("::") for ln in (p.stdout + p.stderr).splitlines()), p.stderr
 
 
 def _commit_in(repo, encoding: str, message: str | bytes) -> str:
@@ -1229,9 +1240,10 @@ def _commit_in(repo, encoding: str, message: str | bytes) -> str:
 
 
 def _encoding_header(repo, sha: str) -> str | None:
-    raw = guard.undecoded(subprocess.run(["git", "cat-file", "commit", sha], cwd=repo.work, env=repo.env,
-                                         capture_output=True, check=True).stdout)
-    return guard.commit_encoding(raw) if "\nencoding " in raw.split("\n\n", 1)[0] else None
+    """Предпосылка — со слов git (`%e`), не стража: иначе тест не отличит «заголовка
+    нет» от «страж его не узнаёт» (opus-fix2, DS M3)."""
+    enc = git(repo.work, "log", "-1", "--format=%e", sha, env=repo.env).stdout.strip()
+    return enc or None
 
 
 def test_utf8_bytes_under_a_foreign_encoding_header_are_judged(repo):

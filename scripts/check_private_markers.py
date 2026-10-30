@@ -315,8 +315,10 @@ def gh_escape(v: str, prop: bool = False) -> str:
 
 def gh_line(v: str) -> str:
     """Чужой текст в строке лога CI: раннер разбирает команды и из stderr
-    (финальный Opus, M4), но команда начинается только с новой строки — `%`
-    в логе не раскодируется и остаётся как есть (выход opus-fix, Sonnet M3)."""
+    (финальный Opus, M4) — перевод строки не доходит до вывода, `%` в логе не
+    раскодируется и остаётся как есть (выход opus-fix, Sonnet M3). Строку с
+    чужим текстом начинает свой знак, не пробел: раннер снимает ведущие
+    пробелы, и путь `::error::…` стал бы командой (opus-fix2, Sonnet I1)."""
     return v.replace("\r", "\\r").replace("\n", "\\n")
 
 
@@ -809,7 +811,9 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
             body = raw.split("\n\n", 1)[1] if "\n\n" in raw else ""
             texts.append((f"{sha[:9]} сообщение", clean(body)))
             for k in kinds(body):
-                hits.append(f"{sha[:9]} сообщение: {k}")
+                h = f"{sha[:9]} сообщение: {k}" + ("; перезапиши сообщение коммита в UTF-8" if k == NOT_UTF8 else "")
+                if h not in hits:      # перекодированный вид уже судился: дубль не печатаем (opus-fix2, Sonnet M1)
+                    hits.append(h)
         for key, text in extra_headers(raw):
             texts.append((f"{sha[:9]} заголовок {key}", clean(text)))
             for k in kinds(text):
@@ -1225,7 +1229,8 @@ def main() -> int:
     try:
         return _run(a)
     except (GitError, PeopleGateError) as e:
-        print(f"❌ страж не смог проверить — отказ: {gh_line(_scrub(str(e)))}", file=sys.stderr)
+        why = _scrub(str(e))       # в CI — строкой лога; владельцу — как git написал (opus-fix2, DS M1)
+        print(f"❌ страж не смог проверить — отказ: {gh_line(why) if a.public_only else why}", file=sys.stderr)
         return 1
 
 
@@ -1262,7 +1267,7 @@ def _run(a: argparse.Namespace) -> int:
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
             for h in hits:
-                print(f"  {gh_line(h)}", file=sys.stderr)
+                print(f"  • {gh_line(h)}", file=sys.stderr)
             print("Это проверка ФОРМАТОВ. Имена и внутренние названия ловит "
                   "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
             return 1
