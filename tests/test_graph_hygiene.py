@@ -796,6 +796,7 @@ def test_people_description_is_superseded_with_dates_not_silently(tmp_path):
     after = node.read_text(encoding="utf-8")
     head = lambda t: re.sub(r"_\(последнее упоминание: [^)]*\)_", "", t.split("## Встречи", 1)[0])   # дата живёт
     assert head(after) == head(text), "верх и хроника не тронуты"
+    assert after.count("_(последнее упоминание: 2026-09-12)_") == 1, "дата упоминания сдвинулась, строка одна"
     # узел без описания получает первое без строки хроники — это не вытеснение; «—» не описание
     old = graph / "Люди" / "Старый.md"
     old.write_text("# Старый\n\n## Встречи\n- [[Встречи/2026-05-05_1000]]\n", encoding="utf-8")
@@ -2448,7 +2449,8 @@ def test_refines_rule_table():
                      ("в отпуске до 2026-09-20", "в отпуске до 2026-09-27"),       # актуализация даты
                      ("роль 1", "роль 2"), ("QA", "руководитель QA-направления"),
                      ("аналитик", "бывший аналитик"),                              # отрицание обогащением — видно «было → стало»
-                     ("отпуск с 12.09", "отпуск с 09.12")]:
+                     ("отпуск с 12.09", "отпуск с 09.12"),
+                     ("лид, аналитик", "аналитик лид")]:                          # те же слова: в пути раньше ловит _same_fact
         assert refines(old, new), (old, new)
     for old, new in [("Техлид ветки X, права на схемы; ведёт систему A", "Технический эксперт"),
                      ("Ведущий планёрок кластера и держатель денег", "Участник"),
@@ -2467,6 +2469,13 @@ def test_refines_rule_table():
         assert not refines(old, new), (old, new)
 
 
+def test_supersede_without_title_leaves_node_as_is():
+    """Узел без «# Имя» — не трогаем и отдаём ту же тройку (текст, событие, эпизод):
+    вызывающий распаковывает три значения (мутант return None, CI #882)."""
+    text = "просто строка без заголовка\n"
+    assert g._supersede_description(text, "аналитик", "Встречи/2026-09-01_1000", "Пётр") == (text, None, "")
+
+
 def test_null_description_does_not_drop_meeting(tmp_path):
     """«роль»: null во вложенной записи разбора (`_shaped` смотрит только верхний
     уровень) — не описание, а не AttributeError на всю встречу (Haiku C1, n846-in1)."""
@@ -2474,7 +2483,7 @@ def test_null_description_does_not_drop_meeting(tmp_path):
     (graph / "Люди").mkdir(parents=True)
     g.upsert_entity(graph, "Люди", "Пустой", "person", None, "Встречи/2026-10-01_1000", None)
     t = (graph / "Люди" / "Пустой.md").read_text(encoding="utf-8")
-    assert "\n# Пустой\n\n_(последнее упоминание: 2026-10-01)_\n" in t and "None" not in t, t
+    assert t[g._body_at(t):].startswith("# Пустой\n\n_(последнее упоминание: 2026-10-01)_\n") and "None" not in t, t
     g.upsert_entity(graph, "Люди", "Пустой", "person", "аналитик", "Встречи/2026-10-02_1000", "")
     g.upsert_entity(graph, "Люди", "Пустой", "person", None, "Встречи/2026-10-03_1000", "")
     t = (graph / "Люди" / "Пустой.md").read_text(encoding="utf-8")
