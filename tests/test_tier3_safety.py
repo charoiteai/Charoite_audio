@@ -271,6 +271,42 @@ def _counting_embedder(calls: list):
     return Embedder(run, "test-fake")
 
 
+@pytest.mark.parametrize("head", ["## Суть \n", "## Суть\r\n", "##  Суть\n"])
+def test_own_essence_survives_a_loose_header(tmp_path, head):
+    """С №628 заголовок решает, судится ли ядро: хвостовой пробел (Obsidian его не
+    срезает), CRLF и двойной пробел не снимают рукописную суть с суда (n628-opus I2)."""
+    (tmp_path / "Ядра").mkdir()
+    (tmp_path / "Ядра" / "А.md").write_bytes(f"{head}приём платежей\n".encode("utf-8"))
+    (tmp_path / "Ядра" / "Б.md").write_text("## Суть\nоплата картами\n", encoding="utf-8")
+    calls: list = []
+    report = tier3.revise(tmp_path, embedder=_counting_embedder(calls), judge=fake_judge(),
+                          may_continue=_open)
+    assert report["status"] != "no_work", report
+    assert (report["judged_cores"], report["cores_total"]) == (2, 2), report
+
+
+def test_a_canon_carrying_a_merged_essence_is_judged(tmp_path):
+    """Канон прошлого слияния несёт рукописную суть дубля в «## Суть дубля «X»» —
+    это своя суть, канон остаётся в суде (n628-opus I1)."""
+    (tmp_path / "Ядра").mkdir()
+    (tmp_path / "Ядра" / "Оплата картой.md").write_text(
+        "## Статус\nэквайринг\n\n## Суть дубля «Приём платежей»\nприём оплаты картами\n",
+        encoding="utf-8")
+    (tmp_path / "Ядра" / "Эквайринг.md").write_text("## Суть\nприём оплаты картами\n", encoding="utf-8")
+    cores = {c["name"]: c for c in tier3.load_cores(tmp_path / "Ядра")}
+    assert cores["Оплата картой"]["essence_src"] == "секция"
+    assert cores["Оплата картой"]["essence"] == "приём оплаты картами"
+
+
+def test_an_unreadable_core_is_skipped_not_fatal(tmp_path):
+    """Не-UTF-8 файл ядра пропускается: иначе трейсбек ронял ночь всех графов
+    раньше, чем отказ судьи успевал сказать «unavailable» (n628-opus M1)."""
+    (tmp_path / "Ядра").mkdir()
+    (tmp_path / "Ядра" / "Битое.md").write_bytes(b"## \xff\n")
+    (tmp_path / "Ядра" / "Целое.md").write_text("## Суть\nтема\n", encoding="utf-8")
+    assert [c["name"] for c in tier3.load_cores(tmp_path / "Ядра")] == ["Целое"]
+
+
 def test_a_single_core_is_named_as_such(tmp_path):
     """Одно ядро — «ядер меньше двух», а не «своя суть у 1 из 1»: причина должна
     назвать настоящую нехватку (n628-out2, выживший мутант `< 2 → < 0`)."""
