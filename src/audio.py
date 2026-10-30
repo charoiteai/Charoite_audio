@@ -806,6 +806,9 @@ class AudioHub:
         # их не трогают: нет ключа — нет возраста и нет признака.
         self._content_ts: dict[str, float] = {}
         self._silent_open: dict[str, float] = {}     # открытый `silent`: метка -> граница (часы содержимого)
+        # Отсчёт возраста содержимого не раньше выхода канала из реестра потерь:
+        # старые часы после `back` дали бы `silent` сразу (Sonnet I1 out1)
+        self._content_floor: dict[str, float] = {}
         self._call = False                           # звонок идёт — факт демона (`Heard.call`), липкий
         # Моменты речевых чанков микрофона (стенные часы) — тот же гейт, тот же
         # разрез, что в `pull_placed`; окно подрезается на чтении
@@ -1905,7 +1908,12 @@ class AudioHub:
             # никто и никогда (Important DS выходного круга по №235)
             if lost_now:
                 self._announce_losses(lost_now)
-        self._check_content(now)
+            # и при упавшем проходе: свой гвард, исходное исключение не подменяет
+            # (Sonnet I2 = DS I2 out1 — гвард у каждой единицы работы, №311)
+            try:
+                self._check_content(now)
+            except Exception as e:  # noqa: BLE001
+                _safe_stderr(f"проверка содержимого канала упала: {e!r}")
 
     def _sweep(self, now: float, lost_now: dict[str, Loss]) -> None:
         """Один проход сторожа по каналам: оживление по факту кадров, перезапуск
@@ -2003,8 +2011,17 @@ class AudioHub:
         # (микрогонка — Minor GLM круга 2); после флага производители потерь и
         # возвратов молчат целиком — статус, журнал и след замолкают одним
         # условием (Important DS круга 2), а `end` проходит
-        self._channel_closed = True
         now = time.time()
+        # содержимое вернулось после последнего прохода сторожа — серия закрывается
+        # до закрытия следа, иначе итог скажет «до конца записи» (DS I4 out1)
+        for label, opened in list(self._silent_open.items()):
+            ts = self._content_ts.get(label)
+            if ts is not None and ts > opened:
+                self._silent_open.pop(label)
+                self._channel_event(CH_AUDIBLE, label, now, opened, ts - opened,
+                                    Loss("содержимое вернулось", retriable=False, died=True,
+                                         cause="silent_content"))
+        self._channel_closed = True
         for label, loss in list(self._lost.items()):
             if label in self._ended:
                 continue
@@ -2032,7 +2049,10 @@ class AudioHub:
             mic_chunks = len(self._mic_speech)
         opened = self._silent_open.get(label)
         if label in self._lost:
+            # серию в следе закрывает само событие потери (`_silent_till_end`),
+            # здесь — только защёлка и новый отсчёт после возврата
             self._silent_open.pop(label, None)
+            self._content_floor[label] = now
             return
         if opened is not None:
             if ts is not None and ts > opened:
@@ -2041,7 +2061,7 @@ class AudioHub:
                                     Loss("содержимое вернулось", retriable=False, died=True,
                                          cause="silent_content"))
             return
-        if not self._call or ts is None or now - ts < CONTENT_SILENT_S:
+        if not self._call or ts is None or now - max(ts, self._content_floor.get(label, ts)) < CONTENT_SILENT_S:
             return
         step = speech_gate.step_seconds(self.chunk_s, self.overlap_s)
         if mic_chunks * step / CONTENT_SILENT_S < CONTENT_MIC_SHARE:

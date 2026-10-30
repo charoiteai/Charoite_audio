@@ -175,3 +175,92 @@ def test_live_line_is_a_trace_line_and_does_not_eat_the_episode_budget(monkeypat
     hub._check_content(now)
     assert len(lines) == 1 and channel_trace.is_trace_line(lines[0]), lines
     assert trace._episodes_shown["blackhole"] == 0 and "blackhole" not in trace._open_shown
+
+
+def test_a_silence_cut_by_a_frame_loss_does_not_reach_the_end_of_the_summary(monkeypatch):
+    """Серия, погашенная кадровой потерей, закрыта в следе: канал вернулся и звучит —
+    итог не говорит «не писался до конца записи» (DS C1 = Haiku C1 out1)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    trace = channel_trace.ChannelTrace(pathlib.Path(tempfile.mkdtemp()) / "x_live.md")
+    hub.on_channel = trace.on_event
+    now = time.time()
+    _dead_call(hub, now)
+    hub._check_content(now)
+    hub._real_frame["blackhole"] = now - 40
+    hub._announce_losses({"blackhole": a.Loss("умер", retriable=False, died=True)})
+    hub._check_content(now + 5)
+    hub._last_frame["blackhole"] = hub._real_frame["blackhole"] = now + 6
+    hub._announce_back("blackhole", 6.0)
+    hub._content_ts["blackhole"] = now + 7
+    hub._check_content(now + 10)
+    note = channel_trace.summary_of(trace.events) or ""
+    assert "не писался" not in note, note
+
+
+def test_after_a_frame_loss_the_content_age_counts_again(monkeypatch):
+    """Старые часы содержимого после возврата канала не дают `silent` сразу (Sonnet I1 out1)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got = []
+    hub.on_channel = got.append
+    now = time.time()
+    _dead_call(hub, now)
+    hub._lost["blackhole"] = a.Loss("умер", retriable=False, died=True)
+    hub._check_content(now)
+    hub._lost.clear()
+    hub._check_content(now + 5)
+    assert got == [], "отсчёт 600 с — от выхода из потери"
+    hub._mic_speech.extend(now + a.CONTENT_SILENT_S - i for i in range(60))
+    hub._check_content(now + a.CONTENT_SILENT_S + 1)
+    assert [e.kind for e in got] == [a.CH_SILENT]
+
+
+def test_content_back_before_the_stop_closes_the_silence(monkeypatch):
+    """Звук вернулся после последнего прохода сторожа — стоп закрывает серию (DS I4 out1)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got = []
+    hub.on_channel = got.append
+    now = time.time()
+    _dead_call(hub, now)
+    hub._check_content(now)
+    hub._content_ts["blackhole"] = now + 1
+    hub.end_channel_episodes()
+    assert [e.kind for e in got] == [a.CH_SILENT, a.CH_AUDIBLE]
+    assert channel_trace.summary_of([e.as_dict() for e in got]) is None
+
+
+def test_a_failing_sweep_still_checks_the_content(monkeypatch):
+    """Упавший проход сторожа не снимает проверку содержимого (Sonnet I2 = DS I2 out1)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got = []
+    hub.on_channel = got.append
+    now = time.time()
+    _dead_call(hub, now)
+
+    def boom(*args):
+        raise RuntimeError("проход упал")
+    monkeypatch.setattr(hub, "_sweep", boom)
+    hub._last_check = 0.0
+    try:
+        hub._watch_streams()
+    except RuntimeError:
+        pass
+    assert [e.kind for e in got] == [a.CH_SILENT]
+
+
+def test_mic_speech_moments_come_from_the_hub_cut(monkeypatch):
+    """Доля микрофона — из того же среза и гейта, что `pull_placed` (DS C3 in2):
+    речевой срез микрофона оставляет момент, тихий — нет."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    n = int(hub.sr * hub.chunk_s)
+    hub._consume(hub.captures[0], np.zeros(n, dtype=np.float32))
+    hub.pull_placed()
+    assert len(hub._mic_speech) == 0
+    t = np.arange(n) / hub.sr
+    hub._consume(hub.captures[0], (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
+    hub.pull_placed()
+    assert len(hub._mic_speech) == 1

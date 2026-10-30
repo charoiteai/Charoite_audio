@@ -395,13 +395,17 @@ def summary_of(events: list[dict]) -> str | None:
 
 
 def _silent_till_end(events: list[dict]) -> dict[str, float | None]:
-    """Серии `silent`, не закрытые `audible` до конца записи: метка -> граница."""
+    """Серии `silent`, открытые до конца записи: метка -> граница. Закрывает серию
+    `audible` и любое кадровое событие той же метки: потеря забирает интервал
+    себе (одна тревога о канале), возврат кадров начинает отсчёт заново — без
+    этого серия, погашенная потерей, жила бы до конца записи (DS C1 = Haiku C1 out1)."""
     open_: dict[str, float | None] = {}
     for e in events:
-        if e.get("kind") == KIND_SILENT:
-            open_.setdefault(e.get("label", "?"), e.get("stopped_at"))
-        elif e.get("kind") == KIND_AUDIBLE:
-            open_.pop(e.get("label", "?"), None)
+        kind, label = e.get("kind"), e.get("label", "?")
+        if kind == KIND_SILENT:
+            open_.setdefault(label, e.get("stopped_at"))
+        elif kind in (KIND_AUDIBLE, "lost", "back", "gap", "end"):
+            open_.pop(label, None)
     return open_
 
 
