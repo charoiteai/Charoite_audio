@@ -2555,6 +2555,28 @@ def test_forget_edits_a_dossier_outside_the_night_paths(tmp_path):
     assert deep not in p.delete and deep in p.edit, (p.delete, list(p.edit))
 
 
+@pytest.mark.parametrize("before, after", [
+    # пункт списка свойства в шапке — одна строка: `aliases:` за ним — не продолжение
+    ('---\nвстречи:\n  - "[[Встречи/{s}]]"\naliases:\n  - Маша\n---\n# Мария\n',
+     "---\nвстречи:\naliases:\n  - Маша\n---\n# Мария\n"),
+    ("---\nиз: [[Встречи/{s}]]\n---\n- [[Встречи/{s}]] — факт\n  перенос\n- другое\n",
+     f"---\nиз: {forget.REMOVED_NOTE}\n---\n- другое\n"),
+    # пункт внутри огороженного кода — одна строка, следующая строка кода остаётся
+    ("```md\n- [[Встречи/{s}]] — пример\nвторая строка примера\n```\n",
+     "```md\nвторая строка примера\n```\n"),
+    # код внутри пункта о встрече — его тело
+    ("- [[Встречи/{s}]] — факт\n\n  ```\n  код\n  ```\n- другое\n", "- другое\n"),
+])
+def test_forget_takes_one_line_in_the_header_and_in_fenced_code(tmp_path, before, after):
+    """YAML-шапка и огороженный код — не блоки Markdown: ленивое продолжение
+    пункта шапки снимало ключ `aliases:` (n845-opus I1), а в коде — строку
+    примера (n845-opus M1)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, before.format(s=STAMP))
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == after, p.edit.get(node)
+
+
 def test_forget_meeting_subitem_takes_only_its_own_block(tmp_path):
     """Подпункт о встрече уходит со своими строками; родитель и соседи — нет."""
     root, graph = _world(tmp_path)

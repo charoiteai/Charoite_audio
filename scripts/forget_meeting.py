@@ -70,7 +70,7 @@ import privacy  # noqa: E402
 import deps  # noqa: E402
 import live_sidecar  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
-from charoite_graph import dossier, graph_names, safe_write  # noqa: E402
+from charoite_graph import dossier, frontmatter, graph_names, safe_write  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 
 
@@ -88,6 +88,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 
 import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402
+import graph_links  # noqa: E402
 import graphs  # noqa: E402
 import install_profile  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -1202,6 +1203,25 @@ def _other_meetings(text: str, keys: typing.Iterable[str]) -> list[str]:
 _ENTRY = re.compile(r"[ \t]*(?:[•–—⁃‣▪>|#]|\*\*|__|\[\[)")
 
 
+def _flat_lines(text: str, lines: list[str]) -> set[int]:
+    """Номера строк, где блоков Markdown нет: YAML-шапка (`frontmatter.split`) и
+    огороженный код (`graph_links._FENCE_RE`). Ленивое продолжение пункта шапки
+    снимало ключ `aliases:` за ним, а в коде — строку примера (n845-opus I1, M1)."""
+    fm, body = frontmatter.split(text)
+    head = len(text) - len(body) if fm is not None else 0
+    flat: set[int] = set()
+    pos, fence = 0, False
+    for n, line in enumerate(lines):
+        if pos < head:
+            flat.add(n)
+        elif graph_links._FENCE_RE.match(line):
+            fence = not fence     # сама ограда — не пункт: ей и так достаётся пометка
+        elif fence:
+            flat.add(n)
+        pos += len(line)
+    return flat
+
+
 def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = None,
                    keys: typing.Iterable[str] = (), told: list[str] | None = None) -> str:
     """Убрать следы встречи из текста узла, который остаётся жить.
@@ -1219,11 +1239,19 @@ def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = No
     # разделители строк — как были: `"\n".join` менял U+2028 и `\x0b` (out5 DS I5),
     # а одиночный `\r` склеивал файл в один пункт (out6 Haiku I2)
     lines = _MD_LINE.findall(text)
+    flat = _flat_lines(text, lines)
     i = 0
     while i < len(lines):
         line = lines[i]
         if not link.search(line):
             out.append(line)
+            i += 1
+            continue
+        if i in flat:
+            # шапка и код: пункт со ссылкой уходит одной строкой, как до №845; код
+            # внутри пункта о встрече — его тело и уходит с блоком ниже
+            if not _ITEM.match(line.rstrip("\r\n")):
+                out.append(link.sub(REMOVED_NOTE, line))
             i += 1
             continue
         # пункт, который называет и другие встречи («Источники» досье), — не только
