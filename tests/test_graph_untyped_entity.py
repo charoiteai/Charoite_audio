@@ -185,3 +185,33 @@ def test_without_the_flag_the_old_birth_stays(tmp_path):
     graph = _graph(tmp_path)
     held = g.apply_entities(graph, [{"имя": "Иван Петров", "тип": "человек", "суть": "x"}], LINK)
     assert held == {} and (graph / "Системы" / "Иван Петров.md").exists()
+
+
+_CORE = {"имя": "Миграция витрины", "статус": "идёт", "суть": "перенос", "хроника": "старт"}
+_TASK = {"имя": "Миграция витрины", "тип": "задача", "суть": "перенос витрины на новый кластер"}
+
+
+def test_task_named_as_a_core_does_not_write_into_the_core(tmp_path, monkeypatch):
+    """Тема-задача без двойника в Системы/ со второй встречи находит ядро проходом 1
+    `find_canonical`: описание сущности и «## Встречи» в файл ядра не пишутся, хроника
+    ядра держит обе встречи (n836-opus I1; на базе ядро жило рядом с двойником)."""
+    monkeypatch.setattr(g, "_root", lambda: tmp_path)
+    graph = _graph(tmp_path)
+    for day in ("2026-10-01_1000", "2026-10-02_1000"):
+        g.apply_entities(graph, [_TASK], f"Встречи/{day}", typed=True)
+        g.upsert_core(graph, _CORE, f"Встречи/{day}", day)
+    core = (graph / "Ядра" / "Миграция витрины.md").read_text(encoding="utf-8")
+    assert "## Встречи" not in core and _TASK["суть"] not in core
+    assert "[[Встречи/2026-10-01_1000]]" in core and "[[Встречи/2026-10-02_1000]]" in core
+    assert not (graph / "Системы" / "Миграция витрины.md").exists()
+
+
+def test_task_line_links_the_core_born_by_the_same_meeting(tmp_path, monkeypatch):
+    """Ядра пишутся после сущностей, заметка — после ядер: строка задачи ссылается на
+    ядро этой встречи, а не говорит «узел не создан» (n836-opus M1)."""
+    monkeypatch.setattr(g, "_root", lambda: tmp_path)
+    graph = _graph(tmp_path)
+    held = g.apply_entities(graph, [_TASK], LINK, typed=True)
+    g.upsert_core(graph, _CORE, LINK, "2026-10-27_1000")
+    line = g.entity_line(graph, _TASK, held)
+    assert line.startswith("- [[Ядра/Миграция витрины") and g._HELD_WHY["untyped"] not in line

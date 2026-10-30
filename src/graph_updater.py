@@ -2012,6 +2012,13 @@ def _held_lead(via: str) -> str:
     return f"поиск ведёт в {via.split('/', 1)[-1]} — " if via else ""
 
 
+def _core_of(graph: pathlib.Path, name: str, folder: str) -> pathlib.Path | None:
+    """Узел, который найдёт `canon_link`, если это ядро: тип вне перечня
+    узла не рождает, и ядро с тем же именем — единственный его адрес."""
+    node = find_canonical(graph, name, folder=folder)
+    return node if node is not None and node.parent.name in CHAROITE.core_folders else None
+
+
 def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]) -> str:
     """Строка сущности в заметке встречи: ссылка на узел, а если узла не
     завели (№193) — текст с пометкой и ссылками на кандидатов, чтобы Obsidian
@@ -2024,6 +2031,10 @@ def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]
     if (folder, name) not in held:
         return f"- {canon_link(graph, name, folder)} {head}"
     verdict, cands, *via = held[(folder, name)]
+    if verdict == "untyped" and _core_of(graph, name, folder) is not None:
+        # ядро с этим именем родилось этой же встречей (ядра пишутся после
+        # сущностей) — ссылка на него, а не «узел не создан» (n836-opus M1)
+        return f"- {canon_link(graph, name, folder)} {head}"
     if verdict in ("aliased", "by_alias"):
         # встреча легла в узел другой папки, чем сказал тип: ссылка на него с
         # именем из разбора (canon_link с папкой типа его не увидит). Пометка —
@@ -2056,8 +2067,15 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
         name, typ, desc = e["имя"], e.get("тип", "entity"), e.get("суть", "")
         verdict, cands = entity_node_verdict(graph, folder, name)
         known = ent_kind(e)
-        if verdict == "new" and typed and known and known not in ENT_FOLDER:
-            verdict = "untyped"
+        if typed and known and known not in ENT_FOLDER:
+            if verdict == "new":
+                verdict = "untyped"
+            elif verdict == "existing" and _core_of(graph, name, folder) is not None:
+                # тема-задача без двойника в Системы/ нашла ядро проходом 1
+                # find_canonical: ядро ведёт upsert_core, описание сущности и
+                # «## Встречи» в его файл не пишем — ссылка в заметке и так на
+                # него (n836-opus I1)
+                continue
         if verdict == "resolved":
             # узел найден по псевдониму в ДРУГОЙ папке, чем сказал тип (тип — самое
             # ненадёжное поле разбора): пишем в него по РЕШЁННОМУ пути, а не по
