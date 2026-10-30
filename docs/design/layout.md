@@ -198,7 +198,7 @@
 - `scripts/nemotron_shadow_check.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md
 - `scripts/nemotron_shadow_replay.py` ← docs/DIARIZATION.md, docs/FEATURES.md
 - `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SETUP.md
-- `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
+- `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/design/TIER3_REVISION.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
@@ -209,7 +209,7 @@
 - `scripts/runtime_profile.py` ← docs/FEATURES.md, docs/design/RUNTIME_PROFILE.md
 - `scripts/sign_release_manifest.py` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/zh/RELEASING.md
 - `scripts/stt_bench.py` ← docs/FEATURES.md, docs/MODELS.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/zh/FEATURES.md, docs/zh/MODELS.md
-- `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/design/NLI_LABEL_CONTRACT_2026-10.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/design/NLI_LABEL_CONTRACT_2026-10.md, docs/design/TIER3_REVISION.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/audio.py` ← docs/INVARIANTS.md, docs/ru/INVARIANTS.md, docs/zh/INVARIANTS.md
 - `src/brain.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/research/diarization-log.md, docs/ru/ARCHITECTURE.md, docs/ru/DIARIZATION.md, docs/zh/ARCHITECTURE.md, docs/zh/DIARIZATION.md
@@ -243,7 +243,7 @@
 - `src/mcp_server.py` ← README.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/README.md, docs/zh/SETUP.md
 - `src/meeting_archive.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/night_cloud.py` ← pyproject.toml
-- `src/nli.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, pyproject.toml
+- `src/nli.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/TIER3_REVISION.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, pyproject.toml
 - `src/once.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/owner_voice.py` ← docs/DIARIZATION.md
 - `src/privacy.py` ← CONTRIBUTING.md, MANIFESTO.md, PRIVACY.md, SECURITY.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/PRIVACY.md, docs/ru/SECURITY.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/PRIVACY.md, docs/zh/SECURITY.md
