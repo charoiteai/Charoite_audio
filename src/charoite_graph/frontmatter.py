@@ -95,7 +95,9 @@ def _list_fallback(fm: str, key: str) -> list:
 
 def list_field(text: str, key: str, where: str = "") -> list[str]:
     """Поле-список шапки (`aliases:`, `auto_aliases:`): список, блок или
-    одиночная строка; пустые и дубли — вон."""
+    одиночная строка; пустые и дубли — вон. BOM перед шапкой не прячет поле: его
+    видит `has_field`, и состав досье выходил бы пустым (n843-out1 Sonnet I1)."""
+    text = (text or "").removeprefix(_BOM)
     fm, _ = split(text)
     if fm is None:
         return []
@@ -175,6 +177,20 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
     if merged == current:
         return text
     return _put_line(text, key, f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]")
+
+
+def has_field(text: str, key: str) -> bool:
+    """Поле `key:` в шапке есть (пустое `[]` — тоже есть): отличает «состав не
+    записан» от «состав пуст» (n843-in3 I3)."""
+    fm, _ = split((text or "").removeprefix(_BOM))
+    return fm is not None and _field_span(fm, key) is not None
+
+
+def set_list_field(text: str, key: str, names: list[str]) -> str:
+    """Поле-список `key:` заменить ровно этими именами (порядок и дубли — как
+    у `with_list_field`); `with_list_field` только дописывает (n843-in3 M2)."""
+    clean = list(dict.fromkeys(n.strip() for n in names if n and n.strip()))
+    return _put_line(text, key, f"{key}: [" + ", ".join(yaml_str(m) for m in clean) + "]")
 
 
 _BOM = "\ufeff"
