@@ -13,12 +13,13 @@ final class LiveAnswerProbe: XCTestCase {
         let graph = try ProbeTurn.graphDir(raw)
         let index = try await ProbeTurn.isolateIndex(self)   // семантика как в чате, запись — в копию
 
-        let params = ProbeTurn.arm.params
+        let arm = try ProbeTurn.arm()
+        let params = arm.params
         let outcome = await ProbeTurn.search("что решили по витрине сертификации",
                                              params: params, root: graph, index: index)
         let out = outcome.text
         let rels = outcome.rels ?? []
-        print(ProbeTurn.header("=== ЧТО ПОЛУЧАЕТ МОДЕЛЬ (\(out.count) знаков, \(rels.count) источников) ==="))
+        print(ProbeTurn.header("=== ЧТО ПОЛУЧАЕТ МОДЕЛЬ (\(out.count) знаков, \(rels.count) источников) ===", arm: arm))
         for (i, rel) in rels.enumerated() { print("  \(i + 1). \(rel)") }
         XCTAssertFalse(out.isEmpty)
     }

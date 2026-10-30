@@ -26,23 +26,33 @@ final class MemoryBench: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         guard let benchPath = env["CHAROITE_BENCH"], !benchPath.isEmpty else { throw XCTSkip("бенч не задан") }
         // Бенч запрошен — дальше любой недостающий вход валит прогон, а не пропускает его.
-        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
         let (cases, gate) = try parse(URL(fileURLWithPath: (benchPath as NSString).expandingTildeInPath))
         // пустой набор — диагноз парсера, а не графа: страж пустой выдачи ниже соврал бы
         guard !cases.isEmpty else { XCTFail("вопросы не разобрались: \(benchPath)"); return }
+        // Слой 2: синтез по сохранённым пачкам, без графа и поиска (№752)
+        if let replay = env["CHAROITE_BENCH_REPLAY"], !replay.isEmpty {
+            try await replayPackets(replay, cases: cases)
+            return
+        }
+        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
 
         // Проверяем ОТВЕТ, а не только выдачу поиска: мерить надо то, что
         // доходит до человека.
         let withModel = try ProbeTurn.flag("CHAROITE_BENCH_ANSWERS")
-        let (armName, params) = ProbeTurn.arm
+        let arm = try ProbeTurn.arm()
+        let (armName, params) = arm
         // ответы и выдача — разные файлы: прогон со синтезом не затирает отчёт выдачи
         let kind = withModel ? "_answers" : ""
         let reportPath = try ProbeTurn.reportPath("bench_\(armName)\(kind)")
         let foundPath = try ProbeTurn.reportPath("bench_\(armName)\(kind)_found")
+        let packets = try ProbeTurn.PacketLog("bench_packet_\(armName)\(kind)")
         let index = try await ProbeTurn.isolateIndex(self)
         var report = ProbeTurn.header(withModel
             ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез тем же ходом, что чат)"
-            : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)")
+            : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)", arm: arm)
+        // Время поиска и синтеза — порознь: решение о слое 2 — по ним (n752-in1, Sonnet C2)
+        let clock = ContinuousClock()
+        var searchTime = Duration.zero, synthTime = Duration.zero
         var hitTotal = 0, mustTotal = 0
         var unanswered: [String] = []
         var dump = ""   // выдача поиска по вопросам — видно, что дошло до модели
@@ -53,8 +63,18 @@ final class MemoryBench: XCTestCase {
         var falseRefusal: [ArchiveSearch.Verdict: Int] = [:]
         var abstainOK = 0, abstainTotal = 0
         for c in cases {
+            let started = clock.now
             let outcome = await ProbeTurn.search(c.q, params: params, root: graph, index: index)
+            searchTime += started.duration(to: clock.now)
             let found = outcome.text
+            let body = withModel ? ProbeTurn.body(question: c.q, outcome: outcome) : nil
+            var reply: ProbeTurn.Reply?
+            if let body, c.abstain || !found.isEmpty {
+                let asked = clock.now
+                reply = await ProbeTurn.send(body)
+                synthTime += asked.duration(to: clock.now)
+            }
+            try packets.append(.init(arm: arm, q: c.q, outcome: outcome, body: body, answer: reply?.text))
             if found.isEmpty && !c.abstain { emptyFound += 1 }
             dump += "=== \(c.q) [\(outcome.verdict.rawValue)]\n\(found)\n\n"
             let verdictLine = "вердикт поиска: \(outcome.verdict.rawValue)"
@@ -64,7 +84,7 @@ final class MemoryBench: XCTestCase {
                 // Без модели воздержанием поиска считается любой вердикт,
                 // кроме «нашлось».
                 if withModel {
-                    guard let answer = await ProbeTurn.answer(question: c.q, outcome: outcome) else {
+                    guard let answer = reply?.text else {
                         unanswered.append(c.q)
                         continue
                     }
@@ -93,7 +113,7 @@ final class MemoryBench: XCTestCase {
                 // Модель не ответила — факты вопроса в знаменателе с нулём: подмена
                 // ответа выдачей поиска засчитывала факты, которых человек не увидит,
                 // а выброс вопроса поднимал процент тем выше, чем больше молчала модель.
-                guard let answer = await ProbeTurn.answer(question: c.q, outcome: outcome) else {
+                guard let answer = reply?.text else {
                     unanswered.append(c.q)
                     mustTotal += c.must.count
                     continue
@@ -110,6 +130,17 @@ final class MemoryBench: XCTestCase {
             report += "\n· \(c.q)\n  факты \(hits.count)/\(c.must.count)"
             if !missed.isEmpty { report += ", нет: \(missed.joined(separator: ", "))" }
             report += ", \(verdictLine)"
+            // Слой 1: где в выдаче руки стоит каждый факт — ранг куска, «гейт» или «нет»
+            let ranks = c.must.map { fact -> String in
+                switch ProbeTurn.factRank(fact, in: outcome.parts, norm: norm) {
+                case nil: return "\(fact)→нет"
+                case -1?: return "\(fact)→гейт"
+                case let r?: return "\(fact)→\(r)"
+                }
+            }
+            report += "\n  ранги: \(ranks.joined(separator: ", ")); кусков \(outcome.parts?.count ?? 0), "
+                + "оценка \(ChatRetrieval.estimatedTokens(found)) ток."
+                + (reply?.promptTokens.map { ", промпт у Ollama \($0) ток." } ?? "")
             if withModel {
                 let inFound = c.must.filter { norm(found).contains(norm($0)) }.count
                 // отказ первой строкой и ни одного факта в ответе: оговорка
@@ -146,6 +177,8 @@ final class MemoryBench: XCTestCase {
         }
         report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов \(withModel ? "в ответе" : "в выдаче поиска") "
                 + "(\(Int(ratio * 100))%)\n"
+        report += "время: поиск \(seconds(searchTime)) с, синтез \(seconds(synthTime)) с на \(cases.count) вопр.\n"
+        report += "пачки: \(packets.path)\n"
         // файл — по руке: второй прогон другой руки не затирает первый
         print(report)
         guard ProbeTurn.writePrivate(report, to: reportPath) else {
@@ -187,6 +220,67 @@ final class MemoryBench: XCTestCase {
             XCTAssertGreaterThanOrEqual(Double(abstainOK) / Double(abstainTotal), floor,
                                         "воздержание \(abstainOK)/\(abstainTotal) ниже порога — смотри \(reportPath)")
         }
+    }
+
+    private func seconds(_ d: Duration) -> String {
+        String(format: "%.1f", Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18)
+    }
+
+    /// Слой 2: синтез по пачкам прошлого прогона — без графа и поиска. Ход тот
+    /// же (`ProbeTurn.body`/`send`), поэтому правка промпта видна; «запрос тот
+    /// же» — тело совпало с записанным байт в байт. Ответ при температуре 0 —
+    /// не оракул (n752-in1, DS I4): сравниваются факты обоих ответов.
+    private func replayPackets(_ path: String, cases: [Case]) async throws {
+        let packets = try ProbeTurn.PacketLog.read(path)
+        guard let first = packets.first else { throw ProbeTurn.SetupError(description: "пачек нет в файле: \(path)") }
+        guard packets.allSatisfy({ $0.arm == first.arm }) else {
+            throw ProbeTurn.SetupError(description: "в файле пачки разных рук: \(path)")
+        }
+        let byQ = Dictionary(cases.map { ($0.q, $0) }, uniquingKeysWith: { a, _ in a })
+        var report = "БЕНЧ ПАМЯТИ — ПОВТОР СИНТЕЗА ПО ПАЧКАМ\nрука: \(first.arm) (limit \(first.limit), "
+            + "snippet \(first.snippet), budget \(first.budget)); модель: \(ProbeTurn.model); пачки: \(path)\n"
+        var then = 0, now = 0, total = 0, sameBody = 0, sameAnswer = 0, asked = 0
+        for p in packets {
+            guard let c = byQ[p.q] else {
+                throw ProbeTurn.SetupError(description: "вопроса пачки нет в наборе — набор сменился: «\(p.q)»")
+            }
+            guard p.local == ProbeTurn.inferenceIsLocal, p.model == ProbeTurn.model else {
+                throw ProbeTurn.SetupError(description: "пачка записана при модели \(p.model), локальной \(p.local) — "
+                                           + "сейчас \(ProbeTurn.model), \(ProbeTurn.inferenceIsLocal): повтор не тот ход")
+            }
+            let outcome = try p.outcome()
+            if !c.abstain && outcome.text.isEmpty {
+                total += c.must.count
+                report += "\n· \(c.q)\n  источников нет — модель не спрашиваю"
+                continue
+            }
+            guard let body = ProbeTurn.body(question: c.q, outcome: outcome) else {
+                throw ProbeTurn.SetupError(description: "тело запроса не собралось: «\(c.q)»")
+            }
+            asked += 1
+            let same = p.body == String(decoding: body, as: UTF8.self)
+            if same { sameBody += 1 }
+            let answer = await ProbeTurn.send(body)?.text ?? ""
+            if !answer.isEmpty, answer == p.answer { sameAnswer += 1 }
+            report += "\n· \(c.q)\n  запрос тот же: \(same ? "да" : "нет")"
+            if c.abstain {
+                let a = p.answer.map { ChatRetrieval.isAbsence($0, lines: 2) } ?? false
+                let b = ChatRetrieval.isAbsence(answer, lines: 2)
+                report += ", воздержание при записи: \(a ? "да" : "нет"), сейчас: \(b ? "да" : "нет")"
+            } else {
+                let was = c.must.filter { norm(p.answer ?? "").contains(norm($0)) }.count
+                let got = c.must.filter { norm(answer).contains(norm($0)) }.count
+                (then, now, total) = (then + was, now + got, total + c.must.count)
+                report += ", факты при записи \(was)/\(c.must.count), сейчас \(got)/\(c.must.count)"
+            }
+            report += "\n  ответ: " + answer.replacingOccurrences(of: "\n", with: "\n  ")
+        }
+        report += "\n\nИТОГО: факты при записи \(then)/\(total), повтор \(now)/\(total); "
+            + "запрос тот же \(sameBody)/\(asked), ответ дословно тот же \(sameAnswer)/\(asked)\n"
+        print(report)
+        let out = try ProbeTurn.reportPath("bench_replay_\(first.arm)")
+        XCTAssertTrue(ProbeTurn.writePrivate(report, to: out), "отчёт повтора не записан: \(out)")
+        print("отчёт: \(out)")
     }
 
     private func norm(_ s: String) -> String {

@@ -20,10 +20,11 @@ final class AnswerQualityProbe: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         guard try ProbeTurn.flag("CHAROITE_ANSWER_PROBE") else { throw XCTSkip("не запрошено") }
         let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
-        let (armName, params) = ProbeTurn.arm
+        let arm = try ProbeTurn.arm()
+        let (armName, params) = arm
         let out = try ProbeTurn.reportPath("answer_probe_\(armName)")
         let index = try await ProbeTurn.isolateIndex(self)
-        var report = ProbeTurn.header("ПРОБА ОТВЕТОВ")
+        var report = ProbeTurn.header("ПРОБА ОТВЕТОВ", arm: arm)
         var unanswered = 0, emptySearch = 0
         for q in questions {
             let outcome = await ProbeTurn.search(q, params: params, root: graph, index: index)

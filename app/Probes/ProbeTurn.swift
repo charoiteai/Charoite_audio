@@ -16,11 +16,24 @@ enum ProbeTurn {
     static let model = "qwen3.6:35b-a3b"
     static let engine = "local"
 
-    /// Рука бенча: `CHAROITE_BENCH_ARM=legacy` — прежние 5×1200 с бюджетом
-    /// поиска по умолчанию, иначе — параметры чата.
-    static var arm: (name: String, params: ChatRetrieval.Params) {
-        ProcessInfo.processInfo.environment["CHAROITE_BENCH_ARM"] == "legacy"
-            ? ("legacy", .legacyProbe) : ("chat", .chat)
+    /// Рука бенча из `CHAROITE_BENCH_ARM`: пусто или `chat` — параметры чата,
+    /// `legacy` — прежние 5×1200 с бюджетом поиска по умолчанию, `p<N>` —
+    /// N кусков по 1000 знаков с бюджетом N×1000 (число кусков на деле задаёт
+    /// бюджет, отчёт пишет их счёт). Прочее — ошибка: опечатка `p4l` молча
+    /// перезаписывала бы отчёт руки `chat` (n752-in1, Sonnet I5, DS M5).
+    static func arm() throws -> (name: String, params: ChatRetrieval.Params) {
+        let raw = (ProcessInfo.processInfo.environment["CHAROITE_BENCH_ARM"] ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        switch raw {
+        case "", "chat": return ("chat", .chat)
+        case "legacy": return ("legacy", .legacyProbe)
+        default:
+            guard raw.range(of: #"^p[1-9][0-9]{0,2}$"#, options: .regularExpression) != nil,
+                  let n = Int(raw.dropFirst()) else {
+                throw SetupError(description: "CHAROITE_BENCH_ARM=\(raw): ждём chat, legacy или p<N> (1–999)")
+            }
+            return (raw, ChatRetrieval.Params(limit: n, snippet: 1000, budget: n * 1000))
+        }
     }
 
     static var inferenceIsLocal: Bool {
@@ -51,18 +64,32 @@ enum ProbeTurn {
     /// Ответ модели или nil — модель не ответила (бенч считает такой вопрос
     /// с нулём фактов и падает своим сообщением).
     static func answer(question: String, outcome: ArchiveSearch.Outcome) async -> String? {
-        let local = inferenceIsLocal
-        let system = ChatRetrieval.baseSystem(inferenceIsLocal: local)
+        guard let body = body(question: question, outcome: outcome) else { return nil }
+        return await send(body)?.text
+    }
+
+    /// Тело запроса хода — JSON с упорядоченными ключами: два тела равны,
+    /// только если равны запросы (повтор пачки сверяет его, n752-in1, DS I4).
+    static func body(question: String, outcome: ArchiveSearch.Outcome) -> Data? {
+        let system = ChatRetrieval.baseSystem(inferenceIsLocal: inferenceIsLocal)
             + ChatRetrieval.contextBlock(outcome).block
+        return try? JSONSerialization.data(withJSONObject: ChatRetrieval.requestBody(
+            model: model,
+            messages: [["role": "system", "content": system], ["role": "user", "content": question]],
+            stream: false, temperature: 0), options: [.sortedKeys])
+    }
+
+    /// Ответ и счёт токенов промпта у Ollama: оценка окна — верхняя, отчёт
+    /// пишет, сколько ушло на деле (n752-in1, DS C2).
+    struct Reply { let text: String; let promptTokens: Int? }
+
+    static func send(_ body: Data) async -> Reply? {
         guard let url = URL(string: AppSettings.ollamaURL + "/api/chat") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 600
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ChatRetrieval.requestBody(
-            model: model,
-            messages: [["role": "system", "content": system], ["role": "user", "content": question]],
-            stream: false, temperature: 0))
+        req.httpBody = body
         // Прокси обнуляем, как в проде: системный прокси ломает запрос к localhost.
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
@@ -70,7 +97,102 @@ enum ProbeTurn {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let msg = obj["message"] as? [String: Any],
               let text = msg["content"] as? String, !text.isEmpty else { return nil }
-        return text
+        return Reply(text: text, promptTokens: obj["prompt_eval_count"] as? Int)
+    }
+
+    /// Пачка хода — выдача руки после окна и всё, чем отчёт судит ответ.
+    /// Повтор (`CHAROITE_BENCH_REPLAY`) шлёт её через тот же `body`/`send`:
+    /// правка промпта или блока графа видна в повторе, а поле `body` говорит,
+    /// тот ли это запрос, что при записи (n752-in1, H C3, DS I3).
+    struct Packet: Codable {
+        struct Piece: Codable { let text: String; let rel: String?; let rank: Int }
+        let arm: String
+        let limit: Int, snippet: Int, budget: Int
+        let model: String
+        /// соседа по ссылке берут только при локальной модели (№695): повтор
+        /// на другой хост отказывает (n752-in1, Sonnet I4)
+        let local: Bool
+        let q: String
+        let verdict: String
+        let text: String
+        let rels: [String]?
+        let note: String
+        let parts: [Piece]?
+        let body: String?
+        let answer: String?
+
+        init(arm: (name: String, params: ChatRetrieval.Params), q: String,
+             outcome: ArchiveSearch.Outcome, body: Data?, answer: String?) {
+            self.arm = arm.name
+            limit = arm.params.limit
+            snippet = arm.params.snippet
+            budget = arm.params.budget
+            model = ProbeTurn.model
+            local = ProbeTurn.inferenceIsLocal
+            self.q = q
+            verdict = outcome.verdict.rawValue
+            text = outcome.text
+            rels = outcome.rels
+            note = outcome.note
+            parts = outcome.parts?.map { Piece(text: $0.text, rel: $0.rel, rank: $0.rank) }
+            self.body = body.map { String(decoding: $0, as: UTF8.self) }
+            self.answer = answer
+        }
+
+        func outcome() throws -> ArchiveSearch.Outcome {
+            guard let v = ArchiveSearch.Verdict(rawValue: verdict) else {
+                throw SetupError(description: "пачка: вердикт \(verdict) не известен — «\(q)»")
+            }
+            return ArchiveSearch.Outcome(text: text, rels: rels, verdict: v, note: note,
+                                         parts: parts?.map { ArchiveSearch.Part(text: $0.text, rel: $0.rel, rank: $0.rank) })
+        }
+    }
+
+    /// Пачки пишутся по ходу, строка JSON на вопрос: прогон, упавший на
+    /// 30-м вопросе, оставляет 29 пачек (n752-in1, Sonnet I6). Файл — 0600
+    /// в проверенном каталоге отчётов, новый на каждый прогон.
+    final class PacketLog {
+        let path: String
+        private let handle: FileHandle
+
+        init(_ name: String) throws {
+            path = try reportPath(name)
+            guard writePrivate("", to: path), let h = FileHandle(forWritingAtPath: path) else {
+                throw SetupError(description: "пачки не открылись: \(path)")
+            }
+            handle = h
+        }
+
+        deinit { try? handle.close() }
+
+        func append(_ p: Packet) throws {
+            var line = try JSONEncoder().encode(p)
+            line.append(0x0A)
+            try handle.write(contentsOf: line)
+        }
+
+        static func read(_ raw: String) throws -> [Packet] {
+            let path = (raw as NSString).expandingTildeInPath
+            guard let data = FileManager.default.contents(atPath: path) else {
+                throw SetupError(description: "пачек нет: \(path)")
+            }
+            return try data.split(separator: 0x0A).map { try JSONDecoder().decode(Packet.self, from: Data($0)) }
+        }
+    }
+
+    /// Ранг факта в выдаче — наименьший `Part.rank` куска, где факт стоит во
+    /// фрагменте, а не в шапке «• путь» или «Связано с» (имя файла несёт дату
+    /// и тему встречи, n752-in1, Sonnet I2). −1 — слот гейта. Ранг — порядок
+    /// упаковки, не позиция поиска (Sonnet I1): кривая по рукам — только из
+    /// настоящих прогонов этих рук.
+    static func factRank(_ fact: String, in parts: [ArchiveSearch.Part]?,
+                         norm: (String) -> String) -> Int? {
+        let needle = norm(fact)
+        return (parts ?? []).filter { part in
+            part.text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("Связано с") }
+                .contains { norm(String($0)).contains(needle) }
+        }.map(\.rank).min()
     }
 
     /// Отказ подготовки пробы: тест бросает его и падает с причиной до работы.
@@ -161,7 +283,7 @@ enum ProbeTurn {
 
     /// Шапка отчёта: рука, параметры, движок и модель — чтобы два отчёта
     /// нельзя было сравнить, не видя, чем они отличаются.
-    static func header(_ title: String) -> String {
+    static func header(_ title: String, arm: (name: String, params: ChatRetrieval.Params)) -> String {
         let (name, p) = arm
         return "\(title)\nрука: \(name) (limit \(p.limit), snippet \(p.snippet), budget \(p.budget)); "
             + "движок: \(engine); соседи по ссылке: \(inferenceIsLocal ? "да" : "нет"); модель: \(model)\n"
