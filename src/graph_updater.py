@@ -2843,7 +2843,7 @@ def _supersede_description(text: str, desc: str, meeting_link: str,
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
     if not _refines(old, new):
-        return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), new
+        return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _clip(new)
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
     event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")
     text = text[:start] + new + nl + nl + text[end:]

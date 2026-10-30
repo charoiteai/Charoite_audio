@@ -2489,3 +2489,13 @@ def test_shaped_drops_non_string_fields_of_people_and_entities(capsys):
     out = capsys.readouterr().out
     assert "«люди.вклад» — int" in out and "«люди.имя» — int" in out and "«сущности.тип» — list" in out
     assert "люди.роль" not in out, "null — молча, как у полей верхнего уровня"
+
+
+def test_multiline_episode_stays_on_one_meeting_line(tmp_path):
+    """Эпизод из нескольких строк — одна строка «## Встречи», без обрыва раздела (n846-out2)."""
+    graph = tmp_path / "g"
+    g.upsert_entity(graph, "Люди", "Двустрок", "person", "ведёт систему A", "Встречи/2026-09-01_1000", "")
+    g.upsert_entity(graph, "Люди", "Двустрок", "person", "Участник\n## Хроника", "Встречи/2026-09-02_1000", "")
+    text = (graph / "Люди" / "Двустрок.md").read_text(encoding="utf-8")
+    assert "- [[Встречи/2026-09-02_1000]] _(в этой встрече: «Участник ## Хроника»)_\n" in text, text
+    assert text.count("\n## Хроника") == 0 and "# Двустрок\nведёт систему A\n" in text, text
