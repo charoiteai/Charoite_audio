@@ -267,12 +267,14 @@ def test_fork_stub_is_not_gone(tmp_path):
     assert _plan(text, [THEME, OLD], snap) == dossier.Plan("skip", "same")
 
 
-def test_stub_ring_does_not_hang(world):
-    snap, built, _ = world
-    ring = dossier.GraphSnapshot(snap.files, snap.backlinks, {"A": "B", "B": "A"}, frozenset())
-    text = dossier.with_composition(_dossier(snap, built), [OLD, "A"])
-    p = _plan(text, built, ring)
-    assert (p.action, p.gone) == ("rebuild", ("A",))
+def test_stub_ring_does_not_hang(tmp_path):
+    g = _graph(tmp_path)
+    (g / "Встречи" / "A.md").write_text("# A → [[Встречи/B]]\n", encoding="utf-8")
+    (g / "Встречи" / "B.md").write_text("# B → [[Встречи/A]]\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    assert {"A", "B"} <= snap.stubs
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, "A"])
+    assert _plan(text, [THEME, OLD], snap) == dossier.Plan("skip", "same")
 
 
 def test_rejected_through_stub_stays_rejected(tmp_path):
@@ -324,10 +326,10 @@ def test_stub_is_never_gone(tmp_path, stub):
     snap = dossier.scan_snapshot(g, schema=CHAROITE)
     assert "Старое имя" in snap.stubs and "Старое имя" not in snap.files
     text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, "Старое имя"])
-    for name in (NEW,):
-        snap.files[name]["path"].unlink()
+    snap.files[NEW]["path"].unlink()
+    snap.files[OLD]["path"].unlink()        # обе цели развилки забыты
     p = _plan(text, [THEME, OLD], snap, on_disk=True)
-    assert "Старое имя" not in p.gone, p
+    assert p.gone == (OLD,), p
 
 
 def test_stub_pointing_to_a_fork_is_not_gone(tmp_path):
