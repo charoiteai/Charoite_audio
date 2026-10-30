@@ -890,8 +890,8 @@ the window between the writes is what the doctor catches.
 In the meeting note's «## Связи» only a node that exists in the graph
 becomes a link; a pronoun or a word fragment stays text. People and systems
 carry a «last mention» line that is updated mechanically, and a description
-is a dated fact: only a refinement (every old word kept, no new numbers) or the
-same words with a new date supersedes it with a trace in «## Хроника» (№194); a role from one
+is a dated fact: only a refinement (every old word and number kept, no new numbers) or
+the same words with other numbers (a date too) supersedes it with a trace in «## Хроника» (№194); a role from one
 meeting leaves the top alone and is noted on that meeting's line in
 «## Встречи» as «в этой встрече: …» (№846), and machine lines past ten move to «## Архив хроники»
 at the end of the node. The indexes `Люди/_ЛЮДИ.md`, `Системы/_СИСТЕМЫ.md`,

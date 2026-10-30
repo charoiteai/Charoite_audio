@@ -2508,5 +2508,9 @@ def test_episode_with_wikilink_makes_no_false_meeting_link(tmp_path):
     g.upsert_entity(graph, "Люди", "Ссыльный", "person", "докладчик [[Встречи/2026-09-05_1000]]",
                     "Встречи/2026-09-02_1000", "")
     text = (graph / "Люди" / "Ссыльный.md").read_text(encoding="utf-8")
-    assert "«докладчик [Встречи/2026-09-05_1000]»" in text, text
+    assert "«докладчик [ [Встречи/2026-09-05_1000]]»" in text, text
     assert not g.has_link(text, "Встречи/2026-09-05_1000"), "ложной ссылки встречи нет"
+    for raw in ("[[[Встречи/2026-09-07_1000]]]", "[[[[Встречи/2026-09-08_1000", "x [[Встречи/2026-09-09_1000"):
+        assert "[[" not in g._unlinked(raw), raw                     # любое число скобок (n846-out3)
+    assert g._unlinked("матрица [[1,2],[3,4]]") == "матрица [ [1,2],[3,4]]", "скобки текста целы"
+    assert g._unlinked(g._unlinked("[[X]]")) == g._unlinked("[[X]]"), "идемпотентна"

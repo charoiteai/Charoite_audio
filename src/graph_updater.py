@@ -2513,7 +2513,7 @@ def _stamp_entity(text: str, meeting_line: str, desc: str, meeting_link: str, da
     if event:
         events.append(event)
     if episode:
-        meeting_line += f" _(в этой встрече: «{episode}»)_"
+        meeting_line += f" _(в этой встрече: «{_unlinked(episode)}»)_"
     m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, _body_at(text))
     if m:
         text = text[:m.end()] + f"\n{meeting_line}" + text[m.end():]
@@ -2845,7 +2845,7 @@ def _supersede_description(text: str, desc: str, meeting_link: str,
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
     if not _refines(old, new):
-        return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _unlinked(_clip(new))
+        return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _clip(new)
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
     event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")
     text = text[:start] + new + nl + nl + text[end:]
@@ -3133,8 +3133,10 @@ def _flat(s: str) -> str:
 
 def _unlinked(s: str) -> str:
     """Текст модели внутри строки «## Встречи»: «[[…]]» там — ложная ссылка встречи
-    (`has_link` и счёт встреч указателя её видят), скобки — одинарные (n846-out2 M1)."""
-    return s.replace("[[", "[").replace("]]", "]")
+    (`has_link` и счёт встреч указателя её видят, n846-out2 M1). Между соседними «[»
+    встаёт пробел: ссылки нет при любом числе скобок, а «[[1,2],[3,4]]» не теряет
+    скобок (n846-out3 Sonnet I1, Haiku I2)."""
+    return re.sub(r"\[(?=\[)", "[ ", s)
 
 
 def _clip(s: str, limit: int = 160) -> str:
