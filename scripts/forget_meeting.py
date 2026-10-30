@@ -1042,6 +1042,9 @@ def plan(stamp: str, root: pathlib.Path,
                 in_snap, parts = True, parts[2:]
             rel = "/".join(parts)
             in_dossier = CHAROITE.is_dossier(rel)
+            # владельцу — путь со штампом прогона: копий в снимках до десяти (out8 DS M2)
+            where = (f.relative_to(snap) if f.is_relative_to(snap) else f.relative_to(g)).as_posix() \
+                + (" (снимок)" if in_snap else "")
             try:
                 raw = f.read_bytes()        # одно чтение: файл не исчезнет между двумя (out5 DS I4)
             except OSError:
@@ -1049,24 +1052,23 @@ def plan(stamp: str, root: pathlib.Path,
             try:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
-                # переписать нечитаемое нельзя, промолчать — держать пересказ вечно (out4 DS M2);
-                # кириллическое имя поля без UTF-8 не прочесть — довольно ссылки (out5 DS C1)
-                if in_dossier and dossier.cites(raw.decode("utf-8", "replace"), keys):
-                    where = f"{rel} (снимок)" if in_snap else rel
-                    p.check.append(f"{where}: досье ссылается на встречу, но не в UTF-8 — проверь "
-                                   "шапку руками: строка «ревизия:» не даст ночи его пересобрать")
+                # переписать нечитаемое нельзя, промолчать — держать след вечно (out4 DS M2);
+                # кириллицу без UTF-8 не прочесть — довольно штампа, он ASCII (out5 DS C1, out8 Sonnet I1)
+                if any(k.encode("ascii", "ignore") in raw for k in keys):
+                    p.check.append(f"{where}: ссылается на встречу, но не в UTF-8 — убери след руками"
+                                   + ("; строка «ревизия:» не даст ночи пересобрать досье" if in_dossier else ""))
                 continue
-            revised = in_dossier and bool(dossier.revision(text)) and dossier.cites(text, keys)
+            cited = dossier.cites(text, keys)
+            revised = in_dossier and cited and bool(dossier.revision(text))
             linked = bool(link.search(text))
-            if not linked and not revised:
+            if not linked and not cited:
                 continue
             fixed = _strip_meeting(text, link) if linked else text
             if revised:
                 fixed = dossier.without_revision(fixed)
-            if link.search(fixed):
-                # ссылка через перевод строки в алиасе построчному вырезанию не видна —
-                # не молчать (out7 Sonnet I1, Haiku I1)
-                where = f"{rel} (снимок)" if in_snap else rel
+            if not in_dossier and dossier.cites(fixed, keys):
+                # формы, которых нет в `_link_re` (`#якорь`, `.md`, голый штамп), — не молчать;
+                # тело досье пересоберёт ночь (out7 Sonnet I1, out8 Haiku I2; одна грамматика — №607)
                 p.check.append(f"{where}: ссылка на встречу осталась после правки — убери руками")
             if fixed != text:
                 p.edit[f] = fixed
@@ -1122,10 +1124,11 @@ def _strip_meeting(text: str, link: re.Pattern[str]) -> str:
         if not link.search(line):
             out.append(line)
             continue
-        if line.lstrip().startswith(_LINE):
+        if line.lstrip(" \t").startswith(_LINE):     # отступ Markdown, не `isspace` (out8 Sonnet M1)
             continue    # пункт списка = запись о встрече
         out.append(link.sub(REMOVED_NOTE, line))
-    return "".join(out)
+    # ссылку через перевод строки в алиасе строка целиком не видит — пометкой (out8 DS I1)
+    return link.sub(REMOVED_NOTE, "".join(out))
 
 
 def _backup(path: pathlib.Path, stamp: str) -> None:

@@ -595,7 +595,7 @@ def test_forget_drops_only_the_meeting_item_whatever_ends_the_line(tmp_path, sep
     assert p.edit[node] == f"- срок: 1 августа{sep}", p.edit.get(node)
 
 
-@pytest.mark.parametrize("sep", ["\u2028", "\x0c", "\x85"])
+@pytest.mark.parametrize("sep", ["\u2028", "\x0b", "\x0c", "\x85"])
 def test_forget_keeps_a_meeting_item_whole_across_a_non_markdown_break(tmp_path, sep):
     """U+2028, `\\x0c`, `\\x85` — не конец строки Markdown: пункт о встрече
     уходит целиком, с хвостом; ссылка внутри фразы после них — пометкой, без
@@ -608,14 +608,53 @@ def test_forget_keeps_a_meeting_item_whole_across_a_non_markdown_break(tmp_path,
     assert p.edit[node] == f"Срок{sep}- {forget.REMOVED_NOTE} — перенесли\n- другое\n", p.edit.get(node)
 
 
-def test_forget_names_a_link_it_could_not_cut(tmp_path):
-    """Перевод строки в алиасе: построчное вырезание ссылку не видит — путь
-    файла в «проверь сам», а не молча (out7 Sonnet I1, Haiku I1)."""
+def test_forget_cuts_a_link_with_a_line_break_in_its_alias(tmp_path):
+    """Перевод строки в алиасе: построчно ссылку не видно — её заменяет
+    пометка по всему тексту, а не «забыто частично» с живой ссылкой (out8 DS I1)."""
     root, graph = _world(tmp_path)
     node = graph / "Ядра" / "Срок.md"
     node.write_text(f"см. [[Встречи/{STAMP}|тема\nплатёж]]\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
-    assert any(c.startswith("Ядра/Срок.md: ссылка на встречу осталась") for c in p.check), p.check
+    assert p.edit[node] == f"см. {forget.REMOVED_NOTE}\n", p.edit.get(node)
+
+
+def test_forget_names_a_link_form_it_cannot_cut(tmp_path):
+    """`[[Встречи/<штамп>#якорь]]` `_link_re` не знает (у владельца 16 таких
+    ссылок, замер 30.10) — путь в «проверь сам», не молча (out8 Haiku I2)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(f"- [[Встречи/{STAMP}#Решение]] — выбрали ЮPay\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert "Ядра/Срок.md: ссылка на встречу осталась после правки — убери руками" in p.check, p.check
+
+
+def test_forget_names_any_unreadable_file_that_carries_the_stamp(tmp_path):
+    """Не в UTF-8 и не досье: штамп ASCII виден и в cp1251 — путь в «проверь
+    сам» (out8 Sonnet I1, Haiku I1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_bytes(f"- [[Встречи/{STAMP}]] — факт\n".encode("cp1251"))
+    p = forget.plan(STAMP, root, graph)
+    assert any(c.startswith("Ядра/Срок.md: ссылается на встречу, но не в UTF-8") for c in p.check), p.check
+
+
+def test_forget_names_a_snapshot_copy_with_its_run(tmp_path):
+    """Копий в снимках до десяти: строка «проверь сам» несёт штамп прогона,
+    иначе их не различить (out8 DS M2)."""
+    root, graph = _world(tmp_path)
+    for run in ("2026-07-20_0300", "2026-07-21_0300"):
+        copy = charoite_paths.graph_backups(graph, "cloud_backup", root=root) / run / "Ядра" / "Срок.md"
+        copy.parent.mkdir(parents=True)
+        copy.write_text(f"- [[Встречи/{STAMP}#Решение]] — факт\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert {c.split(":")[0] for c in p.check if "Срок.md" in c} == {
+        "2026-07-20_0300/Ядра/Срок.md (снимок)", "2026-07-21_0300/Ядра/Срок.md (снимок)"}, p.check
+
+
+@pytest.mark.parametrize("text", ["", "a", "a\n", "a\r", "a\r\r\n", "\n\n", "a\u2028\x0b\x0c\x85\n", "—"])
+def test_markdown_lines_keep_the_text_byte_for_byte(text):
+    """Деление на строки Markdown ничего не теряет и не добавляет (out8 DS M4)."""
+    assert "".join(forget._MD_LINE.findall(text)) == text
 
 
 def test_surviving_nodes_are_backed_up_before_editing(tmp_path):
@@ -2244,3 +2283,13 @@ def test_forget_preserves_backups_of_same_named_notes(tmp_path):
     for rel in originals:
         assert "Собственная заметка." in (graph / rel).read_text(encoding="utf-8")
         assert f"Встречи/{STAMP}" not in (graph / rel).read_text(encoding="utf-8")
+
+
+def test_forget_item_marker_is_indented_by_markdown_blanks_only(tmp_path):
+    """Пункт списка — после пробелов и табуляций, не после U+2028: такая строка —
+    фраза, ссылка в ней заменяется пометкой (out8 Sonnet M1, Haiku M1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(f" - [[Встречи/{STAMP}]] — факт\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f" - {forget.REMOVED_NOTE} — факт\n", p.edit.get(node)
