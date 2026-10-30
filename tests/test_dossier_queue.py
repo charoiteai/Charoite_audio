@@ -894,3 +894,106 @@ def test_merged_source_keeps_the_revision(nd, tmp_path, capsys):
     assert "снята" not in out and path.read_bytes() == before
     keys = dossier.load_index(graph / CHAROITE.dossier_dir)[0]["ключи"]
     assert dossier.keywords("тема_1б")[0] in keys, "канон после слияния ищется по имени (n841-out2 DS M3)"
+
+
+# ─────────── №842: `вход:` — метка генератора тела, не триггер ───────────
+
+def test_generator_input_moves_with_prompt_limits_and_model(monkeypatch):
+    """Отпечаток генератора стабилен и меняется от каждой ручки, что решает тело:
+    промпт, правило безымянных, лимиты отбора и ответа, температуры, модель."""
+    base = dossier.generator_input("m")
+    assert base == dossier.generator_input("m") and len(base) == 12
+    assert dossier.generator_input("m2") != base
+    for name, value in (("PROMPT", dossier.PROMPT + " "), ("MAX_SOURCES", dossier.MAX_SOURCES + 1),
+                        ("SRC_CHARS", dossier.SRC_CHARS + 1), ("PROMPT_CHARS", dossier.PROMPT_CHARS + 1),
+                        ("GEN_PREDICT", dossier.GEN_PREDICT + 1), ("GEN_SYSTEM", dossier.GEN_SYSTEM + " "),
+                        ("GEN_TEMPERATURES", (0.3, 0.05))):
+        with monkeypatch.context() as m:
+            m.setattr(dossier, name, value)
+            assert dossier.generator_input("m") != base, name
+    with monkeypatch.context() as m:
+        m.setattr(dossier.graph_names, "UNLABELED_RULE", dossier.graph_names.UNLABELED_RULE + " ")
+        assert dossier.generator_input("m") != base
+
+
+def test_render_writes_input_field_only_when_given():
+    files = {"Ядра/т": {"kind": "Ядра", "mtime": 1.0}}
+    with_gen = dossier.render("т", GOOD, ["Ядра/т"], files, "fp", "2026-10-30", "abc123")
+    without = dossier.render("т", GOOD, ["Ядра/т"], files, "fp", "2026-10-30")
+    assert "\nотпечаток: fp\nвход: abc123\nисточников: 1\n" in with_gen
+    assert "вход:" not in without
+    assert dossier.read_input(dossier.DossierLoad("ok", with_gen)) == "abc123"
+    assert dossier.read_input(dossier.DossierLoad("ok", without)) == ""
+    assert dossier.read_input(dossier.DossierLoad("missing", None)) == ""
+
+
+def test_new_generator_marks_unchanged_themes_but_does_not_rebuild(nd, tmp_path, monkeypatch, capsys):
+    """Смена генератора тему с прежними источниками не пересобирает (n843-in2,
+    критика 2): тело и правки целы, счёт и строка — в отчёте; `--full` собирает
+    нынешним и ставит его метку."""
+    graph = _graph(tmp_path, "Г", {"тема": None, "вторая": None})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    monkeypatch.setattr(nd, "generator_label", lambda c: "g1")
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert dossier.read_input(dossier.load_dossier(path)) == "g1"
+    second = graph / CHAROITE.dossier_dir / "вторая.md"
+    second.write_text(second.read_text(encoding="utf-8").replace("вход: g1\n", ""), encoding="utf-8")
+    before = path.read_bytes()
+    nd.calls.clear()
+    capsys.readouterr()
+
+    monkeypatch.setattr(nd, "generator_label", lambda c: "g2")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    out = capsys.readouterr().out
+    assert nd.calls == [] and r["собрано"] == 0 and r["без_изменений"] == 2, r
+    assert r["другой_вход"] == 1 and r["без_входа"] == 1, r
+    assert "собраны другим генератором 1, без метки `вход:` 1" in out
+    assert path.read_bytes() == before
+
+    r = nd.run(graph, {}, full=True, dry=False, limit=None)
+    assert sorted(nd.calls) == ["вторая", "тема"] and r["собрано"] == 2, r
+    assert dossier.read_input(dossier.load_dossier(path)) == "g2"
+    assert dossier.read_input(dossier.load_dossier(second)) == "g2"
+
+
+def test_same_generator_is_not_counted(nd, tmp_path, monkeypatch, capsys):
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    monkeypatch.setattr(nd, "generator_label", lambda c: "g1")
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    capsys.readouterr()
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert r["без_изменений"] == 1 and r["другой_вход"] == 0 and r["без_входа"] == 0, r
+    assert "другим генератором" not in capsys.readouterr().out
+
+
+def test_no_label_means_no_field_and_no_count(nd, tmp_path, capsys):
+    """Конфиг без модели (тесты, пустой пример): метки нет — досье как до №842,
+    счёта и строки нет, ночь не шумит."""
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert "вход:" not in path.read_text(encoding="utf-8")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert r["без_изменений"] == 1 and r["другой_вход"] == 0 and r["без_входа"] == 0, r
+    assert "другим генератором" not in capsys.readouterr().out
+
+
+def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
+    """Метка — по модели, что ответит на деле (`effective_model`: mlx-server
+    гонит свою `mlx_model`); сломанный конфиг — без метки и строкой, не падением."""
+    import llm as llm_mod
+
+    class Fake:
+        def __init__(self, c):
+            if c["llm"]["model"] == "сломан":
+                raise KeyError("base_url")
+
+        def effective_model(self, model):
+            return "mlx/" + model
+
+    monkeypatch.setattr(llm_mod, "LLM", Fake)
+    assert nd.generator_label({}) == ""
+    assert nd.generator_label({"llm": {}}) == ""
+    assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q")
+    assert nd.generator_label({"llm": {"model": "сломан"}}) == ""
+    assert "вход генератора не посчитан (KeyError" in capsys.readouterr().out

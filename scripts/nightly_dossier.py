@@ -125,7 +125,7 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
-             temperature: float = 0.2) -> str:
+             temperature: float = dossier.GEN_TEMPERATURES[0]) -> str:
     """Сводка локальной моделью. Думать не просим: на структурной задаче
     рассуждение съедает бюджет генерации и документ выходит беднее."""
     sys.path.insert(0, str(CODE / "src"))
@@ -137,12 +137,26 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
     out = []
     for chunk in llm.stream(
             prompt, model=model, think=False,
-            temperature=temperature, num_predict=1800,
-            system=("Ты составляешь фактические справки по документам. "
-                    "Отвечаешь только текстом справки в заданном формате, "
-                    "без обращений к читателю и без вопросов.")):
+            temperature=temperature, num_predict=dossier.GEN_PREDICT,
+            system=dossier.GEN_SYSTEM):
         out.append(chunk)
     return "".join(out).strip()
+
+
+def generator_label(c: dict) -> str:
+    """`вход:` генератора этой ночи (№842) — модель та, что ответит на деле
+    (`LLM.effective_model`, как у ключа кэша сводок). Конфиг без модели — `""`:
+    метки нет, сборка от этого не зависит (`generate` скажет о конфиге сама)."""
+    model = (c.get("llm") or {}).get("model")
+    if not model:
+        return ""
+    sys.path.insert(0, str(CODE / "src"))
+    from llm import LLM  # noqa: PLC0415
+    try:
+        return dossier.generator_input(LLM(c).effective_model(model))
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️ вход генератора не посчитан ({type(e).__name__}: {e}) — досье без метки `вход:`")
+        return ""
 
 
 LOCK_WAIT = 5 * 60          # дольше держит только зависший сосед
@@ -196,8 +210,10 @@ class _GraphRun:
     (n841-out2 Haiku M1, out3 Sonnet M1).
     """
 
-    def __init__(self, graph: pathlib.Path, files: dict, cl: dict, today: str, stamp: str):
+    def __init__(self, graph: pathlib.Path, files: dict, cl: dict, today: str, stamp: str,
+                 gen: str = ""):
         self.graph, self.folder = graph, graph / CHAROITE.dossier_dir
+        self.gen = gen            # `вход:` генератора этой ночи (№842)
         self.files, self.cl, self.today, self.stamp = files, cl, today, stamp
         self.reads = _DossierReads()
         self.entries: dict[str, dict] = {}
@@ -211,6 +227,9 @@ class _GraphRun:
         self.changed = self.broken_manual = 0
         self.labeled = 0          # метка в теле при тех же источниках — эту ночь не трогаем
         self.revised = 0          # тело правила облачная ревизия (`ревизия:` в шапке) — не пересобираем
+        # без изменений, но тело собрано другим генератором / до метки `вход:` —
+        # подмножество `unchanged`, их пересоберёт только `--full` (№842)
+        self.other_input = self.no_input = 0
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе."""
@@ -241,7 +260,8 @@ class _GraphRun:
                 "занят": self.locked, "не_успели": self.late,
                 "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed,
                 "метка_в_теле": self.labeled,
-                "ревизия": self.revised}
+                "ревизия": self.revised,
+                "другой_вход": self.other_input, "без_входа": self.no_input}
 
     def report(self) -> None:
         if self.skipped:
@@ -250,6 +270,9 @@ class _GraphRun:
                   f"не успели за ночь {self.late}, правки автора повреждены {self.broken_manual}, "
                   f"досье изменилось {self.changed}, метка в теле {self.labeled}, "
                   f"ревизия {self.revised}")
+        if self.gen and (self.other_input or self.no_input):
+            print(f"  {self.graph.name}: без изменений, но собраны другим генератором {self.other_input}, "
+                  f"без метки `вход:` {self.no_input} — нынешним их пересоберёт только `--full`")
 
 
 class Candidate:
@@ -262,10 +285,11 @@ class Candidate:
         self.cls, self.собрано, self.loaded, self.mtime = cls, собрано, loaded, mtime
 
 
-def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_GraphRun, list[Candidate]]:
+def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str,
+          gen: str = "") -> tuple[_GraphRun, list[Candidate]]:
     files, backlinks = dossier.scan(graph, schema=CHAROITE)
     cl = dossier.clusters(files, backlinks, schema=CHAROITE) if files else {}
-    g = _GraphRun(graph, files, cl, today, stamp)
+    g = _GraphRun(graph, files, cl, today, stamp, gen)
     found = []
     for theme, members in cl.items():
         path = g.folder / f"{theme}.md"
@@ -295,11 +319,24 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
                 print(f"  ⏭ {graph.name} · {theme}: метка в теле — ночь не трогает")
             else:
                 g.unchanged += 1
+                _count_input(g, loaded)
             continue
         cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
+
+
+def _count_input(g: _GraphRun, loaded: dossier.DossierLoad) -> None:
+    """Тема без изменений: каким генератором собрано тело. Только счёт — смена
+    генератора тему не пересобирает (№842, n843-in2 критика 2)."""
+    if not g.gen:
+        return
+    was = dossier.read_input(loaded)
+    if not was:
+        g.no_input += 1
+    elif was != g.gen:
+        g.other_input += 1
 
 
 def _skip_held(g: _GraphRun, theme: str, rev: str, same: bool) -> None:
@@ -369,7 +406,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return None
     g0 = clock()
     body = ""
-    for temperature in (0.2, 0.05):          # вторая попытка чуть холоднее
+    for temperature in dossier.GEN_TEMPERATURES:
         try:
             # метка деятелем — тем же словом, что во входе: отказом она красила
             # бы ночь и держала тему в голове очереди (n815-in1 C2); «Правки
@@ -393,7 +430,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return clock() - g0
     gen_s = clock() - g0
 
-    text = dossier.render(theme, body, members, g.files, fp, g.today)
+    text = dossier.render(theme, body, members, g.files, fp, g.today, g.gen)
     if manual:
         text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
 
@@ -583,6 +620,7 @@ def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
     today = date.today().isoformat()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")   # штамп копий .backup/, с секундами как у ревизии
     out = RunResult()
+    gen = generator_label(c)
     candidates: list[Candidate] = []
     try:
         for path in paths:
@@ -590,7 +628,7 @@ def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
             # графы до сломанного, а общий скан без этой границы отменял бы
             # работу всех (выход out1 №621, Sonnet I1, DS I1).
             try:
-                g, found = _scan(path, full, today, stamp)
+                g, found = _scan(path, full, today, stamp, gen)
             except Exception as e:  # noqa: BLE001
                 print(f"⚠️ скан {path.name} не удался ({type(e).__name__}: {e}) — граф пропущен")
                 out.scan_failed.append(path.name)

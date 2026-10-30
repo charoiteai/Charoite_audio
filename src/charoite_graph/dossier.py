@@ -26,7 +26,8 @@
 Полный прогон (`--full`) — только по руке, после смены промпта, лимитов или
 модели: состав кластера входит в отпечаток, так что сдвиг границы и без него
 делает тему изменившейся, а пересказ тех же источников новых фактов не даёт и
-стирает облачную ревизию тела (№809, замер .backup 25.10).
+стирает облачную ревизию тела (№809, замер .backup 25.10). Что генератор
+сменился, видно по полю `вход:` (№842): метка, а не триггер пересборки.
 """
 from __future__ import annotations
 
@@ -493,8 +494,36 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
                          unlabeled_rule=graph_names.UNLABELED_RULE)
 
 
+# Остальное, что решает тело досье, кроме источников: вызов модели ночи.
+GEN_SYSTEM = ("Ты составляешь фактические справки по документам. "
+              "Отвечаешь только текстом справки в заданном формате, "
+              "без обращений к читателю и без вопросов.")
+GEN_PREDICT = 1800
+GEN_TEMPERATURES = (0.2, 0.05)      # вторая попытка чуть холоднее
+INPUT_FIELD = "вход"
+
+
+def generator_input(model: str) -> str:
+    """Отпечаток генератора тела (`вход:` в шапке, №842): промпт, лимиты отбора
+    и ответа, модель. Отпечаток состава этого не видит: после снятия воскресного
+    `--full` (№809) досье с прежними источниками новым генератором не собиралось
+    никогда. Метка, а не триггер: пересборка всех тем по смене промпта сжала бы
+    наращённые тела и стёрла ревизию (n843-in2, критика 2) — ночь показывает
+    счёт, решает `--full` руками. Код отбора и разбора ответа сюда не входит."""
+    raw = json.dumps([PROMPT, graph_names.UNLABELED_RULE, GEN_SYSTEM, MAX_SOURCES,
+                      SRC_CHARS, PROMPT_CHARS, GEN_PREDICT, list(GEN_TEMPERATURES), model],
+                     ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def read_input(loaded: DossierLoad) -> str:
+    """`вход:` из шапки; `""` — поля нет (досье до №842 или собрано руками)."""
+    m = re.search(rf"^{INPUT_FIELD}:\s*(\S+)", (loaded.text or "")[:600], re.M)
+    return m.group(1) if m else ""
+
+
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
-           fp: str, today: str) -> str:
+           fp: str, today: str, gen: str = "") -> str:
     """Готовый файл досье: frontmatter для машины, текст для человека."""
     kinds: dict[str, list[str]] = defaultdict(list)
     for m in members:
@@ -508,6 +537,7 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
         f"тема: {theme}",
         f"собрано: {today}",
         f"отпечаток: {fp}",
+        *([f"{INPUT_FIELD}: {gen}"] if gen else []),
         f"источников: {len(members)}",
         "ключи: [" + ", ".join(keys) + "]",
         "tags: [досье, авто]",
