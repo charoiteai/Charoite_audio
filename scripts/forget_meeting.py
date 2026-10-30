@@ -88,7 +88,6 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 
 import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402
-import graph_links  # noqa: E402
 import graphs  # noqa: E402
 import install_profile  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -1203,23 +1202,20 @@ def _other_meetings(text: str, keys: typing.Iterable[str]) -> list[str]:
 _ENTRY = re.compile(r"[ \t]*(?:[•–—⁃‣▪>|#]|\*\*|__|\[\[)")
 
 
-def _flat_lines(text: str, lines: list[str]) -> set[int]:
-    """Номера строк, где блоков Markdown нет: YAML-шапка (`frontmatter.split`) и
-    огороженный код (`graph_links._FENCE_RE`). Ленивое продолжение пункта шапки
-    снимало ключ `aliases:` за ним, а в коде — строку примера (n845-opus I1, M1)."""
-    fm, body = frontmatter.split(text)
-    head = len(text) - len(body) if fm is not None else 0
-    flat: set[int] = set()
-    pos, fence = 0, False
+def _header_lines(text: str, lines: list[str]) -> int:
+    """Сколько первых строк занимает YAML-шапка (`frontmatter.split`, BOM терпим):
+    блоков Markdown в ней нет — ленивое продолжение пункта шапки снимало ключ
+    `aliases:` за ним (n845-opus I1)."""
+    bom = 1 if text.startswith("\ufeff") else 0
+    fm, body = frontmatter.split(text[bom:])
+    if fm is None:
+        return 0
+    head, pos = len(text) - len(body), 0
     for n, line in enumerate(lines):
-        if pos < head:
-            flat.add(n)
-        elif graph_links._FENCE_RE.match(line):
-            fence = not fence     # сама ограда — не пункт: ей и так достаётся пометка
-        elif fence:
-            flat.add(n)
+        if pos >= head:
+            return n
         pos += len(line)
-    return flat
+    return len(lines)
 
 
 def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = None,
@@ -1239,20 +1235,21 @@ def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = No
     # разделители строк — как были: `"\n".join` менял U+2028 и `\x0b` (out5 DS I5),
     # а одиночный `\r` склеивал файл в один пункт (out6 Haiku I2)
     lines = _MD_LINE.findall(text)
-    flat = _flat_lines(text, lines)
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    header = _header_lines(text, lines)
+    # циклы — `for` по строкам, без счётчиков: мутант `i += 1` → `i += 0` крутил
+    # `out.append` без конца и ронял раннер CI по памяти раньше срока теста (№845)
+    skip = 0              # строки до неё ушли блоком предыдущего пункта
+    for i, line in enumerate(lines):
+        if i < skip:
+            continue
         if not link.search(line):
             out.append(line)
-            i += 1
             continue
-        if i in flat:
-            # шапка и код: пункт со ссылкой уходит одной строкой, как до №845; код
-            # внутри пункта о встрече — его тело и уходит с блоком ниже
-            if not _ITEM.match(line.rstrip("\r\n")):
+        if i < header:
+            # шапка: пункт со ссылкой уходит одной строкой, как до №845; пункт со
+            # ссылкой и на другую встречу теряет только ссылку (n845-opusfix Haiku I3)
+            if not _ITEM.match(line.rstrip("\r\n")) or _other_meetings(link.sub("", line), keys):
                 out.append(link.sub(REMOVED_NOTE, line))
-            i += 1
             continue
         # пункт, который называет и другие встречи («Источники» досье), — не только
         # её след: теряет ссылку, а не блок (out1 Haiku I1)
@@ -1266,37 +1263,43 @@ def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = No
                 head = _ITEM.match(bare)                   # маркер — только в начале строки (out5 Haiku M2)
                 if re.search(r"[^\W_]", dossier.LINK_RE.sub("", bare[head.end():] if head else bare)):
                     told.append("пометка")
-            i += 1
             continue
-        base, j = _indent(line), i + 1
+        base = _indent(line)
         # после пустой строки пункт продолжает только строка от колонки его текста,
         # мельче — абзац вне списка, как в CommonMark (n845-in1 Sonnet I3)
         head = _ITEM.match(line.rstrip("\r\n")).end()
         head += len(line[head:]) - len(line[head:].lstrip(" \t"))
         body = max(len(line[:head].rstrip("\r\n").expandtabs(4)), base + 1)
-        while j < len(lines):
-            if lines[j].strip(_BLANK):
-                # без пустой строки пункт продолжает строка от колонки его текста или
-                # ленивое продолжение — текст, который не открывает свой блок; сосед
-                # « - другой» с отступом в колонку — свой пункт (out1 DS C1, Haiku I3)
-                if _indent(lines[j]) < body:
-                    if _OPENS.match(lines[j].rstrip("\r\n")):     # `$` не видит `\r` (out2 Sonnet I1)
-                        break
-                    if told is not None:
-                        told.append("ленивая")
-                j += 1
-                continue
-            k = j
-            while k < len(lines) and not lines[k].strip(_BLANK):
-                k += 1
-            if k < len(lines) and _indent(lines[k]) >= body:
-                j = k
-                continue
-            break
+        skip = _block_end(lines, i, body, told)
         if lost is not None:
-            lost += [m for gone in lines[i:j] for m in _other_meetings(link.sub("", gone), keys)]
-        i = j
+            lost += [m for gone in lines[i:skip] for m in _other_meetings(link.sub("", gone), keys)]
     return "".join(out)
+
+
+def _block_end(lines: list[str], item: int, body: int, told: list[str] | None) -> int:
+    """Номер первой строки после блока пункта `lines[item]` с колонкой текста `body`.
+    Пустые строки в конце блока остаются соседям."""
+    gap = None            # начало серии пустых строк внутри блока
+    for n in range(item + 1, len(lines)):
+        if not lines[n].strip(_BLANK):
+            if gap is None:
+                gap = n
+            continue
+        if gap is not None:
+            # после пустой строки пункт продолжает только строка от колонки текста
+            if _indent(lines[n]) < body:
+                return gap
+            gap = None
+            continue
+        # без пустой строки пункт продолжает строка от колонки его текста или
+        # ленивое продолжение — текст, который не открывает свой блок; сосед
+        # « - другой» с отступом в колонку — свой пункт (out1 DS C1, Haiku I3)
+        if _indent(lines[n]) < body:
+            if _OPENS.match(lines[n].rstrip("\r\n")):     # `$` не видит `\r` (out2 Sonnet I1)
+                return n
+            if told is not None:
+                told.append("ленивая")
+    return len(lines) if gap is None else gap
 
 
 def _backup(path: pathlib.Path, stamp: str) -> pathlib.Path | None:
