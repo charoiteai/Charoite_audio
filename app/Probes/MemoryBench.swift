@@ -47,6 +47,8 @@ final class MemoryBench: XCTestCase {
         let foundPath = try ProbeTurn.reportPath("bench_\(armName)\(kind)_found")
         let index = try await ProbeTurn.isolateIndex(self)
         let packets = try ProbeTurn.PacketLog("bench_packet_\(armName)\(kind)")
+        // путь — сразу: оборванный прогон отчёта не пишет, а приватный файл остаётся (n752-out2, DS M3)
+        print("пачки (0600, убрать после разбора): \(packets.path)")
         var report = ProbeTurn.header(withModel
             ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез тем же ходом, что чат)"
             : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)", arm: arm)
@@ -143,10 +145,10 @@ final class MemoryBench: XCTestCase {
             let lengths = (outcome.parts ?? []).map(\.text.count)
             report += "\n  ранги: \(ranks.joined(separator: ", ")); кусков \(lengths.count)"
                 + (lengths.isEmpty ? "" : " длиной \(lengths.min()!)–\(lengths.max()!) зн.") + ", "
-                + "оценка промпта \(ChatRetrieval.estimatedTokens(ProbeTurn.system(question: c.q, outcome: outcome)) + ChatRetrieval.messageTokens(c.q)) ток."
+                + "оценка промпта \(ChatRetrieval.messageTokens(ProbeTurn.system(question: c.q, outcome: outcome)) + ChatRetrieval.messageTokens(c.q)) ток."
                 + (reply?.promptTokens.map { ", промпт у Ollama \($0) ток." } ?? "")
             if withModel {
-                let inFound = c.must.filter { norm(found).contains(norm($0)) }.count
+                let inFound = c.must.filter { ProbeTurn.factRank($0, in: outcome.parts, norm: norm) != nil }.count
                 // отказ первой строкой и ни одного факта в ответе: оговорка
                 // «точной даты нет» перед найденным фактом — не отказ (out2, DS I2).
                 // Судья — как в базе, по всем вердиктам (счёт по вердиктам ниже):
@@ -240,8 +242,7 @@ final class MemoryBench: XCTestCase {
     private func replayPackets(_ path: String, cases: [Case]) async throws {
         let (packets, torn) = try ProbeTurn.PacketLog.read(path)
         guard let first = packets.first else { throw ProbeTurn.SetupError(description: "пачек нет в файле: \(path)") }
-        guard first.arm.range(of: #"^(chat|legacy|p[1-9][0-9]{0,2})$"#, options: .regularExpression) != nil,
-              packets.allSatisfy({ $0.arm == first.arm }) else {
+        guard ProbeTurn.isKnownArm(first.arm), packets.allSatisfy({ $0.arm == first.arm }) else {
             throw ProbeTurn.SetupError(description: "в файле пачки разных или незнакомых рук: \(path)")
         }
         let byQ = Dictionary(cases.map { ($0.q, $0) }, uniquingKeysWith: { a, _ in a })
@@ -252,6 +253,10 @@ final class MemoryBench: XCTestCase {
             }
             guard p.body != nil else {
                 throw ProbeTurn.SetupError(description: "пачка без синтеза — повторять нечего, запиши с CHAROITE_BENCH_ANSWERS=1: «\(p.q)»")
+            }
+            // модель спрашивали и она промолчала — «при записи» вышло бы нулём (n752-out2, DS C1)
+            guard p.answer != nil || !(p.abstain || !p.text.isEmpty) else {
+                throw ProbeTurn.SetupError(description: "пачка записана при молчащей модели — эталоном не годится: «\(p.q)»")
             }
             guard p.local == ProbeTurn.inferenceIsLocal, p.model == ProbeTurn.model, p.server == ProbeTurn.server else {
                 throw ProbeTurn.SetupError(description: "пачка записана при \(p.model) на \(p.server) — сейчас "
@@ -283,29 +288,34 @@ final class MemoryBench: XCTestCase {
             asked += 1
             let same = p.body == String(decoding: body, as: UTF8.self)
             if same { sameBody += 1 }
+            // запись считается до запроса: сегодняшнее молчание её не занижает (n752-out2, DS I1)
+            let was = p.must.filter { norm(p.answer ?? "").contains(norm($0)) }.count
+            let inFound = p.must.filter { ProbeTurn.factRank($0, in: outcome.parts, norm: norm) != nil }.count
+            let absentThen = p.answer.map { ChatRetrieval.isAbsence($0, lines: 2) } ?? false
+            if p.abstain {
+                (abstainThen, abstainTotal) = (abstainThen + (absentThen ? 1 : 0), abstainTotal + 1)
+            } else {
+                (then, total) = (then + was, total + p.must.count)
+                if inFound > 0 && was == 0 && ChatRetrieval.isAbsence(p.answer ?? "") { refusalThen += 1 }
+            }
             let started = clock.now
             let reply = await ProbeTurn.send(body)
             synthTime += started.duration(to: clock.now)
             guard let answer = reply?.text else {
                 unanswered.append(p.q)
-                total += p.must.count
                 continue
             }
             if answer == p.answer { sameAnswer += 1 }
             report += "\n· \(p.q)\n  запрос тот же: \(same ? "да" : "нет")"
             if p.abstain {
-                let a = p.answer.map { ChatRetrieval.isAbsence($0, lines: 2) } ?? false
                 let b = ChatRetrieval.isAbsence(answer, lines: 2)
-                (abstainThen, abstainNow, abstainTotal) = (abstainThen + (a ? 1 : 0), abstainNow + (b ? 1 : 0), abstainTotal + 1)
-                report += ", воздержание при записи: \(a ? "да" : "нет"), сейчас: \(b ? "да" : "нет")"
+                abstainNow += b ? 1 : 0
+                report += ", воздержание при записи: \(absentThen ? "да" : "нет"), сейчас: \(b ? "да" : "нет")"
             } else {
-                let was = p.must.filter { norm(p.answer ?? "").contains(norm($0)) }.count
                 let got = p.must.filter { norm(answer).contains(norm($0)) }.count
-                (then, now, total) = (then + was, now + got, total + p.must.count)
+                now += got
                 report += ", факты при записи \(was)/\(p.must.count), сейчас \(got)/\(p.must.count)"
                 // false_refusal — тем же судьёй, что прямой прогон (n752-out1, Haiku I6)
-                let inFound = p.must.filter { norm(outcome.text).contains(norm($0)) }.count
-                if inFound > 0 && was == 0 && ChatRetrieval.isAbsence(p.answer ?? "") { refusalThen += 1 }
                 if inFound > 0 && got == 0 && ChatRetrieval.isAbsence(answer) {
                     refusalNow += 1
                     report += "\n  false_refusal: отказ при \(inFound)/\(p.must.count) фактах в выдаче"
@@ -327,6 +337,9 @@ final class MemoryBench: XCTestCase {
         print("отчёт: \(out)")
         XCTAssertTrue(unanswered.isEmpty, "модель не ответила на \(unanswered.count) из \(asked) — проверь Ollama "
                       + "(\(ProbeTurn.model)); смотри \(out)")
+        // неполный файл и файл без измеренных вопросов — не эталон (n752-out2, Sonnet I2, DS I2)
+        XCTAssertTrue(missing.isEmpty && !torn, "пачки не на весь набор (\(packets.count) из \(cases.count)) — смотри \(out)")
+        XCTAssertGreaterThan(asked, 0, "повтор не спросил модель ни разу — пачки без выдачи, смотри \(out)")
     }
 
     /// Судья фактов: регистр, «ё», и любые цепочки пробелов — один пробел:

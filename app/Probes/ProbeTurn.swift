@@ -23,6 +23,12 @@ enum ProbeTurn {
     /// упаковщик режет, а p1–p2 упираются в потолок источника 600/800 —
     /// с p3+ не сравнимы, n752-out1 Sonnet I3). Прочее — ошибка: опечатка `p4l` молча
     /// перезаписывала бы отчёт руки `chat` (n752-in1, Sonnet I5, DS M5).
+    /// Имя руки, которое понимает `arm()`: им же повтор допускает имя из файла
+    /// пачек в путь отчёта (n752-out2, DS M2).
+    static func isKnownArm(_ name: String) -> Bool {
+        name == "chat" || name == "legacy" || name.range(of: #"^p[1-9][0-9]{0,2}$"#, options: .regularExpression) != nil
+    }
+
     static func arm() throws -> (name: String, params: ChatRetrieval.Params) {
         let raw = (ProcessInfo.processInfo.environment["CHAROITE_BENCH_ARM"] ?? "")
             .trimmingCharacters(in: .whitespaces)
@@ -30,8 +36,7 @@ enum ProbeTurn {
         case "", "chat": return ("chat", .chat)
         case "legacy": return ("legacy", .legacyProbe)
         default:
-            guard raw.range(of: #"^p[1-9][0-9]{0,2}$"#, options: .regularExpression) != nil,
-                  let n = Int(raw.dropFirst()) else {
+            guard isKnownArm(raw), let n = Int(raw.dropFirst()) else {
                 throw SetupError(description: "CHAROITE_BENCH_ARM=\(raw): ждём chat, legacy или p<N> (1–999)")
             }
             return (raw, ChatRetrieval.Params(limit: n, snippet: 1000, budget: n * 1000))
@@ -210,8 +215,10 @@ enum ProbeTurn {
             var out: [Packet] = []
             for (i, line) in lines.enumerated() {
                 do { out.append(try JSONDecoder().decode(Packet.self, from: Data(line))) } catch {
-                    guard i == lines.count - 1 else {
-                        throw SetupError(description: "пачка \(i + 1) не разобралась: \(path)")
+                    // единственная строка не разобралась — это формат, а не обрыв (n752-out2, DS M1)
+                    guard i == lines.count - 1, !out.isEmpty else {
+                        throw SetupError(description: "пачка \(i + 1) не разобралась (формат сменился? перезапиши): "
+                                         + "\(path) — \(error)")
                     }
                     return (out, true)
                 }
@@ -231,13 +238,17 @@ enum ProbeTurn {
     static func factRank(_ fact: String, in parts: [ArchiveSearch.Part]?,
                          norm: (String) -> String) -> Int? {
         let needle = norm(fact)
-        return (parts ?? []).filter { part in
-            var lines = part.text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
-            if lines.first?.trimmingCharacters(in: .whitespaces).hasPrefix("Связано с [[") == true {
-                lines = lines.dropFirst()
-            }
-            return norm(lines.joined(separator: "\n")).contains(needle)
-        }.map(\.rank).min()
+        return (parts ?? []).filter { norm(pieceBody($0.text)).contains(needle) }.map(\.rank).min()
+    }
+
+    /// Тело куска без шапки — один судья «факт в выдаче» для рангов и
+    /// false_refusal (n752-out2, Sonnet M3).
+    static func pieceBody(_ text: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
+        if lines.first?.trimmingCharacters(in: .whitespaces).hasPrefix("Связано с [[") == true {
+            lines = lines.dropFirst()
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Отказ подготовки пробы: тест бросает его и падает с причиной до работы.
@@ -331,7 +342,7 @@ enum ProbeTurn {
     static func header(_ title: String, arm: (name: String, params: ChatRetrieval.Params)) -> String {
         let (name, p) = arm
         // для pN это заказ, а не факт: длины кусков — в строке «ранги» (n752-out1, Haiku C1)
-        return "\(title)\nрука: \(name) (limit \(p.limit), snippet \(p.snippet), budget \(p.budget)); "
+        return "\(title)\nрука: \(name) (заказ: limit \(p.limit), snippet \(p.snippet), budget \(p.budget)); "
             + "движок: \(engine); соседи по ссылке: \(inferenceIsLocal ? "да" : "нет"); модель: \(model)\n"
     }
 }
