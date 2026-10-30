@@ -95,7 +95,9 @@ def _list_fallback(fm: str, key: str) -> list:
 
 def list_field(text: str, key: str, where: str = "") -> list[str]:
     """Поле-список шапки (`aliases:`, `auto_aliases:`): список, блок или
-    одиночная строка; пустые и дубли — вон."""
+    одиночная строка; пустые и дубли — вон. BOM перед шапкой не прячет поле: его
+    видит `has_field`, и состав досье выходил бы пустым (n843-out1 Sonnet I1)."""
+    text = (text or "").removeprefix(_BOM)
     fm, _ = split(text)
     if fm is None:
         return []

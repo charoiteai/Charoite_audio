@@ -175,10 +175,136 @@ def test_grown_body(world, held, action):
     assert (p.action, p.reason) == (action, "grown")
 
 
-@pytest.mark.parametrize("held,action", [(False, "rebuild"), (True, "hold")])
-def test_manual_dossier_without_sources(world, held, action):
+@pytest.mark.parametrize("held", [False, True])
+def test_manual_dossier_without_sources_is_held(world, held):
+    """Досье без «Источников» собрано руками: писать в него ночь не вправе."""
     snap, _, members = world
     text = "---\nтип: досье\n---\n## Сейчас\n- факт\n"
     if held:
         text = dossier.with_revision(text, "2026-07-23")
-    assert _plan(text, members, snap) == dossier.Plan(action, "no_composition")
+    assert _plan(text, members, snap) == dossier.Plan("hold", "no_composition")
+
+
+def test_empty_file_is_rebuilt(world):
+    snap, _, members = world
+    assert _plan(" \n", members, snap) == dossier.Plan("rebuild", "new")
+
+
+def test_body_without_now_heading_is_held(world):
+    """Автор переименовал «## Сейчас» — тело не разобрано, дописывать некуда (out1 Sonnet I3)."""
+    snap, built, members = world
+    text = dossier.with_composition(_dossier(snap, built), [OLD]).replace("## Сейчас", "## Сегодня")
+    assert _plan(text, members, snap) == dossier.Plan("hold", "unparsed")
+
+
+def test_composition_survives_bom(world):
+    """BOM перед шапкой: поле видно и читается — иначе все встречи «новые» (out1 Sonnet I1)."""
+    snap, built, members = world
+    text = dossier.with_composition("\ufeff" + _dossier(snap, built), [OLD])
+    assert text.startswith("\ufeff---")
+    assert dossier.composition(text, schema=CHAROITE) == [OLD]
+    assert _plan(text, members, snap) == dossier.Plan("add", "meetings", (NEW,))
+
+
+@pytest.mark.parametrize("value", ["", "~", "null"])
+def test_composition_without_value_is_unreadable(world, value):
+    snap, built, members = world
+    text = _dossier(snap, built).replace("tags:", f"{dossier.COMPOSITION_FIELD}: {value}\ntags:", 1)
+    assert frontmatter.has_field(text, dossier.COMPOSITION_FIELD)
+    assert dossier.composition(text, schema=CHAROITE) is None
+    assert _plan(text, members, snap) == dossier.Plan("hold", "no_composition")
+
+
+def test_block_list_composition(world):
+    snap, built, members = world
+    text = _dossier(snap, built).replace("tags:", f"{dossier.COMPOSITION_FIELD}:\n  - {OLD}\ntags:", 1)
+    assert dossier.composition(text, schema=CHAROITE) == [OLD]
+    assert _plan(text, members, snap).action == "add"
+
+
+@pytest.mark.parametrize("held,action", [(False, "rebuild"), (True, "hold")])
+def test_damaged_file_is_never_appended(world, held, action):
+    """Тело с U+FFFD: дописка вернула бы знаки замены в файл (out1 Haiku C1)."""
+    snap, built, members = world
+    text = _dossier(snap, built, BODY.replace("первая", "перв\ufffdя"))
+    if held:
+        text = dossier.with_revision(text, "2026-07-23")
+    p = dossier.plan(dossier.DossierLoad("damaged", text), members, snap, schema=CHAROITE, on_disk=False)
+    assert (p.action, p.reason) == (action, "damaged")
+    same = dossier.plan(dossier.DossierLoad("damaged", text), built, snap, schema=CHAROITE, on_disk=False)
+    assert same.action == "skip"
+
+
+def test_meeting_missing_from_snapshot_is_gone(tmp_path):
+    snap = dossier.scan_snapshot(_graph(tmp_path, new_meeting=False), schema=CHAROITE)
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, NEW])
+    p = _plan(text, [THEME, OLD], snap)
+    assert (p.action, p.reason, p.gone) == ("rebuild", "gone", (NEW,))
+
+
+@pytest.mark.parametrize("held,action", [(False, "rebuild"), (True, "hold")])
+def test_meeting_that_left_the_theme_is_gone(world, held, action):
+    """Ссылку встречи на ядро сняли — файл жив, но тело её пересказывать не вправе (out1 Haiku I2)."""
+    snap, _, members = world
+    text = _dossier(snap, members)
+    if held:
+        text = dossier.with_revision(text, "2026-07-23")
+    p = _plan(text, [THEME, OLD, "Пётр"], snap)
+    assert (p.action, p.gone) == (action, (NEW,))
+
+
+def test_fork_stub_is_not_gone(tmp_path):
+    """Заглушка-развилка без одной цели — не уход (out1 Haiku I1)."""
+    g = _graph(tmp_path)
+    (g / "Встречи" / "Старое имя.md").write_text(
+        f"# Старое имя → [[Встречи/{OLD}]] · [[Встречи/{NEW}]]\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    assert "Старое имя" in snap.stubs and "Старое имя" not in snap.redirects
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, "Старое имя"])
+    assert _plan(text, [THEME, OLD], snap) == dossier.Plan("skip", "same")
+
+
+def test_stub_ring_does_not_hang(world):
+    snap, built, _ = world
+    ring = dossier.GraphSnapshot(snap.files, snap.backlinks, {"A": "B", "B": "A"}, frozenset())
+    text = dossier.with_composition(_dossier(snap, built), [OLD, "A"])
+    p = _plan(text, built, ring)
+    assert (p.action, p.gone) == ("rebuild", ("A",))
+
+
+def test_rejected_through_stub_stays_rejected(tmp_path):
+    g = _graph(tmp_path)
+    (g / "Встречи" / "Старое имя.md").write_text(f"# Старое имя → [[Встречи/{NEW}]]\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    text = frontmatter.set_list_field(_dossier(snap, [THEME, OLD]), dossier.REJECTED_FIELD, ["Старое имя"])
+    assert _plan(text, [THEME, OLD, NEW], snap) == dossier.Plan("skip", "same")
+
+
+def test_gone_wins_over_force(tmp_path):
+    snap = dossier.scan_snapshot(_graph(tmp_path, new_meeting=False), schema=CHAROITE)
+    text = dossier.with_revision(dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, NEW]), "2026-07-23")
+    assert _plan(text, [THEME, OLD], snap, force=True).action == "hold"
+
+
+def test_grow_limit_counts_each_new_meeting(tmp_path):
+    g = _graph(tmp_path)
+    third = "2026-07-25_0900"
+    (g / "Встречи" / f"{third}.md").write_text(f"Третья [[Ядра/{THEME}]].\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    built = [THEME, OLD, "Пётр"]
+    base = len(dossier.split_dossier(_dossier(snap, built))[1])
+    pad = dossier.GROW_LIMIT - dossier.ADD_CHARS - base
+    text = _dossier(snap, built, BODY.replace("- 403", "- 403" + "х" * pad))
+    assert len(dossier.split_dossier(text)[1]) + dossier.ADD_CHARS == dossier.GROW_LIMIT
+    assert _plan(text, built + [NEW], snap).action == "add"
+    assert _plan(text, built + [NEW, third], snap).reason == "grown"
+    over = _dossier(snap, built, BODY.replace("- 403", "- 403" + "х" * (pad + 1)))
+    assert _plan(over, built + [NEW], snap).reason == "grown"
+
+
+def test_has_field_and_set_list_field_keep_crlf():
+    text = "---\r\nтип: досье\r\n---\r\nтело\r\n"
+    out = frontmatter.set_list_field(text, dossier.COMPOSITION_FIELD, ["a", "b"])
+    assert "\r\nсостав: [\"a\", \"b\"]\r\n" in out
+    assert frontmatter.has_field(out, dossier.COMPOSITION_FIELD)
+    assert frontmatter.list_field(out, dossier.COMPOSITION_FIELD) == ["a", "b"]

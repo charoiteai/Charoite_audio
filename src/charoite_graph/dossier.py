@@ -148,11 +148,13 @@ def _title(p: pathlib.Path) -> str:
 
 @dataclass(frozen=True)
 class GraphSnapshot:
-    """Один обход графа: файлы, обратные ссылки и стрелки заглушек alias → канон.
-    Стрелки нужны и составу досье: встреча, ставшая заглушкой, не ушла (n843-in3 I4)."""
+    """Один обход графа: файлы, обратные ссылки, стрелки заглушек alias → канон и
+    имена всех заглушек слияния. Составу досье нужны оба: встреча, ставшая
+    заглушкой, не ушла, и у развилки без одной цели тоже (n843-in3 I4, out1 Haiku I1)."""
     files: dict[str, dict]
     backlinks: dict[str, set[str]]
     redirects: dict[str, str]
+    stubs: frozenset[str] = frozenset()
 
 
 def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
@@ -173,6 +175,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
     backlinks: dict[str, set[str]] = defaultdict(set)
     # alias → канон: заглушки сами не темы, но входящие ссылки на них живые
     redirects: dict[str, str] = {}
+    stubs: set[str] = set()
 
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -204,6 +207,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
             # цель — из первой строки заголовка (redirects.stub_target), а не
             # первая [[ссылка]] в файле: та могла быть из frontmatter (luna I5)
             target = _stub_target(text)
+            stubs.add(_title(p))
             if target:
                 redirects[_title(p)] = target.rsplit("/", 1)[-1].removesuffix(".md").strip()
             continue
@@ -260,7 +264,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
         who = backlinks.pop(alias, set())
         if who and canon in files:
             backlinks[canon] |= who - {canon}
-    return GraphSnapshot(files, dict(backlinks), redirects)
+    return GraphSnapshot(files, dict(backlinks), redirects, frozenset(stubs))
 
 
 def meeting_date(meta: dict, *, schema: GraphSchema) -> str | None:
@@ -691,8 +695,8 @@ GROW_LIMIT = 12_000                # тело длиннее после доба
 ADD_CHARS = 1_300                  # замер пилота 30.10: столько добавляет одна встреча
 
 Action = Literal["skip", "add", "rebuild", "hold"]
-Reason = Literal["new", "forced", "unreadable", "no_composition", "gone", "same", "labeled",
-                 "grown", "meetings"]
+Reason = Literal["new", "forced", "unreadable", "unparsed", "no_composition", "gone", "same",
+                 "labeled", "grown", "damaged", "meetings"]
 
 
 @dataclass(frozen=True)
@@ -716,8 +720,10 @@ def _source_meetings(sources: str, schema: GraphSchema) -> list[str]:
 def composition(text: str | None, *, schema: GraphSchema) -> list[str] | None:
     """Встречи, по которым собрано тело: поле `состав:`, без поля — встречи раздела
     «Источники» (досье, собранные до поля). None — состав не читается: досье без
-    «Источников» собрано руками (n843-in3 I3)."""
+    «Источников» собрано руками (n843-in3 I3), как и `состав:` без значения (out1 Sonnet I1)."""
     if text and frontmatter.has_field(text, COMPOSITION_FIELD):
+        if frontmatter.scalar_field(text, COMPOSITION_FIELD) in ("", "~", "null", "Null", "NULL"):
+            return None
         return [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, COMPOSITION_FIELD)]
     sources = split_dossier(text or "")[2]
     return None if sources is None else _source_meetings(sources, schema)
@@ -742,17 +748,23 @@ def _canon(name: str, snap: GraphSnapshot) -> str:
 def membership_delta(composed: list[str], rejected: list[str], members: list[str],
                      snap: GraphSnapshot, *, schema: GraphSchema,
                      on_disk: bool) -> tuple[list[str], list[str]]:
-    """(новые встречи темы, ушедшие встречи состава). Ушла — файла нет: в снимке
-    (`on_disk=False`) или на диске (`on_disk=True`, сверка под замком). Узлы других
-    видов уходом не считаются, новое ядро без новой встречи — не новое (n843-in2 C1, I5)."""
+    """(новые встречи темы, ушедшие встречи состава). Ушла — файла нет в снимке, при
+    `on_disk=True` (сверка под замком) и на диске, или живая встреча выпала из темы:
+    ссылку на ядро сняли, тело её пересказывать не вправе (out1 Haiku I2). Заглушка
+    слияния — не уход. Узлы других видов уходом не считаются, новое ядро без новой
+    встречи — не новое (n843-in2 C1, I5)."""
     had = {_canon(n, snap) for n in composed}
     skip = had | {_canon(n, snap) for n in rejected}
     meetings = {m for m in members
                 if m in snap.files and schema.is_meeting_folder(snap.files[m].get("kind", ""))}
     new = sorted(meetings - skip)
-    gone = sorted(n for n in had
-                  if n not in snap.files or (on_disk and not snap.files[n]["path"].exists()))
-    return new, gone
+    def left(n: str) -> bool:
+        if n in snap.stubs:
+            return False
+        if n not in snap.files or (on_disk and not snap.files[n]["path"].exists()):
+            return True
+        return n not in meetings and schema.is_meeting_folder(snap.files[n].get("kind", ""))
+    return new, sorted(n for n in had if left(n))
 
 
 def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema: GraphSchema,
@@ -761,23 +773,30 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
     ревизию (до него — пять мест по отпечатку с mtime, n843-in2). Первая подходящая
     строка:
 
-    - файла нет — rebuild;
-    - не читается — hold; без читаемого состава (руками) — rebuild, с ревизией hold;
+    - файла нет или он пуст — rebuild;
+    - не читается, тело без «## Сейчас» или без читаемого состава (досье руками) —
+      hold: писать в тело неизвестного устройства нельзя (n843-in3 I3, out1 Sonnet I3);
     - ушла встреча состава — rebuild, с ревизией hold (снимает «забыть» или владелец);
     - `force` (`--full`) — rebuild, кроме тела с ревизией или меткой (n815-out7 I3);
     - новых встреч нет — skip: смена текста прежних членов тело не трогает;
     - новые есть: метка в теле — rebuild (n843-in3 I1), тело выросло бы за
-      `GROW_LIMIT` — rebuild (I8), с ревизией оба — hold; иначе add.
+      `GROW_LIMIT` — rebuild (I8), с ревизией оба — hold; иначе add, а у
+      повреждённого файла (UTF-8 с заменой) — rebuild под охраной «Правок автора»,
+      с ревизией hold: дописка вернула бы в тело знаки замены (out1 Haiku C1).
     """
     if loaded.state == "missing":
         return Plan("rebuild", "new")
     if loaded.state == "unreadable":
         return Plan("hold", "unreadable")
     text = loaded.text or ""
+    if not text.strip():
+        return Plan("rebuild", "new")
     held = bool(revision(text))
+    if not VALID_RE.search(text):
+        return Plan("hold", "unparsed")
     composed = composition(text, schema=schema)
     if composed is None:
-        return Plan("hold" if held else "rebuild", "no_composition")
+        return Plan("hold", "no_composition")
     rejected = [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, REJECTED_FIELD)]
     new, gone = membership_delta(composed, rejected, members, snap, schema=schema, on_disk=on_disk)
     if gone:
@@ -791,6 +810,8 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
         return Plan("hold" if held else "rebuild", "labeled", tuple(new))
     if len(split_dossier(text)[1]) + ADD_CHARS * len(new) > GROW_LIMIT:
         return Plan("hold" if held else "rebuild", "grown", tuple(new))
+    if loaded.state == "damaged":
+        return Plan("hold" if held else "rebuild", "damaged", tuple(new))
     return Plan("add", "meetings", tuple(new))
 
 
