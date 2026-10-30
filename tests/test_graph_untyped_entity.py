@@ -69,14 +69,17 @@ def test_type_outside_the_list_gives_no_node(tmp_path, monkeypatch, typ):
     assert not (graph / g.CANDIDATES_NOTE).exists(), "человеку подтверждать нечего — только лог"
 
 
-def test_untyped_leaves_its_trace_in_the_log(tmp_path, monkeypatch):
-    """След удержания — только журнал: кандидатов нет, значит строка лога обязана быть (out1 DS M7)."""
+def test_untyped_leaves_its_trace_in_the_log(tmp_path, monkeypatch, capsys):
+    """След удержания — журнал и stdout: кандидатов нет, значит строка лога обязана быть (out1 DS M7);
+    stdout печатает `settle_untyped` по исходу (mut2, Haiku I1)."""
     graph = _graph(tmp_path)
     monkeypatch.setattr(g, "_root", lambda: tmp_path / "data")
     held = g.apply_entities(graph, [{"имя": "Иван Петров", "тип": "человек", "суть": "x"}], LINK, typed=True)
     assert held == {("Системы", "Иван Петров"): ("untyped", [])}
+    capsys.readouterr()
     g.settle_untyped(graph, held, LINK)
     assert held == {("Системы", "Иван Петров"): ("untyped", [])}
+    assert "Системы/Иван Петров" in capsys.readouterr().out
     log = (tmp_path / "data" / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
     assert "узел не создан: Системы/Иван Петров: тип вне перечня разбора" in log, log
 
