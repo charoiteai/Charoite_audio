@@ -204,6 +204,13 @@ def emit(obj: dict):
             _stop_event.set()
 
 
+def _content_age(hub) -> str:
+    """Возраст содержимого канала собеседников для пульса (№654): агрегат, по нему
+    сверяется живой признак мёртвого канала на следующих встречах."""
+    age = hub.health_snapshot().get("channels", {}).get("blackhole", {}).get("content_age_seconds")
+    return "-" if age is None else f"{age:.0f}"
+
+
 def quiet_loop_warn(tag: str):
     """Голос для вспомогательного контура, который раньше молчал.
 
@@ -1526,6 +1533,10 @@ def main():
                 # владельца, а правило `alone` умирало (ревью 20.08, DeepSeek).
                 heard_by_channel.note_gate(placed.start / hub.sr, gate_step_s,
                                            is_mic=chan.is_mic(speaker))
+                if heard_by_channel.call:
+                    # звонок идёт — признак мёртвого содержимого канала собеседников
+                    # судит хаб по своим часам (№654); липкий, повтор безвреден
+                    hub.set_call()
                 # Позиционная раскладка (ревью 15.08): если в чанке говорили
                 # несколько человек кусками от секунды, распознаём по кускам —
                 # текст на границе реплик перестаёт уходить чужому голосу
@@ -3627,7 +3638,8 @@ def main():
                               f"top_share={top_share:.2f} "
                               f"echoed_n={len(echoed)} "
                               f"text_pairs={pairs} "
-                              f"signed={live_signed}",
+                              f"signed={live_signed} "
+                              f"content_age_s={_content_age(hub)}",
                               file=sys.stderr, flush=True)
                     except Exception as e:  # noqa: BLE001
                         print(f"owner-pulse: сбой ({e})", file=sys.stderr, flush=True)

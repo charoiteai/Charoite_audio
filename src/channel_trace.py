@@ -83,6 +83,16 @@ PHONE_REASONS = {                # причина — значение из enum
     "stalled": "запись не поднялась после застоя",
     "no_stop": "стоп не зафиксирован — приложение не закрыло файл",
 }
+# --- Содержимое канала собеседников (№654) -------------------------------
+# Кадры идут, а в них нули, пока звонок идёт: гарнитура отключилась, собеседники
+# слышны через динамики. Вид события хаба `CH_SILENT`/`CH_AUDIBLE` — не эпизод
+# отсутствия канала (`episodes_of` его не видит, `lost_till_end` и срез хвоста
+# после звонка №733 не задеты). В итог — только серия, открытая на стопе: вернув-
+# шееся содержимое доказало, что канал жив, и законная долгая пауза собеседников
+# не должна делать встречу «неполной» (Important DS in2).
+KIND_SILENT = "silent"
+KIND_AUDIBLE = "audible"
+PHRASE_SILENT = "не пишется с"
 PHRASE_CUT = "оборвана"          # терминальный стоп: дальше встреча не записана
 PHRASE_SPLIT = "прервана"        # ротация: файл закрыт не человеком, продолжение — если запись возобновилась
 PHRASE_CONTINUED = "продолжение, если запись возобновилась, следующим файлом"
@@ -114,7 +124,7 @@ PHRASE_GAP = ": пробел в записи"
 _TRACE_RE = re.compile(
     r"^(?:⚠️|✅|⏹) (?:" + "|".join(re.escape(n) for n in NAMES.values()) + r")"
     r"(?: (?:" + "|".join(re.escape(p) for p in (PHRASE_NOT_CAPTURED, PHRASE_LOST, PHRASE_BACK,
-                                                  PHRASE_CUT, PHRASE_SPLIT)) + r")"
+                                                  PHRASE_CUT, PHRASE_SPLIT, PHRASE_SILENT)) + r")"
     r"|" + re.escape(PHRASE_GAP) + r")")
 
 
@@ -136,6 +146,8 @@ def render(ev) -> str | None:
     if ev.kind == "gap":
         return (f"⚠️ {name}{PHRASE_GAP} {_hm(ev.stopped_at)}–{_hm(ev.at)} "
                 f"({_dur(ev.silent_s)}), поток перезапущен")
+    if ev.kind == KIND_SILENT:
+        return f"⚠️ {name} {PHRASE_SILENT} {_hm(ev.stopped_at)} — собеседники слышны только через микрофон"
     return None
 
 
@@ -224,6 +236,11 @@ class ChannelTrace:
         self._persist()
         text = render(ev)
         if text is None:
+            return
+        if ev.kind == KIND_SILENT:
+            # не эпизод: бюджет строк `LINES_MAX` и открытые `lost` не трогает (DS in2 I3);
+            # защёлка хаба выпускает его один раз на серию
+            self._say(text, _hm(ev.at))
             return
         # потолок — по эпизодам: `back` показывается, если показан его `lost`;
         # начало нового эпизода (lost/gap) сверх потолка — только сайдкар и итог
@@ -355,7 +372,8 @@ def summary_of(events: list[dict]) -> str | None:
     # вся встреча; состоялось ли продолжение, телефон в момент закрытия не знает,
     # и формулировка этого не утверждает (Critical DS выходного круга по №200)
     cuts = [e for e in events if e.get("kind") == KIND_STOPPED]
-    if not eps and not cuts:
+    silent = _silent_till_end(events)
+    if not eps and not cuts and not silent:
         return None
     parts = []
     for label in dict.fromkeys(e.label for e in eps):
@@ -371,7 +389,20 @@ def summary_of(events: list[dict]) -> str | None:
         total_s = _dur(total) + (" без учёта эпизодов с неизвестной границей" if unknown else "")
         parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {total_s})")
     parts.extend(_phone_text(e) for e in cuts)
+    parts.extend(f"{NAMES.get(label, label)} не писался с {_hm(at)} до конца записи — "
+                 "собеседники только через микрофон" for label, at in silent.items())
     return SUMMARY_MARK + ": " + "; ".join(parts)
+
+
+def _silent_till_end(events: list[dict]) -> dict[str, float | None]:
+    """Серии `silent`, не закрытые `audible` до конца записи: метка -> граница."""
+    open_: dict[str, float | None] = {}
+    for e in events:
+        if e.get("kind") == KIND_SILENT:
+            open_.setdefault(e.get("label", "?"), e.get("stopped_at"))
+        elif e.get("kind") == KIND_AUDIBLE:
+            open_.pop(e.get("label", "?"), None)
+    return open_
 
 
 def events_of(live: pathlib.Path) -> list[dict]:
