@@ -97,10 +97,7 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
     for p in sorted(folder.glob("*.md")):
         if p.name.startswith("_"):
             continue
-        try:
-            text = p.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue  # нечитаемое ядро не роняет ночь всех графов (n628-opus M1)
+        text = p.read_text(encoding="utf-8")
         if _is_merged(text):
             continue  # уже сведён прошлой ревизией
         def sect(title: str) -> str:

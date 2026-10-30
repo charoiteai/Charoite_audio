@@ -271,15 +271,6 @@ def _counting_embedder(calls: list):
     return Embedder(run, "test-fake")
 
 
-def test_an_unreadable_core_is_skipped_not_fatal(tmp_path):
-    """Не-UTF-8 файл ядра пропускается: иначе трейсбек ронял ночь всех графов
-    раньше, чем отказ судьи успевал сказать «unavailable» (n628-opus M1)."""
-    (tmp_path / "Ядра").mkdir()
-    (tmp_path / "Ядра" / "Битое.md").write_bytes(b"## \xff\n")
-    (tmp_path / "Ядра" / "Целое.md").write_text("## Суть\nтема\n", encoding="utf-8")
-    assert [c["name"] for c in tier3.load_cores(tmp_path / "Ядра")] == ["Целое"]
-
-
 def test_a_single_core_is_named_as_such(tmp_path):
     """Одно ядро — «ядер меньше двух», а не «своя суть у 1 из 1»: причина должна
     назвать настоящую нехватку (n628-out2, выживший мутант `< 2 → < 0`)."""
