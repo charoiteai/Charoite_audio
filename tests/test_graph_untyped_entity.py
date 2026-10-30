@@ -280,3 +280,14 @@ def test_refused_core_keeps_the_mark_and_the_log(tmp_path, monkeypatch):
     assert held == {("Системы", "Пилот проект"): ("untyped", [])}
     assert g._HELD_ENTITY in g.entity_line(graph, task, held)
     assert "Системы/Пилот проект" in (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
+
+
+def test_apply_entities_prints_the_held_but_not_the_untyped(tmp_path, capsys):
+    """stdout `apply_entities` — удержанные без узла (здесь опечатка живого узла), а «тип вне
+    перечня» печатает `settle_untyped` по исходу (выживший мутант `not in → in` в CI #885)."""
+    graph = _graph(tmp_path)
+    _node(graph, "Модели/Qwen 32B")
+    g.apply_entities(graph, [{"имя": "Kwen 32B", "тип": "сервис", "суть": "x"},
+                             {"имя": "Иван Петров", "тип": "человек", "суть": "x"}], LINK, typed=True)
+    out = capsys.readouterr().out
+    assert "Kwen 32B" in out and "Иван Петров" not in out, out
