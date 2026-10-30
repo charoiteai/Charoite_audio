@@ -134,7 +134,8 @@ def _title(p: pathlib.Path) -> str:
     return p.stem
 
 
-def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
+def scan(graph: pathlib.Path, *, schema: GraphSchema,
+         stubs: dict[str, str] | None = None) -> tuple[dict[str, dict], dict[str, set[str]]]:
     """Все .md графа → карта файлов и обратные ссылки.
 
     Возвращает (files, backlinks): files[title] = {path, text, mtime, kind},
@@ -144,8 +145,10 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], 
     """
     files: dict[str, dict] = {}
     backlinks: dict[str, set[str]] = defaultdict(set)
-    # alias → канон: заглушки сами не темы, но входящие ссылки на них живые
-    redirects: dict[str, str] = {}
+    # alias → канон: заглушки сами не темы, но входящие ссылки на них живые.
+    # `stubs` отдаёт их наружу: имя источника досье после слияния — тот же
+    # узел, не ушедший (выход n841-out1 DS C1)
+    redirects: dict[str, str] = {} if stubs is None else stubs
 
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -580,41 +583,70 @@ def with_revision(text: str, date: str) -> str:
     return frontmatter.with_field(text, REVISION_FIELD, date)
 
 
-def source_keys(text: str | None) -> list[str]:
+# Ссылка источника пишется `render` как `[[имя]]`: `#` — часть имени («C# и
+# .NET»), а не якорь, его `LINK_RE` обрезал бы (выход n841-out1 DS C1, Haiku I1)
+_SOURCE_LINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
+
+
+def source_keys(text: str | None) -> list[str] | None:
     """Имена источников из раздела «## Источники» — последним сегментом пути,
-    как их пишет `render` и как их зовёт `scan`."""
-    sources = split_dossier(text or "")[2] or ""
-    keys = (m.split("/")[-1].strip() for m in LINK_RE.findall(sources))
+    без `.md`, как их пишет `render` и как их зовёт `scan`. `None` — раздела
+    нет: досье не разобрать."""
+    sources = split_dossier(text or "")[2]
+    if sources is None:
+        return None
+    keys = (m.split("/")[-1].strip().removesuffix(".md").strip()
+            for m in _SOURCE_LINK_RE.findall(sources))
     return list(dict.fromkeys(k for k in keys if k))
+
+
+def _resolve(name: str, stubs: dict[str, str], members: set[str]) -> str:
+    """Имя через цепочку заглушек слияния — до члена кластера или конца цепочки."""
+    seen = {name}
+    while name not in members and name in stubs and stubs[name] not in seen:
+        name = stubs[name]
+        seen.add(name)
+    return name
 
 
 @dataclass(frozen=True)
 class Hold:
     """Почему ночь не пересобирает досье: тело правила облачная ревизия.
 
-    Держит, только пока каждый источник досье ещё в кластере: «забыть
-    встречу» удаляет её файл, и факты из неё выводит из тела именно
-    пересборка — ревизия не вправе их сохранить (вход n841-in1 S-C1)."""
+    Держит, только пока каждый источник досье ещё в кластере (сам или через
+    заглушку слияния): «забыть встречу» удаляет её файл, и факты из неё
+    выводит из тела именно пересборка — ревизия не вправе их сохранить (вход
+    n841-in1 S-C1). Раздел «Источники» не разобран — проверить нечем, не
+    держим (выход n841-out1 DS I2)."""
     revision: str = ""
     gone: int = 0       # источников досье, которых больше нет в кластере
     new: int = 0        # членов кластера, которых нет в «Источниках»
     sources: tuple[str, ...] = ()
+    unparsed: bool = False
 
     @property
     def held(self) -> bool:
-        return bool(self.revision) and self.gone == 0
+        return bool(self.revision) and self.gone == 0 and not self.unparsed
+
+    def why_not(self) -> str:
+        return ("раздел «Источники» не разобран" if self.unparsed
+                else f"источников ушло {self.gone}")
 
 
-def hold(text: str | None, members: list[str]) -> Hold:
+def hold(text: str | None, members: list[str], stubs: dict[str, str] | None = None) -> Hold:
     """Один предикат «тело принадлежит ревизии» на скан, сборку под замком и
-    разовый возврат из копий (вход n841-in1: схождение трёх голов)."""
+    разовый возврат из копий (вход n841-in1: схождение трёх голов). `stubs` —
+    заглушки слияния из `scan`: источник, слитый в член кластера, не ушёл."""
     rev = revision(text)
     if not rev:
         return Hold()
     src = source_keys(text)
+    if not src:
+        return Hold(rev, unparsed=True)
     now = set(members)
-    return Hold(rev, sum(1 for s in src if s not in now),
-                sum(1 for m in members if m not in set(src)), tuple(src))
+    alive = {_resolve(s, stubs or {}, now) for s in src}
+    return Hold(rev, sum(1 for s in src if _resolve(s, stubs or {}, now) not in now),
+                sum(1 for m in members if m not in alive), tuple(src))
 
 
 @dataclass(frozen=True)

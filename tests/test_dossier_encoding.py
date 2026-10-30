@@ -143,7 +143,7 @@ def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     reasons = (result["без_изменений"] + result["сверх_лимита"]
                + result["занят"] + result["не_успели"]
                + result["правки_повреждены"] + result["досье_изменилось"]
-               + result["метка_в_теле"])
+               + result["метка_в_теле"] + result["ревизия"])
     assert reasons == result["пропущено"]
     _all_index(folder)
     _account(result, counts, paths, capsys, verified=(paths["Альфа"], paths["Гамма"]))
@@ -186,7 +186,7 @@ def test_dossier_edited_during_generation_is_not_overwritten(night, monkeypatch,
         reasons = (result["без_изменений"] + result["сверх_лимита"]
                    + result["занят"] + result["не_успели"]
                    + result["правки_повреждены"] + result["досье_изменилось"]
-               + result["метка_в_теле"])
+               + result["метка_в_теле"] + result["ревизия"])
         assert reasons == result["пропущено"]
         assert paths["Бета"].read_bytes() == edited["bytes"]
         assert "правка во время генерации" in paths["Бета"].read_text(encoding="utf-8")

@@ -177,9 +177,16 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
     return _put_line(text, key, f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]")
 
 
+_BOM = "\ufeff"
+
+
 def _put_line(text: str, key: str, line: str) -> str:
     """Поле `key:` шапки заменить строкой `line` (нет поля — дописать, нет
-    шапки — завести): замена по позициям YAML, без второго экземпляра поля."""
+    шапки — завести): замена по позициям YAML, без второго экземпляра поля.
+    BOM перед шапкой остаётся на месте, второй шапки над ним не будет (выход
+    n841-out1 DS I1)."""
+    if text.startswith(_BOM):
+        return _BOM + _put_line(text[1:], key, line)
     fm, body = split(text)
     if fm is None:
         if text.startswith("---"):
@@ -202,12 +209,13 @@ def scalar_field(text: str, key: str) -> str:
     """Скалярное поле шапки как записано (`""` — поля нет). Значение берётся
     из текста строки, а не из YAML: `2026-10-18` YAML прочёл бы датой, а
     шапка с чужим незакавыченным двоеточием не разобралась бы вовсе (вход
-    n841-in1 DS C1)."""
-    fm, _ = split(text or "")
+    n841-in1 DS C1). Значение строкой ниже ключа тоже читается (выход out1
+    Haiku M1), BOM перед шапкой не мешает (DS I1)."""
+    fm, _ = split((text or "").removeprefix(_BOM))
     span = _field_span(fm, key) if fm is not None else None
     if not span:
         return ""
-    raw = fm[span[0]:span[1]].split("\n", 1)[0].split(":", 1)[1].strip()
+    raw = fm[span[0]:span[1]].split(":", 1)[1].strip().split("\n", 1)[0].strip()
     if raw.startswith('"'):
         try:
             return str(json.loads(raw))

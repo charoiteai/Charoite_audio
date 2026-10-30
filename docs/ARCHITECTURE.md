@@ -1048,8 +1048,11 @@ before the classes and once more on the snapshot taken to the model
 (`dossier.hold`): a model retelling cut a reviewed body by 80 % on 25.10 and nobody
 would repeat the review. New sources are logged (`⏭ … новых источников N`); the
 index keeps the dossier's own sources. The hold lasts only while every source the
-dossier names is still in the cluster: a forgotten meeting lifts it (`↻ … снята`) and
-the topic is rebuilt without it — the retelling must not outlive its source.
+dossier names is still in the cluster, by itself or through a merge stub (`scan(stubs=)`):
+a forgotten meeting lifts it (`↻ … снята`) and the topic is rebuilt without it — the
+retelling must not outlive its source. A sources section the parser cannot read lifts
+the hold too. A topic that drops out of the clusters altogether (fewer than three
+members left) is not visited by the night at all, with or without the field.
 
 **Index lookup** (`Досье/_index.json`) is lexical, over word stems with
 prefix matching, so `qwen` finds `qwen3-32b`. No embeddings and no running

@@ -210,11 +210,20 @@ class _GraphRun:
         self.changed = self.broken_manual = 0
         self.labeled = 0          # метка в теле при тех же источниках — эту ночь не трогаем
         self.revised = 0          # тело правила облачная ревизия (`ревизия:` в шапке) — не пересобираем
+        self.stubs: dict[str, str] = {}   # заглушки слияния из `scan` — для `dossier.hold`
+
+    def hold(self, loaded: dossier.DossierLoad, members: list[str]) -> dossier.Hold:
+        return dossier.hold(loaded.text, members, self.stubs)
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
-        """Неприменённая пересборка оставляет прежнее досье в индексе."""
+        """Неприменённая пересборка оставляет прежнее досье в индексе. У
+        удержанной ревизией темы — по источникам самого досье: ключи индекса
+        не ссылаются на тексты, которых в досье нет. Решает здесь, а не каждый
+        вызов: путей `keep` пять (выход n841-out1 Sonnet I2)."""
         if loaded.state != "missing":
-            self.entries[theme] = _index_entry_from_disk(theme, members, loaded, fp, self.today)
+            h = self.hold(loaded, members)
+            self.entries[theme] = _index_entry_from_disk(
+                theme, list(h.sources) if h.held else members, loaded, fp, self.today)
 
     def write_index(self, dry: bool) -> None:
         """Один раз за прогон: как только у графа кончились кандидаты, а для
@@ -262,16 +271,18 @@ class Candidate:
 
 
 def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_GraphRun, list[Candidate]]:
-    files, backlinks = dossier.scan(graph, schema=CHAROITE)
+    stubs: dict[str, str] = {}
+    files, backlinks = dossier.scan(graph, schema=CHAROITE, stubs=stubs)
     cl = dossier.clusters(files, backlinks, schema=CHAROITE) if files else {}
     g = _GraphRun(graph, files, cl, today, stamp)
+    g.stubs = stubs
     found = []
     for theme, members in cl.items():
         path = g.folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
         loaded = g.reads.load(path)
-        h = dossier.hold(loaded.text, members)
-        g.keep(theme, list(h.sources) if h.held else members, loaded, fp)
+        h = g.hold(loaded, members)
+        g.keep(theme, members, loaded, fp)
         same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
         # Тело правила облачная ревизия: пересказ модели стёр бы её (25.10
         # `--full` — текст −80 %, ⚠ 999 → 0), повторить её некому. Проверка —
@@ -281,7 +292,7 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
             continue
         if h.revision:
             print(f"  ↻ {graph.name} · {theme}: ревизия {h.revision} снята — "
-                  f"источников ушло {h.gone}, пересборка")
+                  f"{h.why_not()}, пересборка")
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
         # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
         # круга подряд теряло хвост на разборе (n815-out6, решение координатора)
@@ -303,13 +314,14 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
 
 
 def _skip_held(g: _GraphRun, theme: str, h: dossier.Hold, same: bool) -> None:
-    """Пропуск темы с ревизией в теле. Строка лога — только при новых
-    источниках: тема отстаёт от графа, и это видно (вход n841-in1 DS M3)."""
+    """Пропуск темы с ревизией в теле. Строка лога — только когда тема
+    отстаёт от графа: новые источники или правка прежних (вход n841-in1 DS M3,
+    выход out1 DS M1)."""
     g.skipped += 1
     g.revised += 1
-    if not same:
-        print(f"  ⏭ {g.graph.name} · {theme}: ревизия {h.revision} — ночь не трогает; "
-              f"новых источников {h.new}")
+    if h.new or not same:
+        lag = f"новых источников {h.new}" if h.new else "источники правились"
+        print(f"  ⏭ {g.graph.name} · {theme}: ревизия {h.revision} — ночь не трогает; {lag}")
 
 
 def _graph_key(c: Candidate) -> tuple:
@@ -353,9 +365,9 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         g.keep(theme, members, loaded, fp)
     # Поле могли поставить, пока тема ждала очереди: решение «переписать
     # можно» — по тому снимку, с которым идём к модели (вход n841-in1 S-I1)
-    h = dossier.hold(loaded.text, members)
+    h = g.hold(loaded, members)
     if h.held:
-        g.keep(theme, list(h.sources), loaded, fp)
+        g.keep(theme, members, loaded, fp)
         _skip_held(g, theme, h, cand.cls == SAME)
         return None
     allowed, manual, failures = _manual_for_rebuild(theme, loaded)

@@ -806,3 +806,43 @@ def test_hold_counts_gone_and_new_sources():
     assert dossier.hold(text, ["а", "б", "в"]) == dossier.Hold("2026-10-18", 0, 1, ("а", "б"))
     assert not dossier.hold(text, ["а", "в"]).held
     assert dossier.hold(re.sub(r"ревизия: .*\n", "", text), ["а"]) == dossier.Hold()
+
+
+def test_revision_survives_a_head_yaml_cannot_parse():
+    """Чужое незакавыченное двоеточие ломает YAML шапки — поле всё равно
+    читается (`frontmatter.parse` отдал бы {}; выход out1 DS M3)."""
+    text = "---\nописание: а: б\nревизия: 2026-10-18\n---\n# т\n"
+    assert dossier.frontmatter.parse(text) == {}
+    assert dossier.revision(text) == "2026-10-18"
+
+
+def test_revision_value_on_the_next_line_is_read():
+    assert dossier.revision("---\nревизия:\n  2026-10-18\nтема: т\n---\n# т\n") == "2026-10-18"
+
+
+def test_with_revision_keeps_one_head_after_a_bom():
+    """BOM перед шапкой: второй шапки над ним нет, поле видно (выход out1 DS I1)."""
+    text = "\ufeff---\nтема: т\n---\n# т\n## Сейчас\nx\n"
+    out = dossier.with_revision(text, "2026-10-18")
+    assert out.startswith("\ufeff---\n") and out.count("---\n") == 2, out
+    assert dossier.revision(out) == "2026-10-18"
+
+
+@pytest.mark.parametrize("link, key", [
+    ("[[Встречи/б.md]]", "б"), ("[[б|подпись]]", "б"), ("[[C# и .NET]]", "C# и .NET"),
+])
+def test_source_keys_read_the_name_render_wrote(link, key):
+    """`#` — часть имени, не якорь: `LINK_RE` резал «C# и .NET» до «C», и
+    удержание снималось каждую ночь (выход out1 DS C1, Haiku I1)."""
+    text = f"---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- {link}\n\n## Правки автора\n\n—\n"
+    assert dossier.source_keys(text) == [key]
+    assert dossier.hold(dossier.with_revision(text, "2026-10-18"), [key]).held
+
+
+def test_hold_follows_merge_stubs_to_a_member():
+    text = dossier.with_revision(
+        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- [[а]] · [[б]]\n"
+        "\n## Правки автора\n\n—\n", "2026-10-18")
+    assert dossier.hold(text, ["а", "в"], {"б": "г", "г": "в"}).held
+    assert not dossier.hold(text, ["а", "в"], {"б": "г"}).held
+    assert dossier.hold(text, ["а", "в"], {"б": "в"}).new == 0
