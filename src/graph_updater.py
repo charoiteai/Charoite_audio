@@ -721,8 +721,10 @@ def _shaped(got: dict | None) -> dict | None:
             if not isinstance(item, dict):
                 continue
             for field in fields:
-                if isinstance(item.get(field), (int, float)) and not isinstance(item[field], bool):
-                    item[field] = str(item[field])    # «имя»: 1494 доходило до узла на базе (Opus M1)
+                if (key, field) == ("сущности", "имя") and type(item.get(field)) is int:
+                    # «имя»: 1494 системы доходило до узла на базе (Opus M1); число у человека и в
+                    # тексте («роль»: 2026 вставала верхом навсегда) — отброшено, как прежде (n846-opus-fix)
+                    item[field] = str(item[field])
                 if field in item and not isinstance(item[field], str):
                     if item[field] is not None:
                         print(f"граф: «{key}.{field}» — {type(item[field]).__name__}, а не строка — отброшено")
@@ -2857,8 +2859,9 @@ def _supersede_description(text: str, desc: str, meeting_link: str,
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
     # встреча старше последнего упоминания (долг встреч, импорт) верх не трогает:
     # иначе запоздалый разбор откатывал верх, а эпизоды после №846 его не сменят (Opus I1)
+    # будущая «последняя дата» (часы машины, ручное имя) охрану не включает: иначе верх замерзал (n846-opus-fix)
     seen = _LAST_SEEN_RE.search(text, _body_at(text))
-    if (when and seen and day < seen.group(1)) or not _refines(old, new):
+    if (when and seen and day < seen.group(1) <= time.strftime("%Y-%m-%d")) or not _refines(old, new):
         return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _clip(new)
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
     event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")

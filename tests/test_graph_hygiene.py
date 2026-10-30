@@ -2484,6 +2484,16 @@ def test_late_meeting_leaves_newer_top(tmp_path):
     assert text.count("_(было:") == 1 and "_(последнее упоминание: 2026-09-10)_" in text, text
 
 
+def test_future_last_seen_does_not_freeze_top(tmp_path):
+    """Будущая «последняя дата» (часы машины, ручное имя встречи) охрану поздней
+    встречи не включает: уточнение встаёт наверх (n846-opus-fix, Sonnet M1)."""
+    graph = tmp_path / "g"
+    g.upsert_entity(graph, "Люди", "Будущий", "person", "аналитик", "Встречи/2099-01-01_1000", "")
+    g.upsert_entity(graph, "Люди", "Будущий", "person", "аналитик данных", "Встречи/2026-09-01_1000", "")
+    text = (graph / "Люди" / "Будущий.md").read_text(encoding="utf-8")
+    assert "# Будущий\nаналитик данных\n" in text, text
+
+
 def test_supersede_without_title_leaves_node_as_is():
     """Узел без «# Имя» — не трогаем и отдаём ту же тройку (текст, событие, эпизод):
     вызывающий распаковывает три значения (мутант return None, CI #882)."""
@@ -2508,14 +2518,16 @@ def test_null_description_does_not_drop_meeting(tmp_path):
 def test_shaped_drops_non_string_fields_of_people_and_entities(capsys):
     """Строковые поля записей людей и сущностей — строка или нет поля: «роль»: null
     ронял встречу, «вклад»: null писал «None» в заметку (Haiku C1 n846-in1, DS I2 n846-out1);
-    число приводится к строке — «имя»: 1494 доходило до узла и на базе (Opus M1)."""
+    целое «имя» сущности — строкой, «имя»: 1494 доходило до узла и на базе (Opus M1);
+    число у человека и в текстовых полях — отброшено («роль»: 2026 вставала верхом, n846-opus-fix)."""
     got = g._shaped({"люди": [{"имя": "Икс", "роль": None, "вклад": 5}, {"имя": 42}, "Строка"],
                      "сущности": [{"имя": "Витрина", "тип": ["система"], "суть": None},
                                   {"имя": 1494, "тип": "система", "суть": True}]})
-    assert got["люди"] == [{"имя": "Икс", "вклад": "5"}, {"имя": "42"}, "Строка"], got   # число — строкой (Opus M1)
+    assert got["люди"] == [{"имя": "Икс"}, {}, "Строка"], got      # число у человека — не имя (n846-opus-fix)
     assert got["сущности"] == [{"имя": "Витрина"}, {"имя": "1494", "тип": "система"}], got
     out = capsys.readouterr().out
-    assert "«сущности.тип» — list" in out and "«сущности.суть» — bool" in out and "int" not in out, out
+    assert "«люди.вклад» — int" in out and "«люди.имя» — int" in out and "«сущности.тип» — list" in out
+    assert "«сущности.суть» — bool" in out and "сущности.имя" not in out, out
     assert "люди.роль" not in out, "null — молча, как у полей верхнего уровня"
 
 
