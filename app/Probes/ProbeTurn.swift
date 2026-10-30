@@ -245,8 +245,8 @@ enum ProbeTurn {
         return (parts ?? []).filter { norm(pieceBody($0.text)).contains(needle) }.map(\.rank).min()
     }
 
-    /// Тело куска без шапки — один судья «факт в выдаче» для рангов и
-    /// false_refusal (n752-out2, Sonnet M3).
+    /// Тело куска без шапки — только для рангов факта. false_refusal судит вся
+    /// выдача с шапками, как до №752: модель видит шапки (n752-out3, Haiku I1).
     static func pieceBody(_ text: String) -> String {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
         if lines.first?.trimmingCharacters(in: .whitespaces).hasPrefix("Связано с [[") == true {
