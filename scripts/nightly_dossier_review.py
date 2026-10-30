@@ -533,6 +533,9 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         with file_locks.graph_lock(lock_dir, lock_wait) as taken:
             if taken:
                 try:
+                    # снимок до чтения: между сверкой текста и записью идёт копия, и
+                    # правка владельца в это окно (Obsidian замок не берёт) затиралась бы (n853-out1 Haiku I1)
+                    seen = safe_write.stat_snapshot(path)
                     if path.read_text(encoding="utf-8") != old:
                         rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
                         continue
@@ -550,7 +553,10 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                     # без копии не перезаписываем — правило tier3 (DS I2 / GLM I1 по #561)
                     failed.append(f"- **{theme}** — сбой: копия до правки не сделана ({e}) — без копии не перезаписываю")
                     continue
-                safe_write.write_text(path, text)   # с переносом прав и меток файла (DS M2 по #561)
+                # с переносом прав и меток файла (DS M2 по #561)
+                if not safe_write.write_text(path, text, expect=seen):
+                    rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
+                    continue
         if not taken:
             # Замок не взят: граф занят соседом (разбор ночной встречи, ревизия до
             # 30 мин) или недоступен (нет каталога, ФС без flock). Это не сбой ночи:

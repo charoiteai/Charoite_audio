@@ -481,6 +481,26 @@ def test_edit_mode_takes_the_graph_lock_per_write_not_for_the_whole_run(tmp_path
     assert "Идёт пилот" in (folder / "Одно.md").read_text(encoding="utf-8")
 
 
+def test_owner_edit_between_the_check_and_the_write_is_kept(tmp_path, monkeypatch):
+    """Между сверкой текста и записью — копия досье: правка владельца в это окно
+    затиралась текстом ревизии (n853-out1 Haiku I1). Запись — с гейтом снимка."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch)
+    path = folder / "Одно.md"
+    body = _body(ndr)
+    monkeypatch.setattr(ndr, "review", lambda theme, *a, **k: (body, ""))
+    real_backup = ndr._backup
+
+    def backup_then_owner_edits(folder_, stamp, p):
+        real_backup(folder_, stamp, p)
+        p.write_text(p.read_text(encoding="utf-8") + "\nправка владельца после копии\n", encoding="utf-8")
+
+    monkeypatch.setattr(ndr, "_backup", backup_then_owner_edits)
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 0
+    text = path.read_text(encoding="utf-8")
+    assert text.endswith("правка владельца после копии\n") and "Идёт пилот" in text
+
+
 def test_dossier_changed_during_the_cloud_call_is_left_alone(tmp_path, monkeypatch):
     """Между чтением досье и записью — минуты облачного вызова: правку владельца
     за это окно ревизия затирала бы своим текстом (аудит 13.09, GLM I2)."""

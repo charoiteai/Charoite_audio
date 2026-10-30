@@ -53,3 +53,15 @@ def test_every_graph_lock_taker_uses_one_lock_dir(tmp_path, monkeypatch):
     dirs = set(taken.values()) | set(plan_dirs)
     assert len(dirs) == 1, taken | {"forget_meeting": plan_dirs}
     assert next(iter(dirs)).is_relative_to(data), dirs
+
+
+def test_lock_dir_formula_lives_in_one_place():
+    """Новое место замка, вписавшее формулу руками, разошлось бы с соседями молча, а
+    тест выше его не знает (n853-out1 Sonnet M1): формула — только в `charoite_paths`."""
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent
+    copy = re.compile(r"graph_backups\([^)]*\)\s*\.parent")
+    found = [f"{p.relative_to(root)}:{n}" for d in ("src", "scripts") for p in sorted((root / d).rglob("*.py"))
+             if p.name != "charoite_paths.py"
+             for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1) if copy.search(line)]
+    assert not found, found
