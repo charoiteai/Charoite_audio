@@ -196,7 +196,7 @@
 2. **Graph update** — entities (People/Systems), decisions, action items,
    Cores with status + chronicle; a meeting note with wiki-links. A
    person's or system's description is a dated fact too: a refinement
-   (all old words kept, no new numbers) or a new date replaces it, and the
+   (all old words kept, no new numbers) or the same wording with a new date or number replaces it, and the
    old wording stays in the node's chronicle as "was … → now …, date" — a
    rephrasing of the same thing is not a new fact. A role from a single
    meeting leaves the top alone and goes in as an "in this meeting: …, date"

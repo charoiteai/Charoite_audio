@@ -2499,3 +2499,14 @@ def test_multiline_episode_stays_on_one_meeting_line(tmp_path):
     text = (graph / "Люди" / "Двустрок.md").read_text(encoding="utf-8")
     assert "- [[Встречи/2026-09-02_1000]] _(в этой встрече: «Участник ## Хроника»)_\n" in text, text
     assert text.count("\n## Хроника") == 0 and "# Двустрок\nведёт систему A\n" in text, text
+
+
+def test_episode_with_wikilink_makes_no_false_meeting_link(tmp_path):
+    """«[[…]]» в эпизоде — не ссылка встречи: иначе has_link той встречи истинен (n846-out2 M1)."""
+    graph = tmp_path / "g"
+    g.upsert_entity(graph, "Люди", "Ссыльный", "person", "ведёт систему A", "Встречи/2026-09-01_1000", "")
+    g.upsert_entity(graph, "Люди", "Ссыльный", "person", "докладчик [[Встречи/2026-09-05_1000]]",
+                    "Встречи/2026-09-02_1000", "")
+    text = (graph / "Люди" / "Ссыльный.md").read_text(encoding="utf-8")
+    assert "«докладчик [Встречи/2026-09-05_1000]»" in text, text
+    assert not g.has_link(text, "Встречи/2026-09-05_1000"), "ложной ссылки встречи нет"
