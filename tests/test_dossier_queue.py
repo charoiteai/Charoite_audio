@@ -1038,4 +1038,5 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
     # неимпортируемый `llm` — тоже без метки, а не трейсбек прогона (out1 M2)
     monkeypatch.setitem(sys.modules, "llm", None)
     assert nd.generator_label({"llm": {"model": "q"}}) == ""
-    assert "вход генератора не посчитан (" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "вход генератора не посчитан (" in out and "llm" in out, out
