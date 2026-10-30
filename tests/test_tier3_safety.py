@@ -271,6 +271,16 @@ def _counting_embedder(calls: list):
     return Embedder(run, "test-fake")
 
 
+def test_a_single_core_is_named_as_such(tmp_path):
+    """Одно ядро — «ядер меньше двух», а не «своя суть у 1 из 1»: причина должна
+    назвать настоящую нехватку (n628-out2, выживший мутант `< 2 → < 0`)."""
+    (tmp_path / "Ядра").mkdir()
+    (tmp_path / "Ядра" / "Одно.md").write_text("## Суть\nодна тема\n", encoding="utf-8")
+    report = tier3.revise(tmp_path, embedder=_counting_embedder([]), judge=fake_judge(),
+                          may_continue=_open)
+    assert report["status"] == "no_work" and report["reason"] == "ядер меньше двух", report
+
+
 def test_cores_with_only_autostatus_are_not_judged(graph):
     """Ядра от upsert_core (один «## Статус») не судятся вовсе (№628).
 
