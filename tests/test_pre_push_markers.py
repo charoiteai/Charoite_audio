@@ -1160,19 +1160,50 @@ def test_public_only_still_judges_a_non_utf8_file_by_the_patterns(repo, monkeypa
     assert p.returncode == 0 and "  ⚠ notes.txt:2:" in p.stderr, p.stderr
 
 
-def test_public_only_judges_a_pdf_without_nul_and_does_not_fail(repo, monkeypatch, tmp_path):
+def test_public_only_judges_a_pdf_without_nul_and_does_not_fail(repo, monkeypatch):
     """PDF без NUL с почтой: владелец пропустил его хешем — CI видит находку
     предупреждением и не краснеет без выхода (выход out7 №570, DS C1); хеш в
-    списке владельца шаблоны не глушит (Sonnet I1)."""
+    списке владельца шаблоны не глушит (Sonnet I1) — список с настоящим хешем
+    блоба (выход out8, Sonnet I2 и DS I1)."""
     pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n<< /Author (" + ("jane.doe" + "@" + "mail-host" + ".ru").encode() + b") >>\n"
     (repo.work / "doc.pdf").write_bytes(pdf)
     repo.commit("pdf")
-    monkeypatch.setattr(guard, "allowed_blobs", lambda: {"любой"})
+    blob = git(repo.work, "rev-parse", "HEAD:doc.pdf", env=repo.env).stdout.strip()
+    monkeypatch.setattr(guard, "allowed_blobs", lambda: {blob})
     lossy: dict[str, list[str]] = {}
     monkeypatch.chdir(repo.work)
     assert guard.scan_public(guard.tracked_files(), lossy) == [] and len(lossy["doc.pdf"]) == 1, lossy
+    _allow(repo, blob)
     p = guard_run(repo.work, "--public-only", env=repo.env)
     assert p.returncode == 0 and "  ⚠ doc.pdf:3:" in p.stderr, p.stderr
+    assert "::warning file=doc.pdf,line=3::" in p.stdout and "чисто" not in p.stdout, p.stdout
+
+
+def test_public_only_refuses_a_utf8_leak(repo):
+    """Находка в UTF-8 — по-прежнему отказ CI: предупреждение только для тела с
+    потерями (выход out8, Haiku I3)."""
+    (repo.work / "notes.txt").write_text("адрес " + "jane.doe" + "@" + "mail-host" + ".ru\n",
+                                         encoding="utf-8")
+    repo.commit("utf8")
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 1 and "notes.txt:1: почта на непубличном домене" in p.stderr, p.stderr
+
+
+@pytest.mark.parametrize("data,kind", [
+    (b"plain", "text"),
+    (b"x\0" + ("jane.doe" + "@" + "mail-host" + ".ru").encode(), "text"),
+    ("почта".encode("cp1251"), "foreign"),
+    ("почта".encode("cp1251") + b"\0", "binary"),
+    (b"\xff" * 8000 + b"\0", "foreign"),
+])
+def test_body_kind_is_one_decision_for_both_decoders(data, kind):
+    """Вид тела решает один классификатор (выход out8, Haiku M1): UTF-8 с NUL —
+    текст, NUL без UTF-8 — двоичное, порог NUL — первые 8000 байт."""
+    assert guard.body_kind(data)[0] == kind
+    got = guard.public_text(data)
+    assert (got is None) == (kind == "binary")
+    if got is not None:
+        assert got[1] == (kind == "foreign")
 
 
 def test_public_only_refuses_a_non_utf8_file_name(repo):

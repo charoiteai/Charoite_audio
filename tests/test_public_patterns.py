@@ -62,7 +62,9 @@ def test_no_false_alarms(line):
 def test_clean_tree_passes():
     """Само дерево обязано быть чистым — иначе страж бесполезен с рождения."""
     files = cpm.tracked_files()
-    assert cpm.scan_public(files, {}) == []
+    lossy: dict[str, list[str]] = {}
+    # и без файлов не в UTF-8: их находки — лишь предупреждение CI (выход out8 №570, DS I2)
+    assert cpm.scan_public(files, lossy) == [] and lossy == {}, lossy
 
 
 def test_ci_runs_the_public_check():
@@ -77,4 +79,5 @@ def test_private_list_is_not_required_for_public_mode(monkeypatch, tmp_path):
     """В CI приватного списка нет. Публичный режим обязан работать без него —
     иначе на раннере проверка тихо превратится в успех."""
     monkeypatch.setenv("CHAROITE_MARKERS", str(tmp_path / "нет-такого-файла.txt"))
-    assert cpm.scan_public(cpm.tracked_files(), {}) == []
+    lossy: dict[str, list[str]] = {}
+    assert cpm.scan_public(cpm.tracked_files(), lossy) == [] and lossy == {}, lossy

@@ -186,6 +186,23 @@ class NotUtf8(Exception):
     находка с выходом (хеш блоба для текста, переименование для имени)."""
 
 
+TEXT, BINARY, FOREIGN = "text", "binary", "foreign"
+
+
+def body_kind(data: bytes) -> tuple[str, str | None]:
+    """Вид тела — одно решение на оба декодера (выход out8 №570, Haiku M1):
+    байты валидны как UTF-8 — текст, даже с NUL (строки читаются, вход №570
+    S-I5); иначе NUL в первых 8000 байт, как у git, — двоичное; прочее — текст
+    в чужой кодировке."""
+    try:
+        return TEXT, data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if b"\0" in data[:8000]:
+        return BINARY, None
+    return FOREIGN, None
+
+
 def tree_text(f: pathlib.Path, data: bytes) -> str | None:
     """Текст файла дерева для суда. UTF-8 — текст (нулевой байт не помеха: строки
     читаются, вход №570 S-I5); двоичное (NUL в первых 8000 байт, как у git) —
@@ -194,12 +211,9 @@ def tree_text(f: pathlib.Path, data: bytes) -> str | None:
     списке владельца. Подпись медиа здесь не решает: подпись в начале и cp1251
     за ней — текст, который никто не прочёл (выход out2, Haiku C1); PDF без NUL
     выходит по хешу. Хеш считает git: формат объектов знает он (sha1 или sha256)."""
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    if b"\0" in data[:8000]:
-        return None
+    kind, text = body_kind(data)
+    if kind != FOREIGN:
+        return text
     blob = git("hash-object", "--stdin", stdin=data).decode().strip()
     if blob in allowed_blobs():
         return None
@@ -279,15 +293,15 @@ def public_hits(line: str) -> list[str]:
 
 
 def public_text(data: bytes) -> tuple[str, bool] | None:
-    """Текст для публичных шаблонов и признак потери: UTF-8 — без потерь;
-    двоичное (NUL в первых 8000 байт, как у git) — None, его судит покоммитный
-    страж; прочее — с заменой байтов. Допуска по хешу здесь нет: хеш — выход
-    приватного гейта, а не повод не судить шаблонами (выход out7 №570, Sonnet I1)."""
-    try:
-        return data.decode("utf-8"), False
-    except UnicodeDecodeError:
-        pass
-    if b"\0" in data[:8000]:
+    """Текст для публичных шаблонов и признак потери, вид — `body_kind`: UTF-8
+    (и с NUL) — без потерь; двоичное — None, его судит покоммитный страж;
+    чужая кодировка — с заменой байтов, видны только ASCII-форматы. Допуска по
+    хешу здесь нет: хеш — выход приватного гейта, а не повод не судить
+    шаблонами (выход out7 №570, Sonnet I1)."""
+    kind, text = body_kind(data)
+    if kind == TEXT:
+        return text, False
+    if kind == BINARY:
         return None
     return data.decode("utf-8", "replace"), True
 
@@ -1203,6 +1217,9 @@ def _run(a: argparse.Namespace) -> int:
                   "перекодируй в UTF-8, локальный хук откажет", file=sys.stderr)
             for h in found:
                 print(f"  ⚠ {h}", file=sys.stderr)
+                # аннотация PR: зелёный шаг CI иначе прячет находку в логе (выход out8, Sonnet I1)
+                path, line, what = h.rsplit(":", 2)
+                print(f"::warning file={path},line={line}::{what.strip()}")
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
             for h in hits:
@@ -1210,8 +1227,13 @@ def _run(a: argparse.Namespace) -> int:
             print("Это проверка ФОРМАТОВ. Имена и внутренние названия ловит "
                   "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
             return 1
-        print("публичные шаблоны: чисто" + (f", не в UTF-8 (судились с заменой байтов): {len(lossy)}"
-                                             if lossy else ""))
+        warned = sum(map(len, lossy.values()))
+        if warned:
+            print(f"публичные шаблоны: отказов нет, предупреждений {warned} в файлах не в UTF-8 "
+                  f"({len(lossy)}) — см. ⚠ выше")
+        else:
+            print("публичные шаблоны: чисто" + (f", не в UTF-8 (судились с заменой байтов): {len(lossy)}"
+                                                 if lossy else ""))
         return 0
     owner = owner_machine()
     path = default_markers_path() if owner else markers_path()
