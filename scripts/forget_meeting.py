@@ -1175,9 +1175,12 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
         print("\nничего не сделано. Повторите с --yes, если это то, что нужно:\n"
               "  удаление стенограмм, записи, папки архива и узла встречи необратимо")
         return False
-    acts = [q.resolve() for q in [*p.delete, *p.edit]]
+    # Путь записи — лексический (симлинк в графе пишется как файл графа), поэтому сверяем
+    # и его, и его цель: `resolve()` одного уводил симлинк за граф, замок не брался
+    # (n841-opus-fix3 Sonnet I1 = Haiku I1)
+    acts = [*p.delete, *p.edit]
     needed = sorted(d for d, g in p.lock_dirs.items()
-                    if any(q.is_relative_to(g.resolve()) or q.is_relative_to(d.resolve()) for q in acts))
+                    if any(_under(q, g, d) for q in acts))
     with contextlib.ExitStack() as stack:
         for d in needed:
             try:
@@ -1197,6 +1200,12 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
         left = _apply_locked(p)
     _report_and_forget_brain(p, left, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
     return True
+
+
+def _under(path: pathlib.Path, *roots: pathlib.Path) -> bool:
+    """Путь лежит под одним из корней — по написанию или по цели симлинков."""
+    forms = {path, path.resolve()}
+    return any(q.is_relative_to(r) for q in forms for root in roots for r in (root, root.resolve()))
 
 
 def _apply_locked(p: Plan) -> list[pathlib.Path]:

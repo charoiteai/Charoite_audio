@@ -2388,6 +2388,32 @@ def test_forget_does_not_wait_for_a_graph_it_does_not_touch(tmp_path, памят
     assert elsewhere not in taken and taken
 
 
+def test_forget_locks_a_graph_whose_node_is_a_symlink_outside(tmp_path, память, monkeypatch):
+    """Узел графа — симлинк на файл вне графа: запись идёт по пути в графе, значит и замок
+    этого графа берётся (n841-opus-fix3 Sonnet I1 = Haiku I1)."""
+    root, graph = _world(tmp_path)
+    outside = tmp_path / "снаружи.md"
+    outside.write_text(f"- [[Встречи/{STAMP}]] — факт\n", encoding="utf-8")
+    node = graph / "Ядра" / "Срок.md"
+    node.unlink(missing_ok=True)
+    node.symlink_to(outside)
+    p = forget.plan(STAMP, root, graph)
+    assert node in p.edit
+    p.delete[:] = []
+    p.edit = {node: p.edit[node]}
+    p.snaps = {node: p.snaps[node]}
+    seen = []
+
+    @contextlib.contextmanager
+    def busy(lock_dir, wait, **kw):
+        seen.append(lock_dir)
+        yield False
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", busy)
+    assert forget.apply(p, yes=True) is False
+    assert seen, "замок графа с симлинком не взят"
+
+
 def test_forget_takes_the_same_lock_as_the_dossier_review(tmp_path, память, monkeypatch):
     """Замок — тот же каталог, что у ревизии и ночной сборки: родитель снимков графа."""
     root, graph = _world(tmp_path)
