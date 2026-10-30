@@ -1068,8 +1068,8 @@ field `состав:`, or the meetings of the «Источники» section for
 the field (`dossier.composition`). A new meeting of the topic, not in the composition
 and not in `не_принято:`, is appended — under a review too. A meeting of the
 composition whose file is gone, or which left the topic, sends the body to a rebuild,
-or to a hold under a review; a merge stub (`GraphSnapshot.stubs`) is never gone — its
-targets are not judged. The body
+or to a hold under a review; a stub with one arrow is judged by its canon, and a
+stub without a single target (`GraphSnapshot.stubs`: a fork, or no link) is never gone. The body
 is never appended to when the file is damaged, has no «## Сейчас», carries a
 diarization label, or would grow past `GROW_LIMIT`.
 

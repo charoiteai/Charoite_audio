@@ -385,3 +385,16 @@ def test_empty_composition_with_spaces_or_comment_is_empty(world, value):
     snap, built, members = world
     text = _dossier(snap, built).replace("tags:", f"{dossier.COMPOSITION_FIELD}: {value}\ntags:", 1)
     assert dossier.composition(text, schema=CHAROITE) == []
+
+
+def test_single_arrow_stub_is_judged_by_its_canon(tmp_path):
+    """Одиночная стрелка: судится канон — забыт канон, ушла встреча (out4 Haiku I1)."""
+    g = _graph(tmp_path)
+    (g / "Встречи" / "Старое имя.md").write_text(f"# Старое имя → [[Встречи/{NEW}]]\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    assert snap.redirects["Старое имя"] == NEW
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD, NEW]), [OLD, "Старое имя"])
+    assert _plan(text, [THEME, OLD, NEW], snap, on_disk=True) == dossier.Plan("skip", "same")
+    snap.files[NEW]["path"].unlink()
+    p = _plan(text, [THEME, OLD, NEW], snap, on_disk=True)
+    assert (p.action, p.gone) == ("rebuild", (NEW,))
