@@ -113,9 +113,10 @@ class Node:
     digest_lines: tuple[str, ...] = ()
     #: aliases строками, как в шапке: маска ПДн ищет их написание, а не стемы (№793)
     aliases: tuple[str, ...] = ()
-    #: inode файла: запись через tmp+replace, сохранившая mtime и размер, меняет только его (№853)
-    ino: int = -1
     _: dataclasses.KW_ONLY
+    #: inode файла: запись через tmp+replace, сохранившая mtime и размер, меняет только его (№853).
+    #: Только по ключу: позиционный вызов молча записал бы сюда чужое значение (n853-opusfix Haiku M2)
+    ino: int = -1
     #: Схема хранилища — только на время конструирования: из неё выводится
     #: `person`, а сам узел её не хранит.
     schema: dataclasses.InitVar[GraphSchema]
@@ -231,7 +232,7 @@ class Stub:
     target: str | None      # «Папка/Канон.md» по `redirects.stub_target`; None — развилка
     mtime: float
     size: int
-    ino: int = -1
+    ino: int = dataclasses.field(default=-1, kw_only=True)
 
 
 #: Исход `_load` для файла, который не прочитался: не узел и не заглушка, а дыра,
@@ -301,8 +302,9 @@ class NodeIndex:
                         unreadable.add(p)
                         continue
                     cached = self._nodes.get(p) or old_stubs.get(p)
-                    # inode — как в `safe_write.snapshot_of`: copy_if_changed сохраняет
-                    # mtime и размер, и кэш отдавал бы старый узел (финальный Opus n853 M1)
+                    # inode — та же причина, что в `safe_write.snapshot_of`: copy_if_changed
+                    # сохраняет mtime и размер, и кэш отдавал бы старый узел (финальный Opus
+                    # n853 M1). Здесь float `st_mtime` из одного stat с обеих сторон, не `_ns`
                     if cached and (cached.mtime, cached.size, cached.ino) \
                             == (st.st_mtime, st.st_size, st.st_ino):
                         (stubs if isinstance(cached, Stub) else fresh)[p] = cached
@@ -334,7 +336,7 @@ class NodeIndex:
         if redirects.is_merged(text):
             # заглушка после слияния — не узел (хвост 20.08, GLM), но запись для маски
             return Stub(p, folder, p.stem, redirects.stub_target(text),
-                        st2.st_mtime, st2.st_size, st2.st_ino)
+                        st2.st_mtime, st2.st_size, ino=st2.st_ino)
         if self.schema.is_person_folder(folder) and graph_names.is_placeholder_node(p.stem):
             return None                 # «Собеседник 3» — склейка разных людей, не подсказка (GLM I6, 07.09)
         name = p.stem
