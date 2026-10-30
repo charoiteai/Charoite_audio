@@ -938,7 +938,8 @@ def test_tree_scan_normalizes_nfd(tmp_path, monkeypatch):
     import unicodedata
     f = tmp_path / "t.md"
     f.write_text(unicodedata.normalize("NFD", "Семёнов " + "И. И.\n"), encoding="utf-8")
-    assert guard.scan_public([f]) == [f"{f}:1: фамилия с инициалами"]
+    unread: list[str] = []
+    assert guard.scan_public([f], unread) == [f"{f}:1: фамилия с инициалами"] and unread == []
 
 
 # ── узкий круг Sonnet по правкам Opus (№541) ────────────────────────────────
@@ -1138,7 +1139,34 @@ def test_public_only_warns_on_cp1251_and_does_not_fail(repo):
     p = guard_run(repo.work, "--public-only", env=repo.env)
     assert p.returncode == 0, p.stdout + p.stderr
     assert f"⚠ notes.txt: {guard.NOT_UTF8}" in p.stderr and "blob_allow" not in p.stderr, p.stderr
-    assert guard_run(repo.work, "--all", env=repo.env).returncode == 1
+    assert "не в UTF-8 (судились с заменой байтов): 1" in p.stdout, p.stdout
+    tree = guard_run(repo.work, "--all", env=repo.env)
+    assert tree.returncode == 1 and f"notes.txt: {guard.NOT_UTF8}" in tree.stderr, tree.stderr
+
+
+def test_public_only_still_judges_a_non_utf8_file_by_the_patterns(repo, monkeypatch):
+    """Один битый байт не выводит файл из-под шаблонов (выход out6 №570,
+    Sonnet I1 = Haiku C2): почта в cp1251-тексте — находка CI."""
+    leak = "contact: " + "jane.doe" + "@" + "mail-host" + ".ru\n"
+    (repo.work / "notes.txt").write_bytes(("запуск\n" + leak).encode("cp1251"))
+    repo.commit("cp1251 + mail")
+    unread: list[str] = []
+    monkeypatch.chdir(repo.work)
+    hits = guard.scan_public(guard.tracked_files(), unread)
+    assert unread == ["notes.txt"], unread
+    assert any(h.startswith("notes.txt:2:") for h in hits), hits
+
+
+def test_public_only_refuses_a_non_utf8_file_name(repo):
+    """Имя не в UTF-8 — отказ и в CI, как на базе (выход out6 №570, C1 всех трёх)."""
+    blob = git(repo.work, "hash-object", "-w", "--stdin", env=repo.env)
+    subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                    b"100644," + blob.stdout.strip().encode() + b"," + "имя.md".encode("cp1251")],
+                   cwd=repo.work, env=repo.env, check=True, capture_output=True)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "commit", "-qm", "name",
+        env=repo.env)
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 1 and f"имя {guard.NOT_UTF8}" in p.stderr, p.stdout + p.stderr
 
 
 def test_cp1251_text_is_refused_by_pre_commit(repo):

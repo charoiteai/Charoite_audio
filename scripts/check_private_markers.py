@@ -278,22 +278,27 @@ def public_hits(line: str) -> list[str]:
     return [name for name, raw in PUBLIC_PATTERNS.items() if re.search(raw, line)]
 
 
-def scan_public(files: list[pathlib.Path], unread: list[str] | None = None) -> list[str]:
-    """Находки по публичным шаблонам — «путь:строка: чем сработало». Файл не в
-    UTF-8 — в `unread`, не в находки: допуска по хешу у раннера CI нет, и отказ
-    краснил бы `main` без выхода (выход out5 №570, DS C1). Судит такой файл
-    локальный хук, он же главный рубеж."""
+def scan_public(files: list[pathlib.Path], unread: list[str]) -> list[str]:
+    """Находки по публичным шаблонам — «путь:строка: чем сработало». Имя не в
+    UTF-8 — находка. Содержимое не в UTF-8 шаблоны судят всё равно (байты вне
+    UTF-8 — U+FFFD, адреса и почты видны), а путь уходит в `unread`, не в
+    находки: допуска по хешу у раннера CI нет, и отказ за одну кодировку краснил
+    бы `main` без выхода (выход out5 №570, DS C1; out6 — все три головы)."""
     hits: list[str] = []
     texts: list[tuple[pathlib.Path, str]] = []
     for f in files:
+        if opaque(str(f)):
+            hits.append(f"{clean(str(f))}: имя {NOT_UTF8} — переименуй")
+            continue
         try:
-            text = tree_read(f)
+            data = f.read_bytes()
         except OSError:
             continue
+        try:
+            text = tree_text(f, data)
         except NotUtf8:
-            if unread is not None:
-                unread.append(clean(str(f)))
-            continue
+            unread.append(clean(str(f)))
+            text = data.decode("utf-8", "replace")
         if text is not None:
             texts.append((f, text))
     for name, raw in PUBLIC_PATTERNS.items():
@@ -827,7 +832,6 @@ def _zero(sha: str) -> bool:
 def _known_remote(remote: str) -> list[str]:
     names = git("remote").decode("utf-8", "replace").split()
     if remote not in names:
-        # userinfo адреса (логин, токен) в журнал не попадает
         # адрес в журнал не попадает вовсе: у scp-формы и пароля со `/` userinfo
         # регуляркой не вычистить (выход out5 №570, DS I1, Sonnet M1)
         raise GitError("push не в названный remote: опубликованное не с чем "
@@ -1193,7 +1197,8 @@ def _run(a: argparse.Namespace) -> int:
             print("Это проверка ФОРМАТОВ. Имена и внутренние названия ловит "
                   "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
             return 1
-        print("публичные шаблоны: чисто")
+        print("публичные шаблоны: чисто" + (f", не в UTF-8 (судились с заменой байтов): {len(unread)}"
+                                             if unread else ""))
         return 0
     owner = owner_machine()
     path = default_markers_path() if owner else markers_path()

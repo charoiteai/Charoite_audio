@@ -432,10 +432,10 @@ and other code pages are not guessed; a PDF without a NUL byte counts here)
 cannot be checked and are refused; the maintainer lets a
 specific version through by adding its blob hash, which the refusal prints, to
 `~/.config/charoite/blob_allow.txt`. Two prices of judging media by its first bytes:
-an mp3 without an ID3 tag and an `.onnx` model without a NUL byte early on are refused
+an mp3 without an ID3 tag and an `.onnx` model whose first byte is not `0x08` are refused
 the same way. Binary files have no added lines, so their content is judged only by the
 per-commit check at push. CI (`--public-only`) has no hash list: it warns about a file that
-is not UTF-8 and does not fail, the local hook judges it. A file name that is not UTF-8 is refused
+is not UTF-8, still runs the patterns on it with the bytes replaced and does not fail; the local hook judges it. A file name that is not UTF-8 is refused
 everywhere: rename the file. The maintainer's hook does not fetch: when
 the server has commits the clone has not seen (a squash merge on GitHub), a
 refusal adds `git fetch <remote>` — fetch and push again.
