@@ -1204,37 +1204,98 @@ def test_public_only_never_says_clean_with_a_lossy_file(repo):
     assert p.returncode == 0 and "чисто" not in p.stdout and "только ASCII" in p.stdout, p.stdout
 
 
-
 def test_public_only_stderr_carries_no_workflow_command_from_a_file_name(repo):
     """Путь в stderr — тот же чужой текст, что и в аннотации: раннер разбирает
-    команды и оттуда (финальный Opus №570, M4)."""
+    команды и оттуда (финальный Opus №570, M4). Перевод строки не доходит до
+    вывода вовсе, а путь без него печатается как есть, без `%`-кодов."""
     (repo.work / "a\n::error::pwn.txt").write_bytes(("Иван" + "ов И. И.\n").encode("cp1251"))
+    (repo.work / "100% готово.txt").write_bytes(("Иван" + "ов И. И.\n").encode("cp1251"))
     repo.commit("cp1251")
     p = guard_run(repo.work, "--public-only", env=repo.env)
     assert p.returncode == 0, p.stdout + p.stderr
-    assert not any(ln.startswith("::error") for ln in (p.stdout + p.stderr).splitlines()), p.stderr
+    assert not any(ln.startswith("::") for ln in p.stderr.splitlines()), p.stderr
+    assert all(ln.startswith("::warning file=") for ln in p.stdout.splitlines() if ln.startswith("::")), p.stdout
+    assert "⚠ 100% готово.txt" in p.stderr, p.stderr
 
 
-def test_commit_message_in_a_foreign_encoding_is_refused(repo):
-    """`encoding cp1251` в заголовке: git перекодирует сообщение по нему, и
-    кириллический маркер приходит кракозябрами — судить нечего (финальный Opus №570, I1)."""
+def _commit_in(repo, encoding: str, message: str | bytes) -> str:
     repo.write("a.md", "раз\n")
     git(repo.work, "add", "-A", env=repo.env)
-    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "-c", "i18n.commitEncoding=cp1251",
-        "commit", "-q", "-m", f"fix: запуск на {MARKER}", env=repo.env)
-    sha = repo.head()
+    msg = repo.tmp / "msg.txt"
+    msg.write_bytes(message if isinstance(message, bytes) else message.encode("utf-8"))
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "-c", f"i18n.commitEncoding={encoding}",
+        "commit", "-q", "-F", str(msg), env=repo.env)
+    return repo.head()
+
+
+def _encoding_header(repo, sha: str) -> str | None:
+    raw = guard.undecoded(subprocess.run(["git", "cat-file", "commit", sha], cwd=repo.work, env=repo.env,
+                                         capture_output=True, check=True).stdout)
+    return guard.commit_encoding(raw) if "\nencoding " in raw.split("\n\n", 1)[0] else None
+
+
+def test_utf8_bytes_under_a_foreign_encoding_header_are_judged(repo):
+    """`encoding cp1251` над байтами UTF-8: `log --encoding=UTF-8` отдаёт
+    кракозябры, push — сырые байты. Судится сырое сообщение (финальный Opus
+    №570, I1; выход opus-fix, DS C1)."""
+    sha = _commit_in(repo, "cp1251", f"fix: запуск на {MARKER}")
+    assert _encoding_header(repo, sha) == "cp1251"
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
     assert p.returncode == 1, p.stdout + p.stderr
-    assert f"{sha[:9]} сообщение: кодировка cp1251" in p.stderr, p.stderr
+    assert f"{sha[:9]} сообщение: приватный маркер" in p.stderr, p.stderr
+    assert MARKER not in p.stderr
+
+
+def test_ascii_message_under_a_foreign_encoding_header_passes(repo):
+    """Ярлык — не повод для отказа: ASCII читается одинаково в любой кодировке
+    (выход opus-fix, DS C1 / Sonnet M1)."""
+    sha = _commit_in(repo, "ISO-8859-1", "fix: ascii only")
+    assert _encoding_header(repo, sha) == "ISO-8859-1"
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stdout + p.stderr
+
+
+def test_message_bytes_in_a_foreign_encoding_are_not_judged_clean(repo):
+    """Сообщение байтами cp1251 под своим заголовком: сырые байты вне UTF-8 —
+    «не проверить», как у строк файлов."""
+    sha = _commit_in(repo, "cp1251", "fix: чистое сообщение".encode("cp1251"))
+    assert _encoding_header(repo, sha) == "cp1251"
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert f"{sha[:9]} сообщение: {guard.NOT_UTF8}" in p.stderr, p.stderr
+
+
+def test_encoding_header_value_is_judged_and_never_printed(repo):
+    """Значение заголовка — чужой текст объекта: судится и не печатается
+    (выход opus-fix, DS I1)."""
+    sha = _commit_in(repo, MARKER, "fix: ascii only")
+    assert _encoding_header(repo, sha) == MARKER
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert f"{sha[:9]} заголовок encoding: приватный маркер" in p.stderr, p.stderr
+    assert MARKER not in p.stderr
 
 
 def test_commit_marked_utf8_is_judged_as_usual(repo):
-    repo.write("a.md", "раз\n")
-    git(repo.work, "add", "-A", env=repo.env)
-    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "-c", "i18n.commitEncoding=UTF8",
-        "commit", "-q", "-m", "чистое сообщение", env=repo.env)
+    sha = _commit_in(repo, "UTF8", "чистое сообщение")
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
     assert p.returncode == 0, p.stdout + p.stderr
+    assert _encoding_header(repo, sha) is None
+
+
+@pytest.mark.parametrize("raw,enc", [
+    ("tree x\nencoding UTF_8\n\nm", None),
+    ("tree x\nencoding utf8\n\nm", None),
+    ("tree x\nencoding Utf-8 \n\nm", None),
+    ("tree x\nencoding cp1251\n\nm", "cp1251"),
+    ("tree x\nmergetag object y\n encoding cp1251\n\nm", None),
+    ("tree x\n\nencoding cp1251", None),
+])
+def test_commit_encoding_reads_only_the_header(raw, enc):
+    """Варианты имени UTF-8 сводятся к одному; строка продолжения mergetag и
+    тело сообщения заголовком не считаются (Sonnet M2, Haiku I2)."""
+    assert guard.commit_encoding(raw) == enc
+
 
 @pytest.mark.parametrize("data,kind", [
     (b"plain", "text"),

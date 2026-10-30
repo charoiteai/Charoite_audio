@@ -307,11 +307,17 @@ def public_text(data: bytes) -> tuple[str, bool] | None:
 
 
 def gh_escape(v: str, prop: bool = False) -> str:
-    """Чужой текст в выводе CI: `%` и перевод строки, а в свойствах команды ещё
-    `:` и `,` — иначе имя файла дописало бы свою команду workflow (Haiku out8 M1).
-    Раннер разбирает команды и из stderr: путь туда идёт так же (финальный Opus, M4)."""
+    """Чужой текст в команде workflow: `%` и перевод строки, а в свойствах ещё
+    `:` и `,` — иначе имя файла дописало бы свою команду (Haiku out8 M1)."""
     v = v.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     return v.replace(":", "%3A").replace(",", "%2C") if prop else v
+
+
+def gh_line(v: str) -> str:
+    """Чужой текст в строке лога CI: раннер разбирает команды и из stderr
+    (финальный Opus, M4), но команда начинается только с новой строки — `%`
+    в логе не раскодируется и остаётся как есть (выход opus-fix, Sonnet M3)."""
+    return v.replace("\r", "\\r").replace("\n", "\\n")
 
 
 def gh_warning(path: str, line: str, text: str) -> str:
@@ -581,15 +587,18 @@ def raw_objects(shas: list[str]) -> dict[str, str]:
 
 
 # Заголовки коммита, которые судятся отдельно (автор, коммитер) или не текст
-# (дерево, родители, подпись). Остальные — mergetag и любые будущие — судятся.
-_KNOWN_HEADERS = {"tree", "parent", "author", "committer", "encoding", "gpgsig", "gpgsig-sha256"}
+# (дерево, родители, подпись). Остальные — mergetag, encoding и любые будущие —
+# судятся: значение encoding тоже чужой текст объекта (выход opus-fix, DS I1).
+_KNOWN_HEADERS = {"tree", "parent", "author", "committer", "gpgsig", "gpgsig-sha256"}
 
 
 def commit_encoding(raw: str) -> str | None:
     """Кодировка сообщения из заголовка `encoding`, если она не UTF-8. По ней git
     перекодирует сообщение в `log --encoding=UTF-8`, и кириллица, записанная
     байтами UTF-8 под чужим заголовком, приходит валидным UTF-8 из кракозябр —
-    маркер не виден, а push отправит сырые байты (финальный Opus №570, I1)."""
+    маркер не виден, а push отправит сырые байты (финальный Opus №570, I1).
+    Поэтому у такого коммита судится ещё и сырое сообщение; сам ярлык поводом
+    для отказа не служит (выход opus-fix, DS C1)."""
     for line in raw.split("\n\n", 1)[0].split("\n"):
         if line.startswith("encoding "):
             enc = line[len("encoding "):].strip()
@@ -796,9 +805,11 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         hits += _people_report(texts, {}, refs=refs, mask=mask) if people else []
         return 0, hits
     for sha, raw in raw_objects([m.sha for m in metas]).items():
-        enc = commit_encoding(raw)
-        if enc is not None:
-            hits.append(f"{sha[:9]} сообщение: кодировка {clean(enc)} — {NOT_UTF8}; перезапиши коммит в UTF-8")
+        if commit_encoding(raw) is not None:
+            body = raw.split("\n\n", 1)[1] if "\n\n" in raw else ""
+            texts.append((f"{sha[:9]} сообщение", clean(body)))
+            for k in kinds(body):
+                hits.append(f"{sha[:9]} сообщение: {k}")
         for key, text in extra_headers(raw):
             texts.append((f"{sha[:9]} заголовок {key}", clean(text)))
             for k in kinds(text):
@@ -1214,7 +1225,7 @@ def main() -> int:
     try:
         return _run(a)
     except (GitError, PeopleGateError) as e:
-        print(f"❌ страж не смог проверить — отказ: {_scrub(str(e))}", file=sys.stderr)
+        print(f"❌ страж не смог проверить — отказ: {gh_line(_scrub(str(e)))}", file=sys.stderr)
         return 1
 
 
@@ -1241,17 +1252,17 @@ def _run(a: argparse.Namespace) -> int:
         lossy: dict[str, list[str]] = {}
         hits = scan_public(tracked_files(), lossy)
         for f, found in lossy.items():
-            print(f"⚠ {gh_escape(f)}: не UTF-8 — тело судили с заменой байтов, находок {len(found)}; "
+            print(f"⚠ {gh_line(f)}: не UTF-8 — тело судили с заменой байтов, находок {len(found)}; "
                   "перекодируй в UTF-8, локальный хук откажет", file=sys.stderr)
             for h in found:
-                print(f"  ⚠ {gh_escape(h)}", file=sys.stderr)
+                print(f"  ⚠ {gh_line(h)}", file=sys.stderr)
                 # аннотация PR: зелёный шаг CI иначе прячет находку в логе (выход out8, Sonnet I1)
                 path, line, what = h.rsplit(":", 2)
                 print(gh_warning(path, line, what.strip()))
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
             for h in hits:
-                print(f"  {gh_escape(h)}", file=sys.stderr)
+                print(f"  {gh_line(h)}", file=sys.stderr)
             print("Это проверка ФОРМАТОВ. Имена и внутренние названия ловит "
                   "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
             return 1
