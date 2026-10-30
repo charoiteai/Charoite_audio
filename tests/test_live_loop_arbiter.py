@@ -97,20 +97,19 @@ def test_auto_node_lookup_reads_speech_not_the_labelled_tail():
     assert "tr.speech_tail(" in call and "tr.tail(" not in call, call
 
 
-
-def test_minutes_draft_waits_a_long_tick_only_while_the_draft_is_fresh():
+def test_minutes_draft_waits_a_long_tick_only_after_a_written_draft():
     # №808: черновик раз в 600 с, а не 150 — минуты основной модели и замок подсказок
     assert re.search(r"^MINUTES_EVERY = 600(\.0)?\b", SRC, re.M)
     assert re.search(r"^MINUTES_RETRY = 150(\.0)?\b", SRC, re.M)
     body = _body("minutes_loop")
     # сон — через stop: после стопа цикл не зовёт модель ради выброшенного черновика
-    assert "if stop.wait(due):" in body and "time.sleep(" not in body
-    # первого черновика нет — короткий такт: короткой встрече иначе нечем
-    # перештамповаться, когда модель на пересборке легла (Haiku I1)
-    assert "due = MINUTES_RETRY\n" in body.split("while not stop.is_set():")[0]
-    # уступка (слот занят или ручной запрос) — снова короткий такт, а не дыра в 20 минут (Sonnet I1)
-    for gate in ("if not got:", "if out is None:"):
-        tail = body.split(gate, 1)[1].lstrip()
-        assert tail.startswith("due = MINUTES_RETRY"), gate
-    # длинный такт — только после удачной генерации, рядом со сдвигом seen
-    assert "seen = grown\n                due = MINUTES_EVERY" in body
+    assert re.search(r"if stop\.wait\(MINUTES_EVERY if wrote else MINUTES_RETRY\):\s*return", body)
+    assert "time.sleep(" not in body
+    # длинный такт заслуживает только запись: флаг гасится на каждом пробуждении
+    # и поднимается в одном месте — сразу за записью черновика (Sonnet I1 и Haiku I1 out1)
+    loop = body.split("while not stop.is_set():", 1)
+    assert re.search(r"\bwrote = False\b", loop[0])
+    assert re.search(r"return\s+wrote = False\b", loop[1])
+    raised = [m.start() for m in re.finditer(r"\bwrote = True\b", body)]
+    assert len(raised) == 1
+    assert re.search(r"note_minutes_written\(draft\)\s+wrote = True\b", body)
