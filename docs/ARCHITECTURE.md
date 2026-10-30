@@ -1031,8 +1031,11 @@ At night a local model writes a five-section summary per cluster.
 **Incremental.** Each dossier carries a fingerprint of its composition in
 its front matter — the source list and their modification times. Unchanged fingerprint means the
 topic did not move, so the model is not called. On a typical night a handful
-of topics out of dozens get rebuilt. A weekly full pass (`--full`) is still
-useful: incremental updates gradually blur cluster boundaries. The fingerprint
+of topics out of dozens get rebuilt. A full pass (`--full`) is manual only,
+after a change of the prompt, limits or model: cluster membership is part of
+the fingerprint, so a moved boundary already marks the topic as changed, while
+retelling unchanged sources adds no facts and erases the cloud review of the
+body (the night schedule dropped it, №809). The fingerprint
 does not know the prompt, so a body that still names a diarization label as an
 actor (`dossier.labeled_body`, the same predicate the graph doctor counts) is not
 rebuilt by the night when the fingerprint matches, `--full` included: a model

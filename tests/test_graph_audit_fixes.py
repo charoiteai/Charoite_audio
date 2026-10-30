@@ -79,11 +79,8 @@ def test_the_theme_core_itself_reaches_the_prompt():
 # сортировки и искали литерал в исходнике (вход in3 №621, DS C3).
 
 
-def test_nightly_runs_a_full_dossier_pass_weekly():
-    """У ревизии ядер воскресный полный прогон был, у досье — нет."""
-    sh = (SCRIPTS / "nightly.sh").read_text(encoding="utf-8")
-    assert "DOSSIER_MODE" in sh and "--full" in sh
-    assert 'date +%u' in sh
+# Воскресный --full досье снят (№809): расписание проверяет поведенческая
+# таблица test_nightly_exit.py::test_dossier_budget_follows_the_mode.
 
 
 def test_chinese_quote_is_verified_not_dropped():

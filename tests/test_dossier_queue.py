@@ -163,7 +163,7 @@ def _main_full(nd, tmp_path, monkeypatch, graph, *extra):
     return nd.main()
 
 
-def test_sunday_full_leaves_the_night_tail_its_time(nd, tmp_path, monkeypatch, capsys):
+def test_full_leaves_the_night_tail_its_time(nd, tmp_path, monkeypatch, capsys):
     """№749, сценарий ночи: потолок через «резерв хвоста + 100 с», --full без
     бюджета. Шаг обязан остановиться по бюджету, урезанному до потолка минус
     резерв, — а не дойти до потолка и отдать хвост ночи в «(поздно)». Окно
@@ -660,9 +660,9 @@ def test_graph_gone_mid_run_does_not_stop_the_night(nd, tmp_path, monkeypatch):
     assert "б1" in nd.calls
 
 
-def test_cut_full_rebuild_continues_from_the_rest_next_sunday(nd, tmp_path, monkeypatch):
+def test_cut_full_rebuild_continues_from_the_rest_next_manual_run(nd, tmp_path, monkeypatch):
     """№749, вход in1 DS C3: урезанная полная пересборка не начинается заново,
-    а следующим воскресеньем берёт ровно то, что не успела, — по `собрано`
+    а следующим ручным `--full` берёт ровно то, что не успела, — по `собрано`
     настоящих досье, а не по засеву теста."""
     import datetime as dt
     graph = _graph(tmp_path, "Г", {f"тема{i}": None for i in range(6)})
@@ -741,7 +741,7 @@ def test_clean_theme_without_changes_is_not_counted_as_labeled(nd, tmp_path):
 
 
 def test_full_leaves_a_labeled_theme_alone(nd, tmp_path, capsys):
-    """Воскресный `--full` меченую тему тоже не трогает (n815-out7 Haiku I3) и
+    """Ручной `--full` меченую тему тоже не трогает (n815-out7 Haiku I3) и
     показывает её строкой и счётчиком (DS M2); чистые темы `--full` собирает,
     как на базе (`test_full_without_budget_ignores_the_limit_and_takes_unchanged_themes`)."""
     graph, path = _labeled_graph(nd, tmp_path)
