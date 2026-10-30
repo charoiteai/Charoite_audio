@@ -99,10 +99,14 @@ def _account(result, counts, paths, capsys, damaged=1, verified=()):
 
 
 @pytest.mark.parametrize("where", ["body", "fingerprint"])
-def test_damaged_body_or_fingerprint_rebuilds_every_theme(night, monkeypatch, capsys, where):
+@pytest.mark.parametrize("head", ["## Правки автора", "##Правки автора"])
+def test_damaged_body_or_fingerprint_rebuilds_every_theme(night, monkeypatch, capsys, where, head):
     nd, graph, folder, paths, calls = night
     old, new = (("старое тело", b"old\xffbody") if where == "body"
                 else ("отпечаток: старый", "отпечаток: ".encode() + b"old\xfffp"))
+    # повреждение вне правок при заголовке, как его набирает владелец, — пересборка (n856-min1 M2)
+    paths["Бета"].write_text(paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head),
+                             encoding="utf-8")
     before = _damage(paths["Бета"], old, new)
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=False, limit=12)
