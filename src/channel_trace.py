@@ -147,7 +147,11 @@ def render(ev) -> str | None:
         return (f"⚠️ {name}{PHRASE_GAP} {_hm(ev.stopped_at)}–{_hm(ev.at)} "
                 f"({_dur(ev.silent_s)}), поток перезапущен")
     if ev.kind == KIND_SILENT:
-        return f"⚠️ {name} {PHRASE_SILENT} {_hm(ev.stopped_at)} — собеседники слышны только через микрофон"
+        # только факт о канале — звонок мог кончиться (Important Sonnet out4)
+        return f"⚠️ {name} {PHRASE_SILENT} {_hm(ev.stopped_at)}"
+    if ev.kind == KIND_AUDIBLE:
+        # пара к `silent`: без неё строка «не пишется» в документе навсегда (Important Haiku out4)
+        return f"✅ {name} {PHRASE_BACK} {_hm(ev.at)} — в нулях был с {_hm(ev.stopped_at)}"
     return None
 
 
@@ -237,9 +241,9 @@ class ChannelTrace:
         text = render(ev)
         if text is None:
             return
-        if ev.kind == KIND_SILENT:
+        if ev.kind in (KIND_SILENT, KIND_AUDIBLE):
             # не эпизод: бюджет строк `LINES_MAX` и открытые `lost` не трогает (DS in2 I3);
-            # защёлка хаба выпускает его один раз на серию
+            # защёлка хаба выпускает пару один раз на серию
             self._say(text, _hm(ev.at))
             return
         # потолок — по эпизодам: `back` показывается, если показан его `lost`;

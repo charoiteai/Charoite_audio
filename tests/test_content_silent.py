@@ -410,3 +410,24 @@ def test_silent_and_audible_carry_the_content_duration_and_a_final_loss(monkeypa
         (a.CH_SILENT, _NOW - 700, 700.0, True),
         (a.CH_AUDIBLE, _NOW - 700, 750.0, True)]
     assert [(x.retriable, x.died) for x in losses] == [(False, True), (False, True)]
+
+
+def test_a_returned_content_closes_the_trace_line_and_says_only_the_fact(monkeypatch):
+    """Пара строк следа: «не пишется с» и «снова пишется с» — обе распознаются как след,
+    бюджет эпизодов не тратят; ни строка, ни статус не утверждают «собеседники через
+    микрофон» — звонок мог кончиться (Important Haiku и Sonnet out4)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    lines, said = [], []
+    trace = channel_trace.ChannelTrace(pathlib.Path(tempfile.mkdtemp()) / "x_live.md",
+                                       note=lines.append)
+    hub.on_channel = trace.on_event
+    hub.on_status = said.append
+    _dead_call(hub, _NOW, age=700)
+    hub._check_content(_NOW)
+    hub._content_ts["blackhole"] = _NOW + 50
+    hub._check_content(_NOW + 55)
+    assert len(lines) == 2 and all(channel_trace.is_trace_line(x) for x in lines), lines
+    assert channel_trace.PHRASE_SILENT in lines[0] and channel_trace.PHRASE_BACK in lines[1], lines
+    assert not any("микрофон" in x for x in lines + said), (lines, said)
+    assert trace._episodes_shown["blackhole"] == 0 and "blackhole" not in trace._open_shown
