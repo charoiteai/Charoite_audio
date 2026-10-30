@@ -721,6 +721,8 @@ def _shaped(got: dict | None) -> dict | None:
             if not isinstance(item, dict):
                 continue
             for field in fields:
+                if isinstance(item.get(field), (int, float)) and not isinstance(item[field], bool):
+                    item[field] = str(item[field])    # «имя»: 1494 доходило до узла на базе (Opus M1)
                 if field in item and not isinstance(item[field], str):
                     if item[field] is not None:
                         print(f"граф: «{key}.{field}» — {type(item[field]).__name__}, а не строка — отброшено")
@@ -2709,8 +2711,17 @@ def _fact_words(s: str) -> tuple[set[str], tuple[str, ...]]:
     буквы выброшены; слова множеством (порядок не смысл), числа — в порядке
     появления: у дат, долей и версий порядок и есть смысл, «с 12.09» и
     «с 09.12» множеством совпадали (Important DS r4 по #539)."""
-    words = re.findall(r"\w+", _fact_norm(s))
-    return {w for w in words if len(w) >= 2 and not w.isdigit()}, tuple(w for w in words if w.isdigit())
+    words, nums = set(), []
+    for w in re.findall(r"\w+", _fact_norm(s)):
+        if w.isdigit():
+            nums.append(w)
+            continue
+        if any(c.isdigit() for c in w):      # «32b», «15ч»: число — в числа, слово — скелетом «#b» (Opus I2)
+            nums += re.findall(r"\d+", w)
+            w = re.sub(r"\d+", "#", w)
+        if len(w) >= 2:
+            words.add(w)
+    return words, tuple(nums)
 
 
 def _same_fact(old: str, new: str) -> bool:
@@ -2844,7 +2855,10 @@ def _supersede_description(text: str, desc: str, meeting_link: str,
         return text, ("описание — пересказ", f"{name}: «{_clip(new)}» ≈ «{_clip(old)}»"), ""
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
-    if not _refines(old, new):
+    # встреча старше последнего упоминания (долг встреч, импорт) верх не трогает:
+    # иначе запоздалый разбор откатывал верх, а эпизоды после №846 его не сменят (Opus I1)
+    seen = _LAST_SEEN_RE.search(text, _body_at(text))
+    if (when and seen and day < seen.group(1)) or not _refines(old, new):
         return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _clip(new)
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
     event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")

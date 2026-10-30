@@ -893,7 +893,7 @@ carry a «last mention» line that is updated mechanically, and a description
 is a dated fact: only a refinement (every old word and number kept, no new numbers) or
 the same words with as many numbers, other values (a date too), supersedes it with a trace in «## Хроника» (№194); a role from one
 meeting leaves the top alone and is noted on that meeting's line in
-«## Встречи» as «в этой встрече: …» (№846), and machine lines past ten move to «## Архив хроники»
+«## Встречи» as «в этой встрече: …» (№846), a meeting older than the node's last mention leaves the top alone, and machine lines past ten move to «## Архив хроники»
 at the end of the node. The indexes `Люди/_ЛЮДИ.md`, `Системы/_СИСТЕМЫ.md`,
 `Команды/_КОМАНДЫ.md` are rebuilt for the touched folders after every
 meeting (newest on top) and in full at night, while `_MOC.md` stays a
