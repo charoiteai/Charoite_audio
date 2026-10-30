@@ -580,7 +580,8 @@ def test_forget_strips_a_meeting_line_without_splitting_others(tmp_path):
     root, graph = _world(tmp_path)
     node = graph / "Ядра" / "Выбор платёжного провайдера.md"
     before = node.read_text(encoding="utf-8")
-    node.write_text(before + "ЮPay\u2028срок\x0bпозже\n", encoding="utf-8")
+    # после пустой строки: без неё строка — ленивое продолжение пункта встречи (№845)
+    node.write_text(before + "\nЮPay\u2028срок\x0bпозже\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
     assert "ЮPay\u2028срок\x0bпозже\n" in p.edit[node], p.edit.get(node)
 
@@ -603,10 +604,13 @@ def test_forget_keeps_a_meeting_item_whole_across_a_non_markdown_break(tmp_path,
     потери начала фразы (out7 Haiku C1, Sonnet I1, DS I2)."""
     root, graph = _world(tmp_path)
     node = graph / "Ядра" / "Срок.md"
-    node.write_text(f"- [[Встречи/{STAMP}]] — факт{sep}продолжение\nСрок{sep}- [[Встречи/{STAMP}]] — "
+    # «Срок…» — после пустой строки: без неё это ленивое продолжение пункта, уходит с ним (№845)
+    node.write_text(f"- [[Встречи/{STAMP}]] — факт{sep}продолжение\n\nСрок{sep}- [[Встречи/{STAMP}]] — "
                     "перенесли\n- другое\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
-    assert p.edit[node] == f"Срок{sep}- {forget.REMOVED_NOTE} — перенесли\n- другое\n", p.edit.get(node)
+    out = p.edit[node]
+    assert "факт" not in out and "продолжение" not in out, out
+    assert out.endswith(f"Срок{sep}- {forget.REMOVED_NOTE} — перенесли\n- другое\n"), out
 
 
 def test_forget_never_cuts_across_lines(tmp_path):
@@ -2745,7 +2749,8 @@ def test_forget_keeps_a_dossier_a_human_touched_and_names_it(tmp_path, case):
            "revision": "тело правила облачная ревизия"}.get(case, "этот путь ночь не пересобирает")
     if case == "snapshot":
         rel = path.relative_to(charoite_paths.graph_backups(graph, "cloud_backup", root=root)).as_posix() + " (снимок)"
-    named = [c for c in p.check if "пересказ встречи в теле проверь сам" in c]
+    # своё досье, а не живое досье фикстуры (`Досье/Платёжный провайдер.md`, без отпечатка)
+    named = [c for c in p.check if c.startswith(f"{rel}: ") and "пересказ встречи в теле проверь сам" in c]
     assert named == [f"{rel}: {why} — пересказ встречи в теле проверь сам"], p.check
 
 
