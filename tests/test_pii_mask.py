@@ -511,9 +511,11 @@ def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkey
         class R:
             returncode = 0
             stderr = ""
-            # модель вернула тело как получила — с подделками
-            # по статическому каркасу PROMPT, не по заголовку из data (n793-out19 DS-M2)
-            stdout = cmd[2].split("ТЕКУЩЕЕ ДОСЬЕ:\n", 1)[1].split("\n\nИСТОЧНИКИ", 1)[0]
+            # модель вернула тело с подделками и одной правкой: тело без правок ревизией
+            # не считается (№841 opus I2) — по статическому каркасу PROMPT, не по
+            # заголовку из data (n793-out19 DS-M2)
+            stdout = (cmd[2].split("ТЕКУЩЕЕ ДОСЬЕ:\n", 1)[1].split("\n\nИСТОЧНИКИ", 1)[0]
+                      .replace(" пилот ", " пилот второй месяц "))
 
         return R()
 
@@ -531,7 +533,7 @@ def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkey
     # (n793-out18 DS-I1; out19 S-I1 = DS-I2, S-M1; out20 DS-I1)
     assert "маска basic: замен" in log and "не прочитались узлы (1)" in log
     assert "по всему промпту" not in log
-    assert "- Анна Белова" in fixed
+    assert "- Анна Белова" in fixed and "Идёт пилот второй месяц" in fixed
 
     # подделка не развернулась — ревизия отклонена, досье не тронуто (n793-out18 H-C1 = S-I1)
     monkeypatch.setattr(ndr.cloud_door, "unmask_reply", lambda reply, m: ("⟦?Тамара⟧", 1))
