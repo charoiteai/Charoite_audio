@@ -1140,7 +1140,7 @@ def test_public_only_warns_on_cp1251_and_does_not_fail(repo):
     assert p.returncode == 0, p.stdout + p.stderr
     assert "⚠ notes.txt: не UTF-8 — тело судили с заменой байтов, находок 0" in p.stderr, p.stderr
     assert "blob_allow" not in p.stderr, p.stderr
-    assert "не в UTF-8 (судились с заменой байтов): 1" in p.stdout, p.stdout
+    assert "не в UTF-8 файлов 1" in p.stdout, p.stdout
     tree = guard_run(repo.work, "--all", env=repo.env)
     assert tree.returncode == 1 and f"notes.txt: {guard.NOT_UTF8}" in tree.stderr, tree.stderr
 
@@ -1187,6 +1187,21 @@ def test_public_only_refuses_a_utf8_leak(repo):
     repo.commit("utf8")
     p = guard_run(repo.work, "--public-only", env=repo.env)
     assert p.returncode == 1 and "notes.txt:1: почта на непубличном домене" in p.stderr, p.stderr
+
+
+def test_gh_warning_escapes_a_foreign_file_name():
+    """Имя файла с переводом строки не заводит свою команду workflow (Haiku out8 M1)."""
+    got = guard.gh_warning("x\n::error::pwn,a:b%.txt", "3", "почта 100%")
+    assert got == "::warning file=x%0A%3A%3Aerror%3A%3Apwn%2Ca%3Ab%25.txt,line=3::почта 100%25"
+    assert "\n" not in got
+
+
+def test_public_only_never_says_clean_with_a_lossy_file(repo):
+    """Кириллица в cp1251 шаблонам не видна: итог без слова «чисто» (Haiku out8 I1)."""
+    (repo.work / "notes.txt").write_bytes(("Иван" + "ов И. И.\n").encode("cp1251"))
+    repo.commit("cp1251")
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 0 and "чисто" not in p.stdout and "только ASCII" in p.stdout, p.stdout
 
 
 @pytest.mark.parametrize("data,kind", [

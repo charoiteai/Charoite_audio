@@ -306,6 +306,16 @@ def public_text(data: bytes) -> tuple[str, bool] | None:
     return data.decode("utf-8", "replace"), True
 
 
+def gh_warning(path: str, line: str, text: str) -> str:
+    """Команда аннотации GitHub: имя файла чужое — `%`, перевод строки, а в
+    свойствах ещё `:` и `,` экранируются, иначе имя дописало бы свою команду
+    (Haiku out8 M1)."""
+    def esc(v: str, prop: bool) -> str:
+        v = v.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        return v.replace(":", "%3A").replace(",", "%2C") if prop else v
+    return f"::warning file={esc(path, True)},line={esc(line, True)}::{esc(text, False)}"
+
+
 def scan_public(files: list[pathlib.Path], lossy: dict[str, list[str]]) -> list[str]:
     """Находки по публичным шаблонам — «путь:строка: чем сработало». Имя не в
     UTF-8 — находка. Тело не в UTF-8 судится с заменой байтов, но его находки —
@@ -1219,7 +1229,7 @@ def _run(a: argparse.Namespace) -> int:
                 print(f"  ⚠ {h}", file=sys.stderr)
                 # аннотация PR: зелёный шаг CI иначе прячет находку в логе (выход out8, Sonnet I1)
                 path, line, what = h.rsplit(":", 2)
-                print(f"::warning file={path},line={line}::{what.strip()}")
+                print(gh_warning(path, line, what.strip()))
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
             for h in hits:
@@ -1228,12 +1238,12 @@ def _run(a: argparse.Namespace) -> int:
                   "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
             return 1
         warned = sum(map(len, lossy.values()))
-        if warned:
-            print(f"публичные шаблоны: отказов нет, предупреждений {warned} в файлах не в UTF-8 "
-                  f"({len(lossy)}) — см. ⚠ выше")
+        if lossy:
+            # «чисто» здесь неправда: кириллица после замены байтов шаблонам не видна (Haiku out8 I1)
+            print(f"публичные шаблоны: отказов нет; не в UTF-8 файлов {len(lossy)}, предупреждений "
+                  f"{warned} — проверены только ASCII-форматы, см. ⚠ выше")
         else:
-            print("публичные шаблоны: чисто" + (f", не в UTF-8 (судились с заменой байтов): {len(lossy)}"
-                                                 if lossy else ""))
+            print("публичные шаблоны: чисто")
         return 0
     owner = owner_machine()
     path = default_markers_path() if owner else markers_path()
