@@ -1067,8 +1067,8 @@ trailing space typed in Obsidian no longer loses the edits (№856). A dossier w
 layout is not the one `render` writes (`dossier.layout_problem` names the reason; text
 after the first «Правки автора» heading is the owner's, headings included) is held before the model, logged and counted (`раскладка не та N`,
 `раскладка` in the result); the cloud review leaves it alone too. A model body with
-either heading inside fails `looks_valid`. On 30.10 three dossiers out of 1070 were held,
-all handmade, with no «Сейчас» and no night fingerprint.
+either heading inside fails `looks_valid`. On 30.10 five dossiers out of 1070 were held,
+all handmade, with no night fingerprint.
 
 `dossier.plan` (№843, not yet called by the night) is the one decision these checks
 are moving to: skip, add, rebuild or hold, from the meetings the body was built from
