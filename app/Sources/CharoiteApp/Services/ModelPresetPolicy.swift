@@ -42,9 +42,9 @@ struct ModelPreset: Identifiable, Equatable {
     /// выключается вместе с дежавю: иначе обещание «эмбеддер здесь не живёт»
     /// ломается на первой же встрече (ревью 19.08).
     var tier3: Bool { dejaVu }
-    /// Модель тезисов и черновика минуток (`sufler.think_model`). Идёт каждые
-    /// 40–150 секунд всю встречу, поэтому на лёгких машинах это лёгкая
-    /// модель, а не «та же, что основная».
+    /// Модель тезисов и черновика минуток (`sufler.think_model`). Тезисы идут
+    /// каждые ~40 с всю встречу (`THESIS_EVERY` в демоне), поэтому на лёгких
+    /// машинах это лёгкая модель, а не «та же, что основная».
     var thinkModel: String { needsGB >= 64 ? model : smallModel }
     /// Модель разметки реплик (`sufler.markup_model`) — см. configFlags.
     var markupModel: String { needsGB >= 32 ? model : smallModel }

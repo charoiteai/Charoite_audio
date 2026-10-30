@@ -96,3 +96,20 @@ def test_auto_node_lookup_reads_speech_not_the_labelled_tail():
     call = call[:call.index(")") + 1]
     assert "tr.speech_tail(" in call and "tr.tail(" not in call, call
 
+
+def test_minutes_draft_waits_a_long_tick_only_after_a_written_draft():
+    # №808: черновик раз в 600 с, а не 150 — минуты основной модели и замок подсказок
+    assert re.search(r"^MINUTES_EVERY = 600(\.0)?\b", SRC, re.M)
+    assert re.search(r"^MINUTES_RETRY = 150(\.0)?\b", SRC, re.M)
+    body = _body("minutes_loop")
+    # сон — через stop: после стопа цикл не зовёт модель ради выброшенного черновика
+    assert re.search(r"if stop\.wait\(MINUTES_EVERY if wrote else MINUTES_RETRY\):\s*return", body)
+    assert "time.sleep(" not in body
+    # длинный такт заслуживает только запись: флаг гасится на каждом пробуждении
+    # и поднимается в одном месте — сразу за записью черновика (Sonnet I1 и Haiku I1 out1)
+    loop = body.split("while not stop.is_set():", 1)
+    assert re.search(r"\bwrote = False\b", loop[0])
+    assert re.search(r"return\s+wrote = False\b", loop[1])
+    raised = [m.start() for m in re.finditer(r"\bwrote = True\b", body)]
+    assert len(raised) == 1
+    assert re.search(r"note_minutes_written\(draft\)\s+wrote = True\b", body)
