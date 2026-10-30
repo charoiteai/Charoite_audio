@@ -441,12 +441,11 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             # или не в UTF-8 — не ронять ночь целиком (аудит 13.09, GLM M4)
             failed.append(f"- **{theme}** — сбой: досье не прочитано ({e})")
             continue
-        # Пригодность досье к записи зависит только от `old` — до платного вызова (out5 Sonnet I2)
-        head0, _, sources0, _ = split_dossier(old)
-        if sources0 is None:
-            rejected.append(f"- **{theme}** — в досье нет раздела «## Источники» — не трогаем")
-            continue
-        if dossier.revision(dossier.with_revision(head0, stamp[:10])) != stamp[:10]:
+        # Пригодность досье к записи зависит только от `old` — до платного вызова (out5 Sonnet I2);
+        # без записи поле не нужно, предложение в отчёт идёт как раньше (out6 DS I1, Haiku I1).
+        # «Источники» `review` проверяет сам, до облака
+        head0 = split_dossier(old)[0]
+        if may_edit and dossier.revision(dossier.with_revision(head0, stamp[:10])) != stamp[:10]:
             # незакрытая шапка поля не примет; правка без поля — пересказ следующей ночью (out4 DS I1);
             # по одной шапке: черта `---` в теле не сойдёт за её конец (out5 Haiku I2)
             failed.append(f"- **{theme}** — сбой: поле `ревизия:` не ставится (шапка не закрыта) — "
@@ -474,12 +473,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # Тело теперь ревизии: ночная пересборка его не трогает, снимает поле
         # «забыть встречу» (№841); поле — в той же записи, что строка
         # «Применено» отчёта, и не разойдётся с ним (вход n841-in1 S-C2)
-        text = dossier.with_revision(text, stamp[:10])
-        if dossier.revision(text) != stamp[:10]:
-            # незакрытая шапка поля не примет; правка без поля — пересказ следующей ночью (out4 DS I1)
-            failed.append(f"- **{theme}** — сбой: поле `ревизия:` не ставится (шапка не закрыта) — "
-                          "правка не применена")
-            continue
+        text = dossier.with_revision(text, stamp[:10])     # шапка та же, что проверена до вызова
 
         # замок на одну запись; за время облачного вызова файл мог смениться —
         # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2).

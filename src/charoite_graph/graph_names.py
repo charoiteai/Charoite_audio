@@ -190,7 +190,8 @@ _SENTENCE_LOOKBACK = 40
 
 def link_target_stem(target: str) -> str:
     """Цель ссылки как имя узла: последний сегмент без якоря, `.md` и `\\`, которым
-    таблица Obsidian экранирует `|` алиаса (как `graph_links.LinkResolver.resolve`)."""
+    таблица Obsidian экранирует `|` алиаса. У `graph_links.LinkResolver.resolve` свой разбор
+    того же `\\` (одна грамматика ссылок — долг №607)."""
     t = re.split(r"[#^]", target)[0].strip().rstrip("\\").strip()
     return t.split("/")[-1].strip().removesuffix(".md").strip()
 

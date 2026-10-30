@@ -348,9 +348,11 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
 
 
 
-def test_review_refuses_to_apply_when_the_revision_field_cannot_be_set(tmp_path, monkeypatch):
+@pytest.mark.parametrize("may_edit", [True, False])
+def test_review_refuses_to_apply_when_the_revision_field_cannot_be_set(tmp_path, monkeypatch, may_edit):
     """Незакрытая шапка: поле не ставится, а без поля ночь перескажет правку —
-    значит и правку не пишем, в отчёте сбой (выход n841-out4 DS I1)."""
+    значит и правку не пишем, в отчёте сбой (выход n841-out4 DS I1). Без записи
+    поле не нужно: предложение в отчёте, как раньше (out6 DS I1, Haiku I1)."""
     ndr = _load("nightly_dossier_review")
     graph = tmp_path / "g"
     folder = graph / ndr.CHAROITE.dossier_dir
@@ -366,12 +368,15 @@ def test_review_refuses_to_apply_when_the_revision_field_cannot_be_set(tmp_path,
         "Идёт пилот", "Пилот ⚠️ идёт")
     called = []
     monkeypatch.setattr(ndr, "review", lambda *a, **k: called.append(1) or (fixed, ""))
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": may_edit}}
     ndr.run(graph, cfg, dry=False, limit=6)
     assert path.read_text(encoding="utf-8") == before
-    assert not called, "облачный вызов до проверки, что правку можно записать (out5 Sonnet I2, Haiku I4)"
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
-    assert "**Платёжный провайдер** — сбой: поле `ревизия:` не ставится" in report, report
+    if may_edit:
+        assert not called, "облачный вызов до проверки, что правку можно записать (out5 Sonnet I2, Haiku I4)"
+        assert "**Платёжный провайдер** — сбой: поле `ревизия:` не ставится" in report, report
+    else:
+        assert called and "## Предложено, но не применено" in report and "Сбои шага" not in report, report
 
 def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
     """Досье с пятью разделами, но без «## Источники» раньше роняло весь

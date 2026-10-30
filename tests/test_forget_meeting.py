@@ -504,8 +504,7 @@ def test_forget_keeps_an_own_revision_field_outside_the_dossier_folder(tmp_path)
 
 def test_forget_lifts_the_revision_without_touching_the_body(tmp_path):
     """Досье с полем и голой ссылкой: снимается только поле, тело как было —
-    `_strip_meeting` (`splitlines`) режет и по U+2028, и по `\\x0b`, поэтому
-    строки он правит, лишь когда в тексте есть его ссылка (out4 Sonnet M1)."""
+    U+2028 и `\\x0b` в теле не трогаются (out4 Sonnet M1)."""
     root, graph = _world(tmp_path)
     path = _revised_dossier(graph, f"[[{STAMP}]]")
     path.write_text(path.read_text(encoding="utf-8").replace("ЮPay ", "ЮPay\u2028\x0b"), encoding="utf-8")
@@ -534,13 +533,16 @@ def test_forget_survives_a_file_that_vanishes_while_read(tmp_path, monkeypatch):
     path.write_bytes(path.read_text(encoding="utf-8").encode("cp1251", "replace"))
     real = pathlib.Path.read_bytes
 
+    reads = []
+
     def gone(self):
         if self.name == path.name:
+            reads.append(self)
             raise FileNotFoundError(self)
         return real(self)
     monkeypatch.setattr(pathlib.Path, "read_bytes", gone)
     p = forget.plan(STAMP, root, graph)
-    assert path not in p.edit
+    assert path not in p.edit and len(reads) == 1, reads     # одно чтение (out6 Haiku M4)
 
 
 @pytest.mark.parametrize("where", ["nested", "ancestor"])
@@ -555,6 +557,22 @@ def test_forget_asks_the_schema_whether_a_file_is_a_dossier(tmp_path, where):
     assert node in p.edit and dossier_mod.revision(p.edit[node]) == "3", p.edit.get(node)
 
 
+@pytest.mark.parametrize("place", ["data", "graph"])
+def test_forget_drops_revision_of_a_dossier_copy_in_a_snapshot(tmp_path, place):
+    """Путь снимка начинается со штампа прогона (в данных) или с
+    `.cloud_backup/<штамп>` (в графе): досье в копии остаётся досье, поле
+    `ревизия:` снимается и там (out6 DS C1, Haiku C1)."""
+    root, graph = _world(tmp_path)
+    base = (charoite_paths.graph_backups(graph, "cloud_backup", root=root) if place == "data"
+            else graph / forget.CLOUD_BACKUP_DIR)
+    copy = base / "2026-07-20_0300" / "Досье" / "Платёжный провайдер.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(f"---\nревизия: 2026-10-01\n---\n## Сейчас\n- выбрали ЮPay\n"
+                    f"## Источники\n- [[{STAMP}]]\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert copy in p.edit and not dossier_mod.revision(p.edit[copy]), p.edit.get(copy)
+
+
 def test_forget_strips_a_meeting_line_without_splitting_others(tmp_path):
     """`_strip_meeting` режет только по `\\n`: U+2028 и `\\x0b` в соседних
     строках остаются (out5 DS I5)."""
@@ -564,6 +582,17 @@ def test_forget_strips_a_meeting_line_without_splitting_others(tmp_path):
     node.write_text(before + "ЮPay\u2028срок\x0bпозже\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
     assert "ЮPay\u2028срок\x0bпозже\n" in p.edit[node], p.edit.get(node)
+
+
+@pytest.mark.parametrize("sep", ["\r", "\u2028"])
+def test_forget_drops_only_the_meeting_item_whatever_ends_the_line(tmp_path, sep):
+    """Одиночный `\\r` и U+2028 — тоже конец строки: уходит пункт о встрече,
+    соседний пункт и разделители остаются (out6 Haiku I2, Sonnet M2, DS M1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_bytes(f"- [[Встречи/{STAMP}]] — факт{sep}- срок: 1 августа{sep}".encode("utf-8"))
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f"- срок: 1 августа{sep}", p.edit.get(node)
 
 
 def test_surviving_nodes_are_backed_up_before_editing(tmp_path):

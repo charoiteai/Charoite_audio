@@ -1026,9 +1026,16 @@ def plan(stamp: str, root: pathlib.Path,
             # иначе пересказ забытой встречи пережил бы её — тема пересоберётся
             # без неё, состав кластера уже другой. Только у досье: у узла людей
             # или документа это поле владельца (выход n841-out4 DS I2). Досье ли
-            # это — решает схема по пути внутри графа, как у `scan` (out5 DS C2)
-            base = snap if f.is_relative_to(snap) else g
-            rel = f.relative_to(base).as_posix()
+            # это — решает схема по пути внутри графа, как у `scan` (out5 DS C2);
+            # у копии путь берётся от графа внутри снимка — без штампа прогона
+            # и без `.cloud_backup/<штамп>` старого места (out6 DS C1)
+            in_snap = f.is_relative_to(snap)
+            parts = f.relative_to(snap if in_snap else g).parts
+            if in_snap:
+                parts = parts[1:]
+            elif parts[:1] == (CLOUD_BACKUP_DIR,):
+                in_snap, parts = True, parts[2:]
+            rel = "/".join(parts)
             in_dossier = CHAROITE.is_dossier(rel)
             try:
                 raw = f.read_bytes()        # одно чтение: файл не исчезнет между двумя (out5 DS I4)
@@ -1040,7 +1047,7 @@ def plan(stamp: str, root: pathlib.Path,
                 # переписать нечитаемое нельзя, промолчать — держать пересказ вечно (out4 DS M2);
                 # кириллическое имя поля без UTF-8 не прочесть — довольно ссылки (out5 DS C1)
                 if in_dossier and dossier.cites(raw.decode("utf-8", "replace"), keys):
-                    where = f"{rel} (снимок)" if base == snap else rel
+                    where = f"{rel} (снимок)" if in_snap else rel
                     p.check.append(f"{where}: досье ссылается на встречу, но не в UTF-8 — проверь "
                                    "шапку руками: строка «ревизия:» не даст ночи его пересобрать")
                 continue
@@ -1099,15 +1106,16 @@ def _strip_meeting(text: str, link: re.Pattern[str]) -> str:
     хуже, чем оставить видимый пробел.
     """
     out = []
-    # только по `\n`: `splitlines` режет и по U+2028, `\x0b`, `\x85` (out5 DS I5)
-    for line in text.split("\n"):
+    # разделители строк — как были: `"\n".join` менял U+2028 и `\x0b` (out5 DS I5),
+    # а одиночный `\r` без `splitlines` склеивал файл в один пункт (out6 Haiku I2)
+    for line in text.splitlines(keepends=True):
         if not link.search(line):
             out.append(line)
             continue
         if line.lstrip().startswith(_LINE):
             continue    # пункт списка = запись о встрече
         out.append(link.sub(REMOVED_NOTE, line))
-    return "\n".join(out)
+    return "".join(out)
 
 
 def _backup(path: pathlib.Path, stamp: str) -> None:
