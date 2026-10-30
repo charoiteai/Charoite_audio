@@ -771,3 +771,38 @@ def test_split_dossier_sections_end_on_the_next_header():
         "# Т\n", "## Сейчас\nа", None, "моё")
     for tail in ("## Источники\n- [[x]]\n\n## Правки автора\nмоё", "## Правки автора\nмоё\n\n## Источники\n- [[x]]"):
         assert dossier.split_dossier(f"# Т\n## Сейчас\nа\n\n{tail}\n") == ("# Т\n", "## Сейчас\nа", "- [[x]]", "моё"), tail
+
+
+@pytest.mark.parametrize("head, want", [
+    ("ревизия: 2026-10-18", "2026-10-18"),
+    ('ревизия: "2026-10-18"', "2026-10-18"),
+    ("ревизия: '2026-10-18'", "2026-10-18"),
+    ("тема: x", ""),
+])
+def test_revision_reads_the_scalar_field(head, want):
+    text = f"---\nтема: т\n{head}\n---\n# т\n"
+    assert dossier.revision(text) == want
+    assert dossier.revision(text.replace("\n", "\r\n")) == want
+
+
+def test_revision_of_a_broken_or_missing_head_is_empty():
+    assert dossier.revision("# без шапки\nревизия: 2026-10-18\n") == ""
+    assert dossier.revision("---\nтема: [не закрыт\n---\n") == ""
+    assert dossier.revision("") == ""
+
+
+def test_with_revision_replaces_the_field_without_a_duplicate():
+    text = "---\nтема: т\nсобрано: 2026-10-01\n---\n# т\nтело\n"
+    once = dossier.with_revision(text, "2026-10-18")
+    twice = dossier.with_revision(once, "2026-10-30")
+    assert twice.count("ревизия:") == 1 and dossier.revision(twice) == "2026-10-30"
+    assert twice.endswith("---\n# т\nтело\n") and "собрано: 2026-10-01" in twice
+
+
+def test_hold_counts_gone_and_new_sources():
+    text = dossier.with_revision(
+        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- **Встречи:** [[а]] · [[Встречи/б]]\n"
+        "\n## Правки автора\n\n—\n", "2026-10-18")
+    assert dossier.hold(text, ["а", "б", "в"]) == dossier.Hold("2026-10-18", 0, 1, ("а", "б"))
+    assert not dossier.hold(text, ["а", "в"]).held
+    assert dossier.hold(re.sub(r"ревизия: .*\n", "", text), ["а"]) == dossier.Hold()

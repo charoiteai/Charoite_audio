@@ -567,6 +567,56 @@ def labeled_body(text: str) -> bool:
     return graph_names.has_speaker_actor(split_dossier(text or "")[1])
 
 
+REVISION_FIELD = "ревизия"
+
+
+def revision(text: str | None) -> str:
+    """Дата облачной ревизии тела из шапки (`ревизия:`); `""` — поля нет."""
+    return frontmatter.scalar_field(text or "", REVISION_FIELD)
+
+
+def with_revision(text: str, date: str) -> str:
+    """Поставить дату ревизии в шапку: заменой поля, без второй строки."""
+    return frontmatter.with_field(text, REVISION_FIELD, date)
+
+
+def source_keys(text: str | None) -> list[str]:
+    """Имена источников из раздела «## Источники» — последним сегментом пути,
+    как их пишет `render` и как их зовёт `scan`."""
+    sources = split_dossier(text or "")[2] or ""
+    keys = (m.split("/")[-1].strip() for m in LINK_RE.findall(sources))
+    return list(dict.fromkeys(k for k in keys if k))
+
+
+@dataclass(frozen=True)
+class Hold:
+    """Почему ночь не пересобирает досье: тело правила облачная ревизия.
+
+    Держит, только пока каждый источник досье ещё в кластере: «забыть
+    встречу» удаляет её файл, и факты из неё выводит из тела именно
+    пересборка — ревизия не вправе их сохранить (вход n841-in1 S-C1)."""
+    revision: str = ""
+    gone: int = 0       # источников досье, которых больше нет в кластере
+    new: int = 0        # членов кластера, которых нет в «Источниках»
+    sources: tuple[str, ...] = ()
+
+    @property
+    def held(self) -> bool:
+        return bool(self.revision) and self.gone == 0
+
+
+def hold(text: str | None, members: list[str]) -> Hold:
+    """Один предикат «тело принадлежит ревизии» на скан, сборку под замком и
+    разовый возврат из копий (вход n841-in1: схождение трёх голов)."""
+    rev = revision(text)
+    if not rev:
+        return Hold()
+    src = source_keys(text)
+    now = set(members)
+    return Hold(rev, sum(1 for s in src if s not in now),
+                sum(1 for m in members if m not in set(src)), tuple(src))
+
+
 @dataclass(frozen=True)
 class DossierLoad:
     state: Literal["ok", "damaged", "unreadable", "missing"]

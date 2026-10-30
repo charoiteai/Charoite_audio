@@ -174,7 +174,12 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
     merged = list(dict.fromkeys(merged))
     if merged == current:
         return text
-    line = f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]"
+    return _put_line(text, key, f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]")
+
+
+def _put_line(text: str, key: str, line: str) -> str:
+    """Поле `key:` шапки заменить строкой `line` (нет поля — дописать, нет
+    шапки — завести): замена по позициям YAML, без второго экземпляра поля."""
     fm, body = split(text)
     if fm is None:
         if text.startswith("---"):
@@ -191,6 +196,29 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
     if not fm2.endswith(nl):
         fm2 = fm2.rstrip("\r\n") + nl
     return "---" + fm2 + "---" + nl + body
+
+
+def scalar_field(text: str, key: str) -> str:
+    """Скалярное поле шапки как записано (`""` — поля нет). Значение берётся
+    из текста строки, а не из YAML: `2026-10-18` YAML прочёл бы датой, а
+    шапка с чужим незакавыченным двоеточием не разобралась бы вовсе (вход
+    n841-in1 DS C1)."""
+    fm, _ = split(text or "")
+    span = _field_span(fm, key) if fm is not None else None
+    if not span:
+        return ""
+    raw = fm[span[0]:span[1]].split("\n", 1)[0].split(":", 1)[1].strip()
+    if raw.startswith('"'):
+        try:
+            return str(json.loads(raw))
+        except ValueError:
+            pass
+    return raw.strip("\"'")
+
+
+def with_field(text: str, key: str, value: str) -> str:
+    """Скалярное поле шапки: заменить или дописать одной строкой."""
+    return _put_line(text, key, f"{key}: {yaml_str(value)}")
 
 
 def with_aliases(text: str, names: list[str]) -> str:

@@ -209,6 +209,7 @@ class _GraphRun:
         self.unchanged = self.over_limit = self.locked = self.late = 0
         self.changed = self.broken_manual = 0
         self.labeled = 0          # метка в теле при тех же источниках — эту ночь не трогаем
+        self.revised = 0          # тело правила облачная ревизия (`ревизия:` в шапке) — не пересобираем
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе."""
@@ -238,14 +239,16 @@ class _GraphRun:
                 "без_изменений": self.unchanged, "сверх_лимита": self.over_limit,
                 "занят": self.locked, "не_успели": self.late,
                 "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed,
-                "метка_в_теле": self.labeled}
+                "метка_в_теле": self.labeled,
+                "ревизия": self.revised}
 
     def report(self) -> None:
         if self.skipped:
             print(f"  {self.graph.name}: пропущено {self.skipped}: без изменений {self.unchanged}, "
                   f"сверх лимита {self.over_limit}, граф занят {self.locked}, "
                   f"не успели за ночь {self.late}, правки автора повреждены {self.broken_manual}, "
-                  f"досье изменилось {self.changed}, метка в теле {self.labeled}")
+                  f"досье изменилось {self.changed}, метка в теле {self.labeled}, "
+                  f"ревизия {self.revised}")
 
 
 class Candidate:
@@ -267,8 +270,18 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         path = g.folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
         loaded = g.reads.load(path)
-        g.keep(theme, members, loaded, fp)
+        h = dossier.hold(loaded.text, members)
+        g.keep(theme, list(h.sources) if h.held else members, loaded, fp)
         same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
+        # Тело правила облачная ревизия: пересказ модели стёр бы её (25.10
+        # `--full` — текст −80 %, ⚠ 999 → 0), повторить её некому. Проверка —
+        # до классов, иначе `--full` взял бы SAME (вход n841-in1 DS M1)
+        if h.held:
+            _skip_held(g, theme, h, same)
+            continue
+        if h.revision:
+            print(f"  ↻ {graph.name} · {theme}: ревизия {h.revision} снята — "
+                  f"источников ушло {h.gone}, пересборка")
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
         # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
         # круга подряд теряло хвост на разборе (n815-out6, решение координатора)
@@ -287,6 +300,16 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
+
+
+def _skip_held(g: _GraphRun, theme: str, h: dossier.Hold, same: bool) -> None:
+    """Пропуск темы с ревизией в теле. Строка лога — только при новых
+    источниках: тема отстаёт от графа, и это видно (вход n841-in1 DS M3)."""
+    g.skipped += 1
+    g.revised += 1
+    if not same:
+        print(f"  ⏭ {g.graph.name} · {theme}: ревизия {h.revision} — ночь не трогает; "
+              f"новых источников {h.new}")
 
 
 def _graph_key(c: Candidate) -> tuple:
@@ -328,6 +351,13 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # генерации» (вход in3 №621, DS M2).
         loaded = g.reads.reload(path)
         g.keep(theme, members, loaded, fp)
+    # Поле могли поставить, пока тема ждала очереди: решение «переписать
+    # можно» — по тому снимку, с которым идём к модели (вход n841-in1 S-I1)
+    h = dossier.hold(loaded.text, members)
+    if h.held:
+        g.keep(theme, list(h.sources), loaded, fp)
+        _skip_held(g, theme, h, cand.cls == SAME)
+        return None
     allowed, manual, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
         g.отказы += failures

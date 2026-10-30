@@ -342,6 +342,9 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
     backups = list((folder / ".backup").iterdir())
     assert len(backups) == 1 and len(backups[0].name) == len("2026-07-15_140000"), backups
     assert (backups[0] / path.name).read_text(encoding="utf-8").startswith("---")
+    # №841: поле `ревизия:` держит правленое тело от пересказа ночной сборкой
+    assert ndr.dossier.revision(text) == backups[0].name[:10]
+    assert not ndr.dossier.revision(rejected.read_text(encoding="utf-8"))
 
 
 def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
