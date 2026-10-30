@@ -535,6 +535,13 @@ def test_retry_is_colder_than_the_first_attempt(nd, tmp_path, monkeypatch):
     assert temps == [0.4, 0.1] and r["собрано"] == 1, (temps, r)
 
 
+def test_retry_temperature_is_colder_than_the_first():
+    """Инвариант мутанта #819 на самой константе: подмена в тесте выше его не держит
+    (n842-fix3, Haiku I-1)."""
+    first, retry = dossier.GEN_TEMPERATURES
+    assert retry < first
+
+
 def test_backup_line_only_when_a_dossier_was_replaced(nd, tmp_path, capsys):
     """Мутант #819: строка о копии печаталась бы у новой темы."""
     graph = _graph(tmp_path, "Г", {"старая": "2026-07-20", "новая": None})
@@ -983,7 +990,8 @@ def test_generate_reports_whether_the_fallback_answered(monkeypatch, fell):
     assert seen == [fell]
 
 
-@pytest.mark.parametrize("fell, label", [([True], ""), ([False], "g1"), ([False, True], "")])
+@pytest.mark.parametrize("fell, label", [([True], ""), ([False], "g1"), ([False, True], ""),
+                                         ([True, False], "g1")])
 def test_body_from_the_fallback_gets_no_input_label(nd, tmp_path, monkeypatch, fell, label):
     """Тело от облачного запаса с меткой облачной модели навсегда сошло бы за
     «тот же генератор» (финальный Opus №842, M1): метку решает последняя попытка."""

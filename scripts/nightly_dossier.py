@@ -142,7 +142,8 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
     for chunk in llm.stream(prompt, model=model, temperature=temperature, **dossier.gen_call()):
         out.append(chunk)
     if fell_back is not None:
-        fell_back.append(bool(getattr(llm, "_fell_back_local", False)))
+        # поле напрямую: переименуют — громкий отказ, не тихая чужая метка (n842-fix3 M1)
+        fell_back.append(bool(llm._fell_back_local))
     return "".join(out).strip()
 
 
