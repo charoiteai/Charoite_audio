@@ -36,6 +36,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 import forget_meeting as forget  # noqa: E402
 import charoite_paths  # noqa: E402
 from charoite_graph import dossier as dossier_mod  # noqa: E402
+from charoite_graph import frontmatter  # noqa: E402
 
 STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
@@ -2585,6 +2586,9 @@ def test_forget_edits_a_dossier_outside_the_night_paths(tmp_path):
     # со ссылкой и на другую встречу — теряет только ссылку
     ('---\nвстречи:\n  - "[[Встречи/{s}]] и [[Встречи/{o}]]"\n---\n',
      f'---\nвстречи:\n  - "{forget.REMOVED_NOTE} и [[Встречи/{{o}}]]"\n---\n'),
+    # строка блочного скаляра чужого ключа без продолжения — одна строка, соседний ключ цел (n845-fix5 Haiku m-1)
+    ("---\nописание: |\n  текст\n  - [[Встречи/{s}]] — факт\nконец: 1\n---\n",
+     "---\nописание: |\n  текст\nконец: 1\n---\n"),
     # код внутри пункта о встрече — его тело
     ("- [[Встречи/{s}]] — факт\n\n  ```\n  код\n  ```\n- другое\n", "- другое\n"),
 ])
@@ -2597,23 +2601,31 @@ def test_forget_takes_one_line_in_the_yaml_header(tmp_path, before, after):
     assert p.edit[node] == after.format(o=OTHER), p.edit.get(node)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="№637: пункт шапки уходит одной строкой — перенос "
-                   "скаляра остаётся, YAML ломается; правка шапки по узлам YAML; входов 0 из 10 прогонов "
-                   "по шапкам графов (n845-fix4)")
-@pytest.mark.parametrize("before, after", [
+_HEADER_DEBT = pytest.mark.xfail(strict=True, raises=AssertionError, reason="№637: пункт шапки уходит одной "
+                                 "строкой — перенос скаляра остаётся, YAML ломается; правка шапки по узлам YAML; "
+                                 "входов 0 из 10 прогонов по шапкам графов (n845-fix4)")
+
+
+@pytest.mark.parametrize("before, keep", [
     # перенос скаляра пункта: остаток превращает список в строку (n845-fix2 Haiku I1, fix4 Sonnet M1)
-    ('---\nвстречи:\n  - "[[Встречи/{s}]] — выбрали\n    перенос"\n  - другое\n---\n',
-     "---\nвстречи:\n  - другое\n---\n"),
+    pytest.param('---\nвстречи:\n  - "[[Встречи/{s}]] — выбрали\n    перенос"\n  - другое\n---\n',
+                 {"встречи": ["другое"]}, marks=_HEADER_DEBT),
     # строка блочного скаляра чужого ключа: отступ скаляра — по первой строке, остаток не разбирается
     # (n845-fix3 Haiku I2, fix4 Haiku I1)
-    ("---\nописание: |\n  - [[Встречи/{s}]] — выбрали\n    подробности\n  конец\n---\n",
-     "---\nописание: |\n  конец\n---\n"),
+    pytest.param("---\nописание: |\n  - [[Встречи/{s}]] — выбрали\n    подробности\n  конец\n---\n",
+                 {}, marks=_HEADER_DEBT),
 ])
-def test_forget_leaves_a_parseable_yaml_header(tmp_path, before, after):
+def test_forget_leaves_a_parseable_yaml_header(tmp_path, before, keep):
+    """Свойство, а не текст: шапка разбирается, ключи и типы те же, встречи в ней нет
+    (n845-fix5 Sonnet I1 = Haiku I-1: починка по узлам YAML даст другую форму текста)."""
     root, graph = _world(tmp_path)
     node = _core(graph, before.format(s=STAMP))
     p = forget.plan(STAMP, root, graph)
-    assert p.edit[node] == after, p.edit.get(node)
+    after = p.edit[node]
+    data = frontmatter.parse(after)
+    shape = {k: type(v) for k, v in frontmatter.parse(before.format(s=STAMP)).items()}
+    assert {k: type(v) for k, v in data.items()} == shape, after
+    assert STAMP not in after and all(data[k] == v for k, v in keep.items()), after
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="№637: оград забывание не различает — пункт о встрече "
