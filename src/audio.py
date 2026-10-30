@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import os
 import pathlib
+import collections
 import dataclasses
 import queue
 import sys
@@ -94,7 +95,22 @@ CH_END = "end"        # запись остановлена, канал так �
 # машинный класс причины — контракт для потребителей вместо разбора подстрок
 # (критика GLM входного круга): restart_failed | hung | start_error | missing |
 # restarted | stop
-CH_CAUSES = ("restart_failed", "hung", "start_error", "missing", "restarted", "stop")
+CH_CAUSES = ("restart_failed", "hung", "start_error", "missing", "restarted", "stop",
+             "silent_content")
+# Канал собеседников отдаёт кадры, но в них цифровые нули, а звонок идёт (№654):
+# гарнитура отключилась посреди звонка, собеседники звучат через динамики, и
+# сторож кадров молчит — кадры-то идут. Не эпизод отсутствия канала (`lost` по
+# той же метке спаривался бы с кадровым эпизодом — Critical обеих голов in1),
+# а свой вид следа, по образцу `KIND_STOPPED` телефона.
+CH_SILENT = "silent"      # звонок идёт, содержимое канала стоит CONTENT_SILENT_S
+CH_AUDIBLE = "audible"    # содержимое вернулось; строка «снова пишется», серия закрыта
+# Порог и доля — опыт 30.10 по 9 записям 28–29.10 (повтор признака тем же
+# `speech_gate.speech_starts`): законные серии нулей в звонке — до 394 с, отказ —
+# 5015 с (29.10; отказ 05.10 на 818 с в эти 9 не входит). Доля речевых чанков микрофона за то же окно
+# гасит хвост после конца звонка (там 0–6 %, на отказе 28 %): при 20 % — одно
+# срабатывание на отказе, ноль на остальных восьми; при 5 % — одно ложное.
+CONTENT_SILENT_S = 600.0
+CONTENT_MIC_SHARE = 0.2
 
 
 @dataclasses.dataclass(frozen=True)
@@ -784,6 +800,19 @@ class AudioHub:
         # первый кусок тишины выпадал из интервалов (Important DS выходного круга)
         self._real_frame: dict[str, float] = {}
         self._channel_closed = False                 # след закрыт остановкой: событий больше нет
+        # Часы СОДЕРЖИМОГО (№654): последний блок, где после квантования записи
+        # есть ненулевой отсчёт, — те же байты, что ушли в `.pcm`, поэтому живой
+        # возраст и `zero_runs` пересборки по файлу не расходятся. Рестарт и старт
+        # их не трогают: нет ключа — нет возраста и нет признака.
+        self._content_ts: dict[str, float] = {}
+        self._silent_open: dict[str, float] = {}     # открытый `silent`: метка -> граница (часы содержимого)
+        # Отсчёт возраста содержимого не раньше выхода канала из реестра потерь:
+        # старые часы после `back` дали бы `silent` сразу (Sonnet I1 out1)
+        self._content_floor: dict[str, float] = {}
+        self._call = False                           # звонок идёт — факт демона (`Heard.call`), липкий
+        # Моменты речевых чанков микрофона (стенные часы) — тот же гейт, тот же
+        # разрез, что в `pull_placed`; окно подрезается на чтении
+        self._mic_speech: collections.deque = collections.deque()
         self._mode = mode                          # `device` из конфига: намеренный один канал ≠ авария (DS M4)
         self._fail_streak: dict[str, int] = {}   # неудачные рестарты подряд по каналу
         self._scream_count = 0            # криков за встречу — потолок звука LOUD_SCREAMS
@@ -1762,8 +1791,12 @@ class AudioHub:
         дренажа очередей при stop()."""
         # под тем же локом, что и снапшот: новый ключ в словаре во
         # время его копирования — та же гонка, что и pop у _sinks
+        buf = pcm16(part)
+        sound = speech_gate.has_sound(np.frombuffer(buf, dtype="<i2"))
         with self._lock:
             self._last_frame[c.label] = self._real_frame[c.label] = time.time()
+            if sound:
+                self._content_ts[c.label] = self._last_frame[c.label]
             # после _closing файлы закрываются — блок в них не пишем и не кричим
             # о «сбое диска»: sink для него уже «нет» (GLM r1 I1 по #557)
             sink = None if self._closing else self._sinks.get(c.label)
@@ -1771,7 +1804,7 @@ class AudioHub:
         sink_error = None
         if sink is not None:
             try:
-                sink.write(pcm16(part))
+                sink.write(buf)
                 # flush, иначе `written` означает «принято в буфер
                 # файла»: кончившийся диск всплыл бы только на close(),
                 # где исключение глотается, — и мы бы уже пообещали
@@ -1875,6 +1908,12 @@ class AudioHub:
             # никто и никогда (Important DS выходного круга по №235)
             if lost_now:
                 self._announce_losses(lost_now)
+            # и при упавшем проходе: свой гвард, исходное исключение не подменяет
+            # (Sonnet I2 = DS I2 out1 — гвард у каждой единицы работы, №311)
+            try:
+                self._check_content(now)
+            except Exception as e:  # noqa: BLE001
+                _safe_stderr(f"проверка содержимого канала упала: {e!r}")
 
     def _sweep(self, now: float, lost_now: dict[str, Loss]) -> None:
         """Один проход сторожа по каналам: оживление по факту кадров, перезапуск
@@ -1972,8 +2011,12 @@ class AudioHub:
         # (микрогонка — Minor GLM круга 2); после флага производители потерь и
         # возвратов молчат целиком — статус, журнал и след замолкают одним
         # условием (Important DS круга 2), а `end` проходит
-        self._channel_closed = True
         now = time.time()
+        # содержимое вернулось после последнего прохода сторожа — серия закрывается
+        # до закрытия следа: в сайдкаре и строках следа пара `silent`/`audible` (DS I4 out1)
+        for label in list(self._silent_open):
+            self._close_silence(label, now)
+        self._channel_closed = True
         for label, loss in list(self._lost.items()):
             if label in self._ended:
                 continue
@@ -1981,6 +2024,67 @@ class AudioHub:
             silent = now - loss.stopped_at if loss.stopped_at else None
             self._channel_event(CH_END, label, now, loss.stopped_at, silent,
                                 Loss(loss.reason, retriable=False, died=loss.died, cause="stop"))
+
+    def set_call(self) -> None:
+        """Звонок идёт — факт демона (`Heard.call`, липкий). Без него признак
+        содержимого молчит: на очной встрече канал собеседников в нулях законно."""
+        self._call = True
+
+    def _check_content(self, now: float, label: str = "blackhole") -> None:
+        """Содержимое канала собеседников стоит, а звонок идёт (№654). Переход
+        «нет → есть» — одно событие `silent`, возврат содержимого — `audible`.
+        Канал в реестре потерь — главнее кадровая потеря: открытый `silent`
+        закрывается молча, новый не открывается (две тревоги о том же — DS in1)."""
+        if self._channel_closed:
+            return
+        with self._lock:
+            ts = self._content_ts.get(label)
+            while self._mic_speech and self._mic_speech[0] < now - CONTENT_SILENT_S:
+                self._mic_speech.popleft()
+            mic_chunks = len(self._mic_speech)
+        opened = self._silent_open.get(label)
+        if label in self._lost:
+            # потеря забирает интервал себе (одна тревога о канале): защёлка
+            # снимается молча, отсчёт — заново после возврата
+            self._silent_open.pop(label, None)
+            self._content_floor[label] = now
+            return
+        if opened is not None:
+            self._close_silence(label, now)
+            return
+        if not self._call or ts is None:
+            return
+        # граница серии — та же, что у возраста: после потери отсчёт и граница
+        # начинаются с её конца, а не с часов до неё (Important Opus)
+        since = max(ts, self._content_floor.get(label, ts))
+        if now - since < CONTENT_SILENT_S:
+            return
+        step = speech_gate.step_seconds(self.chunk_s, self.overlap_s)
+        if mic_chunks * step / CONTENT_SILENT_S < CONTENT_MIC_SHARE:
+            return                    # микрофон тоже молчит — звонок кончился, а не канал умер
+        self._silent_open[label] = since  # защёлка до события: следующий проход не повторит
+        self._channel_event(CH_SILENT, label, now, since, now - since,
+                            Loss("звонок идёт, а содержимого нет", retriable=False, died=True,
+                                 cause="silent_content"))
+        if self._channel_closed:
+            return                    # след закрыт посреди прохода — статус молчит с ним (Minor Haiku out2)
+        # только факт о канале: «собеседники через микрофон» ложно, если звонок кончился,
+        # а встреча идёт очно — сигнала конца звонка у хаба нет (Important Sonnet out4)
+        self._say(f"⚠️ системный звук не пишется с {time.strftime('%H:%M', time.localtime(since))}")
+
+    def _close_silence(self, label: str, now: float) -> None:
+        """Содержимое вернулось — серия `silent` закрывается одним `audible`.
+        Снятие защёлки атомарно: сторож и `end_channel_episodes` идут разными
+        потоками, проигравший видит пустую защёлку и молчит (Important out2)."""
+        with self._lock:
+            opened = self._silent_open.get(label)
+            ts = self._content_ts.get(label)
+            if opened is None or ts is None or ts <= opened:
+                return
+            del self._silent_open[label]
+        self._channel_event(CH_AUDIBLE, label, now, opened, ts - opened,
+                            Loss("содержимое вернулось", retriable=False, died=True,
+                                 cause="silent_content"))
 
     def _channel_event(self, kind: str, label: str, at: float, stopped_at: float | None,
                        silent_s: float | None, loss: "Loss") -> ChannelEvent | None:
@@ -2087,6 +2191,7 @@ class AudioHub:
                 for label, buf in self._bufs.items()
             }
             last_frame = dict(self._last_frame)
+            content = dict(self._content_ts)
             sinks = set(self._sinks)
         labels = list(backlog)
         ages = {
@@ -2099,6 +2204,10 @@ class AudioHub:
             label: {
                 "backlog_seconds": backlog[label],
                 "input_age_seconds": ages[label],
+                # возраст содержимого (№654) — не в `input_age_seconds`: нули
+                # микрофона при выключенном звуке законны, а то поле перезапускает встречу
+                "content_age_seconds": (max(0.0, now - content[label]) if label in content
+                                        else None),
                 "recording": label in sinks,
             }
             for label in labels
@@ -2230,6 +2339,9 @@ class AudioHub:
                     chunk_no[label] = chunk_no.get(label, -1) + 1
             seqs = {label: (label, chunk_no[label]) for label, c in cut.items() if c is not None}
         speech = {label: (c is not None and self.is_speech(c)) for label, c in cut.items()}
+        if speech.get("mic"):
+            with self._lock:
+                self._mic_speech.append(time.time())    # доля микрофона для `_check_content`
         now = time.monotonic()
         if speech.get("blackhole"):
             # Эхо динамиков доживает в микрофоне до следующего среза, когда

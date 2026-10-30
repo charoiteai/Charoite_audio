@@ -83,6 +83,16 @@ PHONE_REASONS = {                # причина — значение из enum
     "stalled": "запись не поднялась после застоя",
     "no_stop": "стоп не зафиксирован — приложение не закрыло файл",
 }
+# --- Содержимое канала собеседников (№654) -------------------------------
+# Кадры идут, а в них нули, пока звонок идёт: гарнитура отключилась, собеседники
+# слышны через динамики. Вид события хаба `CH_SILENT`/`CH_AUDIBLE` — не эпизод
+# отсутствия канала (`episodes_of` его не видит, `lost_till_end` и срез хвоста
+# после звонка №733 не задеты). В итог «запись неполная» серия не входит вовсе:
+# сигнала конца звонка нет, и очная часть после звонка неотличима от мёртвого
+# канала (Critical Haiku out3) — серия живёт парой строк следа и в сайдкаре.
+KIND_SILENT = "silent"
+KIND_AUDIBLE = "audible"
+PHRASE_SILENT = "не пишется с"
 PHRASE_CUT = "оборвана"          # терминальный стоп: дальше встреча не записана
 PHRASE_SPLIT = "прервана"        # ротация: файл закрыт не человеком, продолжение — если запись возобновилась
 PHRASE_CONTINUED = "продолжение, если запись возобновилась, следующим файлом"
@@ -114,7 +124,7 @@ PHRASE_GAP = ": пробел в записи"
 _TRACE_RE = re.compile(
     r"^(?:⚠️|✅|⏹) (?:" + "|".join(re.escape(n) for n in NAMES.values()) + r")"
     r"(?: (?:" + "|".join(re.escape(p) for p in (PHRASE_NOT_CAPTURED, PHRASE_LOST, PHRASE_BACK,
-                                                  PHRASE_CUT, PHRASE_SPLIT)) + r")"
+                                                  PHRASE_CUT, PHRASE_SPLIT, PHRASE_SILENT)) + r")"
     r"|" + re.escape(PHRASE_GAP) + r")")
 
 
@@ -136,6 +146,12 @@ def render(ev) -> str | None:
     if ev.kind == "gap":
         return (f"⚠️ {name}{PHRASE_GAP} {_hm(ev.stopped_at)}–{_hm(ev.at)} "
                 f"({_dur(ev.silent_s)}), поток перезапущен")
+    if ev.kind == KIND_SILENT:
+        # только факт о канале — звонок мог кончиться (Important Sonnet out4)
+        return f"⚠️ {name} {PHRASE_SILENT} {_hm(ev.stopped_at)}"
+    if ev.kind == KIND_AUDIBLE:
+        # пара к `silent`: без неё строка «не пишется» в документе навсегда (Important Haiku out4)
+        return f"✅ {name} {PHRASE_BACK} {_hm(ev.at)} — в нулях был с {_hm(ev.stopped_at)}"
     return None
 
 
@@ -224,6 +240,11 @@ class ChannelTrace:
         self._persist()
         text = render(ev)
         if text is None:
+            return
+        if ev.kind in (KIND_SILENT, KIND_AUDIBLE):
+            # не эпизод: бюджет строк `LINES_MAX` и открытые `lost` не трогает (DS in2 I3);
+            # защёлка хаба выпускает пару один раз на серию
+            self._say(text, _hm(ev.at))
             return
         # потолок — по эпизодам: `back` показывается, если показан его `lost`;
         # начало нового эпизода (lost/gap) сверх потолка — только сайдкар и итог
@@ -355,6 +376,9 @@ def summary_of(events: list[dict]) -> str | None:
     # вся встреча; состоялось ли продолжение, телефон в момент закрытия не знает,
     # и формулировка этого не утверждает (Critical DS выходного круга по №200)
     cuts = [e for e in events if e.get("kind") == KIND_STOPPED]
+    # серия `silent` (№654) в итог не входит: «запись неполная» о ней неверно, когда
+    # звонок кончился, а очная часть встречи идёт — у хаба нет сигнала конца звонка
+    # (Critical Haiku out3); строка следа и статус верны в обоих случаях
     if not eps and not cuts:
         return None
     parts = []

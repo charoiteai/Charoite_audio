@@ -54,6 +54,14 @@ def speech_starts(x: np.ndarray, sr: int, chunk_s: float, overlap_s: float,
             if chunk_is_speech(x[i:i + need], vad_db)]
 
 
+def has_sound(x: np.ndarray) -> bool:
+    """В отсчётах ЗАПИСИ есть звук: хоть один ненулевой. Отсчёты — уже квантованные
+    (s16le `.pcm` или он же, прочитанный как float); живой хаб зовёт это на тех же
+    байтах, что пишет в файл, — повторно квантовать нельзя: отсчёт ±1, прочитанный
+    как 1/32768, второй раз ушёл бы в ноль (Critical обеих голов in2 по №654)."""
+    return bool(np.any(x))
+
+
 def zero_runs(x: np.ndarray, sr: int, min_s: float,
               block_s: float = 0.1) -> list[tuple[float, float]]:
     """Серии подряд идущих блоков по `block_s`, где ВСЕ отсчёты точно ноль.
@@ -65,8 +73,8 @@ def zero_runs(x: np.ndarray, sr: int, min_s: float,
     записи, тоже. Неполный последний блок не считается вовсе: как и у гейта,
     хвост короче окна не судится.
 
-    Не знает ни про пересборку, ни про каналы: тем же разрезом хабу нужны
-    нули записи в карточке №654.
+    Не знает ни про пересборку, ни про каналы: живой хаб берёт тот же
+    `has_sound` для часов содержимого канала (№654).
     """
     width = int(sr * block_s)
     if width <= 0 or len(x) == 0:
@@ -75,7 +83,7 @@ def zero_runs(x: np.ndarray, sr: int, min_s: float,
     run_start: int | None = None
     i = 0
     while i + width <= len(x):
-        if np.any(x[i:i + width]):
+        if has_sound(x[i:i + width]):
             if run_start is not None:
                 if (i - run_start) / sr >= min_s:
                     out.append((run_start / sr, i / sr))

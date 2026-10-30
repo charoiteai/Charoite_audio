@@ -1288,6 +1288,32 @@ coalescing is by count: after six lines per channel only the stop summary goes
 into the documents ("recording incomplete: no system audio 14:32–14:35,
 14:50–until the end"). The string status contract was closed in №310, below.
 
+**A call channel that delivers frames of zeros is a trace event (№654).** The
+watchdog judges a channel by frames, so a stream that keeps sending digital
+zeros looks alive while the other side is heard only through the microphone.
+The hub keeps a content clock — the moment of the last non-zero sample in the
+very bytes written to `.pcm` (`speech_gate.has_sound`, the same predicate as
+`zero_runs`). The `silent` event opens when three facts hold: a call is in
+progress (`Heard.call` → `hub.set_call()`), the call channel content has been
+zero for ≥ 600 s, and the microphone carried speech in ≥ 20 % of that window
+(the hub's own gated cut). Replay over 9 call recordings: one trigger, on the
+real failure, none on legitimate silence. `audible` closes the series when
+content returns; a frame loss wins over dead content (one alarm about the
+channel, the count restarts after the channel is back); a quiet restart does
+not close it. The live status line is quiet and gives no restart advice. The
+series stays out of the "recording incomplete" summary: the call is sticky and
+the hub has no end-of-call signal, so after a call an in-person part of the
+meeting with the owner talking looks the same as a dead channel — the trace
+line ("system audio is not recorded since 18:13") is true in both cases, the
+summary would not be. Known limit: with headphones and a silent owner the mic
+share stays low and the failure is not flagged; a channel that goes to zeros
+before the call threshold (≈30–80 s of the other side's speech), or one that has
+never carried sound since the channel opened, never becomes a call and is not
+flagged either; a channel that dies after the call is recognised is flagged by
+the same rules. After a frame loss the age of the series and its boundary both
+start at the end of the loss. The pulse carries `content_age_s` — the raw time
+since the last sound, without that reset.
+
 **Stickiness is set by the writer; layers in the app are owned (№310).** The
 daemon classified hub status lines by substring against three and two Russian
 markers (`is_sticky_status`, `is_sticky_clear`, `is_recording_failure`): a
