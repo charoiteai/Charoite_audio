@@ -697,18 +697,21 @@ def dossier_block(theme: str, body: str, snippet_chars: int, chars: int | None =
     """Блок «📁» сводки темы. `chars=None` — прежний вид: тело `snippet_chars * 3`
     знаков до схлопывания пробелов. С потолком — весь блок вместе с шапкой не
     длиннее `chars`: пробелы схлопнуты до среза, обрыв — по границе слова с «…»
-    (входной круг Sonnet I4, M1, M2 по №855)."""
+    (входной круг Sonnet I4, M1, M2 по №855); потолок, где тело не помещается
+    даже знаком, — пустая строка, вызывающий блок пропускает."""
     head = f"📁 Досье «{theme}»\n  "
     if chars is None:
         return head + " ".join(body[:snippet_chars * 3].split())
     flat = " ".join(body.split())
     room = chars - len(head)
+    if room <= 1:
+        return ""                       # потолок не держит шапку с телом — блока нет (выходной круг №855)
     if len(flat) > room:
-        cut = flat[:max(0, room - 1)]
-        if " " in cut:
-            cut = cut[:cut.rfind(" ")]
-        flat = cut + "…"
-    return (head + flat)[:chars]
+        cut = flat[:room - 1]
+        if flat[room - 1] != " " and " " in cut:
+            cut = cut[:cut.rfind(" ")]  # слово на границе не целое — до предыдущего пробела
+        flat = cut.rstrip() + "…"
+    return head + flat
 
 
 def snippet(text: str, rx: re.Pattern, chars: int, rare_first: Sequence[str], dense: bool = False) -> str:
@@ -1563,7 +1566,9 @@ class GraphSearch:
         первичной выдачи не идут, как и всегда. `dossier_limit` и `dossier_chars` —
         полоса сводок: сколько тем и потолок одного блока «📁» вместе с шапкой;
         `None` — прежнее тело `snippet_chars * 3` (MCP и выдача для человека). Числа
-        полосы даёт профиль потребителя (`brain.Profile`, №855)."""
+        полосы даёт профиль потребителя (`brain.Profile`, №855). Тема, сводки
+        которой нет в снимке, слота не занимает и при умолчаниях: берётся следующая
+        годная, и её счёт идёт в покрытие вердикта — как у любой показанной сводки."""
         if not self.ready:
             gen = self._gen
             return Result([], 0, ready=False, query=query, skipped=gen.skipped, unread=gen.unread,
@@ -1795,7 +1800,10 @@ class GraphSearch:
             d = gen.dossiers.get(norm_text(f"{self.schema.dossier_dir}/{e['тема']}"))
             if d is None:
                 continue
-            out.append((d.rel, dossier_block(e["тема"], d.body or d.text, snippet_chars, chars)))
+            block = dossier_block(e["тема"], d.body or d.text, snippet_chars, chars)
+            if not block:
+                continue
+            out.append((d.rel, block))
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
 

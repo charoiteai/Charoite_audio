@@ -105,7 +105,7 @@ def absence_only(result: graph_search.Result) -> bool:
 
 class Packed(NamedTuple):
     """Блок памяти как запись, а не строка. `text` — то, что уходит в промпт
-    (байт в байт прежний `memory_block`); остальные поля — его же части, чтобы
+    (не длиннее бюджета: разделитель узлов — внутри него, №855); остальные поля — его же части, чтобы
     никто не разбирал строку шапки: `lead` — шапка с оговоркой, `nodes` — вошедший
     текст узлов (без своей строки-заголовка), `body` — вошедшие фрагменты выдачи,
     `cut` — фрагменты выдачи, которые бюджет срезал целиком или частью. Бенч ищет
@@ -124,8 +124,8 @@ NODES_SEP = "\n\n"
 def fragment_share(budget: int, status: Verdict, *, with_nodes: bool) -> int:
     """Сколько знаков блока гарантировано фрагментам выдачи (шапка с ними): без
     узлов — весь бюджет; с узлами — бюджет без разделителя и, при неуверенной
-    выдаче, без доли узлов. Одно место для `_memory_block` и инварианта полос
-    профиля (входной круг по №855: долю узлов знал только упаковщик)."""
+    выдаче, без доли узлов. Одно место доли узлов: `_memory_block` берёт её
+    отсюда, тест сверяет с упаковкой (входной круг по №855: долю знал только упаковщик)."""
     if not with_nodes:
         return budget
     return budget - len(NODES_SEP) - (0 if status is Verdict.CONFIDENT else int(budget * NODES_SHARE))
@@ -156,8 +156,9 @@ def _memory_block(result: graph_search.Result | None, *, nodes: str = "", budget
         f_budget = fragment_share(budget, result.status, with_nodes=True)
         n_budget = budget - len(NODES_SEP) - f_budget
         n_take = min(len(nodes_part), n_budget + max(0, f_budget - len(frag_part)))
-        f_take = min(len(frag_part), budget - len(NODES_SEP) - n_take)
-        text = nodes_part[:n_take] + NODES_SEP + frag_part[:f_take]
+        sep = NODES_SEP if n_take else ""     # узлы не вошли — блок без пустой строки в начале
+        f_take = min(len(frag_part), budget - len(sep) - n_take)
+        text = nodes_part[:n_take] + sep + frag_part[:f_take]
     else:
         n_take = min(len(nodes_part), budget) if nodes_part else 0
         f_take = 0 if nodes_part else min(len(frag_part), budget)

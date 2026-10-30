@@ -1788,6 +1788,11 @@ def test_dossier_block_cap_covers_the_header_and_cuts_on_a_word():
     short = gs.dossier_block("Шлюз", "пилот, провайдер ЮPay", 500, 550)
     assert short == "📁 Досье «Шлюз»\n  пилот, провайдер ЮPay", "короткое тело — без «…»"
     assert gs.dossier_block("Шлюз", body, 500) == "📁 Досье «Шлюз»\n  " + " ".join(body[:1500].split())
+    head = "📁 Досье «т»\n  "
+    assert gs.dossier_block("т", "аа бб вв", 500, len(head) + 6) == head + "аа бб…", "целое слово на границе не теряется"
+    assert gs.dossier_block("т", "аабб", 500, len(head) + 3) == head + "аа…", "слово без пробела — по знаку"
+    assert gs.dossier_block("т" * 100, "x", 5, 20) == "" and gs.dossier_block("т", "x", 5, 0) == "", \
+        "потолок без места под тело — блока нет, а не обрезок шапки"
 
 
 def test_dossier_limit_takes_the_next_theme_when_the_first_is_not_in_the_snapshot(tmp_path):

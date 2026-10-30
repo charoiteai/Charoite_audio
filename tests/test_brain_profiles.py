@@ -218,8 +218,10 @@ def _band(profile: brain.Profile) -> list[str]:
 def _lanes_fit(profile: brain.Profile) -> dict[str, bool]:
     """Помещается ли лучший блок профиля после полосы досье: на уверенной выдаче
     без узлов — целиком, на неуверенной с узлами (живой контекст, `nodes=fallback`)
-    — шапка блока и первое окно выдержки, где стоит попадание. Шапка выдачи —
-    самая длинная (UNVERIFIED с оговоркой охвата)."""
+    — шапка блока и первые `snippet_chars` знаков выдержки (попадание стоит в
+    первых 150, хвост окна до `snippet_chars × 1,5 + 150` — нет: бенч с узлами — долг
+    №637). Шапка выдачи — самая длинная (UNVERIFIED с оговоркой охвата). Запас на
+    30.10: окно с узлами — 51 знак у expand и 15 у live, целиком — 495 и 921."""
     frag = _worst_fragment(profile)
     block = f"• {_REL}\n  ↳ по ссылке из {_NODE_REL}\n  {frag}"
     head = block[:block.index(frag) + profile.snippet_chars]
@@ -241,6 +243,20 @@ def test_dossier_band_leaves_the_best_block_in_the_budget():
         assert prof.dossier_limit >= 1 and prof.dossier_chars is not None, f"{name}: полоса не задана"
         assert all(len(b) <= prof.dossier_chars for b in _band(prof)), f"{name}: блок досье длиннее потолка"
         assert _lanes_fit(prof) == {"целиком": True, "окно с узлами": True}, name
+
+
+def test_packer_gives_fragments_exactly_the_fragment_share():
+    """`fragment_share` — та доля, что упаковщик отдаёт фрагментам, когда и узлы, и
+    фрагменты длиннее бюджета: при неуверенной выдаче ровно она; при уверенной узлы
+    берут только остаток, его нет — разделителя нет, фрагментам весь бюджет, не
+    меньше доли (выходной круг №855)."""
+    for status in (V.CONFIDENT, V.UNVERIFIED, V.WEAK):
+        p = brain._memory_block(_res(status, blocks=("ж" * 5000,)), nodes="у" * 5000, budget=2600)
+        got, share = len(p.text) - p.text.index(p.lead), brain.fragment_share(2600, status, with_nodes=True)
+        assert len(p.text) == 2600, status
+        assert got == (2600 if status is V.CONFIDENT else share) and got >= share, status
+    p = brain._memory_block(_res(V.CONFIDENT, blocks=("ж" * 5000,)), nodes="у" * 100, budget=2600)
+    assert not p.nodes and not p.text.startswith("\n") and len(p.text) == 2600
 
 
 def test_dossier_band_of_the_old_numbers_cuts_the_best_block():
