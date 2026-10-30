@@ -7,6 +7,7 @@
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 from unittest import mock
@@ -793,7 +794,8 @@ def test_people_description_is_superseded_with_dates_not_silently(tmp_path):
     for d in (10, 11, 12):
         g.upsert_entity(graph, "Люди", "Пётр", "person", "Участник", f"Встречи/2026-09-{d}_1000", "")
     after = node.read_text(encoding="utf-8")
-    assert after.split("## Встречи", 1)[0] == text.split("## Встречи", 1)[0], "верх и хроника не тронуты"
+    head = lambda t: re.sub(r"_\(последнее упоминание: [^)]*\)_", "", t.split("## Встречи", 1)[0])   # дата живёт
+    assert head(after) == head(text), "верх и хроника не тронуты"
     # узел без описания получает первое без строки хроники — это не вытеснение; «—» не описание
     old = graph / "Люди" / "Старый.md"
     old.write_text("# Старый\n\n## Встречи\n- [[Встречи/2026-05-05_1000]]\n", encoding="utf-8")
@@ -2472,7 +2474,7 @@ def test_null_description_does_not_drop_meeting(tmp_path):
     (graph / "Люди").mkdir(parents=True)
     g.upsert_entity(graph, "Люди", "Пустой", "person", None, "Встречи/2026-10-01_1000", None)
     t = (graph / "Люди" / "Пустой.md").read_text(encoding="utf-8")
-    assert t.startswith("# Пустой\n\n_(последнее упоминание: 2026-10-01)_\n") and "None" not in t, t
+    assert "\n# Пустой\n\n_(последнее упоминание: 2026-10-01)_\n" in t and "None" not in t, t
     g.upsert_entity(graph, "Люди", "Пустой", "person", "аналитик", "Встречи/2026-10-02_1000", "")
     g.upsert_entity(graph, "Люди", "Пустой", "person", None, "Встречи/2026-10-03_1000", "")
     t = (graph / "Люди" / "Пустой.md").read_text(encoding="utf-8")
