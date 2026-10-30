@@ -163,8 +163,9 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
         # сбой и не «лежит Ollama» (входной круг №358, Codex I4). Отметка идёт
         # вперёд, как у ветки «свежих ядер нет»: иначе граф из одних автостатусов
         # каждую ночь заново читался бы полным прогоном с растущим фокусом
-        # (n628-in1, DS C2 и Sonnet I2).
-        _save_stamp(graph, started)
+        # (n628-in1, DS C2 и Sonnet I2). Долг и досуженные пары переносятся: ядро с
+        # долгом, потерявшее «## Суть», не должно стереть долг молча (n628-out1, M4).
+        _save_stamp(graph, started, set(_pending(graph)), _judged(graph))
         print(f"{graph.name}: ревизовать нечего — {r.get('reason')} ({took:.0f} с)", flush=True)
         return "no_work"
     if not r["ran"]:

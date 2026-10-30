@@ -541,3 +541,24 @@ def test_nothing_to_judge_moves_the_night_stamp(tmp_path, monkeypatch, capsys):
     assert tier3_cores.run(graph, apply=False, mark=True, since_last=True) == "no_work"
     out = capsys.readouterr().out
     assert "свежих ядер нет" in out and "полный прогон" not in out, out
+
+
+def test_nothing_to_judge_keeps_the_night_debt(tmp_path, monkeypatch):
+    """«Судить нечего» двигает отметку, но долг `#pending` и досуженные пары
+    переносит: иначе он стирается молча (n628-out1, Sonnet M4)."""
+    graph = tmp_path / "Граф"
+    (graph / "Ядра").mkdir(parents=True)
+    for n in ("Одно", "Другое"):
+        (graph / "Ядра" / f"{n}.md").write_text("## Статус\nживо\n", encoding="utf-8")
+    stamps = tmp_path / "stamps.json"
+    stamps.write_text(json.dumps({str(graph): 1.0, str(graph) + "#pending": ["Одно"],
+                                  str(graph) + "#judged": [["Одно", "Другое"]]}), encoding="utf-8")
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=stamps: p)
+    monkeypatch.setattr(tier3_cores.graphs, "load_config", lambda: {})
+    monkeypatch.setattr(tier3_cores.nli, "judge", lambda: fake_judge())
+    monkeypatch.setattr(tier3_cores.llm, "embedder", lambda cfg, **kw: fake_embedder())
+    assert tier3_cores.run(graph, apply=False, mark=True, since_last=True) == "no_work"
+    data = json.loads(stamps.read_text(encoding="utf-8"))
+    assert data[str(graph)] > 1.0
+    assert data[str(graph) + "#pending"] == ["Одно"]
+    assert sorted(map(sorted, data[str(graph) + "#judged"])) == [["Другое", "Одно"]]
