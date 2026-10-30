@@ -148,7 +148,8 @@ final class MemoryBench: XCTestCase {
                 + "оценка промпта \(ChatRetrieval.messageTokens(ProbeTurn.system(question: c.q, outcome: outcome)) + ChatRetrieval.messageTokens(c.q)) ток."
                 + (reply?.promptTokens.map { ", промпт у Ollama \($0) ток." } ?? "")
             if withModel {
-                let inFound = c.must.filter { ProbeTurn.factRank($0, in: outcome.parts, norm: norm) != nil }.count
+                // судья прежний — вся выдача с шапками, как до №752: ранг судит только тела (n752-out3, Haiku I1)
+                let inFound = c.must.filter { norm(outcome.text).contains(norm($0)) }.count
                 // отказ первой строкой и ни одного факта в ответе: оговорка
                 // «точной даты нет» перед найденным фактом — не отказ (out2, DS I2).
                 // Судья — как в базе, по всем вердиктам (счёт по вердиктам ниже):
@@ -245,6 +246,10 @@ final class MemoryBench: XCTestCase {
         guard ProbeTurn.isKnownArm(first.arm), packets.allSatisfy({ $0.arm == first.arm }) else {
             throw ProbeTurn.SetupError(description: "в файле пачки разных или незнакомых рук: \(path)")
         }
+        // две пачки одного вопроса — склейка двух прогонов, счёт по ним не тот (n752-out3, Haiku C1)
+        guard Set(packets.map(\.q)).count == packets.count else {
+            throw ProbeTurn.SetupError(description: "в файле две пачки одного вопроса: \(path)")
+        }
         let byQ = Dictionary(cases.map { ($0.q, $0) }, uniquingKeysWith: { a, _ in a })
         var outcomes: [ArchiveSearch.Outcome] = []
         for p in packets {
@@ -293,7 +298,7 @@ final class MemoryBench: XCTestCase {
             if same { sameBody += 1 }
             // запись считается до запроса: сегодняшнее молчание её не занижает (n752-out2, DS I1)
             let was = p.must.filter { norm(p.answer ?? "").contains(norm($0)) }.count
-            let inFound = p.must.filter { ProbeTurn.factRank($0, in: outcome.parts, norm: norm) != nil }.count
+            let inFound = p.must.filter { norm(outcome.text).contains(norm($0)) }.count
             let absentThen = p.answer.map { ChatRetrieval.isAbsence($0, lines: 2) } ?? false
             if p.abstain {
                 (abstainThen, abstainTotal) = (abstainThen + (absentThen ? 1 : 0), abstainTotal + 1)
@@ -306,6 +311,7 @@ final class MemoryBench: XCTestCase {
             synthTime += started.duration(to: clock.now)
             guard let answer = reply?.text else {
                 unanswered.append(p.q)
+                report += "\n· \(p.q)\n  запрос тот же: \(same ? "да" : "нет"), модель не ответила"
                 continue
             }
             if answer == p.answer { sameAnswer += 1 }
@@ -341,7 +347,7 @@ final class MemoryBench: XCTestCase {
         XCTAssertTrue(unanswered.isEmpty, "модель не ответила на \(unanswered.count) из \(asked) — проверь Ollama "
                       + "(\(ProbeTurn.model)); смотри \(out)")
         // неполный файл и файл без измеренных вопросов — не эталон (n752-out2, Sonnet I2, DS I2)
-        XCTAssertTrue(missing.isEmpty && !torn, "пачки не на весь набор (\(packets.count) из \(cases.count)) — смотри \(out)")
+        XCTAssertTrue(missing.isEmpty && packets.count == cases.count && !torn, "пачки не на весь набор (\(packets.count) из \(cases.count)) — смотри \(out)")
         XCTAssertGreaterThan(asked, 0, "повтор не спросил модель ни разу — пачки без выдачи, смотри \(out)")
     }
 
@@ -368,6 +374,10 @@ final class MemoryBench: XCTestCase {
         func flush() throws {
             defer { q = nil; must = nil; abstain = false; otherGraph = false }
             guard let question = q else { return }
+            // повтор сверяет пачки с набором по тексту вопроса: дубль склеил бы два в один (n752-out3, Haiku C1)
+            if out.contains(where: { $0.q == question }) {
+                throw ProbeTurn.SetupError(description: "вопрос в наборе дважды: \(question)")
+            }
             // Вопрос по другому графу владельца: в этом графе ответа нет, верно —
             // отсутствие; его факты сверены по тому графу и здесь не считаются.
             if otherGraph {

@@ -16,6 +16,12 @@ enum ProbeTurn {
     static let model = "qwen3.6:35b-a3b"
     static let engine = "local"
 
+    /// Имя руки, которое понимает `arm()`: им же повтор допускает имя из файла
+    /// пачек в путь отчёта (n752-out2, DS M2).
+    static func isKnownArm(_ name: String) -> Bool {
+        name == "chat" || name == "legacy" || name.range(of: #"^p[1-9][0-9]{0,2}$"#, options: .regularExpression) != nil
+    }
+
     /// Рука бенча из `CHAROITE_BENCH_ARM`: пусто или `chat` — параметры чата,
     /// `legacy` — прежние 5×1200 с бюджетом поиска по умолчанию, `p<N>` —
     /// N кусков по 1000 знаков с бюджетом N×1000 (число кусков на деле задаёт
@@ -23,12 +29,6 @@ enum ProbeTurn {
     /// упаковщик режет, а p1–p2 упираются в потолок источника 600/800 —
     /// с p3+ не сравнимы, n752-out1 Sonnet I3). Прочее — ошибка: опечатка `p4l` молча
     /// перезаписывала бы отчёт руки `chat` (n752-in1, Sonnet I5, DS M5).
-    /// Имя руки, которое понимает `arm()`: им же повтор допускает имя из файла
-    /// пачек в путь отчёта (n752-out2, DS M2).
-    static func isKnownArm(_ name: String) -> Bool {
-        name == "chat" || name == "legacy" || name.range(of: #"^p[1-9][0-9]{0,2}$"#, options: .regularExpression) != nil
-    }
-
     static func arm() throws -> (name: String, params: ChatRetrieval.Params) {
         let raw = (ProcessInfo.processInfo.environment["CHAROITE_BENCH_ARM"] ?? "")
             .trimmingCharacters(in: .whitespaces)
