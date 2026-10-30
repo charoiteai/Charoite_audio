@@ -2031,10 +2031,6 @@ def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]
     if (folder, name) not in held:
         return f"- {canon_link(graph, name, folder)} {head}"
     verdict, cands, *via = held[(folder, name)]
-    if verdict == "untyped" and _core_of(graph, name, folder) is not None:
-        # ядро с этим именем родилось этой же встречей (ядра пишутся после
-        # сущностей) — ссылка на него, а не «узел не создан» (n836-opus M1)
-        return f"- {canon_link(graph, name, folder)} {head}"
     if verdict in ("aliased", "by_alias"):
         # встреча легла в узел другой папки, чем сказал тип: ссылка на него с
         # именем из разбора (canon_link с папкой типа его не увидит). Пометка —
@@ -2070,11 +2066,13 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
         if typed and known and known not in ENT_FOLDER:
             if verdict == "new":
                 verdict = "untyped"
-            elif verdict == "existing" and _core_of(graph, name, folder) is not None:
+            elif verdict == "existing" and (core := _core_of(graph, name, folder)) is not None:
                 # тема-задача без двойника в Системы/ нашла ядро проходом 1
                 # find_canonical: ядро ведёт upsert_core, описание сущности и
                 # «## Встречи» в его файл не пишем — ссылка в заметке и так на
-                # него (n836-opus I1)
+                # него (n836-opus I1); след — в журнал (opus-fix, Haiku I-2)
+                _journal_graph_event("тип вне перечня: тему ведёт ядро",
+                                     f"{folder}/{name} → {core.parent.name}/{core.stem}", meeting_link)
                 continue
         if verdict == "resolved":
             # узел найден по псевдониму в ДРУГОЙ папке, чем сказал тип (тип — самое
@@ -2091,8 +2089,8 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
             linked.add(name_key(safe_name(name)))
             continue
         if verdict == "untyped":
-            # журнал — после пост-прохода ниже: имя могло получить узел другим типом
-            # (событие — с исходом, не до решения; n836-out2, DS M1 = Haiku M1)
+            # журнал — в settle_untyped после ядер: имя могло получить узел другим
+            # типом или ядром этой встречи (событие — с исходом; n836-out2, opus-fix)
             held[(folder, name)] = (verdict, cands)
             continue
         aliased = _journal_held_entity(graph, folder, name, typ, verdict, cands, meeting_link)
@@ -2118,19 +2116,36 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
             continue
         if name_key(safe_name(n)) in linked and find_canonical(graph, n, folder=f) is not None:
             del held[(f, n)]
-        else:
-            _journal_held_entity(graph, f, n, "", v, c, meeting_link)
     landed = [(k, v, c[0]) for k, (v, c) in held.items() if v in ("aliased", "by_alias")]
     if landed:
         # автосклейка этого прогона и рутинный псевдоним человека — разными словами:
         # оператору по строке видно, случилось ли событие (круг 3, DS M4 / GLM M3)
         print("граф: по псевдониму легло в узел — " + "; ".join(
             f"{f}/{n} → {t} ({_HELD_WHY[v]})" for (f, n), v, t in landed))
-    rest = [(k, v, c) for k, (v, c) in held.items() if v not in ("aliased", "by_alias")]
+    # «тип вне перечня» печатает и журналирует settle_untyped — по исходу, после ядер
+    rest = [(k, v, c) for k, (v, c) in held.items() if v not in ("aliased", "by_alias", "untyped")]
     if rest:
         print("граф: узла не получили — " + "; ".join(
             f"{f}/{n} ({_HELD_WHY[v]}{': ' + ', '.join(c) if c else ''})" for (f, n), v, c in rest))
     return held
+
+
+def settle_untyped(graph: pathlib.Path, held: dict[tuple[str, str], tuple], meeting_link: str) -> None:
+    """Исход «тип вне перечня» — после ядер встречи: ядра пишутся после сущностей, и
+    задача, названная как ядро этой встречи, адрес получает только тогда. Ядро есть —
+    пометка снимается, строка заметки ссылается на него; нет — журнал и stdout
+    (n836-opus M1, opus-fix Haiku I-1: журнал пишется по исходу)."""
+    left = []
+    for (f, n), (v, c, *_) in list(held.items()):
+        if v != "untyped":
+            continue
+        if _core_of(graph, n, f) is not None:
+            del held[(f, n)]
+            continue
+        _journal_held_entity(graph, f, n, "", v, c, meeting_link)
+        left.append(f"{f}/{n}")
+    if left:
+        print(f"граф: узла не получили ({_HELD_WHY['untyped']}) — " + "; ".join(left))
 
 
 def find_canonical(graph: pathlib.Path, name: str,
@@ -3886,6 +3901,7 @@ def main():
     speakers |= labeled_names          # «Саша (Спикер 1)» — подпись цитат «Спикер 1» остаётся
     for c in cores:
         upsert_core(graph, c, meeting_link, stamp, speech, speakers)
+    settle_untyped(graph, held, meeting_link)
     if cores:
         rebuild_cores_moc(graph)
         _revise_meeting_cores(cfg, graph, cores)

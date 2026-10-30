@@ -74,6 +74,8 @@ def test_untyped_leaves_its_trace_in_the_log(tmp_path, monkeypatch):
     monkeypatch.setattr(g, "_root", lambda: tmp_path / "data")
     held = g.apply_entities(graph, [{"имя": "Иван Петров", "тип": "человек", "суть": "x"}], LINK, typed=True)
     assert held == {("Системы", "Иван Петров"): ("untyped", [])}
+    g.settle_untyped(graph, held, LINK)
+    assert held == {("Системы", "Иван Петров"): ("untyped", [])}
     log = (tmp_path / "data" / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
     assert "узел не создан: Системы/Иван Петров: тип вне перечня разбора" in log, log
 
@@ -160,6 +162,7 @@ def test_name_that_got_a_node_leaves_no_false_log_line(tmp_path, monkeypatch):
     monkeypatch.setattr(g, "_root", lambda: tmp_path / "data")
     held = g.apply_entities(graph, [{"имя": "Шлюз", "тип": "задача", "суть": "x"},
                                     {"имя": "Шлюз", "тип": "система", "суть": "y"}], LINK, typed=True)
+    g.settle_untyped(graph, held, LINK)
     assert held == {} and (graph / "Системы" / "Шлюз.md").exists()
     log = tmp_path / "data" / "logs" / "graph_unlinked.log"
     assert not log.exists() or "Шлюз" not in log.read_text(encoding="utf-8")
@@ -198,8 +201,10 @@ def test_task_named_as_a_core_does_not_write_into_the_core(tmp_path, monkeypatch
     monkeypatch.setattr(g, "_root", lambda: tmp_path)
     graph = _graph(tmp_path)
     for day in ("2026-10-01_1000", "2026-10-02_1000"):
-        g.apply_entities(graph, [_TASK], f"Встречи/{day}", typed=True)
+        held = g.apply_entities(graph, [_TASK], f"Встречи/{day}", typed=True)
         g.upsert_core(graph, _CORE, f"Встречи/{day}", day)
+        g.settle_untyped(graph, held, f"Встречи/{day}")
+        assert held == {}
     core = (graph / "Ядра" / "Миграция витрины.md").read_text(encoding="utf-8")
     assert "## Встречи" not in core and _TASK["суть"] not in core
     assert "[[Встречи/2026-10-01_1000]]" in core and "[[Встречи/2026-10-02_1000]]" in core
@@ -213,5 +218,33 @@ def test_task_line_links_the_core_born_by_the_same_meeting(tmp_path, monkeypatch
     graph = _graph(tmp_path)
     held = g.apply_entities(graph, [_TASK], LINK, typed=True)
     g.upsert_core(graph, _CORE, LINK, "2026-10-27_1000")
+    g.settle_untyped(graph, held, LINK)
     line = g.entity_line(graph, _TASK, held)
-    assert line.startswith("- [[Ядра/Миграция витрины") and g._HELD_WHY["untyped"] not in line
+    assert line.startswith("- [[Ядра/Миграция витрины") and g._HELD_ENTITY not in line
+    log = tmp_path / "logs" / "graph_unlinked.log"
+    assert not log.exists() or "Миграция витрины" not in log.read_text(encoding="utf-8")
+
+
+def test_core_without_this_meeting_leaves_a_trace(tmp_path, monkeypatch):
+    """Ядро есть, а эта встреча его не назвала: суть задачи в ядро не идёт, но решение
+    видно в журнале (opus-fix, Haiku I-2)."""
+    monkeypatch.setattr(g, "_root", lambda: tmp_path)
+    graph = _graph(tmp_path)
+    g.upsert_core(graph, _CORE, "Встречи/2026-10-01_1000", "2026-10-01_1000")
+    held = g.apply_entities(graph, [_TASK], LINK, typed=True)
+    assert held == {}
+    assert "## Встречи" not in (graph / "Ядра" / "Миграция витрины.md").read_text(encoding="utf-8")
+    log = (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
+    assert "тему ведёт ядро" in log and "Ядра/Миграция витрины" in log, log
+
+
+def test_twin_in_systems_still_gets_the_meeting(tmp_path, monkeypatch):
+    """Двойник Системы/X рядом с ядром X: встреча по-прежнему пишется в двойника, ядро не
+    трогается — держится на том, что проход 1 `find_canonical` видит Системы раньше Ядер."""
+    monkeypatch.setattr(g, "_root", lambda: tmp_path)
+    graph = _graph(tmp_path)
+    twin = _node(graph, "Системы/Миграция витрины")
+    g.upsert_core(graph, _CORE, "Встречи/2026-10-01_1000", "2026-10-01_1000")
+    held = g.apply_entities(graph, [_TASK], LINK, typed=True)
+    assert held == {} and f"[[{LINK}]]" in twin.read_text(encoding="utf-8")
+    assert "## Встречи" not in (graph / "Ядра" / "Миграция витрины.md").read_text(encoding="utf-8")
