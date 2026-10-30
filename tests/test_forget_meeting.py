@@ -24,6 +24,7 @@
     5. Повторный запуск — не авария: забывать больше нечего.
 """
 import contextlib
+import os
 import pathlib
 
 import pytest
@@ -2359,6 +2360,15 @@ def test_forget_main_exits_1_when_the_graph_lock_is_busy(tmp_path, память,
     assert (root / "transcripts" / f"{STAMP}.md").exists() and память == []
 
 
+def test_forget_main_exits_1_when_yes_did_nothing(tmp_path, monkeypatch, память):
+    """С --yes ничего не сделано и отказа нет — код 1, не 0 (мутант последней ветки CI №845)."""
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "_root", lambda: root)
+    monkeypatch.setattr(forget, "apply", lambda p, **k: False)
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", STAMP, "--graph", str(graph), "--yes"])
+    assert forget.main() == 1
+
+
 def test_forget_does_not_overwrite_a_file_changed_after_the_plan(tmp_path, память):
     """Файл правки сменился между планом и записью (ревизия записала досье): правка
     плана затёрла бы чужую запись — ничего не делаем, человек повторит."""
@@ -2368,7 +2378,7 @@ def test_forget_does_not_overwrite_a_file_changed_after_the_plan(tmp_path, па�
     assert dossier_path in p.edit
     dossier_path.write_text(dossier_path.read_text(encoding="utf-8") + "\nправка ревизии\n",
                             encoding="utf-8")
-    assert forget.apply(p, yes=True) is False
+    assert forget.apply(p, yes=True) is False and p.refused    # отказ дня — код 1 у main
     assert (root / "transcripts" / f"{STAMP}.md").exists()
     assert "правка ревизии" in dossier_path.read_text(encoding="utf-8")
 
@@ -2525,6 +2535,15 @@ def test_forget_takes_the_body_column_after_all_spaces_of_the_marker(tmp_path):
     assert p.edit[node] == "  - сосед\n", p.edit.get(node)
 
 
+def test_forget_takes_the_body_column_after_a_tab_of_the_marker(tmp_path):
+    """`-<таб>текст`: таб маркера — до колонки 4, как в `_indent`; сосед с отступом 2 —
+    не подпункт (мутант `expandtabs(4)` → `expandtabs(0)` CI №845)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"-\t[[Встречи/{STAMP}]] — факт\n  - сосед\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "  - сосед\n", p.edit.get(node)
+
+
 def test_forget_takes_a_paragraph_at_the_body_column_after_a_blank_line(tmp_path):
     """После пустой строки абзац ровно с колонки текста пункта — ещё пункт
     (CommonMark), уходит с ним (мутант `>=` → `>` CI №845)."""
@@ -2566,6 +2585,9 @@ def test_forget_edits_a_dossier_outside_the_night_paths(tmp_path):
     # со ссылкой и на другую встречу — теряет только ссылку
     ('---\nвстречи:\n  - "[[Встречи/{s}]] и [[Встречи/{o}]]"\n---\n',
      f'---\nвстречи:\n  - "{forget.REMOVED_NOTE} и [[Встречи/{{o}}]]"\n---\n'),
+    # перенос скаляра пункта шапки уходит с ним, следующий ключ — нет (n845-fix2 Haiku I1)
+    ('---\nвстречи:\n  - "[[Встречи/{s}]] — выбрали\n    перенос"\n  - другое\naliases:\n---\n',
+     "---\nвстречи:\n  - другое\naliases:\n---\n"),
     # код внутри пункта о встрече — его тело
     ("- [[Встречи/{s}]] — факт\n\n  ```\n  код\n  ```\n- другое\n", "- другое\n"),
 ])
@@ -2576,6 +2598,15 @@ def test_forget_takes_one_line_in_the_yaml_header(tmp_path, before, after):
     node = _core(graph, before.format(s=STAMP, o=OTHER))
     p = forget.plan(STAMP, root, graph)
     assert p.edit[node] == after.format(o=OTHER), p.edit.get(node)
+
+
+@pytest.mark.xfail(strict=True, reason="№637: оград забывание не различает — пункт о встрече "
+                   "внутри кода уносит строки кода блоком; 0 из 15 568 файлов графов (n845-fix2)")
+def test_forget_keeps_code_lines_after_a_meeting_item_inside_a_fence(tmp_path):
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"```md\n- [[Встречи/{STAMP}]] — пример\nx = 1\n```\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "```md\nx = 1\n```\n", p.edit.get(node)
 
 
 def test_forget_meeting_subitem_takes_only_its_own_block(tmp_path):
@@ -2715,6 +2746,19 @@ def test_forget_deletes_nothing_when_a_dossier_copy_has_nowhere_to_go(tmp_path, 
     assert path.exists() and all(q.exists() for q in p.delete)
 
 
+def test_forget_deletes_nothing_when_only_the_dossier_copy_has_nowhere_to_go(tmp_path, monkeypatch):
+    """Копии правок легли, а копия удаляемого досье — нет: отказ всё равно, правки
+    вне раскладки графа отказа не дают (мутант `not in copy_first` CI №845)."""
+    root, graph = _world(tmp_path)
+    path = _night_dossier(graph / "Досье/Платёж.md")
+    p = forget.plan(STAMP, root, graph)
+    assert path in p.copy_first and p.edit
+    real = forget._backup
+    monkeypatch.setattr(forget, "_backup", lambda q, stamp: None if q == path else real(q, stamp))
+    assert forget.apply(p, yes=True) is False and p.refused
+    assert path.exists() and all(q.exists() for q in p.delete)
+
+
 def test_forget_deletes_nothing_when_an_edit_copy_fails(tmp_path, monkeypatch):
     """Копия правки упала — до первого удаления, а не после: встреча не забыта
     наполовину (out4 Haiku I2)."""
@@ -2784,6 +2828,25 @@ def test_forget_refuses_an_edit_inside_a_deleted_folder(tmp_path):
     p.edit[inside] = "y\n"
     assert forget.apply(p, yes=True) is False and p.refused
     assert all(q.exists() for q in p.delete) and inside.read_text(encoding="utf-8") == "x\n"
+
+
+def test_forget_deletes_the_rest_of_a_folder_when_one_file_is_stuck(tmp_path, monkeypatch, память):
+    """Один файл папки архива не удалился — остальные всё равно уходят, а папка
+    названа оставшейся (мутант `ignore_errors=True` → `False` CI №845)."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    arch = next(q for q in p.delete if q.is_dir() and q.parent.name == "Встречи-архив")
+    real, stuck = os.unlink, []
+
+    def unlink(target, *a, dir_fd=None, **k):
+        inside = dir_fd is not None or pathlib.Path(target).parent == arch
+        if inside and not stuck:
+            stuck.append(target)
+            raise PermissionError("занят")
+        return real(target, *a, dir_fd=dir_fd, **k)
+    monkeypatch.setattr(os, "unlink", unlink)
+    forget.apply(p, yes=True)
+    assert stuck and p.refused and len(list(arch.iterdir())) == 1, list(arch.iterdir())
 
 
 def test_forget_left_on_disk_is_a_refusal(tmp_path, monkeypatch, capsys):

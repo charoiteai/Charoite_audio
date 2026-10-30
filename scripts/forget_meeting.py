@@ -1250,6 +1250,10 @@ def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = No
             # ссылкой и на другую встречу теряет только ссылку (n845-opusfix Haiku I3)
             if not _ITEM.match(line.rstrip("\r\n")) or _other_meetings(link.sub("", line), keys):
                 out.append(link.sub(REMOVED_NOTE, line))
+            else:
+                skip = _header_item_end(lines, i, header)
+                if lost is not None:
+                    lost += [m for gone in lines[i + 1:skip] for m in _other_meetings(gone, keys)]
             continue
         # пункт, который называет и другие встречи («Источники» досье), — не только
         # её след: теряет ссылку, а не блок (out1 Haiku I1)
@@ -1264,16 +1268,28 @@ def _strip_meeting(text: str, link: re.Pattern[str], lost: list[str] | None = No
                 if re.search(r"[^\W_]", dossier.LINK_RE.sub("", bare[head.end():] if head else bare)):
                     told.append("пометка")
             continue
-        base = _indent(line)
         # после пустой строки пункт продолжает только строка от колонки его текста,
         # мельче — абзац вне списка, как в CommonMark (n845-in1 Sonnet I3)
         head = _ITEM.match(line.rstrip("\r\n")).end()
         head += len(line[head:]) - len(line[head:].lstrip(" \t"))
-        body = max(len(line[:head].rstrip("\r\n").expandtabs(4)), base + 1)
+        # отступ и маркер в колонках — те же, что в `_indent`: колонка текста всегда
+        # правее отступа пункта (страховка `max(…, отступ + 1)` была мёртвой, мутанты CI №845)
+        body = len(line[:head].rstrip("\r\n").expandtabs(4))
         skip = _block_end(lines, i, body, told)
         if lost is not None:
             lost += [m for gone in lines[i:skip] for m in _other_meetings(link.sub("", gone), keys)]
     return "".join(out)
+
+
+def _header_item_end(lines: list[str], item: int, header: int) -> int:
+    """Номер первой строки после пункта шапки `lines[item]`: перенос YAML-скаляра —
+    только строки глубже маркера, без ленивых, иначе снова уходит `aliases:`
+    (n845-fix2 Haiku I1)."""
+    base = _indent(lines[item])
+    for n in range(item + 1, header):
+        if not lines[n].strip(_BLANK) or _indent(lines[n]) <= base:
+            return n
+    return header
 
 
 def _block_end(lines: list[str], item: int, body: int, told: list[str] | None) -> int:
