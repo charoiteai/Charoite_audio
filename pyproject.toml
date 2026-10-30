@@ -14,7 +14,7 @@ build-backend = "setuptools.build_meta"
 name = "charoite"
 # Версию продукта ведёт release-please: строку ниже он обновляет сам
 # (extra-files в .github/release-please-config.json). Пакет не публикуется.
-version = "0.100.0" # x-release-please-version
+version = "0.101.0" # x-release-please-version
 description = "Charoite: local-first meeting conveyor (STT, diarization, graph)"
 # 3.11 — та же граница, что проверяет scripts/doctor.py и обещает README.
 # Раньше здесь стояло >=3.10: pip ставил пакет на 3.10, а doctor тут же
