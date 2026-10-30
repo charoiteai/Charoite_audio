@@ -302,11 +302,12 @@ so a file that is not UTF-8 is read with replacement instead of raising;
 the decision about «Правки автора» is made before the model call, a
 refusal leaves the theme in the index, and just before the write the
 dossier is re-read under the graph lock so an edit made during generation
-is not overwritten. The «Правки автора» heading is found as a line of any
-level, with or without the space after `##` and with trailing spaces, the
-way the owner types it in Obsidian; the section runs to the end of the file.
-A literal match missed `##Правки автора`, and the rebuild wrote «—» over the
-owner's edits (#856).
+is not overwritten. The «Правки автора» heading is found with any number of
+`#`, with or without the space after them and with trailing spaces, the way
+the owner types it in Obsidian — a superset of the old literal match; the
+section runs to the end of the file. The literal missed `##Правки автора`,
+and the rebuild wrote «—» over the owner's edits (#856). The same headings are
+cut out of the model's body, so a rebuilt body cannot open the section.
 
 ### A graph node is never lost mid-write
 
