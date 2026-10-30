@@ -65,7 +65,7 @@ def _graph(tmp_path: pathlib.Path, *names: str) -> pathlib.Path:
     graph = tmp_path / "Граф"
     (graph / "Ядра").mkdir(parents=True)
     for n in names:
-        (graph / "Ядра" / f"{n}.md").write_text("## Статус\nживо\n", encoding="utf-8")
+        (graph / "Ядра" / f"{n}.md").write_text("## Суть\nживо\n", encoding="utf-8")
     return graph
 
 
@@ -419,7 +419,7 @@ def test_judged_pairs_of_a_changed_core_are_judged_again(tmp_path, monkeypatch):
     for n in ("А", "Б", "В"):
         os.utime(graph / "Ядра" / f"{n}.md", (old, old))
     tier3_cores._save_stamp(graph, old + 60, {"В"}, {frozenset(("А", "Б")), frozenset(("А", "В"))})
-    (graph / "Ядра" / "Б.md").write_text("## Статус\nизменилось\n", encoding="utf-8")
+    (graph / "Ядра" / "Б.md").write_text("## Суть\nизменилось\n", encoding="utf-8")
     seen = {}
     monkeypatch.setattr(tier3, "revise", lambda g, only_names=None, skip_pairs=frozenset(), **kw: (
         seen.update(skip=set(skip_pairs)), dict(EMPTY))[1])
@@ -521,3 +521,23 @@ def test_no_folder_and_a_refusing_transport_are_named(tmp_path):
     graph = _graph(tmp_path, "А", "Б")
     r = tier3.revise(graph, embedder=Embedder(refuse, "test"), judge=fake_judge(), may_continue=_open)
     assert r["status"] == "unavailable" and "соединение отклонено" in r["reason"], r["reason"]
+
+
+def test_nothing_to_judge_moves_the_night_stamp(tmp_path, monkeypatch, capsys):
+    """Граф из одних автостатусов ревизия не судит (№628) — и ночь обязана двинуть
+    отметку: иначе каждую ночь «отметки нет — полный прогон» и растущий фокус
+    (n628-in1, DS C2 и Sonnet I2)."""
+    graph = tmp_path / "Граф"
+    (graph / "Ядра").mkdir(parents=True)
+    for n in ("Одно", "Другое"):
+        (graph / "Ядра" / f"{n}.md").write_text("## Статус\nживо\n", encoding="utf-8")
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    monkeypatch.setattr(tier3_cores.graphs, "load_config", lambda: {})
+    monkeypatch.setattr(tier3_cores.nli, "judge", lambda: fake_judge())
+    monkeypatch.setattr(tier3_cores.llm, "embedder", lambda cfg, **kw: fake_embedder())
+    assert tier3_cores.run(graph, apply=False, mark=True, since_last=True) == "no_work"
+    assert str(graph) in json.loads((tmp_path / "stamps.json").read_text(encoding="utf-8"))
+    capsys.readouterr()
+    assert tier3_cores.run(graph, apply=False, mark=True, since_last=True) == "no_work"
+    out = capsys.readouterr().out
+    assert "свежих ядер нет" in out and "полный прогон" not in out, out

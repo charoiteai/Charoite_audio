@@ -254,15 +254,16 @@ note (the morning brief collects those into "Tier3 asks you to merge"), and
 nestings ("episode ⊂ process") are cross-linked, never merged. The
 irreversible one — merging, where the chronicle is transferred and a
 redirect stub is left in place of the duplicate — needs `--apply` on the CLI
-or `sufler.tier3_auto_apply: true` in the config. The weaker the evidence,
-the higher the bar: cores built by the extractor carry no `## Суть`, so the
-judge is comparing today's status lines, and two live tasks of one project
-read alike on those. For such a pair a confident verdict is not enough — the
-chronicles must also be disjoint: twins come from *different* meetings (June
-named the topic one way, July another), while two threads of one project are
-carried through the same ones. A pair with a shared chronicle is marked, not
-merged. Generic "hub" cores are never touched, and every write is preceded
-by a backup into `Ядра/.tier3_backup/`.
+or `sufler.tier3_auto_apply: true` in the config. Only cores with an essence
+of their own are judged — a `## Суть` ("essence") or `## Задача одной фразой`
+("the task in one sentence") section written by a person. A core built by the
+extractor carries only an auto-written status line, and those read alike
+across unrelated topics (entailment 0.93–1.00 on false pairs; 0 real
+duplicates out of 10 confident pairs in a measurement). Such cores never
+reach the embedder or a pair; a graph with fewer than two judgeable cores is
+"nothing to judge", and the run says how many cores have an essence. Generic
+"hub" cores are never touched, and every write is preceded by a backup into
+`Ядра/.tier3_backup/`.
 
 **Topic dossiers** (`src/charoite_graph/dossier.py`, `scripts/nightly_dossier.py`) — a summary
 per cross-cutting topic: current state, chronology, decisions, open questions,
