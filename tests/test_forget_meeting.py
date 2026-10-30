@@ -2338,10 +2338,25 @@ def test_forget_waits_for_the_graph_lock_and_does_nothing_when_busy(tmp_path, п
         yield False
 
     monkeypatch.setattr(forget.file_locks, "graph_lock", busy)
-    assert forget.apply(p, yes=True) is False
+    assert forget.apply(p, yes=True) is False and p.refused
     assert seen and (root / "transcripts" / f"{STAMP}.md").exists()
     assert f"[[Встречи/{STAMP}" in (graph / "Досье" / "Платёжный провайдер.md").read_text(encoding="utf-8")
     assert память == []
+
+
+def test_forget_main_exits_1_when_the_graph_lock_is_busy(tmp_path, память, monkeypatch):
+    """Отказ замка через точку входа — код 1, а не 0 (мутант кода возврата CI №845)."""
+    root, graph = _world(tmp_path)
+
+    @contextlib.contextmanager
+    def busy(lock_dir, wait, **kw):
+        yield False
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", busy)
+    monkeypatch.setattr(forget, "_root", lambda: root)
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", STAMP, "--graph", str(graph), "--yes"])
+    assert forget.main() == 1
+    assert (root / "transcripts" / f"{STAMP}.md").exists() and память == []
 
 
 def test_forget_does_not_overwrite_a_file_changed_after_the_plan(tmp_path, память):
@@ -2481,6 +2496,63 @@ def test_forget_drops_the_wrapped_text_and_subitems_of_a_meeting_item(tmp_path):
                         "  - срок: 1 августа\n\n    абзац пункта\n\n- другое\n  - его подпункт\n")
     p = forget.plan(STAMP, root, graph)
     assert p.edit[node] == "\n- другое\n  - его подпункт\n", p.edit.get(node)
+
+
+def test_forget_drops_a_tab_indented_subitem_of_a_meeting_item(tmp_path):
+    """Таб — до колонки, кратной четырём: подпункт с табом — в блоке пункта, а не
+    свой пункт (мутант `4 - n % 4` CI №845)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — выбрали ЮPay\n\t- срок: 1 августа\n- другое\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "- другое\n", p.edit.get(node)
+
+
+def test_forget_keeps_a_sibling_whose_tab_lands_short_of_the_item_text(tmp_path):
+    """« \\t» — колонка 4, мельче текста подпункта о встрече (6): сосед — свой
+    пункт, не продолжение (мутант `4 - n % 4` → `4 + n % 4` CI №845)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- тема\n    - [[Встречи/{STAMP}]] — факт\n \t- сосед\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "- тема\n \t- сосед\n", p.edit.get(node)
+
+
+def test_forget_takes_the_body_column_after_all_spaces_of_the_marker(tmp_path):
+    """`-   текст`: колонка текста — после всех пробелов маркера (4); строка с
+    отступом 2 — соседний пункт, не подпункт (мутант колонки тела CI №845)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"-   [[Встречи/{STAMP}]] — факт\n  - сосед\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "  - сосед\n", p.edit.get(node)
+
+
+def test_forget_takes_a_paragraph_at_the_body_column_after_a_blank_line(tmp_path):
+    """После пустой строки абзац ровно с колонки текста пункта — ещё пункт
+    (CommonMark), уходит с ним (мутант `>=` → `>` CI №845)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — факт\n\n  продолжение\n- другое\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "- другое\n", p.edit.get(node)
+
+
+def test_forget_does_not_call_a_person_link_another_meeting(tmp_path):
+    """Ссылка на человека в снятом пункте — не «ссылка на другую встречу»
+    (мутант `and` → `or` в `_other_meetings` CI №845)."""
+    root, graph = _world(tmp_path)
+    node = _core(graph, f"- [[Встречи/{STAMP}]] — с [[Люди/Мария Соколова]]\n- другое\n")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == "- другое\n", p.edit.get(node)
+    assert not [c for c in p.check if "на другие встречи" in c], p.check
+
+
+def test_forget_edits_a_dossier_outside_the_night_paths(tmp_path):
+    """`Досье/Архив/2026/<тема>.md` ночь не пересобирает: не удаляется, а
+    правится (мутант `and` → `or` в пути досье ночи CI №845)."""
+    root, graph = _world(tmp_path)
+    deep = graph / "Досье" / "Архив" / "2026" / "Платёж.md"
+    deep.parent.mkdir(parents=True)
+    deep.write_bytes(_night_dossier(tmp_path / "Платёж.md").read_bytes())    # отпечаток ночи цел
+    p = forget.plan(STAMP, root, graph)
+    assert deep not in p.delete and deep in p.edit, (p.delete, list(p.edit))
 
 
 def test_forget_meeting_subitem_takes_only_its_own_block(tmp_path):
@@ -2673,6 +2745,7 @@ def test_forget_names_an_edit_that_did_not_land(tmp_path, monkeypatch, capsys):
     forget.apply(p, yes=True)
     out = capsys.readouterr().out
     assert p.refused and "не поправлено" in out and str(core) in out, out
+    assert "поправлено 0 (" in out, out     # ни одна правка не легла
     assert not list(graph.rglob("*.tmp"))
 
 

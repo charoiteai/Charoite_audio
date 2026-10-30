@@ -1376,7 +1376,7 @@ def _apply_locked(p: Plan) -> tuple[list[pathlib.Path], list[pathlib.Path]] | No
         except OSError as e:
             for t, _ in staged:
                 with contextlib.suppress(OSError):
-                    t.unlink(missing_ok=True)
+                    t.unlink()
             print(f"НЕ сделано ничего: правка {path} не записалась ({e}) — повтори, когда граф на месте")
             return None
         # Права узла — как были: конвейер пишет граф под harden_umask (0600),
@@ -1404,7 +1404,7 @@ def _apply_locked(p: Plan) -> tuple[list[pathlib.Path], list[pathlib.Path]] | No
         except OSError:
             unedited.append(path)  # правка не легла — тоже не «забыто»
             with contextlib.suppress(OSError):
-                tmp.unlink(missing_ok=True)       # не оставлять поправленную копию рядом (out6 Sonnet M1)
+                tmp.unlink()       # не оставлять поправленную копию рядом (out6 Sonnet M1)
     return left, unedited
 
 
