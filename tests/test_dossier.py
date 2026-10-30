@@ -852,3 +852,24 @@ def test_cites_reads_links_by_the_graph_grammar(text, cites):
     Obsidian экранирует `|` (`\\|`), блок — `^`; производные встречи — `<ключ>_…`
     (выход n841-out4 Haiku C1, Sonnet M2, DS M3)."""
     assert dossier.cites(text, ["2026-07-15_1400"]) is cites
+
+
+def test_fingerprint_on_disk_follows_the_disk_not_the_scan(tmp_path):
+    """Отпечаток по диску: совпадает со снимком, пока источники те же; правка или
+    удаление источника после скана его меняет (круг n841-opus-fix)."""
+    import os as _os
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    for f in (a, b):
+        f.write_text("x\n", encoding="utf-8")
+    files = {f.stem: {"path": f, "text": "x\n", "mtime": f.stat().st_mtime, "kind": "встреча"}
+             for f in (a, b)}
+    members = ["a", "b"]
+    snap = dossier.fingerprint(members, files)
+    assert dossier.fingerprint_on_disk(members, files) == snap
+    st = a.stat()
+    _os.utime(a, (st.st_atime, st.st_mtime + 5))
+    touched = dossier.fingerprint_on_disk(members, files)
+    assert touched != snap
+    b.unlink()
+    assert dossier.fingerprint_on_disk(members, files) not in (snap, touched)
+    assert dossier.fingerprint(members, files) == snap, "снимок не меняется"

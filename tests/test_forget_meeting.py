@@ -23,6 +23,7 @@
        а не чужие заметки.
     5. Повторный запуск — не авария: забывать больше нечего.
 """
+import contextlib
 import pathlib
 
 import pytest
@@ -635,7 +636,8 @@ def test_forget_names_a_dossier_copy_the_night_never_rebuilds(tmp_path):
     live.write_text(f"- выбрали ЮPay [[{STAMP}]]\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
     assert any(c.startswith("Досье/.backup/2026-10-18_030000/Тема.md: ссылка на встречу осталась") for c in p.check), p.check
-    assert not any(c.startswith("Досье/Тема.md:") for c in p.check), "живое досье пересоберёт ночь"
+    # и живое: «ночь пересоберёт» верно, только пока тема остаётся кластером (круг n841-opus-fix DS I4)
+    assert any(c.startswith("Досье/Тема.md: ссылка на встречу осталась") for c in p.check), p.check
 
 
 def test_forget_names_a_link_form_it_cannot_cut(tmp_path):
@@ -2313,3 +2315,54 @@ def test_forget_item_marker_is_indented_by_markdown_blanks_only(tmp_path):
     node.write_text(f" - [[Встречи/{STAMP}]] — факт\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
     assert p.edit[node] == f" - {forget.REMOVED_NOTE} — факт\n", p.edit.get(node)
+
+
+def test_forget_waits_for_the_graph_lock_and_does_nothing_when_busy(tmp_path, память, monkeypatch):
+    """Сосед (ревизия досье, разбор встречи) держит замок графа: «забыть» не пишет
+    поверх его записи и не удаляет ничего — всё или ничего (круг n841-opus-fix Sonnet C2)."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    assert p.lock_dirs, "план знает замки графов, которые правит"
+    seen = []
+
+    @contextlib.contextmanager
+    def busy(lock_dir, wait, **kw):
+        seen.append(lock_dir)
+        yield False
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", busy)
+    assert forget.apply(p, yes=True) is False
+    assert seen and (root / "transcripts" / f"{STAMP}.md").exists()
+    assert f"[[Встречи/{STAMP}" in (graph / "Досье" / "Платёжный провайдер.md").read_text(encoding="utf-8")
+    assert память == []
+
+
+def test_forget_does_not_overwrite_a_file_changed_after_the_plan(tmp_path, память):
+    """Файл правки сменился между планом и записью (ревизия записала досье): правка
+    плана затёрла бы чужую запись — ничего не делаем, человек повторит."""
+    root, graph = _world(tmp_path)
+    p = forget.plan(STAMP, root, graph)
+    dossier_path = graph / "Досье" / "Платёжный провайдер.md"
+    assert dossier_path in p.edit
+    dossier_path.write_text(dossier_path.read_text(encoding="utf-8") + "\nправка ревизии\n",
+                            encoding="utf-8")
+    assert forget.apply(p, yes=True) is False
+    assert (root / "transcripts" / f"{STAMP}.md").exists()
+    assert "правка ревизии" in dossier_path.read_text(encoding="utf-8")
+
+
+def test_forget_takes_the_same_lock_as_the_dossier_review(tmp_path, память, monkeypatch):
+    """Замок — тот же каталог, что у ревизии и ночной сборки: родитель снимков графа."""
+    root, graph = _world(tmp_path)
+    taken = []
+    real = forget.file_locks.graph_lock
+
+    @contextlib.contextmanager
+    def spy(lock_dir, wait, **kw):
+        taken.append(pathlib.Path(lock_dir))
+        with real(lock_dir, wait, **kw) as ok:
+            yield ok
+
+    monkeypatch.setattr(forget.file_locks, "graph_lock", spy)
+    assert forget.apply(forget.plan(STAMP, root, graph), yes=True) is True
+    assert charoite_paths.graph_backups(graph, "cloud_backup", root=root).parent in taken

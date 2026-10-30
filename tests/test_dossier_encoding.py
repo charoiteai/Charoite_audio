@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import importlib.util
 import pathlib
 from collections import Counter
@@ -420,3 +421,25 @@ def test_closed_window_falls_back_to_each_theme_fingerprint(night, monkeypatch, 
     assert all(entries[t]["собрано"] == date.today().isoformat() for t in THEMES)
     _account(result, counts, paths, capsys)
     assert calls == []
+
+
+def test_source_changed_during_generation_is_not_written(night, monkeypatch, capsys):
+    """Источник поправлен или удалён после скана («забыть встречу» посреди ночи): тело
+    собрано по снимку с текстом ушедшей встречи — не пишем, тема уйдёт на следующую
+    ночь (круг n841-opus-fix DS I2)."""
+    nd, graph, folder, paths, calls = night
+    before = paths["Бета"].read_bytes()
+
+    def generate(theme, members, files, c, **kw):
+        calls.append((theme, list(members), files))
+        if theme == "Бета":
+            src = pathlib.Path(files[sorted(members)[0]]["path"])
+            st = src.stat()
+            os.utime(src, (st.st_atime, st.st_mtime + 5))
+        return GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["досье_изменилось"] == 1
+    assert paths["Бета"].read_bytes() == before
+    assert "источники изменились за время генерации" in capsys.readouterr().out

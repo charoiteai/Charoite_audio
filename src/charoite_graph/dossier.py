@@ -328,6 +328,27 @@ def fingerprint(members: list[str], files: dict[str, dict]) -> str:
     return h.hexdigest()[:16]
 
 
+def fingerprint_on_disk(members: list[str], files: dict[str, dict]) -> str:
+    """Тот же отпечаток, но время правки — с диска сейчас, а не из снимка скана.
+
+    Скан ночи и ревизии живёт часами: источник, удалённый или поправленный после
+    него («забыть встречу» посреди прогона), снимок не видит, и тело с пересказом
+    ушедшей встречи сходило за собранное по составу. Удалённый член выпадает,
+    правленный меняет время (круг n841-opus-fix: Sonnet C1–C2, DeepSeek C1 и I2).
+    Совпал с `fingerprint` по снимку — тексты снимка те же, что на диске.
+    """
+    now = {}
+    for m in members:
+        meta = files.get(m)
+        if not meta:
+            continue
+        try:
+            now[m] = {**meta, "mtime": pathlib.Path(meta["path"]).stat().st_mtime}
+        except OSError:
+            continue
+    return fingerprint(members, now)
+
+
 # ─────────────────────────── генерация ───────────────────────────
 
 # Инструкция стоит ПОСЛЕ источников намеренно: на длинном контексте требования

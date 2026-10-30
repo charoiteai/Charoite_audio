@@ -76,6 +76,11 @@ split_dossier = dossier.split_dossier
 # Сколько ждать чужой разбор встречи, прежде чем работать без правок:
 # ночь под потолком, дольше стоять смысла нет.
 LOCK_WAIT = 10 * 60
+# Исходы ревизии, которые не отказ по содержанию (круг n841-opus-fix): тело то же —
+# поле не ставим и в «Отклонено» не пишем (DS I3); тело то же, кроме меток
+# диаризации, — чистку пишем, поле не ставим (Sonnet I2, DS M7)
+NO_EDITS = "правок нет — поле `ревизия:` не ставим"
+LABELS_ONLY = "сняты только метки диаризации — поле `ревизия:` не ставим"
 
 
 def _link_key(target: str) -> str:
@@ -113,10 +118,18 @@ def check_revision(old_body: str, new_body: str) -> str | None:
         shown = ", ".join(f"[[{x}]]" for x in lost[:5]) + (" …" if len(lost) > 5 else "")
         return (f"потеряны ссылки на источники ({len(lost)}): {shown} — "
                 "ревизия целиком не применена")
-    if new_body.strip() == old_body.strip():
+    if _same_text(new_body, old_body):
         # то же тело — поле `ревизия:` заморозило бы тему без единой правки (финальный n841 Opus I2)
-        return "правок нет — поле `ревизия:` не ставим"
+        return NO_EDITS
     return None
+
+
+def _same_text(a: str, b: str) -> bool:
+    """Тело то же по словам и строкам: пробелы внутри строки, хвостовые и пустые
+    строки — не правка (круг n841-opus-fix: Sonnet I1, DS M5). Строки не склеиваем:
+    «- a» и «- b» в одну строку — другая разметка, а не то же тело."""
+    norm = lambda s: [re.sub(r"[ \t]+", " ", ln).strip() for ln in s.splitlines() if ln.strip()]
+    return norm(a) == norm(b)
 
 
 def revision_stats(old_body: str, new_body: str) -> str:
@@ -209,6 +222,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         return None, "в досье нет раздела «## Источники» — не трогаем"
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
     # метки деятелем — тем же словом, что в источниках, иначе модель вернёт их в ответ (№815)
+    labeled_body = old_body
     old_body = graph_names.unlabel_speakers(old_body)
     body = f"{old_body}\n\n## Источники\n{graph_names.unlabel_speakers(sources)}\n"
 
@@ -305,10 +319,25 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     # защищённому заголовку: формат — ровно пять секций.
     out = graph_names.unlabel_speakers(strip_protected(out))   # тело на запись — без меток (№815)
     why = check_revision(old_body, out)
+    if why == NO_EDITS and not _same_text(labeled_body, out):
+        # облако ничего не правило, но тело в файле с метками: чистку пишем без поля —
+        # иначе метку не снимет никто, ночь такое тело не трогает (Sonnet I2, DS M7)
+        print(f"  ○ {theme}: {LABELS_ONLY}")
+        return out, LABELS_ONLY
     if why:
         print(f"  ⚠️ {theme}: отклонено — {why}")
         return None, why
     return out, ""
+
+
+def _lag_reason(loaded: dossier.DossierLoad) -> str:
+    """Почему ревизии нет: владелец по строке отчёта должен знать, что делать (Sonnet M2, DS M6)."""
+    if not dossier.read_fingerprint(loaded):
+        return "в шапке досье нет отпечатка состава — ревизию не делаем"
+    if dossier.revision(loaded.text):
+        return ("досье отстаёт от источников, а поле `ревизия:` держит тело — ночь его не "
+                "пересоберёт: убрать строку `ревизия:`, тема соберётся заново")
+    return "досье отстаёт от источников — ревизия после пересборки"
 
 
 def _mtime(p: pathlib.Path) -> float:
@@ -417,7 +446,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
     if may_edit and not dry and lock_dir is None:
         # запись без замка графа — тот самый путь в карантин (аудит 26.08); ошибка вызова, не режим
         raise ValueError("_review_loop: запись включена, а каталог замка графа не передан")
-    done, notes, applied, rejected, failed = 0, [], [], [], []
+    done, notes, applied, rejected, failed, unchanged = 0, [], [], [], [], []
     for path in fresh[:limit]:
         theme = path.stem
         members = cl[theme]
@@ -447,10 +476,15 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # Пригодность досье к записи зависит только от `old` — до платного вызова (out5 Sonnet I2);
         # без записи поле не нужно, предложение в отчёт идёт как раньше (out6 DS I1, Haiku I1).
         # «Источники» `review` проверяет сам, до облака
-        if not dossier.in_sync(dossier.DossierLoad("ok", old), dossier.fingerprint(members, files)):
+        # Состав — по диску сейчас, а не по скану начала прогона: «забыть встречу» посреди
+        # прогона иначе не видно, и текст забытой встречи из снимка ушёл бы в облако
+        # (круг n841-opus-fix: Sonnet C1, DS C1). Гейт и без записи: отставшее тело само
+        # может нести пересказ забытого (Sonnet M1 отклонён)
+        loaded_old = dossier.DossierLoad("ok", old)
+        if not dossier.in_sync(loaded_old, dossier.fingerprint_on_disk(members, files)):
             # тело отстаёт от состава (ночь не дошла, «забыть встречу» прошло днём) —
             # поле заморозило бы пересказ ушедшего источника (финальный Opus C1)
-            rejected.append(f"- **{theme}** — досье отстаёт от источников — ревизия после пересборки")
+            rejected.append(f"- **{theme}** — {_lag_reason(loaded_old)}")
             continue
         head0 = split_dossier(old)[0]
         if may_edit and dossier.revision(dossier.with_revision(head0, stamp[:10])) != stamp[:10]:
@@ -462,8 +496,12 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         fixed, why = review(theme, path, graph, files, members, model, cfg, current=old)
         if not fixed:
             why = " ".join(why.split())
+            if why == NO_EDITS:
+                unchanged.append(f"- **{theme}**")
+                continue
             (failed if why.startswith("сбой:") else rejected).append(f"- **{theme}** — {why}")
             continue
+        labels_only = why == LABELS_ONLY
 
         if not may_edit:
             notes.append(_proposed(theme, fixed))
@@ -481,7 +519,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # Тело теперь ревизии: ночная пересборка его не трогает, снимает поле
         # «забыть встречу» (№841); поле — в той же записи, что строка
         # «Применено» отчёта, и не разойдётся с ним (вход n841-in1 S-C2)
-        text = dossier.with_revision(text, stamp[:10])     # шапка та же, что проверена до вызова
+        if not labels_only:
+            text = dossier.with_revision(text, stamp[:10])     # шапка та же, что проверена до вызова
 
         # замок на одну запись; за время облачного вызова файл мог смениться —
         # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2).
@@ -495,6 +534,11 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                 try:
                     if path.read_text(encoding="utf-8") != old:
                         rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
+                        continue
+                    # и состав — под тем же замком, что берёт «забыть встречу»: забытое за время
+                    # облачного вызова не получит поле на пересказе (Sonnet C2, DS C1 второе окно)
+                    if not dossier.in_sync(loaded_old, dossier.fingerprint_on_disk(members, files)):
+                        rejected.append(f"- **{theme}** — источники сменились за время ревизии — не трогаем")
                         continue
                 except (OSError, UnicodeDecodeError) as e:
                     failed.append(f"- **{theme}** — сбой: досье не перечитано перед записью ({e})")
@@ -521,12 +565,12 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             continue
         done += 1
         # счёт — против тела без меток: сама чистка не правка ревизии (финальный Opus n815 M4)
-        stats = revision_stats(graph_names.unlabel_speakers(old_body), fixed)
+        stats = LABELS_ONLY if labels_only else revision_stats(graph_names.unlabel_speakers(old_body), fixed)
         applied.append(f"- **{theme}** — {stats}; копия до правки — "
                        f"`{CHAROITE.dossier_dir}/.backup/{stamp}/`")
         print(f"  ✓ {theme}: правки применены ({stats})")
 
-    if (notes or applied or rejected or failed) and not dry:
+    if (notes or applied or rejected or failed or unchanged) and not dry:
         # Отчёт пишется в ОБОИХ режимах: с включённой правкой владелец раньше
         # узнавал о переписанном досье только из строки в логе (карточка №87).
         dest = graph / f"Служебное_ревизия_досье_{stamp}.md"
@@ -536,6 +580,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             report += "## Применено\n\n" + "\n".join(applied) + "\n\n"
         if rejected:
             report += "## Отклонено\n\n" + "\n".join(rejected) + "\n\n"
+        if unchanged:
+            report += "## Без правок\n\n" + "\n".join(unchanged) + "\n\n"
         if failed:
             report += "## Сбои шага (не отказ по содержанию)\n\n" + "\n".join(failed) + "\n\n"
             FAILED_STEPS.extend(failed)

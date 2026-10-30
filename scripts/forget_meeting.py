@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import argparse
+import contextlib
 import dataclasses
 import os
 import pathlib
@@ -86,6 +87,7 @@ def _root() -> pathlib.Path:
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
 import charoite_paths  # noqa: E402
+import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import install_profile  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -94,6 +96,9 @@ ARCHIVE_DIR = "Встречи-архив"
 MEETINGS_DIR = "Встречи"
 DOCS_DIR = pathlib.Path("Документация") / "Стенограммы встреч"
 BACKUP_DIR = ".forget_backup"
+# Сколько ждать замок графа: сосед держит его на одну запись досье или на разбор
+# встречи; дольше — человек повторит, а не ждёт вслепую
+LOCK_WAIT = 120
 CLOUD_BACKUP_DIR = ".cloud_backup"      # снимки графа перед облачной правкой
 CLOUD_QUARANTINE = "cloud_quarantine"   # версии облака, убранные сверкой (№88)
 DISPLACED_DIR = "вытеснено"             # тела узлов, ставших заглушками (cloud_review.DISPLACED_DIR)
@@ -171,6 +176,13 @@ class Plan:
     # вовсе (остаток дня, №398). Это не «не дотянется» — удалить их можно,
     # решает человек (Minor DS кругов 1 и 2 по PR #622).
     check: list[str] = dataclasses.field(default_factory=list)
+    # Замок графа — тот же, что у ревизии и ночной сборки досье: каталог данных графа
+    # (родитель снимков). Без него правка «забыть» между сверкой соседа и его записью
+    # затиралась, и ссылка с полем `ревизия:` возвращалась (круг n841-opus-fix Sonnet C2).
+    lock_dirs: list[pathlib.Path] = dataclasses.field(default_factory=list)
+    # Текст файла, по которому построена правка: под замком сверяем — сменился после
+    # плана (ревизия записала) — не затираем, ничего не делаем
+    orig: dict[pathlib.Path, str] = dataclasses.field(default_factory=dict)
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
@@ -1020,6 +1032,8 @@ def plan(stamp: str, root: pathlib.Path,
         # PR #363, GLM+DeepSeek: старое место правилось, новое — нет).
         snap = charoite_paths.graph_backups(
             g, CLOUD_BACKUP_DIR.lstrip("."), root=root)
+        if snap.parent not in p.lock_dirs:
+            p.lock_dirs.append(snap.parent)
         editable = sorted(g.rglob("*.md")) + (
             sorted(snap.rglob("*.md")) if snap.is_dir() else [])
         for f in editable:
@@ -1067,14 +1081,15 @@ def plan(stamp: str, root: pathlib.Path,
             fixed = _strip_meeting(text, link) if linked else text
             if revised:
                 fixed = dossier.without_revision(fixed)
-            rebuilt = in_dossier and not in_snap and not any(x.startswith(".") for x in parts)
-            if not rebuilt and dossier.cites(fixed, keys):
+            if dossier.cites(fixed, keys):
                 # формы, которых нет в `_link_re` (`#якорь`, `.md`, голый штамп, перевод строки
-                # в алиасе), — не молчать; тело досье пересоберёт ночь, копии — нет, правило
-                # пропуска то же, что у `scan` (out8 Haiku I2, Opus I1, M1; одна грамматика — №607)
+                # в алиасе), — не молчать (out8 Haiku I2, Opus I1, M1; одна грамматика — №607).
+                # И у живого досье: «ночь пересоберёт» верно, только пока тема остаётся
+                # кластером — тема из трёх без забытой встречи выпадает (круг n841-opus-fix DS I4)
                 p.check.append(f"{where}: ссылка на встречу осталась после правки — убери руками")
             if fixed != text:
                 p.edit[f] = fixed
+                p.orig[f] = text
     # Сами факты (тема, участники, решения) живут в памяти-компаньоне
     # (brain :8100): забываем их там по ключу, а не говорим «вне
     # досягаемости» (аудит 16.08 п.1 → карточка №41). Отметка brain_sent
@@ -1154,7 +1169,31 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
         print("\nничего не сделано. Повторите с --yes, если это то, что нужно:\n"
               "  удаление стенограмм, записи, папки архива и узла встречи необратимо")
         return False
+    with contextlib.ExitStack() as stack:
+        for d in sorted(set(p.lock_dirs)):
+            try:
+                taken = stack.enter_context(
+                    file_locks.graph_lock(charoite_paths.secure_dir(d), LOCK_WAIT))
+            except OSError as e:
+                taken = False
+                print(f"замок графа не взять ({e})")
+            if not taken:
+                print("\nничего не сделано: граф занят разбором встречи или ревизией досье "
+                      "(или замок недоступен) — повторите позже")
+                return False
+        for path, was in p.orig.items():
+            try:
+                now = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                now = None
+            if now != was:
+                print(f"\nничего не сделано: {path} сменился после плана — запустите снова")
+                return False
+        return _apply_locked(p, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
 
+
+def _apply_locked(p: Plan, *, brain_enabled: bool, brain_explicit: bool) -> bool:
+    """Тело apply под замками графов: удаление и правки — одной фазой."""
     left = []
     for path in p.delete:
         try:

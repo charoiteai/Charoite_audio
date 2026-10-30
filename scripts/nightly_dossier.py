@@ -426,6 +426,17 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             g.changed += 1
             g.keep(theme, members, fresh, fp)
             return gen_s
+        if dossier.fingerprint_on_disk(members, g.files) != fp:
+            # Источник удалён или поправлен после скана («забыть встречу» посреди ночи):
+            # тело собрано по снимку с текстом ушедшей встречи и записалось бы с отпечатком
+            # несуществующего состава. Сверка — под замком, который берёт и «забыть»
+            # (круг n841-opus-fix DS I2)
+            print(f"  ⏸ {theme}: источники изменились за время генерации — "
+                  "тема уйдёт на следующую ночь")
+            g.skipped += 1
+            g.changed += 1
+            g.keep(theme, members, fresh, fp)
+            return gen_s
         if snap is None and fresh.state != "missing":
             # stat не прочёл файл, который читается: без снимка гейт слеп,
             # и «не сосчитать» стало бы «файла нет» (выход out3 №621, DS I1).
