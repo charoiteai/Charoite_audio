@@ -514,6 +514,17 @@ def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
     return base / kind
 
 
+def graph_lock_dir(graph: pathlib.Path, root: pathlib.Path | None = None) -> pathlib.Path:
+    """Каталог `cloud.lock` графа — один адрес для всех, кто берёт замок графа
+    (`file_locks.graph_lock`): разбор встречи, ночь и ревизия досье, «забыть встречу»,
+    разовые утилиты. Формула жила копией в шести местах (Haiku M3 n841-opus-fix2, №853):
+    сменись она в одном — писатели разошлись бы по разным замкам молча.
+
+    Без побочных эффектов: создать каталог с правами 0700 — `secure_dir` у вызывающего,
+    там же решается, что делать с `OSError` (план «забыть» каталогов не создаёт)."""
+    return graph_backups(graph, "cloud_backup", root=root).parent
+
+
 #: Каталог журналов внутри корня данных.
 LOGS_DIR = "logs"
 

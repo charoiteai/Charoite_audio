@@ -389,8 +389,7 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     why_readonly = "Запись выключена: `sufler.cloud_edit_graph: false`. Включите тумблер, если хотите, чтобы облако правило граф само."
     if may_edit:
         try:
-            lock_dir = charoite_paths.secure_dir(
-                charoite_paths.graph_backups(graph, "cloud_backup", root=_root()).parent)
+            lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
         except OSError as e:
             print(f"  замок графа не взять ({e}) — правки не пишу, только отчёт")
             may_edit = False

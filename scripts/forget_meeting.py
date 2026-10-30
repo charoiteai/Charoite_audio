@@ -1038,7 +1038,7 @@ def plan(stamp: str, root: pathlib.Path,
         # PR #363, GLM+DeepSeek: старое место правилось, новое — нет).
         snap = charoite_paths.graph_backups(
             g, CLOUD_BACKUP_DIR.lstrip("."), root=root)
-        p.lock_dirs[snap.parent] = g
+        p.lock_dirs[charoite_paths.graph_lock_dir(g, root=root)] = g
         editable = sorted(g.rglob("*.md")) + (
             sorted(snap.rglob("*.md")) if snap.is_dir() else [])
         for f in editable:

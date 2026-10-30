@@ -471,6 +471,13 @@ def test_edit_mode_takes_the_graph_lock_per_write_not_for_the_whole_run(tmp_path
     assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
     assert len(takes) == 1, takes      # одна запись — один замок; отказ облака замка не берёт
     assert not held[0]
+    # тот же каталог, что у разбора встречи: соседи по замку сверяются друг с другом (№853)
+    sys.path.insert(0, str(SCRIPTS))
+    import cloud_review as cr
+    monkeypatch.setattr(cr, "_root", ndr._root)
+    with cr.graph_lock(graph):
+        pass
+    assert takes[1] == takes[0], takes
     assert "Идёт пилот" in (folder / "Одно.md").read_text(encoding="utf-8")
 
 

@@ -159,15 +159,16 @@ def graph_lock(lock_dir: pathlib.Path, wait: float, *,
     «✓ применены» (аудит облака 26.08, GLM I3).
 
     Даёт True, если замок взят; False — если за `wait` секунд сосед не
-    освободил граф, каталог недоступен или ФС не умеет flock. False — это
-    «работай на чтение», а не авария: судить о занятости по ошибке ФС
-    нельзя (та же логика, что в held_by_someone).
+    освободил граф, каталог недоступен или ФС не умеет flock. False — не
+    авария, и судить о занятости по ошибке ФС нельзя (та же логика, что в
+    held_by_someone). Лог говорит только причину: следствие — читать
+    (`cloud_review`) или отказать (ночь, «забыть», утилиты) — пишет вызывающий.
     """
     try:
         fd = os.open(pathlib.Path(lock_dir) / "cloud.lock",
                      os.O_RDWR | os.O_CREAT, 0o600)
     except OSError as e:
-        log(f"замок графа не взять ({e}) — работаю на чтение")
+        log(f"замок графа не взять ({e})")
         yield False
         return
     try:
@@ -182,7 +183,7 @@ def graph_lock(lock_dir: pathlib.Path, wait: float, *,
                     return
                 sleep(min(poll, max(0.0, deadline - now())))
             except OSError as e:           # ENOLCK и прочее — не «занято»
-                log(f"замок графа не взять ({e}) — работаю на чтение")
+                log(f"замок графа не взять ({e})")
                 yield False
                 return
         yield True

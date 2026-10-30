@@ -241,7 +241,7 @@ def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
 
 
 def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                      source_sha: str, *, expect: tuple[int, int] | None = None,
+                      source_sha: str, *, expect: safe_write.Snapshot | None = None,
                       expect_absent: bool = False) -> live_sidecar.WriteOutcome:
     """Исход записи — значением (№314), включая причину отказа: ретро-отчёт
     печатает её свойством `WriteOutcome.refusal_words` — тем же, что

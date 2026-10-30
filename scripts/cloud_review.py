@@ -520,7 +520,7 @@ def graph_lock(graph: pathlib.Path, wait: float | None = None):
     """
     wait = LOCK_WAIT if wait is None else wait   # константу можно подменить в тестах
     try:
-        base = charoite_paths.secure_dir(backup_root(graph).parent)
+        base = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
     except OSError as e:
         # нет права на каталог данных — как и без бэкапа: только чтение
         print(f"замок графа не взять ({e}) — работаю на чтение")

@@ -25,6 +25,7 @@ import threading
 from charoite_graph import frontmatter
 from charoite_graph import graph_names
 from charoite_graph import redirects
+from charoite_graph import safe_write
 from charoite_graph import text_norm
 from charoite_graph.graph_schema import GraphSchema
 
@@ -323,7 +324,7 @@ class NodeIndex:
             st2 = p.stat()
         except (OSError, ValueError):   # ValueError — не-UTF8 (DS r2 #451)
             return _UNREADABLE          # refresh держит прошлый снапшот и помечает файл
-        if (st2.st_mtime, st2.st_size) != (st.st_mtime, st.st_size):
+        if safe_write.snapshot_of(st2) != safe_write.snapshot_of(st):
             return _UNREADABLE          # файл переписывается прямо сейчас
         if redirects.is_merged(text):
             # заглушка после слияния — не узел (хвост 20.08, GLM), но запись для маски

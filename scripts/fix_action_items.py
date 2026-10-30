@@ -70,8 +70,7 @@ def _graph_lock(graph: pathlib.Path, root: pathlib.Path):
     «tmp + replace» поверх чужой правки, сделанной между чтением и записью
     (Opus C3 входного круга №366)."""
     try:
-        lock_dir = charoite_paths.secure_dir(
-            charoite_paths.graph_backups(graph, "cloud_backup", root=root).parent)
+        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=root))
     except OSError as e:
         raise SystemExit(f"замок графа не взять ({e}) — не пишу")
     return file_locks.graph_lock(lock_dir, LOCK_WAIT)
