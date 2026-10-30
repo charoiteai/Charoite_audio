@@ -789,6 +789,8 @@ def test_revision_of_a_broken_or_missing_head_is_empty():
     assert dossier.revision("# без шапки\nревизия: 2026-10-18\n") == ""
     assert dossier.revision("---\nтема: [не закрыт\n---\n") == ""
     assert dossier.revision("") == ""
+    for v in ("~", "null", "false", "нет", "2026-10", "2026-10-18 ночь"):   # держит только дата (Opus M2)
+        assert dossier.revision(f"---\nревизия: {v}\n---\n") == "", v
 
 
 def test_with_revision_replaces_the_field_without_a_duplicate():

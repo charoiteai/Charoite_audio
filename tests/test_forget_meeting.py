@@ -497,9 +497,9 @@ def test_forget_keeps_an_own_revision_field_outside_the_dossier_folder(tmp_path)
     root, graph = _world(tmp_path)
     node = graph / "Люди" / "Мария Соколова.md"
     node.parent.mkdir(exist_ok=True)
-    node.write_text(f"---\nревизия: 3\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
+    node.write_text(f"---\nревизия: 2026-10-01\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
-    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "3", p.edit.get(node)
+    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "2026-10-01", p.edit.get(node)
 
 
 def test_forget_lifts_the_revision_without_touching_the_body(tmp_path):
@@ -552,9 +552,9 @@ def test_forget_asks_the_schema_whether_a_file_is_a_dossier(tmp_path, where):
     root, graph = _world(tmp_path / "Досье" if where == "ancestor" else tmp_path)
     node = graph / "Люди" / ("Досье" if where == "nested" else "") / "Мария Соколова.md"
     node.parent.mkdir(parents=True, exist_ok=True)
-    node.write_text(f"---\nревизия: 3\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
+    node.write_text(f"---\nревизия: 2026-10-01\n---\nбыла на [[Встречи/{STAMP}]] в июле\n", encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
-    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "3", p.edit.get(node)
+    assert node in p.edit and dossier_mod.revision(p.edit[node]) == "2026-10-01", p.edit.get(node)
 
 
 @pytest.mark.parametrize("place", ["data", "graph"])
@@ -608,14 +608,34 @@ def test_forget_keeps_a_meeting_item_whole_across_a_non_markdown_break(tmp_path,
     assert p.edit[node] == f"Срок{sep}- {forget.REMOVED_NOTE} — перенесли\n- другое\n", p.edit.get(node)
 
 
-def test_forget_cuts_a_link_with_a_line_break_in_its_alias(tmp_path):
-    """Перевод строки в алиасе: построчно ссылку не видно — её заменяет
-    пометка по всему тексту, а не «забыто частично» с живой ссылкой (out8 DS I1)."""
+def test_forget_never_cuts_across_lines(tmp_path):
+    """`[[…]]` через перевод строки Obsidian ссылкой не считает: текст владельца
+    между ней и следующей `]]` не вырезается, остаток — в «проверь сам»
+    (финальный n841 Opus I1, out8 DS I1)."""
     root, graph = _world(tmp_path)
     node = graph / "Ядра" / "Срок.md"
-    node.write_text(f"см. [[Встречи/{STAMP}|тема\nплатёж]]\n", encoding="utf-8")
+    before = f"- см. [[Встречи/{STAMP}|незакрытый\nАбзац владельца про сроки.\n- [[Люди/Мария]] — решение\n"
+    node.write_text(before, encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
-    assert p.edit[node] == f"см. {forget.REMOVED_NOTE}\n", p.edit.get(node)
+    assert node not in p.edit, p.edit.get(node)
+    two = graph / "Ядра" / "Платёж.md"
+    two.write_text(f"см. [[Встречи/{STAMP}|тема\nплатёж]]\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert two not in p.edit and "Ядра/Платёж.md: ссылка на встречу осталась после правки — убери руками" in p.check, p.check
+
+
+def test_forget_names_a_dossier_copy_the_night_never_rebuilds(tmp_path):
+    """Копию досье (`Досье/.backup`, снимок) ночь не пересобирает: пересказ с
+    голой ссылкой — в «проверь сам» (финальный n841 Opus M1)."""
+    root, graph = _world(tmp_path)
+    copy = graph / "Досье" / ".backup" / "2026-10-18_030000" / "Тема.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(f"- выбрали ЮPay [[{STAMP}]]\n", encoding="utf-8")
+    live = graph / "Досье" / "Тема.md"
+    live.write_text(f"- выбрали ЮPay [[{STAMP}]]\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert any(c.startswith("Досье/.backup/2026-10-18_030000/Тема.md: ссылка на встречу осталась") for c in p.check), p.check
+    assert not any(c.startswith("Досье/Тема.md:") for c in p.check), "живое досье пересоберёт ночь"
 
 
 def test_forget_names_a_link_form_it_cannot_cut(tmp_path):

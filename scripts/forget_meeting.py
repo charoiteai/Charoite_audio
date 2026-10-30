@@ -200,7 +200,8 @@ def _link_re(stamps: str | list[str]) -> re.Pattern[str]:
     же минуты под минутный ключ не попадает."""
     keys = [stamps] if isinstance(stamps, str) else list(stamps)
     alt = "|".join(re.escape(k) for k in keys)
-    return re.compile(rf"\[\[{MEETINGS_DIR}/(?:{alt})(?:\|[^\]]*)?\]\]")
+    # алиас — в одной строке: `[[…]]` через перевод строки Obsidian ссылкой не считает (Opus I1)
+    return re.compile(rf"\[\[{MEETINGS_DIR}/(?:{alt})(?:\|[^\]\r\n]*)?\]\]")
 
 
 # Строка Markdown (CommonMark, Obsidian): конец — только `\r\n`, `\r` или `\n`, с
@@ -1066,9 +1067,11 @@ def plan(stamp: str, root: pathlib.Path,
             fixed = _strip_meeting(text, link) if linked else text
             if revised:
                 fixed = dossier.without_revision(fixed)
-            if not in_dossier and dossier.cites(fixed, keys):
-                # формы, которых нет в `_link_re` (`#якорь`, `.md`, голый штамп), — не молчать;
-                # тело досье пересоберёт ночь (out7 Sonnet I1, out8 Haiku I2; одна грамматика — №607)
+            rebuilt = in_dossier and not in_snap and not any(x.startswith(".") for x in parts)
+            if not rebuilt and dossier.cites(fixed, keys):
+                # формы, которых нет в `_link_re` (`#якорь`, `.md`, голый штамп, перевод строки
+                # в алиасе), — не молчать; тело досье пересоберёт ночь, копии — нет, правило
+                # пропуска то же, что у `scan` (out8 Haiku I2, Opus I1, M1; одна грамматика — №607)
                 p.check.append(f"{where}: ссылка на встречу осталась после правки — убери руками")
             if fixed != text:
                 p.edit[f] = fixed
@@ -1127,8 +1130,7 @@ def _strip_meeting(text: str, link: re.Pattern[str]) -> str:
         if line.lstrip(" \t").startswith(_LINE):     # отступ Markdown, не `isspace` (out8 Sonnet M1)
             continue    # пункт списка = запись о встрече
         out.append(link.sub(REMOVED_NOTE, line))
-    # ссылку через перевод строки в алиасе строка целиком не видит — пометкой (out8 DS I1)
-    return link.sub(REMOVED_NOTE, "".join(out))
+    return "".join(out)
 
 
 def _backup(path: pathlib.Path, stamp: str) -> None:

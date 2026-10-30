@@ -29,6 +29,14 @@ def _load(name: str):
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _bodies_in_sync(request, monkeypatch):
+    """Тела тестовых досье без отпечатка: синхронность с составом проверяет свой тест."""
+    if "real_sync" not in request.keywords:
+        from charoite_graph import dossier
+        monkeypatch.setattr(dossier, "in_sync", lambda loaded, fp: True)
+
+
 def test_report_problem_rejects_refusals_and_partial_answers():
     ncc = _load("nightly_claude_cores")
     good = ("## Противоречия\n- нет\n## Протухшее\n- нет\n## Слияния\n- нет\n"
@@ -212,7 +220,7 @@ def test_check_revision_requires_five_sections_length_and_links():
     разделом и растерявший ссылки на источники (карточка №87)."""
     ndr = _load("nightly_dossier_review")
     old = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
-    assert ndr.check_revision(old, old) is None
+    assert ndr.check_revision(old, old) == "правок нет — поле `ревизия:` не ставим"   # Opus I2
     fixed = old.replace("Идёт пилот", "Пилот ⚠️ идёт, срок прошёл 1.08")
     assert ndr.check_revision(old, fixed) is None
     four = old.split("## Кто в теме")[0].rstrip()
@@ -790,3 +798,40 @@ def test_edit_mode_stats_do_not_count_the_label_cleanup_as_an_edit(tmp_path, mon
     assert ndr.run(graph, cfg, dry=False, limit=6) == 1
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
     assert "- **Платёжный провайдер** — +1/−1 строк, ⚠️ 1, ссылок 3→3" in report, report
+
+
+def _stale_world(tmp_path, monkeypatch, ndr, body_answer=None):
+    graph = tmp_path / "g"
+    folder = graph / ndr.CHAROITE.dossier_dir
+    folder.mkdir(parents=True)
+    path = folder / "Платёжный провайдер.md"
+    before = _DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n"
+    path.write_text(before, encoding="utf-8")
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Платёжный провайдер": ["a"]})
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
+    return graph, path, before
+
+
+@pytest.mark.real_sync
+def test_review_leaves_a_body_that_lags_behind_its_sources(tmp_path, monkeypatch):
+    """Отпечаток тела не равен составу (ночь не дошла после «забыть встречу»):
+    поле заморозило бы пересказ ушедшего источника — ревизии нет, облака нет
+    (финальный n841 Opus C1)."""
+    ndr = _load("nightly_dossier_review")
+    graph, path, before = _stale_world(tmp_path, monkeypatch, ndr)
+    called = []
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: called.append(1) or ("x", ""))
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
+    ndr.run(graph, cfg, dry=False, limit=6)
+    assert path.read_text(encoding="utf-8") == before and not called
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "**Платёжный провайдер** — досье отстаёт от источников" in report, report
+
+
+def test_review_without_edits_sets_no_field():
+    """Ответ «всё верно» — то же тело: правки нет, поле не ставится, тема не
+    замерзает (финальный n841 Opus I2)."""
+    ndr = _load("nightly_dossier_review")
+    body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    assert ndr.check_revision(body, body + "\n") == "правок нет — поле `ревизия:` не ставим"

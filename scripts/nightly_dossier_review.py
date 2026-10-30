@@ -113,6 +113,9 @@ def check_revision(old_body: str, new_body: str) -> str | None:
         shown = ", ".join(f"[[{x}]]" for x in lost[:5]) + (" …" if len(lost) > 5 else "")
         return (f"потеряны ссылки на источники ({len(lost)}): {shown} — "
                 "ревизия целиком не применена")
+    if new_body.strip() == old_body.strip():
+        # то же тело — поле `ревизия:` заморозило бы тему без единой правки (финальный n841 Opus I2)
+        return "правок нет — поле `ревизия:` не ставим"
     return None
 
 
@@ -444,6 +447,11 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # Пригодность досье к записи зависит только от `old` — до платного вызова (out5 Sonnet I2);
         # без записи поле не нужно, предложение в отчёт идёт как раньше (out6 DS I1, Haiku I1).
         # «Источники» `review` проверяет сам, до облака
+        if not dossier.in_sync(dossier.DossierLoad("ok", old), dossier.fingerprint(members, files)):
+            # тело отстаёт от состава (ночь не дошла, «забыть встречу» прошло днём) —
+            # поле заморозило бы пересказ ушедшего источника (финальный Opus C1)
+            rejected.append(f"- **{theme}** — досье отстаёт от источников — ревизия после пересборки")
+            continue
         head0 = split_dossier(old)[0]
         if may_edit and dossier.revision(dossier.with_revision(head0, stamp[:10])) != stamp[:10]:
             # незакрытая шапка поля не примет; правка без поля — пересказ следующей ночью (out4 DS I1);

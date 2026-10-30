@@ -582,9 +582,14 @@ def labeled_body(text: str) -> bool:
 REVISION_FIELD = "ревизия"
 
 
+_REVISION_VALUE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def revision(text: str | None) -> str:
-    """Дата облачной ревизии тела из шапки (`ревизия:`); `""` — поля нет."""
-    return frontmatter.scalar_field(text or "", REVISION_FIELD)
+    """Дата облачной ревизии тела из шапки (`ревизия:`); `""` — поля нет. Держит
+    только дата, как её пишет ревизия: `~`, `нет`, `false` не замораживают (Opus M2)."""
+    v = frontmatter.scalar_field(text or "", REVISION_FIELD)
+    return v if _REVISION_VALUE.fullmatch(v) else ""
 
 
 def with_revision(text: str, date: str) -> str:
@@ -632,6 +637,13 @@ def read_fingerprint(source: pathlib.Path | DossierLoad) -> str:
     head = (loaded.text or "")[:600]
     m = re.search(r"^отпечаток:\s*(\S+)", head, re.M)
     return m.group(1) if m else ""
+
+
+def in_sync(loaded: DossierLoad, fp: str) -> bool:
+    """Тело собрано по нынешнему составу источников: ночи — SAME, ревизии — можно
+    править и ставить `ревизия:` (тело, отставшее от «забыть встречу», не замораживается;
+    финальный круг n841 Opus C1)."""
+    return loaded.state != "missing" and read_fingerprint(loaded) == fp
 
 
 # ─────────────────────────── индекс ───────────────────────────

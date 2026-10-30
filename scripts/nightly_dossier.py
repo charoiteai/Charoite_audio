@@ -273,7 +273,7 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         fp = dossier.fingerprint(members, files)
         loaded = g.reads.load(path)
         g.keep(theme, members, loaded, fp)
-        same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
+        same = dossier.in_sync(loaded, fp)
         # Тело правила облачная ревизия: пересказ модели стёр бы её (25.10
         # `--full` — текст −80 %, ⚠ 999 → 0), повторить её некому. Проверка —
         # до классов, иначе `--full` взял бы SAME (вход n841-in1 DS M1).
