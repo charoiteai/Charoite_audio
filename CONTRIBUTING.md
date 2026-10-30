@@ -435,7 +435,7 @@ specific version through by adding its blob hash, which the refusal prints, to
 an mp3 without an ID3 tag and an `.onnx` model whose first byte is not `0x08` are refused
 the same way. Binary files have no added lines, so their content is judged only by the
 per-commit check at push. CI (`--public-only`) has no hash list: it warns about a file that
-is not UTF-8, still runs the patterns on it with the bytes replaced and does not fail; the local hook judges it. A file name that is not UTF-8 is refused
+is not UTF-8, still runs the patterns on it with the bytes replaced and prints what they find as warnings, without failing — CI has no way to let such a file through; the local hook judges it. A file name that is not UTF-8 is refused
 everywhere: rename the file. The maintainer's hook does not fetch: when
 the server has commits the clone has not seen (a squash merge on GitHub), a
 refusal adds `git fetch <remote>` — fetch and push again.

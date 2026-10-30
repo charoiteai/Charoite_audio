@@ -938,8 +938,8 @@ def test_tree_scan_normalizes_nfd(tmp_path, monkeypatch):
     import unicodedata
     f = tmp_path / "t.md"
     f.write_text(unicodedata.normalize("NFD", "Семёнов " + "И. И.\n"), encoding="utf-8")
-    unread: list[str] = []
-    assert guard.scan_public([f], unread) == [f"{f}:1: фамилия с инициалами"] and unread == []
+    lossy: dict[str, list[str]] = {}
+    assert guard.scan_public([f], lossy) == [f"{f}:1: фамилия с инициалами"] and lossy == {}
 
 
 # ── узкий круг Sonnet по правкам Opus (№541) ────────────────────────────────
@@ -1138,7 +1138,8 @@ def test_public_only_warns_on_cp1251_and_does_not_fail(repo):
     repo.commit("cp1251")
     p = guard_run(repo.work, "--public-only", env=repo.env)
     assert p.returncode == 0, p.stdout + p.stderr
-    assert f"⚠ notes.txt: {guard.NOT_UTF8}" in p.stderr and "blob_allow" not in p.stderr, p.stderr
+    assert "⚠ notes.txt: не UTF-8 — тело судили с заменой байтов, находок 0" in p.stderr, p.stderr
+    assert "blob_allow" not in p.stderr, p.stderr
     assert "не в UTF-8 (судились с заменой байтов): 1" in p.stdout, p.stdout
     tree = guard_run(repo.work, "--all", env=repo.env)
     assert tree.returncode == 1 and f"notes.txt: {guard.NOT_UTF8}" in tree.stderr, tree.stderr
@@ -1146,15 +1147,32 @@ def test_public_only_warns_on_cp1251_and_does_not_fail(repo):
 
 def test_public_only_still_judges_a_non_utf8_file_by_the_patterns(repo, monkeypatch):
     """Один битый байт не выводит файл из-под шаблонов (выход out6 №570,
-    Sonnet I1 = Haiku C2): почта в cp1251-тексте — находка CI."""
+    Sonnet I1 = Haiku C2): почта в cp1251-тексте видна в CI — предупреждением с
+    находкой, не отказом: выхода у раннера нет (out7 DS C1). Отказывает хук."""
     leak = "contact: " + "jane.doe" + "@" + "mail-host" + ".ru\n"
     (repo.work / "notes.txt").write_bytes(("запуск\n" + leak).encode("cp1251"))
     repo.commit("cp1251 + mail")
-    unread: list[str] = []
+    lossy: dict[str, list[str]] = {}
     monkeypatch.chdir(repo.work)
-    hits = guard.scan_public(guard.tracked_files(), unread)
-    assert unread == ["notes.txt"], unread
-    assert any(h.startswith("notes.txt:2:") for h in hits), hits
+    assert guard.scan_public(guard.tracked_files(), lossy) == []
+    assert list(lossy) == ["notes.txt"] and lossy["notes.txt"][0].startswith("notes.txt:2:"), lossy
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 0 and "  ⚠ notes.txt:2:" in p.stderr, p.stderr
+
+
+def test_public_only_judges_a_pdf_without_nul_and_does_not_fail(repo, monkeypatch, tmp_path):
+    """PDF без NUL с почтой: владелец пропустил его хешем — CI видит находку
+    предупреждением и не краснеет без выхода (выход out7 №570, DS C1); хеш в
+    списке владельца шаблоны не глушит (Sonnet I1)."""
+    pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n<< /Author (" + ("jane.doe" + "@" + "mail-host" + ".ru").encode() + b") >>\n"
+    (repo.work / "doc.pdf").write_bytes(pdf)
+    repo.commit("pdf")
+    monkeypatch.setattr(guard, "allowed_blobs", lambda: {"любой"})
+    lossy: dict[str, list[str]] = {}
+    monkeypatch.chdir(repo.work)
+    assert guard.scan_public(guard.tracked_files(), lossy) == [] and len(lossy["doc.pdf"]) == 1, lossy
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 0 and "  ⚠ doc.pdf:3:" in p.stderr, p.stderr
 
 
 def test_public_only_refuses_a_non_utf8_file_name(repo):

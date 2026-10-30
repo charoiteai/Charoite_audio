@@ -278,37 +278,48 @@ def public_hits(line: str) -> list[str]:
     return [name for name, raw in PUBLIC_PATTERNS.items() if re.search(raw, line)]
 
 
-def scan_public(files: list[pathlib.Path], unread: list[str]) -> list[str]:
+def public_text(data: bytes) -> tuple[str, bool] | None:
+    """Текст для публичных шаблонов и признак потери: UTF-8 — без потерь;
+    двоичное (NUL в первых 8000 байт, как у git) — None, его судит покоммитный
+    страж; прочее — с заменой байтов. Допуска по хешу здесь нет: хеш — выход
+    приватного гейта, а не повод не судить шаблонами (выход out7 №570, Sonnet I1)."""
+    try:
+        return data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        pass
+    if b"\0" in data[:8000]:
+        return None
+    return data.decode("utf-8", "replace"), True
+
+
+def scan_public(files: list[pathlib.Path], lossy: dict[str, list[str]]) -> list[str]:
     """Находки по публичным шаблонам — «путь:строка: чем сработало». Имя не в
-    UTF-8 — находка. Содержимое не в UTF-8 шаблоны судят всё равно (байты вне
-    UTF-8 — U+FFFD, адреса и почты видны), а путь уходит в `unread`, не в
-    находки: допуска по хешу у раннера CI нет, и отказ за одну кодировку краснил
-    бы `main` без выхода (выход out5 №570, DS C1; out6 — все три головы)."""
+    UTF-8 — находка. Тело не в UTF-8 судится с заменой байтов, но его находки —
+    в `lossy[путь]`, не в отказ: у раннера CI нет выхода ни по хешу, ни строкой
+    допуска (PDF без NUL), и отказ краснил бы `main` навсегда (выход out5 №570
+    DS C1, out7 DS C1); отказывает локальный хук."""
     hits: list[str] = []
-    texts: list[tuple[pathlib.Path, str]] = []
+    texts: list[tuple[pathlib.Path, str, bool]] = []
     for f in files:
         if opaque(str(f)):
             hits.append(f"{clean(str(f))}: имя {NOT_UTF8} — переименуй")
             continue
         try:
-            data = f.read_bytes()
+            got = public_text(f.read_bytes())
         except OSError:
             continue
-        try:
-            text = tree_text(f, data)
-        except NotUtf8:
-            unread.append(clean(str(f)))
-            text = data.decode("utf-8", "replace")
-        if text is not None:
-            texts.append((f, text))
+        if got is not None:
+            texts.append((f, *got))
+            if got[1]:
+                lossy[clean(str(f))] = []
     for name, raw in PUBLIC_PATTERNS.items():
         rx = re.compile(raw)
-        for f, text in texts:
+        for f, text, lost in texts:
             for i, line in enumerate(text.splitlines(), 1):
                 if PUBLIC_ALLOW in line:
                     continue
                 if rx.search(nfc(line)):
-                    hits.append(f"{f}:{i}: {name}")
+                    (lossy[clean(str(f))] if lost else hits).append(f"{f}:{i}: {name}")
     return hits
 
 
@@ -1185,11 +1196,13 @@ def _run(a: argparse.Namespace) -> int:
     full_only = a.all
     # Режим CI: только публичные шаблоны, приватного списка там нет.
     if a.public_only:
-        unread: list[str] = []
-        hits = scan_public(tracked_files(), unread)
-        for f in unread:
-            print(f"⚠ {f}: {NOT_UTF8} — шаблоны не применены; перекодируй в UTF-8, "
-                  "судит локальный хук", file=sys.stderr)
+        lossy: dict[str, list[str]] = {}
+        hits = scan_public(tracked_files(), lossy)
+        for f, found in lossy.items():
+            print(f"⚠ {f}: не UTF-8 — тело судили с заменой байтов, находок {len(found)}; "
+                  "перекодируй в UTF-8, локальный хук откажет", file=sys.stderr)
+            for h in found:
+                print(f"  ⚠ {h}", file=sys.stderr)
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
             for h in hits:
@@ -1197,8 +1210,8 @@ def _run(a: argparse.Namespace) -> int:
             print("Это проверка ФОРМАТОВ. Имена и внутренние названия ловит "
                   "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
             return 1
-        print("публичные шаблоны: чисто" + (f", не в UTF-8 (судились с заменой байтов): {len(unread)}"
-                                             if unread else ""))
+        print("публичные шаблоны: чисто" + (f", не в UTF-8 (судились с заменой байтов): {len(lossy)}"
+                                             if lossy else ""))
         return 0
     owner = owner_machine()
     path = default_markers_path() if owner else markers_path()
