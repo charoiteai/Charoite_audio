@@ -35,9 +35,10 @@ def _node(graph: pathlib.Path, rel: str) -> pathlib.Path:
     return p
 
 
-def _meeting(tmp_path, monkeypatch, graph, ents, language=""):
+def _meeting(tmp_path, monkeypatch, graph, ents, language="", cores=()):
     """Прогон main() на подставном разборе с одними сущностями; модель, архив, хук — заглушки."""
-    data = {"люди": [{"имя": "Гоша", "роль": "разработчик", "вклад": "сроки"}], "сущности": ents}
+    data = {"люди": [{"имя": "Гоша", "роль": "разработчик", "вклад": "сроки"}], "сущности": ents,
+            "ядра": list(cores)}
     speech = "**Гоша** [10:00]: обсуждаем релиз и проверку стенда.\n" * 3 + "Конец обсуждения. " * 20
     tpath = tmp_path / "transcripts" / "2026-10-27_1000.md"
     tpath.parent.mkdir(parents=True, exist_ok=True)
@@ -248,3 +249,34 @@ def test_twin_in_systems_still_gets_the_meeting(tmp_path, monkeypatch):
     held = g.apply_entities(graph, [_TASK], LINK, typed=True)
     assert held == {} and f"[[{LINK}]]" in twin.read_text(encoding="utf-8")
     assert "## Встречи" not in (graph / "Ядра" / "Миграция витрины.md").read_text(encoding="utf-8")
+
+
+def test_main_settles_the_task_after_the_cores(tmp_path, monkeypatch):
+    """Шов в main: исход «тип вне перечня» решается после ядер встречи — задача, названная
+    как ядро этой встречи, ссылается на него без пометки и без строки журнала, а человек
+    без ядра оставляет строку (opus-fix2, Sonnet I-1)."""
+    monkeypatch.setattr(g, "_root", lambda: tmp_path / "data")
+    graph = _graph(tmp_path)
+    person = {"имя": "Иван Петров", "тип": "человек", "суть": "руководитель"}
+    note = _meeting(tmp_path, monkeypatch, graph, [_TASK, person], cores=[_CORE])
+    task_line = next(ln for ln in note.splitlines() if "Миграция витрины" in ln and "(задача)" in ln)
+    assert task_line.startswith("- [[Ядра/Миграция витрины") and g._HELD_ENTITY not in task_line
+    log = (tmp_path / "data" / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
+    assert "Системы/Иван Петров" in log and "Миграция витрины" not in log, log
+
+
+def test_refused_core_keeps_the_mark_and_the_log(tmp_path, monkeypatch):
+    """Ядро встречи отказано (два ядра на тему — не гадаем): задача остаётся текстом с
+    пометкой и строкой журнала (opus-fix2, Sonnet I-2)."""
+    monkeypatch.setattr(g, "_root", lambda: tmp_path)
+    graph = _graph(tmp_path)
+    task = {"имя": "Пилот проект", "тип": "задача", "суть": "x"}
+    for name in ("Пилот проект 2026", "Пилот проект 2027"):
+        g.upsert_core(graph, {**_CORE, "имя": name}, "Встречи/2026-10-01_1000", "2026-10-01_1000")
+    held = g.apply_entities(graph, [task], LINK, typed=True)
+    g.upsert_core(graph, {**_CORE, "имя": "Пилот проект"}, LINK, "2026-10-27_1000")
+    assert not (graph / "Ядра" / "Пилот проект.md").exists()
+    g.settle_untyped(graph, held, LINK)
+    assert held == {("Системы", "Пилот проект"): ("untyped", [])}
+    assert g._HELD_ENTITY in g.entity_line(graph, task, held)
+    assert "Системы/Пилот проект" in (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
