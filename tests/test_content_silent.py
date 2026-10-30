@@ -264,3 +264,45 @@ def test_mic_speech_moments_come_from_the_hub_cut(monkeypatch):
     hub._consume(hub.captures[0], (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
     hub.pull_placed()
     assert len(hub._mic_speech) == 1
+
+
+def test_watchdog_closing_the_silence_during_the_stop_is_one_audible(monkeypatch):
+    """Сторож закрыл серию между снимком защёлок и снятием в стопе: стоп не падает,
+    `audible` один, след закрыт (Important Sonnet = Haiku out2)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got = []
+    hub.on_channel = got.append
+    now = time.time()
+    _dead_call(hub, now)
+    hub._check_content(now)
+    hub._content_ts["blackhole"] = now + 1
+
+    class Racy(dict):
+        def __iter__(self):
+            keys = list(super().__iter__())
+            hub._check_content(now + 2)          # сторож выигрывает гонку
+            return iter(keys)
+
+    hub._silent_open = Racy(hub._silent_open)
+    hub.end_channel_episodes()
+    assert [e.kind for e in got] == [a.CH_SILENT, a.CH_AUDIBLE]
+    assert hub._channel_closed
+
+
+def test_a_quiet_restart_does_not_close_a_dead_content_series(monkeypatch):
+    """Тихий перезапуск (`gap`) мимо реестра потерь: защёлка хаба стоит, содержимое
+    нулевое — итог говорит «не писался до конца записи» (Important Sonnet = Haiku out2)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got = []
+    hub.on_channel = got.append
+    now = time.time()
+    _dead_call(hub, now)
+    hub._check_content(now)
+    hub._channel_event(a.CH_GAP, "blackhole", now + 5, now - 40, 45.0,
+                       a.Loss("перезапуск", retriable=True, died=True, cause="restarted"))
+    hub._check_content(now + 700)
+    assert [e.kind for e in got] == [a.CH_SILENT, a.CH_GAP]
+    note = channel_trace.summary_of([e.as_dict() for e in got]) or ""
+    assert "не писался" in note, note

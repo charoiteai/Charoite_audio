@@ -2014,13 +2014,8 @@ class AudioHub:
         now = time.time()
         # содержимое вернулось после последнего прохода сторожа — серия закрывается
         # до закрытия следа, иначе итог скажет «до конца записи» (DS I4 out1)
-        for label, opened in list(self._silent_open.items()):
-            ts = self._content_ts.get(label)
-            if ts is not None and ts > opened:
-                self._silent_open.pop(label)
-                self._channel_event(CH_AUDIBLE, label, now, opened, ts - opened,
-                                    Loss("содержимое вернулось", retriable=False, died=True,
-                                         cause="silent_content"))
+        for label in list(self._silent_open):
+            self._close_silence(label, now)
         self._channel_closed = True
         for label, loss in list(self._lost.items()):
             if label in self._ended:
@@ -2055,11 +2050,7 @@ class AudioHub:
             self._content_floor[label] = now
             return
         if opened is not None:
-            if ts is not None and ts > opened:
-                self._silent_open.pop(label)
-                self._channel_event(CH_AUDIBLE, label, now, opened, ts - opened,
-                                    Loss("содержимое вернулось", retriable=False, died=True,
-                                         cause="silent_content"))
+            self._close_silence(label, now)
             return
         if not self._call or ts is None or now - max(ts, self._content_floor.get(label, ts)) < CONTENT_SILENT_S:
             return
@@ -2072,6 +2063,20 @@ class AudioHub:
                                  cause="silent_content"))
         self._say(f"⚠️ системный звук не пишется с {time.strftime('%H:%M', time.localtime(ts))} — "
                   "собеседники слышны только через микрофон")
+
+    def _close_silence(self, label: str, now: float) -> None:
+        """Содержимое вернулось — серия `silent` закрывается одним `audible`.
+        Снятие защёлки атомарно: сторож и `end_channel_episodes` идут разными
+        потоками, проигравший видит пустую защёлку и молчит (Important out2)."""
+        with self._lock:
+            opened = self._silent_open.get(label)
+            ts = self._content_ts.get(label)
+            if opened is None or ts is None or ts <= opened:
+                return
+            del self._silent_open[label]
+        self._channel_event(CH_AUDIBLE, label, now, opened, ts - opened,
+                            Loss("содержимое вернулось", retriable=False, died=True,
+                                 cause="silent_content"))
 
     def _channel_event(self, kind: str, label: str, at: float, stopped_at: float | None,
                        silent_s: float | None, loss: "Loss") -> ChannelEvent | None:
