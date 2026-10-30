@@ -71,15 +71,17 @@ def all_graphs() -> list[pathlib.Path]:
 
 
 def _index_entry_from_disk(theme: str, members: list[str], loaded: dossier.DossierLoad,
-                           fp: str, today: str) -> dict:
+                           fp: str, today: str, terms: list[str] | None = None) -> dict:
     """Запись индекса для темы, которую этот прогон не пересобирал: досье
-    на диске живо — в индексе оно должно остаться (отпечаток — фактический)."""
+    на диске живо — в индексе оно должно остаться (отпечаток — фактический).
+    `members` — состав досье (счёт источников), `terms` — имена для ключей
+    поиска, если шире состава."""
     return {
         "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
         "источников": len(members),
         "собрано": _собрано(loaded) or today,
         "отпечаток": dossier.read_fingerprint(loaded) or fp,
-        "ключи": dossier.keywords(theme + " " + " ".join(members)),
+        "ключи": dossier.keywords(theme + " " + " ".join(terms or members)),
     }
 
 
@@ -189,9 +191,10 @@ _CLASS_WORD = {NEW: "новое", CHANGED: "изменилось", SAME: "без
 class _GraphRun:
     """Один граф за прогон: снимок источников, индекс и счётчики причин.
 
-    Индекс — карта ВСЕХ досье на диске, а не только тех, что посетил прогон:
-    темы сверх лимита, с отказом и не успевшие за ночь раньше выпадали из
-    _index/_ИНДЕКС (аудит 17.08). Поэтому `entries` заполняется со скана
+    Индекс — карта досье всех тем графа, а не только тех, что посетил
+    прогон: темы сверх лимита, с отказом и не успевшие за ночь раньше
+    выпадали из _index/_ИНДЕКС (аудит 17.08). Досье темы, выпавшей из
+    кластеров, в индекс не идёт — файл остаётся на диске (n841-out2 Haiku M1). Поэтому `entries` заполняется со скана
     записями с диска, а собранная тема заменяет свою запись.
     """
 
@@ -217,13 +220,15 @@ class _GraphRun:
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе. У
-        удержанной ревизией темы — по источникам самого досье: ключи индекса
-        не ссылаются на тексты, которых в досье нет. Решает здесь, а не каждый
-        вызов: путей `keep` пять (выход n841-out1 Sonnet I2)."""
+        удержанной ревизией темы счёт — по источникам самого досье, ключи — по
+        ним и составу кластера: канон после слияния ищется по своему имени
+        (n841-out2 DS M3). Решает здесь, а не каждый вызов: путей `keep` пять
+        (выход n841-out1 Sonnet I2)."""
         if loaded.state != "missing":
             h = self.hold(loaded, members)
+            own = list(h.sources) or members if h.held else members
             self.entries[theme] = _index_entry_from_disk(
-                theme, list(h.sources) if h.held else members, loaded, fp, self.today)
+                theme, own, loaded, fp, self.today, list(dict.fromkeys([*own, *members])))
 
     def write_index(self, dry: bool) -> None:
         """Один раз за прогон: как только у графа кончились кандидаты, а для
@@ -290,9 +295,6 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         if h.held:
             _skip_held(g, theme, h, same)
             continue
-        if h.revision:
-            print(f"  ↻ {graph.name} · {theme}: ревизия {h.revision} снята — "
-                  f"{h.why_not()}, пересборка")
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
         # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
         # круга подряд теряло хвост на разборе (n815-out6, решение координатора)
@@ -308,6 +310,10 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
                 g.unchanged += 1
             continue
         cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
+        # строка — когда тема и правда идёт в сборку (n841-out2 DS M1, Sonnet M1)
+        if h.revision:
+            print(f"  ↻ {graph.name} · {theme}: ревизия {h.revision} снята — "
+                  f"{h.why_not()}, пересборка")
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
@@ -319,7 +325,10 @@ def _skip_held(g: _GraphRun, theme: str, h: dossier.Hold, same: bool) -> None:
     выход out1 DS M1)."""
     g.skipped += 1
     g.revised += 1
-    if h.new or not same:
+    if h.unparsed:
+        print(f"  ⏭ {g.graph.name} · {theme}: ревизия {h.revision} — ночь не трогает; "
+              "раздел «Источники» не того вида, что пишет сборка: состав не проверить")
+    elif h.new or not same:
         lag = f"новых источников {h.new}" if h.new else "источники правились"
         print(f"  ⏭ {g.graph.name} · {theme}: ревизия {h.revision} — ночь не трогает; {lag}")
 

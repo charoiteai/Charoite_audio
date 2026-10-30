@@ -145,10 +145,8 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema,
     """
     files: dict[str, dict] = {}
     backlinks: dict[str, set[str]] = defaultdict(set)
-    # alias → канон: заглушки сами не темы, но входящие ссылки на них живые.
-    # `stubs` отдаёт их наружу: имя источника досье после слияния — тот же
-    # узел, не ушедший (выход n841-out1 DS C1)
-    redirects: dict[str, str] = {} if stubs is None else stubs
+    # alias → канон: заглушки сами не темы, но входящие ссылки на них живые
+    redirects: dict[str, str] = {}
 
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -219,6 +217,7 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema,
 
     # Входящие ссылки с заглушек — канону. Цепочку A→B→C проходим до конца,
     # visited держит кольцо A→B→A от вечного цикла.
+    resolved: dict[str, str] = {}
     for alias, first in redirects.items():
         if alias in files:
             # Имя занято живым узлом (tier3 слил «Ядра/CRM», а конвейер завёл
@@ -236,6 +235,15 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema,
         who = backlinks.pop(alias, set())
         if who and canon in files:
             backlinks[canon] |= who - {canon}
+        if canon in files:
+            resolved[alias] = canon
+    # Наружу — ровно те стрелки, что применены выше, с концом цепочки: имя
+    # источника досье после слияния — тот же узел, не ушедший (выход n841-out1
+    # DS C1); тёзка живого файла и цепочка мимо живого узла сюда не попадают
+    # (n841-out2 DS I1)
+    if stubs is not None:
+        stubs.clear()
+        stubs.update(resolved)
     return files, dict(backlinks)
 
 
@@ -583,30 +591,33 @@ def with_revision(text: str, date: str) -> str:
     return frontmatter.with_field(text, REVISION_FIELD, date)
 
 
-# Ссылка источника пишется `render` как `[[имя]]`: `#` — часть имени («C# и
-# .NET»), а не якорь, его `LINK_RE` обрезал бы (выход n841-out1 DS C1, Haiku I1)
-_SOURCE_LINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
+# Строка раздела «Источники» так, как её пишет `render`: `- **вид:** [[a]] · [[b]]`.
+# Читаем обратным ходом `render`, а не грамматикой вики-ссылки: имя узла —
+# всё между `[[` и `]]` как есть, с `#`, `|`, `]` и пробелами (выход n841-out1
+# DS C1, n841-out2 DS C1 и Haiku C1)
+_SOURCE_LINE_RE = re.compile(r"^- \*\*[^*\n]+:\*\* (.+)$")
+_SOURCE_SEP = " · "
 
 
 def source_keys(text: str | None) -> list[str] | None:
-    """Имена источников из раздела «## Источники» — последним сегментом пути,
-    без `.md`, как их пишет `render` и как их зовёт `scan`. `None` — раздела
-    нет: досье не разобрать."""
+    """Имена источников из раздела «## Источники» — те же строки, что
+    записал `render`. `None` — раздела нет, он пуст или в нём строка не того
+    вида (правка руками, знак замены): проверить состав нечем."""
     sources = split_dossier(text or "")[2]
     if sources is None:
         return None
-    keys = (m.split("/")[-1].strip().removesuffix(".md").strip()
-            for m in _SOURCE_LINK_RE.findall(sources))
-    return list(dict.fromkeys(k for k in keys if k))
-
-
-def _resolve(name: str, stubs: dict[str, str], members: set[str]) -> str:
-    """Имя через цепочку заглушек слияния — до члена кластера или конца цепочки."""
-    seen = {name}
-    while name not in members and name in stubs and stubs[name] not in seen:
-        name = stubs[name]
-        seen.add(name)
-    return name
+    keys: list[str] = []
+    for line in sources.splitlines():
+        if not line.strip():
+            continue
+        m = _SOURCE_LINE_RE.match(line)
+        if m is None or "\ufffd" in line:
+            return None
+        for link in m.group(1).split(_SOURCE_SEP):
+            if not (link.startswith("[[") and link.endswith("]]")) or len(link) < 5:
+                return None
+            keys.append(link[2:-2])
+    return list(dict.fromkeys(keys)) or None
 
 
 @dataclass(frozen=True)
@@ -616,8 +627,10 @@ class Hold:
     Держит, только пока каждый источник досье ещё в кластере (сам или через
     заглушку слияния): «забыть встречу» удаляет её файл, и факты из неё
     выводит из тела именно пересборка — ревизия не вправе их сохранить (вход
-    n841-in1 S-C1). Раздел «Источники» не разобран — проверить нечем, не
-    держим (выход n841-out1 DS I2)."""
+    n841-in1 S-C1). Раздел «Источники» не того вида, что пишет `render`, —
+    проверить состав нечем: держим и пишем в лог, ревизию повторить некому
+    (n841-out2 Haiku C1, критика DS); «забыть встречу» чистит досье сама
+    (долг №609)."""
     revision: str = ""
     gone: int = 0       # источников досье, которых больше нет в кластере
     new: int = 0        # членов кластера, которых нет в «Источниках»
@@ -626,11 +639,10 @@ class Hold:
 
     @property
     def held(self) -> bool:
-        return bool(self.revision) and self.gone == 0 and not self.unparsed
+        return bool(self.revision) and self.gone == 0
 
     def why_not(self) -> str:
-        return ("раздел «Источники» не разобран" if self.unparsed
-                else f"источников ушло {self.gone}")
+        return f"источников ушло {self.gone}"
 
 
 def hold(text: str | None, members: list[str], stubs: dict[str, str] | None = None) -> Hold:
@@ -644,9 +656,10 @@ def hold(text: str | None, members: list[str], stubs: dict[str, str] | None = No
     if not src:
         return Hold(rev, unparsed=True)
     now = set(members)
-    alive = {_resolve(s, stubs or {}, now) for s in src}
-    return Hold(rev, sum(1 for s in src if _resolve(s, stubs or {}, now) not in now),
-                sum(1 for m in members if m not in alive), tuple(src))
+    # `stubs` из `scan` — уже конец цепочки слияния: одна подстановка
+    alive = [(stubs or {}).get(s, s) for s in src]
+    return Hold(rev, sum(1 for a in alive if a not in now),
+                sum(1 for m in members if m not in set(alive)), tuple(src))
 
 
 @dataclass(frozen=True)

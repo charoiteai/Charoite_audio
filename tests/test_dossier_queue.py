@@ -847,7 +847,7 @@ def test_revision_set_after_the_scan_is_read_before_the_build(nd, tmp_path, monk
         seen.append(theme)
         if theme == "первая":
             text = path.read_text(encoding="utf-8").replace(
-                "## Правки автора", "## Источники\n- [[вторая_1]] · [[вторая_2]] · [[вторая]]\n\n## Правки автора")
+                "## Правки автора", "## Источники\n- **Встречи:** [[вторая_1]] · [[вторая_2]]\n- **Ядра:** [[вторая]]\n\n## Правки автора")
             path.write_text(dossier.with_revision(text, "2026-10-30"), encoding="utf-8")
         return GOOD
 
@@ -888,16 +888,54 @@ def test_merged_source_keeps_the_revision(nd, tmp_path, capsys):
     out = capsys.readouterr().out
     assert nd.calls == [] and r["ревизия"] == 1, (r, out)
     assert "снята" not in out and path.read_bytes() == before
+    keys = dossier.load_index(graph / CHAROITE.dossier_dir)[0]["ключи"]
+    assert dossier.keywords("тема_1б")[0] in keys, "канон после слияния ищется по имени (n841-out2 DS M3)"
 
 
-def test_unparsed_sources_lift_the_revision(nd, tmp_path, capsys):
-    """Раздел «Источники» переименован руками — проверить «забытую встречу»
-    нечем: защита снимается и это видно (выход out1 DS I2)."""
+@pytest.mark.parametrize("full", [False, True])
+def test_unparsed_sources_keep_the_revision_and_say_so(nd, tmp_path, capsys, full):
+    """Раздел «Источники» переименован руками — проверить состав нечем, а
+    ревизию повторить некому: держим, строка в логе, и на `--full` (n841-out2
+    Haiku C1 против out1 DS I2: вечное удержание видно строкой каждую ночь)."""
     graph, path = _revised_graph(nd, tmp_path)
     path.write_text(path.read_text(encoding="utf-8").replace(
         "## Источники", "## Откуда собрано"), encoding="utf-8")
-    _new_meeting(graph)
-    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    before = path.read_bytes()
+    r = nd.run(graph, {}, full=full, dry=False, limit=None)
     out = capsys.readouterr().out
-    assert nd.calls == ["тема"] and r["ревизия"] == 0, r
-    assert "· тема: ревизия 2026-10-18 снята — раздел «Источники» не разобран, пересборка" in out
+    assert nd.calls == [] and r["ревизия"] == 1 and path.read_bytes() == before, r
+    assert "· тема: ревизия 2026-10-18 — ночь не трогает; раздел «Источники» не того вида" in out
+    entry = dossier.load_index(graph / CHAROITE.dossier_dir)[0]
+    assert entry["источников"] == 3, "у неразобранного — счёт по составу кластера"
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_lifted_line_only_when_the_theme_is_rebuilt(nd, tmp_path, capsys, full):
+    """Источник досье правили руками, состав кластера тот же: защита снята, но
+    без `--full` тема без изменений — строки «пересборка» нет (n841-out2 DS M1,
+    Sonnet M1)."""
+    graph, path = _revised_graph(nd, tmp_path)
+    path.write_text(path.read_text(encoding="utf-8").replace("[[тема_1]]", "[[тема_x]]"),
+                    encoding="utf-8")
+    r = nd.run(graph, {}, full=full, dry=False, limit=None)
+    out = capsys.readouterr().out
+    assert ("снята — источников ушло 1, пересборка" in out) is full, out
+    assert nd.calls == (["тема"] if full else []) and r["ревизия"] == 0, r
+
+
+def test_scan_hands_out_only_the_stubs_it_applied(tmp_path):
+    """Заглушка-тёзка живого файла и цепочка мимо живого узла: `scan` их не
+    применяет — и наружу не отдаёт; остальное — с концом цепочки (n841-out2
+    DS I1)."""
+    graph = tmp_path / "Г"
+    (graph / "Встречи").mkdir(parents=True)
+    stub = "---\ntags: [дубль, redirect]\n---\n# {a} → [[Встречи/{b}]]\n\n⚠️ **Дубль. Смерджен Tier3-NLI.**\n"
+    for a, b in (("а", "б"), ("б", "в"), ("г", "д"), ("д", "е")):
+        (graph / "Встречи" / f"{a}.md").write_text(stub.format(a=a, b=b), encoding="utf-8")
+    (graph / "Ядра").mkdir()
+    for live in ("в", "е"):
+        (graph / "Встречи" / f"{live}.md").write_text("# Встреча\n", encoding="utf-8")
+    (graph / "Ядра" / "д.md").write_text("# живой тёзка заглушки\n", encoding="utf-8")
+    stubs = {"чужое": "x"}
+    dossier.scan(graph, schema=CHAROITE, stubs=stubs)
+    assert stubs == {"а": "в", "б": "в", "г": "д"}, stubs

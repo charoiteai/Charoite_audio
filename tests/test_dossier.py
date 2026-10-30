@@ -801,7 +801,7 @@ def test_with_revision_replaces_the_field_without_a_duplicate():
 
 def test_hold_counts_gone_and_new_sources():
     text = dossier.with_revision(
-        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- **Встречи:** [[а]] · [[Встречи/б]]\n"
+        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- **Встречи:** [[а]] · [[б]]\n"
         "\n## Правки автора\n\n—\n", "2026-10-18")
     assert dossier.hold(text, ["а", "б", "в"]) == dossier.Hold("2026-10-18", 0, 1, ("а", "б"))
     assert not dossier.hold(text, ["а", "в"]).held
@@ -828,21 +828,39 @@ def test_with_revision_keeps_one_head_after_a_bom():
     assert dossier.revision(out) == "2026-10-18"
 
 
-@pytest.mark.parametrize("link, key", [
-    ("[[Встречи/б.md]]", "б"), ("[[б|подпись]]", "б"), ("[[C# и .NET]]", "C# и .NET"),
+@pytest.mark.parametrize("name", [
+    "C# и .NET", "Бюджет | итоги", "[Важно] Бюджет", "x.md", " пробел ", "б#Решения",
 ])
-def test_source_keys_read_the_name_render_wrote(link, key):
-    """`#` — часть имени, не якорь: `LINK_RE` резал «C# и .NET» до «C», и
-    удержание снималось каждую ночь (выход out1 DS C1, Haiku I1)."""
-    text = f"---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- {link}\n\n## Правки автора\n\n—\n"
-    assert dossier.source_keys(text) == [key]
-    assert dossier.hold(dossier.with_revision(text, "2026-10-18"), [key]).held
+def test_source_keys_read_back_exactly_what_render_wrote(name):
+    """Имя узла — всё между `[[` и `]]`: грамматика вики-ссылки резала `#`,
+    `|`, теряла `]` и пробелы, и удержание снималось (выход out1 DS C1,
+    out2 DS C1 и Haiku C1)."""
+    members = [name, "Обычная встреча"]
+    files = {m: {"kind": "Встречи"} for m in members}
+    text = dossier.render("т", "## Сейчас\nx\n", members, files, "fp", "2026-10-18")
+    assert dossier.source_keys(text) == sorted(members)
+    h = dossier.hold(dossier.with_revision(text, "2026-10-18"), members)
+    assert h.held and h.gone == 0 and h.new == 0, h
+
+
+@pytest.mark.parametrize("section", [
+    "- [[а]]", "- **Встречи:** [[а]] · б", "- **Встречи:** [[а\ufffd]]", "просто текст", "",
+])
+def test_a_section_render_did_not_write_holds_and_says_so(section):
+    """Строка не того вида, что пишет `render`: состав не проверить — держим
+    (ревизию повторить некому, n841-out2 Haiku C1) и помечаем `unparsed`."""
+    text = dossier.with_revision(
+        f"---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n{section}\n\n## Правки автора\n\n—\n",
+        "2026-10-18")
+    assert dossier.source_keys(text) is None
+    h = dossier.hold(text, ["а"])
+    assert h.held and h.unparsed, h
 
 
 def test_hold_follows_merge_stubs_to_a_member():
     text = dossier.with_revision(
-        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- [[а]] · [[б]]\n"
+        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- **Встречи:** [[а]] · [[б]]\n"
         "\n## Правки автора\n\n—\n", "2026-10-18")
-    assert dossier.hold(text, ["а", "в"], {"б": "г", "г": "в"}).held
+    assert dossier.hold(text, ["а", "в"], {"б": "в"}).held
     assert not dossier.hold(text, ["а", "в"], {"б": "г"}).held
     assert dossier.hold(text, ["а", "в"], {"б": "в"}).new == 0

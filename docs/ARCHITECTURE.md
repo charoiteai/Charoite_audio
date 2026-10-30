@@ -1050,8 +1050,10 @@ would repeat the review. New sources are logged (`⏭ … новых источ�
 index keeps the dossier's own sources. The hold lasts only while every source the
 dossier names is still in the cluster, by itself or through a merge stub (`scan(stubs=)`):
 a forgotten meeting lifts it (`↻ … снята`) and the topic is rebuilt without it — the
-retelling must not outlive its source. A sources section the parser cannot read lifts
-the hold too. A topic that drops out of the clusters altogether (fewer than three
+retelling must not outlive its source. The sources section is read back exactly as
+`render` wrote it (`- **kind:** [[a]] · [[b]]`, the name is everything between the
+brackets); a section edited into another shape cannot be checked, so the hold stays
+and the night says so every time (`⏭ … не того вида`). A topic that drops out of the clusters altogether (fewer than three
 members left) is not visited by the night at all, with or without the field.
 
 **Index lookup** (`Досье/_index.json`) is lexical, over word stems with
