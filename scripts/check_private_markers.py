@@ -278,8 +278,11 @@ def public_hits(line: str) -> list[str]:
     return [name for name, raw in PUBLIC_PATTERNS.items() if re.search(raw, line)]
 
 
-def scan_public(files: list[pathlib.Path]) -> list[str]:
-    """Находки по публичным шаблонам — «путь:строка: чем сработало»."""
+def scan_public(files: list[pathlib.Path], unread: list[str] | None = None) -> list[str]:
+    """Находки по публичным шаблонам — «путь:строка: чем сработало». Файл не в
+    UTF-8 — в `unread`, не в находки: допуска по хешу у раннера CI нет, и отказ
+    краснил бы `main` без выхода (выход out5 №570, DS C1). Судит такой файл
+    локальный хук, он же главный рубеж."""
     hits: list[str] = []
     texts: list[tuple[pathlib.Path, str]] = []
     for f in files:
@@ -287,8 +290,9 @@ def scan_public(files: list[pathlib.Path]) -> list[str]:
             text = tree_read(f)
         except OSError:
             continue
-        except NotUtf8 as e:
-            hits.append(str(e))
+        except NotUtf8:
+            if unread is not None:
+                unread.append(clean(str(f)))
             continue
         if text is not None:
             texts.append((f, text))
@@ -824,8 +828,9 @@ def _known_remote(remote: str) -> list[str]:
     names = git("remote").decode("utf-8", "replace").split()
     if remote not in names:
         # userinfo адреса (логин, токен) в журнал не попадает
-        shown = redact_url(remote)
-        raise GitError(f"push не в названный remote ({shown!r}): опубликованное не с чем "
+        # адрес в журнал не попадает вовсе: у scp-формы и пароля со `/` userinfo
+        # регуляркой не вычистить (выход out5 №570, DS I1, Sonnet M1)
+        raise GitError("push не в названный remote: опубликованное не с чем "
                        f"сравнить — пушьте в remote из `git remote` ({', '.join(names) or 'нет'})")
     return names
 
@@ -1176,7 +1181,11 @@ def _run(a: argparse.Namespace) -> int:
     full_only = a.all
     # Режим CI: только публичные шаблоны, приватного списка там нет.
     if a.public_only:
-        hits = scan_public(tracked_files())
+        unread: list[str] = []
+        hits = scan_public(tracked_files(), unread)
+        for f in unread:
+            print(f"⚠ {f}: {NOT_UTF8} — шаблоны не применены; перекодируй в UTF-8, "
+                  "судит локальный хук", file=sys.stderr)
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
             for h in hits:

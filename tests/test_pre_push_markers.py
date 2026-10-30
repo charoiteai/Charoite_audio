@@ -403,6 +403,9 @@ def test_push_by_url_is_refused(repo):
     repo.commit("ok", wt)
     p = git(wt, "push", str(repo.remote), "feat", env=repo.env, check=False)
     assert p.returncode != 0 and "не в названный remote" in p.stderr, p.stderr
+    # адрес в сообщение не попадает: scp-форму и `/` в пароле регулярка не вычистит (out5)
+    ours = next(line for line in p.stderr.splitlines() if "не в названный remote" in line)
+    assert str(repo.remote) not in ours, ours
 
 
 def test_every_line_of_a_multi_branch_push_is_judged(repo):
@@ -851,8 +854,7 @@ def test_refusals_do_not_quote_names_or_url_secrets(repo, monkeypatch):
     monkeypatch.chdir(repo.work)
     with pytest.raises(guard.GitError) as e:
         guard.push_revs("https://" + "user:" + "tok" + "@example.com/r.git", [])
-    shown = str(e.value).split("'")[1]
-    assert shown == "https://example.com/r.git", str(e.value)
+    assert "tok" not in str(e.value) and "example.com" not in str(e.value), str(e.value)
 
 
 def test_pre_commit_names_the_place_not_the_line(repo):
@@ -1125,6 +1127,18 @@ def test_cp1251_text_is_refused_by_the_tree_scan(repo):
     p = guard_run(repo.work, "--all", env=repo.env)
     assert p.returncode == 1 and f"notes.txt: {guard.NOT_UTF8}" in p.stderr, p.stdout + p.stderr
     assert blob in p.stderr, p.stderr
+
+
+def test_public_only_warns_on_cp1251_and_does_not_fail(repo):
+    """CI: допуска по хешу у раннера нет — отказ краснил бы `main` без выхода
+    (выход out5 №570, DS C1). Предупреждение без хеша и пути `blob_allow`;
+    судит локальный хук — дерево того же коммита отказывает."""
+    (repo.work / "notes.txt").write_bytes(CP1251)
+    repo.commit("cp1251")
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert f"⚠ notes.txt: {guard.NOT_UTF8}" in p.stderr and "blob_allow" not in p.stderr, p.stderr
+    assert guard_run(repo.work, "--all", env=repo.env).returncode == 1
 
 
 def test_cp1251_text_is_refused_by_pre_commit(repo):
