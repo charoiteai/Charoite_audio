@@ -159,8 +159,7 @@ def _graph_lock(graph: pathlib.Path, wait: float = LOCK_WAIT):
     бы заставить ждать разбор только что закончившейся встречи.
     """
     try:
-        lock_dir = charoite_paths.secure_dir(
-            charoite_paths.graph_backups(graph, "cloud_backup", root=_root()).parent)
+        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
     except OSError as e:
         print(f"  замок графа не взять ({e}) — не пишу")
         yield False
@@ -258,7 +257,7 @@ class Candidate:
     sys.modules, а dataclass ищет там свой модуль для строковых аннотаций."""
 
     def __init__(self, g: _GraphRun, theme: str, members: list[str], fp: str, cls: int,
-                 собрано: str, loaded: dossier.DossierLoad, mtime: tuple[int, int] | None):
+                 собрано: str, loaded: dossier.DossierLoad, mtime: safe_write.Snapshot | None):
         self.g, self.theme, self.members, self.fp = g, theme, members, fp
         self.cls, self.собрано, self.loaded, self.mtime = cls, собрано, loaded, mtime
 

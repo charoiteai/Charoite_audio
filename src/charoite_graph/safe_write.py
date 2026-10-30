@@ -24,8 +24,27 @@ import stat
 import uuid
 
 
-def stat_snapshot(path: pathlib.Path) -> tuple[int, int] | None:
-    """Снимок (mtime_ns, size) ОДНИМ stat — для expect-гейта write_text.
+#: Версия файла для expect-гейта: `(st_mtime_ns, st_size, st_ino)`.
+Snapshot = tuple[int, int, int]
+
+
+def snapshot_of(st: os.stat_result) -> Snapshot:
+    """Снимок из уже снятого `stat` — один вид на всех, кто сравнивает версии файла.
+
+    `st_ino`: запись с сохранённым mtime и тем же размером (`copy_if_changed` — copy2
+    в tmp + replace, `write_text(times=)` у канона встречи) пары (mtime, size) не
+    меняла, и гейт пропускал чужую версию (Haiku M3 n841-opus-fix3, №853). replace
+    всегда даёт новый inode; на APFS номер не вернулся ни разу за 5000 записей.
+    ctime не берём: в iCloud-графе его сдвигают метаданные после записи
+    (`com.apple.macl`, выгрузка) — ложные отказы (замер 30.10, вход n853-in1).
+    Не видна только перезапись НА МЕСТЕ с восстановленным mtime и тем же размером
+    (`shutil.copy2` поверх пути в откате `merge_graphs`).
+    """
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def stat_snapshot(path: pathlib.Path) -> Snapshot | None:
+    """Снимок `snapshot_of` ОДНИМ stat — для expect-гейта write_text.
 
     Два подряд вызова stat дают химеру: чужой replace между ними — и mtime
     от старой версии склеивается с размером новой (DS r2 по #464).
@@ -34,11 +53,11 @@ def stat_snapshot(path: pathlib.Path) -> tuple[int, int] | None:
         st = path.stat()
     except OSError:
         return None
-    return (st.st_mtime_ns, st.st_size)
+    return snapshot_of(st)
 
 
 def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
-               expect: tuple[int, int] | None = None,
+               expect: Snapshot | None = None,
                expect_absent: bool = False,
                times: tuple[int, int] | None = None,
                mode: int | None = None) -> bool:
@@ -246,8 +265,9 @@ class LostRace(RuntimeError):
     Причина — ЗНАЧЕНИЕ (`kind`), а не текст: ТРИ вида, и каждый требует от
     вызывающего разного.
 
-    `CHANGED` — файл сменился под рукой дважды подряд: наша правка не легла на
-    живой файл, поверх писал кто-то ещё. `GONE` — файла нет (исчез до снимка
+    `CHANGED` — версия файла (`snapshot_of`) сменилась под рукой дважды подряд:
+    наша правка не легла на живой файл — поверх писал кто-то ещё или файл
+    заменили (новый inode) тем же текстом. `GONE` — файла нет (исчез до снимка
     или между снимком и чтением): править нечего, и упрекнуть его не в чем. Это
     конец состояния, а не отсутствие истории: на второй попытке `GONE` приходит
     ПОСЛЕ проигранной записи, то есть чужая правка была — но файла всё равно
@@ -298,7 +318,7 @@ class LostRace(RuntimeError):
         return self.kind == self.UNREACHABLE
 
 
-def _snapshot_or_raise(path: pathlib.Path, what: str) -> tuple[int, int]:
+def _snapshot_or_raise(path: pathlib.Path, what: str) -> Snapshot:
     """Снимок ОДНИМ stat — или LostRace с причиной из ошибки этого же stat.
 
     «Файла нет» и «не дотянулись» — разные факты, и вызывающему важна именно
@@ -319,7 +339,7 @@ def _snapshot_or_raise(path: pathlib.Path, what: str) -> tuple[int, int]:
     except OSError as exc:
         raise LostRace(path, what, kind=LostRace.UNREACHABLE,
                        detail=str(exc.strerror or exc)) from None
-    return st.st_mtime_ns, st.st_size
+    return snapshot_of(st)       # тот же вид, что у stat_snapshot в write_text: иначе отказ всегда
 
 
 def rewrite_file(path: pathlib.Path, transform, what: str) -> int:

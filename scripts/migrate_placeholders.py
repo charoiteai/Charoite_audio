@@ -254,8 +254,7 @@ def _graph_lock(graph: pathlib.Path, data_root: pathlib.Path | None):
     if data_root is None:
         return contextlib.nullcontext(True)
     try:
-        lock_dir = charoite_paths.secure_dir(
-            charoite_paths.graph_backups(graph, "cloud_backup", root=data_root).parent)
+        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=data_root))
     except OSError as e:
         raise SystemExit(f"замок графа не взять ({e}) — не пишу")
     print(f"замок графа: {lock_dir / 'cloud.lock'}")   # расхождение корней видно сразу (GLM r2)

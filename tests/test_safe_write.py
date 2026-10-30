@@ -325,3 +325,33 @@ def test_write_bytes_creates_every_missing_parent_directory(tmp_path):
 
     assert path.read_bytes() == data, "байты записаны целиком"
     assert not list(path.parent.glob("*.tmp*")), "остаток tmp убран"
+
+
+@pytest.mark.parametrize("write", ["copy_if_changed", "write_text_times"])
+def test_snapshot_sees_a_write_that_keeps_mtime_and_size(tmp_path, write):
+    """№853: чужая запись с сохранённым mtime и тем же размером — `copy_if_changed`
+    (copy2 в tmp + replace) и `write_text(times=)` у канона встречи — пары (mtime,
+    size) не меняла, и гейт `expect` пропускал правку поверх неё."""
+    node, src = tmp_path / "узел.md", tmp_path / "источник.md"
+    node.write_text("аааа\n", encoding="utf-8")
+    src.write_text("бббб\n", encoding="utf-8")
+    st = node.stat()
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+    seen = safe_write.stat_snapshot(node)
+    if write == "copy_if_changed":
+        assert safe_write.copy_if_changed(src, node)
+    else:
+        safe_write.write_text(node, "бббб\n", times=(st.st_atime_ns, st.st_mtime_ns))
+    assert node.stat().st_mtime_ns == st.st_mtime_ns and node.stat().st_size == st.st_size
+    assert safe_write.write_text(node, "наша правка\n", expect=seen) is False
+    assert node.read_text(encoding="utf-8") == "бббб\n"
+
+
+def test_rewrite_file_writes_an_untouched_file(tmp_path):
+    """Снимок `rewrite_file` (`_snapshot_or_raise`) и сверка в `write_text`
+    (`stat_snapshot`) — один вид: разойдись они, нетронутый файл отказывал бы
+    всегда (вход n853-in1, Sonnet I1)."""
+    node = tmp_path / "узел.md"
+    node.write_text("старое\n", encoding="utf-8")
+    assert safe_write.rewrite_file(node, lambda t: (t.replace("старое", "новое"), 1), "проверка") == 1
+    assert node.read_text(encoding="utf-8") == "новое\n"

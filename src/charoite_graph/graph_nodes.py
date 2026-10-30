@@ -25,6 +25,7 @@ import threading
 from charoite_graph import frontmatter
 from charoite_graph import graph_names
 from charoite_graph import redirects
+from charoite_graph import safe_write
 from charoite_graph import text_norm
 from charoite_graph.graph_schema import GraphSchema
 
@@ -113,6 +114,9 @@ class Node:
     #: aliases строками, как в шапке: маска ПДн ищет их написание, а не стемы (№793)
     aliases: tuple[str, ...] = ()
     _: dataclasses.KW_ONLY
+    #: inode файла: запись через tmp+replace, сохранившая mtime и размер, меняет только его (№853).
+    #: Только по ключу: позиционный вызов молча записал бы сюда чужое значение (n853-opusfix Haiku M2)
+    ino: int = -1
     #: Схема хранилища — только на время конструирования: из неё выводится
     #: `person`, а сам узел её не хранит.
     schema: dataclasses.InitVar[GraphSchema]
@@ -228,6 +232,7 @@ class Stub:
     target: str | None      # «Папка/Канон.md» по `redirects.stub_target`; None — развилка
     mtime: float
     size: int
+    ino: int = dataclasses.field(default=-1, kw_only=True)
 
 
 #: Исход `_load` для файла, который не прочитался: не узел и не заглушка, а дыра,
@@ -297,8 +302,11 @@ class NodeIndex:
                         unreadable.add(p)
                         continue
                     cached = self._nodes.get(p) or old_stubs.get(p)
-                    if cached and cached.mtime == st.st_mtime \
-                            and cached.size == st.st_size:
+                    # inode — та же причина, что в `safe_write.snapshot_of`: copy_if_changed
+                    # сохраняет mtime и размер, и кэш отдавал бы старый узел (финальный Opus
+                    # n853 M1). Здесь float `st_mtime` из одного stat с обеих сторон, не `_ns`
+                    if cached and (cached.mtime, cached.size, cached.ino) \
+                            == (st.st_mtime, st.st_size, st.st_ino):
                         (stubs if isinstance(cached, Stub) else fresh)[p] = cached
                         continue
                     node = self._load(p, folder, st)
@@ -323,12 +331,12 @@ class NodeIndex:
             st2 = p.stat()
         except (OSError, ValueError):   # ValueError — не-UTF8 (DS r2 #451)
             return _UNREADABLE          # refresh держит прошлый снапшот и помечает файл
-        if (st2.st_mtime, st2.st_size) != (st.st_mtime, st.st_size):
+        if safe_write.snapshot_of(st2) != safe_write.snapshot_of(st):
             return _UNREADABLE          # файл переписывается прямо сейчас
         if redirects.is_merged(text):
             # заглушка после слияния — не узел (хвост 20.08, GLM), но запись для маски
             return Stub(p, folder, p.stem, redirects.stub_target(text),
-                        st2.st_mtime, st2.st_size)
+                        st2.st_mtime, st2.st_size, ino=st2.st_ino)
         if self.schema.is_person_folder(folder) and graph_names.is_placeholder_node(p.stem):
             return None                 # «Собеседник 3» — склейка разных людей, не подсказка (GLM I6, 07.09)
         name = p.stem
@@ -338,7 +346,7 @@ class NodeIndex:
         return Node(path=p, folder=folder, name=name,
                     name_stems=tuple(stem(t) for t in tokens(name)),
                     alias_stems=tuple(aliases), aliases=alias_names,
-                    mtime=st2.st_mtime, size=st2.st_size,
+                    mtime=st2.st_mtime, size=st2.st_size, ino=st2.st_ino,
                     digest_lines=tuple(_digest(text, self.this_year, schema=self.schema)),
                     schema=self.schema)
 

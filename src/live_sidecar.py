@@ -183,7 +183,7 @@ class WriteOutcome(typing.NamedTuple):
 
 
 def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                     source_sha: str, *, expect: tuple[int, int] | None = None,
+                     source_sha: str, *, expect: safe_write.Snapshot | None = None,
                      expect_absent: bool = False, cut: bool | None = None,
                      log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
     """Записать производную и выдать ей паспорт — единственный машинный
