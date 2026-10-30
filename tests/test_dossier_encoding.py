@@ -132,6 +132,20 @@ def test_damaged_author_text_refuses_before_model(night, monkeypatch, capsys, wh
     assert not list((folder / ".backup").glob("*/Бета.md"))
 
 
+@pytest.mark.parametrize("head", ["##Правки автора", "## Правки автора "])
+def test_owner_heading_spelling_keeps_the_edits(night, head):
+    """№856: заголовок правок, набранный владельцем без пробела или с хвостом,
+    литерал ночи не видел — пересборка писала «—» поверх правок."""
+    nd, graph, folder, paths, calls = night
+    paths["Бета"].write_text(
+        paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head), encoding="utf-8")
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["собрано"] == 3
+    text = paths["Бета"].read_text(encoding="utf-8")
+    assert "новое тело" in text
+    assert text.endswith("## Правки автора\n\nоставить решение автора\n")
+
+
 def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     """Отказ из-за битых «Правок автора» — пропуск темы, а не отказ модели."""
     nd, graph, folder, paths, calls = night
