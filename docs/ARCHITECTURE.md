@@ -1037,7 +1037,16 @@ of topics out of dozens get rebuilt. A full pass (`--full`) is manual only,
 after a change of the prompt, limits or model: cluster membership is part of
 the fingerprint, so a moved boundary already marks the topic as changed, while
 retelling unchanged sources adds no facts and erases the cloud review of the
-body (the night schedule dropped it, №809). The fingerprint
+body (the night schedule dropped it, №809). When it is due shows in the
+`вход:` field (№842): a hash of the body generator — prompt, unlabeled-speaker
+rule, selection and answer limits, temperatures, the model that actually
+answers and its `num_ctx` window (`dossier.generator_input`; the call
+parameters live in `dossier.gen_call`, which `generate` uses too). The night
+writes it when it builds a body and, for unchanged topics, only counts them:
+"built by another generator N, without the `вход:` label M" in the graph
+report line; topics with a review or a label in the body are not counted. A
+label, not a trigger: rebuilding every topic on a prompt change would shrink
+grown bodies and erase the review. The fingerprint
 does not know the prompt, so a body that still names a diarization label as an
 actor (`dossier.labeled_body`, the same predicate the graph doctor counts) is not
 rebuilt by the night when the fingerprint matches, `--full` included: a model

@@ -125,7 +125,7 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
-             temperature: float = dossier.GEN_TEMPERATURES[0]) -> str:
+             temperature: float | None = None) -> str:
     """Сводка локальной моделью. Думать не просим: на структурной задаче
     рассуждение съедает бюджет генерации и документ выходит беднее."""
     sys.path.insert(0, str(CODE / "src"))
@@ -135,25 +135,27 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
     prompt = dossier.build_prompt(theme, members, files, schema=CHAROITE)
     model = (c.get("llm") or {}).get("model")
     out = []
-    for chunk in llm.stream(
-            prompt, model=model, think=False,
-            temperature=temperature, num_predict=dossier.GEN_PREDICT,
-            system=dossier.GEN_SYSTEM):
+    if temperature is None:
+        temperature = dossier.GEN_TEMPERATURES[0]
+    for chunk in llm.stream(prompt, model=model, temperature=temperature, **dossier.gen_call()):
         out.append(chunk)
     return "".join(out).strip()
 
 
 def generator_label(c: dict) -> str:
     """`вход:` генератора этой ночи (№842) — модель та, что ответит на деле
-    (`LLM.effective_model`, как у ключа кэша сводок). Конфиг без модели — `""`:
-    метки нет, сборка от этого не зависит (`generate` скажет о конфиге сама)."""
+    (`LLM.effective_model`, как у ключа кэша сводок), и окно, которое уходит
+    Ollama (mlx-server его не берёт). Конфиг без модели — `""`: метки нет. Любой
+    сбой — `""` и строка: метка прогон не роняет (out1 M2), о конфиге скажет `generate`."""
     model = (c.get("llm") or {}).get("model")
     if not model:
         return ""
     sys.path.insert(0, str(CODE / "src"))
-    from llm import LLM  # noqa: PLC0415
     try:
-        return dossier.generator_input(LLM(c).effective_model(model))
+        from llm import LLM  # noqa: PLC0415
+        llm = LLM(c)
+        num_ctx = None if llm.engine == "mlx-server" else llm.num_ctx
+        return dossier.generator_input(llm.effective_model(model), num_ctx)
     except Exception as e:  # noqa: BLE001
         print(f"  ⚠️ вход генератора не посчитан ({type(e).__name__}: {e}) — досье без метки `вход:`")
         return ""
@@ -272,7 +274,7 @@ class _GraphRun:
                   f"ревизия {self.revised}")
         if self.gen and (self.other_input or self.no_input):
             print(f"  {self.graph.name}: без изменений, но собраны другим генератором {self.other_input}, "
-                  f"без метки `вход:` {self.no_input} — нынешним их пересоберёт только `--full`")
+                  f"без метки `вход:` {self.no_input} — ночь их не пересобирает (метка, не триггер)")
 
 
 class Candidate:

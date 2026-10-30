@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import pathlib
 import shutil
+import sys
 
 import pytest
 
@@ -904,10 +905,11 @@ def test_generator_input_moves_with_prompt_limits_and_model(monkeypatch):
     base = dossier.generator_input("m")
     assert base == dossier.generator_input("m") and len(base) == 12
     assert dossier.generator_input("m2") != base
+    assert dossier.generator_input("m", 8192) != base != dossier.generator_input("m", 16384)
     for name, value in (("PROMPT", dossier.PROMPT + " "), ("MAX_SOURCES", dossier.MAX_SOURCES + 1),
                         ("SRC_CHARS", dossier.SRC_CHARS + 1), ("PROMPT_CHARS", dossier.PROMPT_CHARS + 1),
                         ("GEN_PREDICT", dossier.GEN_PREDICT + 1), ("GEN_SYSTEM", dossier.GEN_SYSTEM + " "),
-                        ("GEN_TEMPERATURES", (0.3, 0.05))):
+                        ("GEN_THINK", True), ("GEN_TEMPERATURES", (0.3, 0.05))):
         with monkeypatch.context() as m:
             m.setattr(dossier, name, value)
             assert dossier.generator_input("m") != base, name
@@ -925,6 +927,34 @@ def test_render_writes_input_field_only_when_given():
     assert dossier.read_input(dossier.DossierLoad("ok", with_gen)) == "abc123"
     assert dossier.read_input(dossier.DossierLoad("ok", without)) == ""
     assert dossier.read_input(dossier.DossierLoad("missing", None)) == ""
+    # строка «вход: …» в теле — не метка (out1 M1)
+    body_line = "---\nтема: т\nотпечаток: x\n---\n\nвход: через шлюз\n"
+    assert dossier.read_input(dossier.DossierLoad("ok", body_line)) == ""
+
+
+def test_generate_calls_the_model_with_what_the_label_hashes(monkeypatch):
+    """Метка и вызов — из одного места (`dossier.gen_call`): литерал в `generate`
+    мимо метки не пройдёт (out1 Haiku I2), температура по умолчанию — первая из
+    `GEN_TEMPERATURES` на вызове, а не на импорте."""
+    import llm as llm_mod
+    nd = _script()
+    seen = []
+
+    class Fake:
+        def __init__(self, c):
+            pass
+
+        def stream(self, prompt, **kw):
+            seen.append(kw)
+            yield GOOD
+
+    monkeypatch.setattr(llm_mod, "LLM", Fake)
+    monkeypatch.setattr(nd.dossier, "build_prompt", lambda *a, **k: "промпт")
+    monkeypatch.setattr(nd.dossier, "GEN_PREDICT", 77)
+    monkeypatch.setattr(nd.dossier, "GEN_TEMPERATURES", (0.4, 0.1))
+    assert nd.generate("т", [], {}, {"llm": {"model": "q"}}) == GOOD.strip()
+    assert seen == [{"model": "q", "temperature": 0.4, **dossier.gen_call()}]
+    assert seen[0]["num_predict"] == 77 and seen[0]["think"] is dossier.GEN_THINK
 
 
 def test_new_generator_marks_unchanged_themes_but_does_not_rebuild(nd, tmp_path, monkeypatch, capsys):
@@ -987,6 +1017,8 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
         def __init__(self, c):
             if c["llm"]["model"] == "сломан":
                 raise KeyError("base_url")
+            self.engine = c["llm"].get("engine", "ollama")
+            self.num_ctx = 8192
 
         def effective_model(self, model):
             return "mlx/" + model
@@ -994,6 +1026,12 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
     monkeypatch.setattr(llm_mod, "LLM", Fake)
     assert nd.generator_label({}) == ""
     assert nd.generator_label({"llm": {}}) == ""
-    assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q")
+    assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q", 8192)
+    # mlx-server окно не берёт — и в метку оно не идёт
+    assert nd.generator_label({"llm": {"model": "q", "engine": "mlx-server"}}) == dossier.generator_input("mlx/q")
     assert nd.generator_label({"llm": {"model": "сломан"}}) == ""
     assert "вход генератора не посчитан (KeyError" in capsys.readouterr().out
+    # неимпортируемый `llm` — тоже без метки, а не трейсбек прогона (out1 M2)
+    monkeypatch.setitem(sys.modules, "llm", None)
+    assert nd.generator_label({"llm": {"model": "q"}}) == ""
+    assert "вход генератора не посчитан (ImportError" in capsys.readouterr().out

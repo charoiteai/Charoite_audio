@@ -499,27 +499,37 @@ GEN_SYSTEM = ("Ты составляешь фактические справки
               "Отвечаешь только текстом справки в заданном формате, "
               "без обращений к читателю и без вопросов.")
 GEN_PREDICT = 1800
+GEN_THINK = False
 GEN_TEMPERATURES = (0.2, 0.05)      # вторая попытка чуть холоднее
 INPUT_FIELD = "вход"
 
 
-def generator_input(model: str) -> str:
+def gen_call() -> dict:
+    """Параметры вызова модели ночи, кроме промпта, модели и температуры: их
+    берёт и `generate`, и `generator_input` — литерал в вызове мимо метки не
+    пройдёт (n842-out1, Haiku I2)."""
+    return {"system": GEN_SYSTEM, "num_predict": GEN_PREDICT, "think": GEN_THINK}
+
+
+def generator_input(model: str, num_ctx: int | None = None) -> str:
     """Отпечаток генератора тела (`вход:` в шапке, №842): промпт, лимиты отбора
-    и ответа, модель. Отпечаток состава этого не видит: после снятия воскресного
-    `--full` (№809) досье с прежними источниками новым генератором не собиралось
-    никогда. Метка, а не триггер: пересборка всех тем по смене промпта сжала бы
-    наращённые тела и стёрла ревизию (n843-in2, критика 2) — ночь показывает
-    счёт, решает `--full` руками. Код отбора и разбора ответа сюда не входит."""
-    raw = json.dumps([PROMPT, graph_names.UNLABELED_RULE, GEN_SYSTEM, MAX_SOURCES,
-                      SRC_CHARS, PROMPT_CHARS, GEN_PREDICT, list(GEN_TEMPERATURES), model],
+    и ответа, модель и её окно (`num_ctx`: Ollama молча режет промпт по нему,
+    n842-out1 Haiku I1). Отпечаток состава этого не видит: после снятия
+    воскресного `--full` (№809) досье с прежними источниками новым генератором
+    не собиралось никогда. Метка, а не триггер: пересборка всех тем по смене
+    промпта сжала бы наращённые тела и стёрла ревизию (n843-in2, критика 2) —
+    ночь показывает счёт, пересборка — решение владельца. Код отбора и разбора
+    ответа (`build_prompt`, `trim_to_format`, `looks_valid`) сюда не входит."""
+    raw = json.dumps([PROMPT, graph_names.UNLABELED_RULE, gen_call(), MAX_SOURCES,
+                      SRC_CHARS, PROMPT_CHARS, list(GEN_TEMPERATURES), model, num_ctx],
                      ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def read_input(loaded: DossierLoad) -> str:
-    """`вход:` из шапки; `""` — поля нет (досье до №842 или собрано руками)."""
-    m = re.search(rf"^{INPUT_FIELD}:\s*(\S+)", (loaded.text or "")[:600], re.M)
-    return m.group(1) if m else ""
+    """`вход:` из шапки; `""` — поля нет (досье до №842 или собрано руками).
+    Читает шапку, а не окно файла: строка «вход: …» в теле — не метка (out1 M1)."""
+    return frontmatter.scalar_field(loaded.text or "", INPUT_FIELD)
 
 
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
