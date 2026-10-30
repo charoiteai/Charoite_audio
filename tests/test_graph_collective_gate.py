@@ -465,8 +465,8 @@ def test_cloud_review_with_write_access_is_told_to_leave_held_names(tmp_path):
     kw = dict(transcript_name="t.md", folder=tmp_path, graph=tmp_path, rev_name="rev.md", stamp="s",
               arch_folder=None)
     edit = g.cloud_enrich_prompt(may_edit=True, **kw)
-    assert "«_(узел не выбран: …)_» или «_(узел не создан: …)_» стоит «голое имя при живых тёзках», " \
-           "не превращай в ссылку" in edit, edit
+    assert "«_(узел не выбран: …)_» или «_(узел не создан: …)_» стоит «голое имя при живых тёзках» " \
+           "или «тип вне перечня разбора», не превращай в ссылку" in edit, edit
     assert "узла под это имя не создавай" in edit
     assert "кроме строк сборного имени ниже" in edit          # правка метки не спорит с запретом (out5 Haiku M3)
     assert g._HELD_WHY["collective"] in edit

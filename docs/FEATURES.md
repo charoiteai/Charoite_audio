@@ -209,11 +209,12 @@
    meeting note with links to the candidates, and the candidate goes to
    `_Кандидаты.md` at the graph root — confirm with an alias in the node or
    create the node by hand. On a Russian-language graph a new node is not
-   created when the parse gives a type outside its list (system, project,
-   team, document, model) — "человек", "задача", "инцидент": the name stays as
-   text in the meeting note marked "тип вне перечня разбора"; an existing node
-   and a typo of a live node still get the meeting, an empty type goes to
-   Системы as before. A bare one-word name while full namesakes live
+   created when the parse gives a type outside the known ones (system, project,
+   team, document, model; case and spaces ignored) — "человек", "задача",
+   "инцидент": the name stays as text in the meeting note marked "тип вне
+   перечня разбора", the trace goes to `graph_unlinked.log`. An existing node
+   still gets the meeting, a typo of a live node stays a candidate, an empty
+   type goes to Системы — all as before. A bare one-word name while full namesakes live
    ("Саша" next to "Саша Образцов") is not written into any node either —
    as a person, an entity or a link end: the meeting note keeps the line with
    the role, the contribution and links to the namesakes, and the name goes

@@ -1589,6 +1589,18 @@ ENT_FOLDER = {"система": "Системы", "команда": "Коман�
               "документ": "Системы", "модель": "Модели"}   # «модель» шла в Системы мимо живой Модели/ (GLM I5, 07.09)
 
 
+def ent_kind(e: dict) -> str:
+    """Тип сущности разбора одним чтением на всех потребителей: модель пишет «Команда»,
+    «система », а то и список — ключи ENT_FOLDER строчные. Четыре сырых `.get` давали
+    гейту №836 и папке разные ответы (n836-out1, обе головы)."""
+    return str(e.get("тип") or "").strip().casefold()
+
+
+def ent_folder(e: dict) -> str:
+    """Папка узла сущности: тип вне ENT_FOLDER и пустой — «Системы», как раньше."""
+    return ENT_FOLDER.get(ent_kind(e), "Системы")
+
+
 def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None) -> str:
     """Вики-ссылка на канонический узел: [[Папка/Имя|Имя]].
 
@@ -1999,7 +2011,7 @@ def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]
     связал встречу с ними, а не с фантомом. Ключ `held` — папка и имя: одно
     имя в двух типах — две разные записи (DS M5 / GLM M4 r1 по #544). У
     сборного имени третье поле — узел поиска (`collective_held`)."""
-    folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
+    folder = ent_folder(e)
     name = e["имя"]
     head = f"({e.get('тип', '')}) — {e.get('суть', '')}"
     if (folder, name) not in held:
@@ -2023,19 +2035,20 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
     `upsert_entity`; junk/ambiguous/near — без узла, в `held` и в журналы.
     Шов вынесен из main() под тест (DS I4 r1 по #544).
 
-    `typed` — перечень типов промпта и ключи ENT_FOLDER на одном языке (русский
-    разбор): тогда тип непустой и вне перечня узел не РОЖДАЕТ — «new» становится
-    «untyped». За октябрь 24 таких рождения, 10 из них — люди в Системы/ (№836).
-    Узел, который уже есть, и опечатка живого узла (near) встречу получают как
-    раньше: тип решает только рождение (n836-in3, обе головы). Пустой тип — как
-    раньше, в Системы. en/zh переводят значения полей, тип придёт «system» —
-    там правило не действует (n836-in2, Sonnet C1)."""
+    `typed` — значения полей разбора русские, как ключи ENT_FOLDER (перечень промпта —
+    их подмножество): тогда тип непустой и вне ключей узел не РОЖДАЕТ — «new»
+    становится «untyped». За октябрь 24 таких рождения, 10 из них — люди в Системы/
+    (№836). Тип решает только рождение: узел, который уже есть, получает встречу,
+    опечатка живого узла (near) остаётся кандидатом, как раньше (n836-in3, обе
+    головы). Пустой тип — как раньше, в Системы. en/zh переводят значения полей, тип
+    придёт «system» — там правило не действует (n836-in2, Sonnet C1)."""
     held: dict[tuple[str, str], tuple[str, list[str]]] = {}
+    linked: set[str] = set()
     for e in ents:
-        folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
+        folder = ent_folder(e)
         name, typ, desc = e["имя"], e.get("тип", "entity"), e.get("суть", "")
         verdict, cands = entity_node_verdict(graph, folder, name)
-        known = str(e.get("тип") or "").strip().casefold()
+        known = ent_kind(e)
         if verdict == "new" and typed and known and known not in ENT_FOLDER:
             verdict = "untyped"
         if verdict == "resolved":
@@ -2050,9 +2063,7 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
             continue
         if verdict in ("existing", "new"):
             upsert_entity(graph, folder, name, typ, desc, meeting_link, "")
-            # то же имя другим типом этой встречи могло остаться удержанным — узел
-            # есть, строка в заметке ссылкой (n836-in2, Sonnet I3 / DS I2)
-            held.pop((folder, name), None)
+            linked.add(name_key(safe_name(name)))
             continue
         aliased = _journal_held_entity(graph, folder, name, typ, verdict, cands, meeting_link)
         if aliased is not None:
@@ -2068,6 +2079,10 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
             held[(folder, name)] = ("aliased" if wrote else "by_alias", [f"{path.parent.name}/{path.stem}"])
             continue
         held[(folder, name)] = (verdict, cands)
+    # то же имя другим типом этой встречи получило узел (в любой папке) — строка «тип вне
+    # перечня» становится ссылкой: canon_link найдёт узел (n836-in2 Sonnet I3, out1 DS M8)
+    for k in [k for k, (v, _c) in held.items() if v == "untyped" and name_key(safe_name(k[1])) in linked]:
+        del held[k]
     landed = [(k, v, c[0]) for k, (v, c) in held.items() if v in ("aliased", "by_alias")]
     if landed:
         # автосклейка этого прогона и рутинный псевдоним человека — разными словами:
@@ -3766,7 +3781,7 @@ def main():
     # ни ссылкой — строкой с кандидатами, как фон выше. Одна таблица на встречу по
     # всем рисуемым именам (люди, сущности, концы связей) и до первой записи: затвор
     # только на записи людей обходили сущность, связь и рендер заметки (n611-in2/in3).
-    _efolder = lambda e: ENT_FOLDER.get(e.get("тип", ""), "Системы")  # noqa: E731
+    _efolder = ent_folder
     collective = collective_held(
         graph, [(p["имя"], "Люди") for p in people]
         + [(e["имя"], _efolder(e)) for e in ents]
@@ -3798,13 +3813,15 @@ def main():
                       p.get("роль", ""), meeting_link, p.get("вклад", ""))
     # Сущность получает узел не безусловно (№193): мусор, опечатка существующего
     # имени и «подходит нескольким» — текстом в заметке и в _Кандидаты.md графа
-    held = apply_entities(graph, ents, meeting_link, typed=_language(cfg) == "ru")
+    # русские значения полей — везде, где промпт не переводит их (en/zh в `_extract`):
+    # «en-US» и «de» получают русский промпт, значит и правило типа (n836-out1, DS I1)
+    held = apply_entities(graph, ents, meeting_link, typed=_language(cfg) not in ("en", "zh"))
     # сущность со сборным именем — текстом с кандидатами тем же entity_line (журнал — выше)
     for e in ents_all:
         if (_ckey(e["имя"]), _efolder(e)) in collective:
             held[(_efolder(e), e["имя"])] = ("collective", *collective[(_ckey(e["имя"]), _efolder(e))][1:])
 
-    touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
+    touched = ({"Люди"} if people else set()) | {ent_folder(e) for e in ents}
     # встреча по псевдониму легла в узел ДРУГОЙ папки — её указатель тоже тронут (DS M4 / GLM M5)
     touched |= {c[0].split("/", 1)[0] for (v, c, *_) in held.values() if v in ("aliased", "by_alias") and c}
     for folder in sorted(touched & set(FOLDER_INDEX)):
@@ -4366,9 +4383,11 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "этой встречи в «## Встречи» и её связи (перенеси их в узел верного "
         "человека), если этого человека на встрече не было, — кроме строк сборного "
         f"имени ниже. Строку, где в пометке «_({_HELD_PERSON.strip(' _(')} …)_» или "
-        f"«_({_HELD_ENTITY.strip(' _(')} …)_» стоит «{_HELD_WHY['collective']}», "
-        "не превращай в ссылку, в узел не переноси и узла под это имя не создавай: "
-        "человек не определён; в узел из «поиск ведёт в …» и в голый узел-тёзку "
+        f"«_({_HELD_ENTITY.strip(' _(')} …)_» стоит «{_HELD_WHY['collective']}» "
+        f"или «{_HELD_WHY['untyped']}», "
+        "не превращай в ссылку, в узел не переноси и узла под это имя не создавай "
+        "(у сборного имени человек не определён, у типа вне перечня это не система); "
+        "в узел из «поиск ведёт в …» и в голый узел-тёзку "
         "ничего не дописывай и их не сливай. Прочие пометки «узел не создан» "
         "(опечатка, несколько кандидатов) — обычные дубли и кандидаты.\n"
         "3. Файлы не удаляй и не переименовывай — удаление Чароит просто не "

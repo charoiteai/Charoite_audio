@@ -23,7 +23,7 @@ LINK = "Встречи/2026-10-27_1000"
 
 def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
     graph = tmp_path / "Граф"
-    for d in ("Встречи", "Люди", "Системы", "Модели"):
+    for d in ("Встречи", "Люди", "Системы", "Модели", "Команды"):
         (graph / d).mkdir(parents=True, exist_ok=True)
     return graph
 
@@ -68,6 +68,26 @@ def test_type_outside_the_list_gives_no_node(tmp_path, monkeypatch, typ):
     assert not (graph / g.CANDIDATES_NOTE).exists(), "человеку подтверждать нечего — только лог"
 
 
+def test_untyped_leaves_its_trace_in_the_log(tmp_path, monkeypatch):
+    """След удержания — только журнал: кандидатов нет, значит строка лога обязана быть (out1 DS M7)."""
+    graph = _graph(tmp_path)
+    monkeypatch.setattr(g, "_root", lambda: tmp_path / "data")
+    held = g.apply_entities(graph, [{"имя": "Иван Петров", "тип": "человек", "суть": "x"}], LINK, typed=True)
+    assert held == {("Системы", "Иван Петров"): ("untyped", [])}
+    log = (tmp_path / "data" / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
+    assert "узел не создан: Системы/Иван Петров: тип вне перечня разбора" in log, log
+
+
+@pytest.mark.parametrize("typ, folder", [("Команда", "Команды"), (" модель ", "Модели"), ("СИСТЕМА", "Системы")])
+def test_listed_type_in_any_case_goes_to_its_folder(tmp_path, monkeypatch, typ, folder):
+    """Гейт и папка читают тип одним `ent_kind`: «Команда» — не только «не untyped», но и в
+    Команды/, а строка заметки — ссылкой туда же (n836-out1, обе головы)."""
+    graph = _graph(tmp_path)
+    note = _meeting(tmp_path, monkeypatch, graph, [{"имя": "Платформа", "тип": typ, "суть": "x"}])
+    assert (graph / folder / "Платформа.md").exists()
+    assert f"[[{folder}/Платформа" in note, note
+
+
 def test_existing_node_still_gets_the_meeting(tmp_path, monkeypatch):
     graph = _graph(tmp_path)
     node = _node(graph, "Системы/Миграция Postgres")
@@ -86,6 +106,15 @@ def test_empty_or_listed_type_is_born_as_before(tmp_path, monkeypatch, ent):
     assert (graph / "Системы" / "Шлюз.md").exists()
 
 
+@pytest.mark.parametrize("language", ["ru", "en-US", "de", "RU"])
+def test_untranslated_profile_applies_the_rule(tmp_path, monkeypatch, language):
+    """Промпт переводит значения только на «en» и «zh» — любой другой язык профиля получает
+    русский промпт, а значит и «человек» в типе (n836-out1, DS I1)."""
+    graph = _graph(tmp_path)
+    _meeting(tmp_path, monkeypatch, graph, [{"имя": "Иван Петров", "тип": "человек", "суть": "x"}], language=language)
+    assert not (graph / "Системы" / "Иван Петров.md").exists()
+
+
 @pytest.mark.parametrize("language", ["en", "zh"])
 def test_translated_profile_keeps_the_old_birth(tmp_path, monkeypatch, language):
     graph = _graph(tmp_path)
@@ -101,6 +130,16 @@ def test_same_name_with_a_listed_type_keeps_the_link(tmp_path, monkeypatch):
     assert g._HELD_WHY["untyped"] not in note
 
 
+def test_same_name_born_in_another_folder_keeps_the_link(tmp_path, monkeypatch):
+    """Имя с типом вне перечня и то же имя «моделью» в одной встрече: узел в Модели/, строка
+    «тип вне перечня» снята — заметка ссылается на узел (n836-out1, DS M8)."""
+    graph = _graph(tmp_path)
+    note = _meeting(tmp_path, monkeypatch, graph, [{"имя": "Шлюз", "тип": "человек", "суть": "x"},
+                                                   {"имя": "Шлюз", "тип": "модель", "суть": "y"}])
+    assert (graph / "Модели" / "Шлюз.md").exists() and not (graph / "Системы" / "Шлюз.md").exists()
+    assert g._HELD_WHY["untyped"] not in note, note
+
+
 def test_typo_of_a_live_node_stays_near(tmp_path):
     graph = _graph(tmp_path)
     _node(graph, "Модели/Qwen 32B")
@@ -109,5 +148,7 @@ def test_typo_of_a_live_node_stays_near(tmp_path):
 
 
 def test_prompt_types_are_keys_of_the_folder_map():
-    listed = re.search(r'"тип":"([а-я|]+)","суть"', inspect.getsource(g._extract)).group(1).split("|")
+    m = re.search(r'"тип":"([а-я|]+)","суть"', inspect.getsource(g._extract))
+    assert m, "строка сущностей в промпте _extract изменила вид — обнови тест"
+    listed = m.group(1).split("|")
     assert listed and set(listed) <= set(g.ENT_FOLDER), "перечень промпта и карта папок разошлись"
