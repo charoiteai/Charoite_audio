@@ -1218,6 +1218,16 @@ def test_git_error_does_not_show_url_credentials(repo, monkeypatch):
     assert "tok" not in str(e.value) and "u:" not in str(e.value), str(e.value)
 
 
+def test_git_error_scrubs_the_url_before_clipping(monkeypatch):
+    """Адрес на границе обрезки: обрезок без «@» скраб не узнал бы (выход out4 №570, I1)."""
+    err = b"x" * 295 + b"//" + b"u:" + b"tok" + b"@host/r"
+    monkeypatch.setattr(guard.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 128, b"", err))
+    with pytest.raises(guard.GitError) as e:
+        guard.git("rev-parse", "HEAD")
+    assert "u:" not in str(e.value) and "tok" not in str(e.value), str(e.value)[-40:]
+
+
 def test_redact_url_takes_the_whole_userinfo():
     assert guard.redact_url("https://" + "u:p@ss" + "@host/r") == "https://host/r"
     assert guard.redact_url("ssh://git@host/r and //a:b@c/d") == "ssh://host/r and //c/d"

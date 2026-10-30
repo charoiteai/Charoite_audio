@@ -66,9 +66,10 @@ def test_binary_and_missing_files_do_not_break_the_scan(tmp_path):
     assert guard.scan_files(guard.build_pattern(list(FAKE)), [binary, missing]) == []
 
 
-def test_picture_signature_without_nul_is_not_media_for_the_tree(tmp_path):
+def test_picture_signature_without_nul_is_not_media_for_the_tree(tmp_path, monkeypatch):
     """Подпись в начале без NUL — текст в чужой кодировке, которого никто не
     прочёл: отказ с хешем блоба (№570, выход out2)."""
+    monkeypatch.setenv("HOME", str(tmp_path))     # допуски владельца тесту не судья (out4 M1)
     fake = tmp_path / "logo.png"
     fake.write_bytes(b"\x89PNG\r\n\x1a\n" + "ВнутренняяСистемаЫЪ".encode("cp1251"))
     hits = guard.scan_files(guard.build_pattern(list(FAKE)), [fake])
