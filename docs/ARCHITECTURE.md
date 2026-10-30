@@ -1040,7 +1040,7 @@ retelling unchanged sources adds no facts and erases the cloud review of the
 body (the night schedule dropped it, №809). When it is due shows in the
 `вход:` field (№842): a hash of the body generator — prompt, unlabeled-speaker
 rule, selection and answer limits, temperatures, the model that actually
-answers and its `num_ctx` window (`dossier.generator_input`; the call
+answers and its Ollama `num_ctx` window (`dossier.generator_input`; the call
 parameters live in `dossier.gen_call`, which `generate` uses too). The night
 writes it when it builds a body and, for unchanged topics, only counts them:
 "built by another generator N, without the `вход:` label M" in the graph

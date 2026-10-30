@@ -288,7 +288,7 @@ The model reads what it selected from oldest to newest. Rebuilds are incremental
 dossier carries a fingerprint of its sources (microsecond precision — an edit
 landing in the same second as the scan used to go unnoticed), and an unchanged
 fingerprint means the model is not called. The `вход:` header field is a hash
-of the generator (prompt, limits, model and its window): when it changes, the
+of the generator (prompt, limits, model, Ollama window): when it changes, the
 night does not rebuild the topic but counts such topics (except reviewed and
 labeled ones); a rebuild is a manual `--full`. All graphs share one night queue:
 one topic from every graph with work comes before anyone's second topic, and

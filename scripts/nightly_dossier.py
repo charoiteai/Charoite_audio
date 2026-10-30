@@ -144,8 +144,10 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
 
 def generator_label(c: dict) -> str:
     """`вход:` генератора этой ночи (№842) — модель та, что ответит на деле
-    (`LLM.effective_model`, как у ключа кэша сводок), и окно, которое уходит
-    Ollama (mlx-server его не берёт). Конфиг без модели — `""`: метки нет. Любой
+    (`LLM.effective_model`, как у ключа кэша сводок), и окно — только у Ollama:
+    mlx-server и облако его в вызов не берут (out2 Sonnet I1; облако без тумблера
+    `LLM` сам переводит в `ollama`). Ответ облачного запаса локальной моделью
+    метка не видит — его видит только стрим, как и `effective_model`. Конфиг без модели — `""`: метки нет. Любой
     сбой — `""` и строка: метка прогон не роняет (out1 M2), о конфиге скажет `generate`."""
     model = (c.get("llm") or {}).get("model")
     if not model:
@@ -154,7 +156,7 @@ def generator_label(c: dict) -> str:
     try:
         from llm import LLM  # noqa: PLC0415
         llm = LLM(c)
-        num_ctx = None if llm.engine == "mlx-server" else llm.num_ctx
+        num_ctx = llm.num_ctx if llm.engine == "ollama" else None
         return dossier.generator_input(llm.effective_model(model), num_ctx)
     except Exception as e:  # noqa: BLE001
         print(f"  ⚠️ вход генератора не посчитан ({type(e).__name__}: {e}) — досье без метки `вход:`")

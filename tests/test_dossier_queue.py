@@ -950,11 +950,14 @@ def test_generate_calls_the_model_with_what_the_label_hashes(monkeypatch):
 
     monkeypatch.setattr(llm_mod, "LLM", Fake)
     monkeypatch.setattr(nd.dossier, "build_prompt", lambda *a, **k: "промпт")
+    # каждое значение отличимо от прежнего литерала: литерал в `generate` тест уронит (out2 I2)
+    assert set(dossier.gen_call()) == {"system", "num_predict", "think"}, "новый ключ — сюда"
+    monkeypatch.setattr(nd.dossier, "GEN_SYSTEM", "S")
     monkeypatch.setattr(nd.dossier, "GEN_PREDICT", 77)
+    monkeypatch.setattr(nd.dossier, "GEN_THINK", True)
     monkeypatch.setattr(nd.dossier, "GEN_TEMPERATURES", (0.4, 0.1))
     assert nd.generate("т", [], {}, {"llm": {"model": "q"}}) == GOOD.strip()
-    assert seen == [{"model": "q", "temperature": 0.4, **dossier.gen_call()}]
-    assert seen[0]["num_predict"] == 77 and seen[0]["think"] is dossier.GEN_THINK
+    assert seen == [{"model": "q", "temperature": 0.4, "system": "S", "num_predict": 77, "think": True}]
 
 
 def test_new_generator_marks_unchanged_themes_but_does_not_rebuild(nd, tmp_path, monkeypatch, capsys):
@@ -1027,11 +1030,12 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
     assert nd.generator_label({}) == ""
     assert nd.generator_label({"llm": {}}) == ""
     assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q", 8192)
-    # mlx-server окно не берёт — и в метку оно не идёт
-    assert nd.generator_label({"llm": {"model": "q", "engine": "mlx-server"}}) == dossier.generator_input("mlx/q")
+    # mlx-server и облако окно в вызов не берут — и в метку оно не идёт (out2 I1)
+    for engine in ("mlx-server", "cloud"):
+        assert nd.generator_label({"llm": {"model": "q", "engine": engine}}) == dossier.generator_input("mlx/q")
     assert nd.generator_label({"llm": {"model": "сломан"}}) == ""
     assert "вход генератора не посчитан (KeyError" in capsys.readouterr().out
     # неимпортируемый `llm` — тоже без метки, а не трейсбек прогона (out1 M2)
     monkeypatch.setitem(sys.modules, "llm", None)
     assert nd.generator_label({"llm": {"model": "q"}}) == ""
-    assert "вход генератора не посчитан (ImportError" in capsys.readouterr().out
+    assert "вход генератора не посчитан (" in capsys.readouterr().out
