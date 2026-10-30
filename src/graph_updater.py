@@ -1746,7 +1746,12 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
 _HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескольким узлам", "near": "похоже на существующий узел",
              "aliased": "псевдоним по повтору", "by_alias": "по псевдониму узла",
              "stub": "ядро — заглушка без канона в Ядрах",
-             "collective": "голое имя при живых тёзках"}
+             "collective": "голое имя при живых тёзках",
+             "untyped": "тип вне перечня разбора"}
+
+# Вердикты без строки человеку: в `_Кандидаты.md` подтверждать нечего, след — только
+# в graph_unlinked.log (n836-in2, Sonnet I2)
+_LOG_ONLY_VERDICTS = frozenset({"junk", "untyped"})
 
 # Папки, чьи псевдонимы читаются глобально и куда автопсевдоним может быть
 # записан. Люди — нет, и на чтении, и на записи: человек с псевдонимом
@@ -1860,7 +1865,7 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     name = safe_name(name)
     why = _HELD_WHY[verdict]
     what = f"{folder}/{name}: {why}" + (" — " + ", ".join(cands) if cands else "")
-    if verdict == "junk":
+    if verdict in _LOG_ONLY_VERDICTS:
         _journal_graph_event("узел не создан", what, meeting_link)
         return None
     log = graph / CANDIDATES_NOTE
@@ -2012,15 +2017,27 @@ def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple]
     return f"- {safe_name(name)} {head}{_HELD_ENTITY}{lead}{_HELD_WHY[verdict]}{tail})_"
 
 
-def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> dict[tuple[str, str], tuple[str, list[str]]]:
+def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
+                   typed: bool = False) -> dict[tuple[str, str], tuple[str, list[str]]]:
     """Узлы «сущностей» разбора — через вердикт (№193): existing/new →
     `upsert_entity`; junk/ambiguous/near — без узла, в `held` и в журналы.
-    Шов вынесен из main() под тест (DS I4 r1 по #544)."""
+    Шов вынесен из main() под тест (DS I4 r1 по #544).
+
+    `typed` — перечень типов промпта и ключи ENT_FOLDER на одном языке (русский
+    разбор): тогда тип непустой и вне перечня узел не РОЖДАЕТ — «new» становится
+    «untyped». За октябрь 24 таких рождения, 10 из них — люди в Системы/ (№836).
+    Узел, который уже есть, и опечатка живого узла (near) встречу получают как
+    раньше: тип решает только рождение (n836-in3, обе головы). Пустой тип — как
+    раньше, в Системы. en/zh переводят значения полей, тип придёт «system» —
+    там правило не действует (n836-in2, Sonnet C1)."""
     held: dict[tuple[str, str], tuple[str, list[str]]] = {}
     for e in ents:
         folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
         name, typ, desc = e["имя"], e.get("тип", "entity"), e.get("суть", "")
         verdict, cands = entity_node_verdict(graph, folder, name)
+        known = str(e.get("тип") or "").strip().casefold()
+        if verdict == "new" and typed and known and known not in ENT_FOLDER:
+            verdict = "untyped"
         if verdict == "resolved":
             # узел найден по псевдониму в ДРУГОЙ папке, чем сказал тип (тип — самое
             # ненадёжное поле разбора): пишем в него по РЕШЁННОМУ пути, а не по
@@ -2033,6 +2050,9 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> 
             continue
         if verdict in ("existing", "new"):
             upsert_entity(graph, folder, name, typ, desc, meeting_link, "")
+            # то же имя другим типом этой встречи могло остаться удержанным — узел
+            # есть, строка в заметке ссылкой (n836-in2, Sonnet I3 / DS I2)
+            held.pop((folder, name), None)
             continue
         aliased = _journal_held_entity(graph, folder, name, typ, verdict, cands, meeting_link)
         if aliased is not None:
@@ -3778,7 +3798,7 @@ def main():
                       p.get("роль", ""), meeting_link, p.get("вклад", ""))
     # Сущность получает узел не безусловно (№193): мусор, опечатка существующего
     # имени и «подходит нескольким» — текстом в заметке и в _Кандидаты.md графа
-    held = apply_entities(graph, ents, meeting_link)
+    held = apply_entities(graph, ents, meeting_link, typed=_language(cfg) == "ru")
     # сущность со сборным именем — текстом с кандидатами тем же entity_line (журнал — выше)
     for e in ents_all:
         if (_ckey(e["имя"]), _efolder(e)) in collective:
