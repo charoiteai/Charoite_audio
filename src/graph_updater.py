@@ -315,6 +315,21 @@ def _extract_all(cfg: dict, transcript: str, project_rule: str = "") -> dict | N
         return data
 
 
+# en/zh-режим разбора: КЛЮЧИ JSON — контракт кода, не трогаем; на язык пользователя
+# переводятся только ЗНАЧЕНИЯ полей — граф читается на его языке, парсер стабилен.
+# Одна таблица на промпт `_extract` и на правило типа в `main`: язык вне её получает
+# русские значения, а с ними и типы — ключи ENT_FOLDER (n836-out2, DS I1)
+_VALUE_LANG_SUFFIX = {
+    "en": "\n\nLANGUAGE: write every field VALUE in English "
+          "(node names, summaries, statuses, updates, topics; people "
+          "as spoken). Keep the JSON KEYS exactly as specified above. "
+          "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block.",
+    "zh": "\n\nLANGUAGE: write every field VALUE in Chinese "
+          "(node names, summaries, statuses, updates, topics; people "
+          "as spoken). Keep the JSON KEYS exactly as specified above. "
+          "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block."}
+
+
 def _language(cfg: dict) -> str:
     """Язык значений разбора — тот же ключ, что выбирает en/zh-ветку промпта в `_extract`.
     Пустой ключ и пустая секция — русский, как у промпта (выход n821-out2, DS M3). Чтение —
@@ -779,15 +794,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "",
                     # en/zh-режим: КЛЮЧИ JSON — контракт кода, не трогаем; на
                     # язык пользователя переводятся только ЗНАЧЕНИЯ полей —
                     # граф читается на его языке, парсер стабилен
-                    + ({"en": "\n\nLANGUAGE: write every field VALUE in English "
-                              "(node names, summaries, statuses, updates, topics; people "
-                              "as spoken). Keep the JSON KEYS exactly as specified above. "
-                              "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block.",
-                        "zh": "\n\nLANGUAGE: write every field VALUE in Chinese "
-                              "(node names, summaries, statuses, updates, topics; people "
-                              "as spoken). Keep the JSON KEYS exactly as specified above. "
-                              "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block."}
-                       .get(_language(cfg), ""))
+                    + _VALUE_LANG_SUFFIX.get(_language(cfg), "")
     )
     # Ошибка сервера здесь стоила всего пост-процессинга: исключение летело
     # наружу, main() падал с трейсбеком в logs/graph_*.log, и не выполнялось
@@ -2065,6 +2072,11 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
             upsert_entity(graph, folder, name, typ, desc, meeting_link, "")
             linked.add(name_key(safe_name(name)))
             continue
+        if verdict == "untyped":
+            # журнал — после пост-прохода ниже: имя могло получить узел другим типом
+            # (событие — с исходом, не до решения; n836-out2, DS M1 = Haiku M1)
+            held[(folder, name)] = (verdict, cands)
+            continue
         aliased = _journal_held_entity(graph, folder, name, typ, verdict, cands, meeting_link)
         if aliased is not None:
             # псевдоним по повтору записан (№236) — встреча ложится в узел-кандидат
@@ -2080,9 +2092,16 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str,
             continue
         held[(folder, name)] = (verdict, cands)
     # то же имя другим типом этой встречи получило узел (в любой папке) — строка «тип вне
-    # перечня» становится ссылкой: canon_link найдёт узел (n836-in2 Sonnet I3, out1 DS M8)
-    for k in [k for k, (v, _c) in held.items() if v == "untyped" and name_key(safe_name(k[1])) in linked]:
-        del held[k]
+    # перечня» становится ссылкой (n836-in2 Sonnet I3, out1 DS M8). Снимается, только если
+    # узел найдёт тот же `find_canonical`, которым `canon_link` нарисует ссылку: иное
+    # написание в чужой папке он не видит — была бы ссылка в никуда (n836-out2, DS C1)
+    for (f, n), (v, c) in list(held.items()):
+        if v != "untyped":
+            continue
+        if name_key(safe_name(n)) in linked and find_canonical(graph, n, folder=f) is not None:
+            del held[(f, n)]
+        else:
+            _journal_held_entity(graph, f, n, "", v, c, meeting_link)
     landed = [(k, v, c[0]) for k, (v, c) in held.items() if v in ("aliased", "by_alias")]
     if landed:
         # автосклейка этого прогона и рутинный псевдоним человека — разными словами:
@@ -3813,9 +3832,9 @@ def main():
                       p.get("роль", ""), meeting_link, p.get("вклад", ""))
     # Сущность получает узел не безусловно (№193): мусор, опечатка существующего
     # имени и «подходит нескольким» — текстом в заметке и в _Кандидаты.md графа
-    # русские значения полей — везде, где промпт не переводит их (en/zh в `_extract`):
+    # русские значения полей — везде, где промпт не переводит их (`_VALUE_LANG_SUFFIX`):
     # «en-US» и «de» получают русский промпт, значит и правило типа (n836-out1, DS I1)
-    held = apply_entities(graph, ents, meeting_link, typed=_language(cfg) not in ("en", "zh"))
+    held = apply_entities(graph, ents, meeting_link, typed=_language(cfg) not in _VALUE_LANG_SUFFIX)
     # сущность со сборным именем — текстом с кандидатами тем же entity_line (журнал — выше)
     for e in ents_all:
         if (_ckey(e["имя"]), _efolder(e)) in collective:

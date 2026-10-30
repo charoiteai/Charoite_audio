@@ -115,7 +115,7 @@ def test_untranslated_profile_applies_the_rule(tmp_path, monkeypatch, language):
     assert not (graph / "Системы" / "Иван Петров.md").exists()
 
 
-@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize("language", sorted(g._VALUE_LANG_SUFFIX))
 def test_translated_profile_keeps_the_old_birth(tmp_path, monkeypatch, language):
     graph = _graph(tmp_path)
     _meeting(tmp_path, monkeypatch, graph, [{"имя": "Gateway", "тип": "system", "суть": "x"}], language=language)
@@ -138,6 +138,31 @@ def test_same_name_born_in_another_folder_keeps_the_link(tmp_path, monkeypatch):
                                                    {"имя": "Шлюз", "тип": "модель", "суть": "y"}])
     assert (graph / "Модели" / "Шлюз.md").exists() and not (graph / "Системы" / "Шлюз.md").exists()
     assert g._HELD_WHY["untyped"] not in note, note
+
+
+def test_other_spelling_in_another_folder_keeps_the_mark(tmp_path, monkeypatch):
+    """Тот же `name_key`, другое написание, узел в чужой папке: `canon_link` его не найдёт —
+    строка остаётся текстом с пометкой, а не ссылкой в никуда (n836-out2, DS C1)."""
+    graph = _graph(tmp_path)
+    monkeypatch.setattr(g, "_root", lambda: tmp_path / "data")
+    held = g.apply_entities(graph, [{"имя": "ИИ-агент", "тип": "человек", "суть": "x"},
+                                    {"имя": "ИИ агент", "тип": "модель", "суть": "y"}], LINK, typed=True)
+    assert (graph / "Модели" / "ИИ агент.md").exists()
+    assert held == {("Системы", "ИИ-агент"): ("untyped", [])}, held
+    line = g.entity_line(graph, {"имя": "ИИ-агент", "тип": "человек", "суть": "x"}, held)
+    assert "[[" not in line and g._HELD_WHY["untyped"] in line, line
+
+
+def test_name_that_got_a_node_leaves_no_false_log_line(tmp_path, monkeypatch):
+    """Журнал пишется по исходу: имя, получившее узел другим типом, строки «не создан» не даёт
+    (n836-out2, DS M1 = Haiku M1)."""
+    graph = _graph(tmp_path)
+    monkeypatch.setattr(g, "_root", lambda: tmp_path / "data")
+    held = g.apply_entities(graph, [{"имя": "Шлюз", "тип": "задача", "суть": "x"},
+                                    {"имя": "Шлюз", "тип": "система", "суть": "y"}], LINK, typed=True)
+    assert held == {} and (graph / "Системы" / "Шлюз.md").exists()
+    log = tmp_path / "data" / "logs" / "graph_unlinked.log"
+    assert not log.exists() or "Шлюз" not in log.read_text(encoding="utf-8")
 
 
 def test_typo_of_a_live_node_stays_near(tmp_path):
