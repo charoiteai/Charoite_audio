@@ -249,6 +249,23 @@ def test_layout_skip_names_the_replacement_char_only_when_it_hid_the_now(night, 
     assert ("знак замены" in line) is suffix
 
 
+@pytest.mark.parametrize("where", ["revision", "title"])
+def test_damaged_head_refuses_before_the_model(night, capsys, where):
+    """Знак замены в шапке прячет поля, которые держат тему: `ревизия:` с битой цифрой
+    читалась пустой, и ночь писала пересказ поверх облачной правки (n856-out4 Haiku C1)."""
+    nd, graph, folder, paths, calls = night
+    p = paths["Бета"]
+    p.write_text(p.read_text(encoding="utf-8").replace("собрано:", "ревизия: 2026-10-30\nсобрано:"),
+                 encoding="utf-8")
+    before = _damage(p, {"revision": "2026-10-30", "title": "# Бета"}[where],
+                     {"revision": b"2026-10-3\xff", "title": b"# \xff\xd0\xb5\xd1\x82\xd0\xb0"}[where])
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert [c[0] for c in calls] == ["Альфа", "Гамма"]
+    assert result["отказы"] == 0 and result["правки_повреждены"] == 1 and result["пропущено"] == 1
+    assert p.read_bytes() == before
+    assert "Бета: Правки автора или шапка повреждены" in capsys.readouterr().out
+
+
 def test_damaged_manual_refusal_is_not_a_model_failure(night, monkeypatch, capsys):
     """Одна испорченная тема не выглядит как молчащая модель: код main не 2."""
     nd, graph, folder, paths, calls = night

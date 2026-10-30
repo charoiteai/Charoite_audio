@@ -124,10 +124,12 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
     if loaded.state == "damaged":
         # битый заголовок правок в теле или в «Источниках» держит `layout_problem`
         # (чужой заголовок, не пункт списка) — здесь знак замены в самих правках;
-        # правок не найти — тоже отказ (n856 Opus I1, out3 Sonnet M1)
-        manual = dossier.split_dossier(text)[3]
-        if manual is None or "\ufffd" in manual:
-            print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
+        # правок не найти — тоже отказ (n856 Opus I1, out3 Sonnet M1). Знак замены в шапке
+        # прячет поля, которые держат тему (`ревизия:` — облачная правка тела), — тоже отказ
+        # (n856-out4 Haiku C1)
+        head, _, _, manual = dossier.split_dossier(text)
+        if manual is None or "\ufffd" in manual or "\ufffd" in head:
+            print(f"  ✗ {theme}: Правки автора или шапка повреждены — не трогаю")
             return False, None, 0
     return True, dossier.preserve_manual(text), 0
 
