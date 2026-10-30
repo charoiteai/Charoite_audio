@@ -2490,7 +2490,7 @@ def _entity_new_text(title: str, typ: str, desc: str, day: str, meeting_line: st
     """Текст нового узла сущности: шапка, заголовок, описание, дата, «## Встречи»."""
     return (f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {title}\n"
             + (f"{desc}\n\n" if desc else "\n")   # без описания — одна пустая, как на всех остальных путях
-            + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
+            + (f"_(последнее упоминание: {day})_\n\n" if _seen_day(day) else "")
             + f"## Встречи\n{meeting_line}\n")
 
 
@@ -2649,9 +2649,18 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
 _LAST_SEEN_RE = re.compile(r"^_\(последнее упоминание: (\d{4}-\d{2}-\d{2})\)_[ \t]*\r?$", re.M)
 
 
+def _seen_day(day: str) -> bool:
+    """День встречи годится в «последнее упоминание»: дата и не из будущего.
+    Будущая (часы машины, ручное имя встречи) встала бы навсегда — максимум назад
+    не откатывается — и глушила или снимала охрану поздней встречи в
+    `_supersede_description` (n846-opus-fix, n846-opus-fix2)."""
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)) and day <= time.strftime("%Y-%m-%d")
+
+
 def _touch_last_seen(text: str, day: str) -> str:
-    """Строка «_(последнее упоминание: ДАТА)_» — обновить, не откатывая назад."""
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+    """Строка «_(последнее упоминание: ДАТА)_» — обновить, не откатывая назад;
+    будущий день не ставится (`_seen_day`)."""
+    if not _seen_day(day):
         return text
     m = _LAST_SEEN_RE.search(text)
     if m:
@@ -2859,9 +2868,9 @@ def _supersede_description(text: str, desc: str, meeting_link: str,
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
     # встреча старше последнего упоминания (долг встреч, импорт) верх не трогает:
     # иначе запоздалый разбор откатывал верх, а эпизоды после №846 его не сменят (Opus I1)
-    # будущая «последняя дата» (часы машины, ручное имя) охрану не включает: иначе верх замерзал (n846-opus-fix)
+    # будущей даты в строке нет — её не ставят писатели строки (`_seen_day`, n846-opus-fix2)
     seen = _LAST_SEEN_RE.search(text, _body_at(text))
-    if (when and seen and day < seen.group(1) <= time.strftime("%Y-%m-%d")) or not _refines(old, new):
+    if (when and seen and day < seen.group(1)) or not _refines(old, new):
         return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _clip(new)
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
     event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")

@@ -2484,14 +2484,19 @@ def test_late_meeting_leaves_newer_top(tmp_path):
     assert text.count("_(было:") == 1 and "_(последнее упоминание: 2026-09-10)_" in text, text
 
 
-def test_future_last_seen_does_not_freeze_top(tmp_path):
-    """Будущая «последняя дата» (часы машины, ручное имя встречи) охрану поздней
-    встречи не включает: уточнение встаёт наверх (n846-opus-fix, Sonnet M1)."""
+def test_future_meeting_sets_no_last_seen(tmp_path):
+    """Встреча из будущего (часы машины, ручное имя) даты упоминания не ставит:
+    верх не замерзает, а поздняя встреча после неё верх не откатывает
+    (n846-opus-fix Sonnet M1, n846-opus-fix2 Haiku C1)."""
     graph = tmp_path / "g"
-    g.upsert_entity(graph, "Люди", "Будущий", "person", "аналитик", "Встречи/2099-01-01_1000", "")
-    g.upsert_entity(graph, "Люди", "Будущий", "person", "аналитик данных", "Встречи/2026-09-01_1000", "")
+    g.upsert_entity(graph, "Люди", "Будущий", "person", "в отпуске до 2026-09-20", "Встречи/2099-01-01_1000", "")
     text = (graph / "Люди" / "Будущий.md").read_text(encoding="utf-8")
-    assert "# Будущий\nаналитик данных\n" in text, text
+    assert "последнее упоминание" not in text, text
+    g.upsert_entity(graph, "Люди", "Будущий", "person", "в отпуске до 2026-09-27", "Встречи/2026-09-10_1000", "")
+    g.upsert_entity(graph, "Люди", "Будущий", "person", "в отпуске до 2026-09-20", "Встречи/2026-09-05_1000", "")
+    text = (graph / "Люди" / "Будущий.md").read_text(encoding="utf-8")
+    assert "# Будущий\nв отпуске до 2026-09-27\n" in text, text
+    assert "_(последнее упоминание: 2026-09-10)_" in text and text.count("_(было:") == 1, text
 
 
 def test_supersede_without_title_leaves_node_as_is():
