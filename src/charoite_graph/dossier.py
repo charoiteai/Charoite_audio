@@ -493,6 +493,15 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
                          unlabeled_rule=graph_names.UNLABELED_RULE)
 
 
+def _body_without_manual(body: str) -> str:
+    """Тело модели без защищённых разделов: заголовок правок в ответе модели — любой, что
+    находит `KEEP_RE`, — начал бы «правки» в теле, следующая ночь взяла бы хвост тела и
+    «Источники» в правки, и они росли бы от ночи к ночи (n856-min1 Haiku I1)."""
+    body = strip_protected(body)
+    m = KEEP_RE.search(body)
+    return (body[:m.start()] if m else body).strip()
+
+
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
            fp: str, today: str) -> str:
     """Готовый файл досье: frontmatter для машины, текст для человека."""
@@ -518,7 +527,7 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
         "> Собрано автоматически ночным проходом. Правки руками сохранятся:",
         "> при пересборке раздел «Правки автора» не трогается.",
         "",
-        body.strip(),
+        _body_without_manual(body),
         "",
         "## Источники",
     ]
@@ -529,11 +538,11 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
     return "\n".join(fm)
 
 
-# Заголовок правок — строкой любого уровня, без пробела и с хвостом пробелов: так его
-# набирает владелец в Obsidian, а литерал «## Правки автора\n» терял правки — пересборка
-# писала «—» поверх (№856). Раздел — до конца файла, как прежде: где правки не последние,
-# хвост уходит в них целиком, а не теряется
-KEEP_RE = re.compile(r"(?m)^#{1,6}[ \t]*Правки автора[ \t]*(?:\n|\Z)(.*)", re.S)
+# Заголовок правок — без пробела и с хвостом пробелов: так его набирает владелец в
+# Obsidian, а литерал «## Правки автора\n» терял правки — пересборка писала «—» поверх
+# (№856). Шаблон — надмножество литерала: что находил он, находит и этот (отступ, любое
+# число «#», середина строки; min1 Haiku C1). Раздел — до конца файла, как прежде
+KEEP_RE = re.compile(r"#+[ \t]*Правки автора[ \t]*(?:\n|\Z)(.*)", re.S)
 BACKUP_DIR = ".backup"       # копии досье до пересборки и ревизии: `Досье/.backup/<штамп>/`
 
 

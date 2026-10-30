@@ -117,10 +117,14 @@ def test_damaged_body_or_fingerprint_rebuilds_every_theme(night, monkeypatch, ca
 
 
 @pytest.mark.parametrize("where", ["manual", "heading"])
-def test_damaged_author_text_refuses_before_model(night, monkeypatch, capsys, where):
+@pytest.mark.parametrize("head", ["## Правки автора", "##Правки автора", "## Правки автора "])
+def test_damaged_author_text_refuses_before_model(night, monkeypatch, capsys, where, head):
     nd, graph, folder, paths, calls = night
     old, new = (("решение", b"re\xffsolution") if where == "manual"
                 else ("Правки", b"Pr\xffavki"))
+    # повреждённые правки с заголовком, как его набирает владелец, — тоже отказ (n856-min1 M2)
+    paths["Бета"].write_text(paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head),
+                             encoding="utf-8")
     before = _damage(paths["Бета"], old, new)
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=False, limit=12)

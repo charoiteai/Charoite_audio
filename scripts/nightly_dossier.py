@@ -117,7 +117,8 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
     text = loaded.text or ""
     if loaded.state == "damaged":
         section = dossier.KEEP_RE.search(text)
-        # заголовок раздела — литерал регулярки, поэтому знак замены во всём совпадении означает знак замены в тексте раздела
+        # в заголовке шаблона знака замены нет (`#`, пробелы, «Правки автора»), поэтому знак
+        # замены во всём совпадении означает знак замены в тексте раздела
         if section is None or "\ufffd" in section.group():
             print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
             return False, None, 0
