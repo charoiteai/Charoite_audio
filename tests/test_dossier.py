@@ -799,15 +799,6 @@ def test_with_revision_replaces_the_field_without_a_duplicate():
     assert twice.endswith("---\n# т\nтело\n") and "собрано: 2026-10-01" in twice
 
 
-def test_hold_counts_gone_and_new_sources():
-    text = dossier.with_revision(
-        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- **Встречи:** [[а]] · [[б]]\n"
-        "\n## Правки автора\n\n—\n", "2026-10-18")
-    assert dossier.hold(text, ["а", "б", "в"]) == dossier.Hold("2026-10-18", 0, 1, ("а", "б"))
-    assert not dossier.hold(text, ["а", "в"]).held
-    assert dossier.hold(re.sub(r"ревизия: .*\n", "", text), ["а"]) == dossier.Hold()
-
-
 def test_revision_survives_a_head_yaml_cannot_parse():
     """Чужое незакавыченное двоеточие ломает YAML шапки — поле всё равно
     читается (`frontmatter.parse` отдал бы {}; выход out1 DS M3)."""
@@ -828,39 +819,17 @@ def test_with_revision_keeps_one_head_after_a_bom():
     assert dossier.revision(out) == "2026-10-18"
 
 
-@pytest.mark.parametrize("name", [
-    "C# и .NET", "Бюджет | итоги", "[Важно] Бюджет", "x.md", " пробел ", "б#Решения",
-])
-def test_source_keys_read_back_exactly_what_render_wrote(name):
-    """Имя узла — всё между `[[` и `]]`: грамматика вики-ссылки резала `#`,
-    `|`, теряла `]` и пробелы, и удержание снималось (выход out1 DS C1,
-    out2 DS C1 и Haiku C1)."""
-    members = [name, "Обычная встреча"]
-    files = {m: {"kind": "Встречи"} for m in members}
-    text = dossier.render("т", "## Сейчас\nx\n", members, files, "fp", "2026-10-18")
-    assert dossier.source_keys(text) == sorted(members)
-    h = dossier.hold(dossier.with_revision(text, "2026-10-18"), members)
-    assert h.held and h.gone == 0 and h.new == 0, h
-
-
-@pytest.mark.parametrize("section", [
-    "- [[а]]", "- **Встречи:** [[а]] · б", "- **Встречи:** [[а\ufffd]]", "просто текст", "",
-])
-def test_a_section_render_did_not_write_holds_and_says_so(section):
-    """Строка не того вида, что пишет `render`: состав не проверить — держим
-    (ревизию повторить некому, n841-out2 Haiku C1) и помечаем `unparsed`."""
-    text = dossier.with_revision(
-        f"---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n{section}\n\n## Правки автора\n\n—\n",
-        "2026-10-18")
-    assert dossier.source_keys(text) is None
-    h = dossier.hold(text, ["а"])
-    assert h.held and h.unparsed, h
-
-
-def test_hold_follows_merge_stubs_to_a_member():
-    text = dossier.with_revision(
-        "---\nтема: т\n---\n# т\n## Сейчас\nx\n\n## Источники\n- **Встречи:** [[а]] · [[б]]\n"
-        "\n## Правки автора\n\n—\n", "2026-10-18")
-    assert dossier.hold(text, ["а", "в"], {"б": "в"}).held
-    assert not dossier.hold(text, ["а", "в"], {"б": "г"}).held
-    assert dossier.hold(text, ["а", "в"], {"б": "в"}).new == 0
+def test_without_revision_drops_only_the_field():
+    """Снять поле (зовёт «забыть встречу», №841): шапка и тело — как были,
+    BOM и CRLF на месте; поля нет — текст тот же."""
+    text = "---\nтема: т\nревизия: 2026-10-18\nсобрано: 2026-10-01\n---\n# т\nтело\n"
+    assert dossier.without_revision(text) == "---\nтема: т\nсобрано: 2026-10-01\n---\n# т\nтело\n"
+    last = "---\nтема: т\nревизия: 2026-10-18\n---\n# т\n"
+    assert dossier.without_revision(last) == "---\nтема: т\n---\n# т\n"
+    crlf = text.replace("\n", "\r\n")
+    assert dossier.without_revision(crlf) == "---\r\nтема: т\r\nсобрано: 2026-10-01\r\n---\r\n# т\r\nтело\r\n"
+    bom = "\ufeff" + last
+    assert dossier.without_revision(bom) == "\ufeff---\nтема: т\n---\n# т\n"
+    for same in ("# без шапки\nревизия: 2026-10-18\n", "---\nтема: т\n---\n# т\n"):
+        assert dossier.without_revision(same) == same
+    assert dossier.revision(dossier.without_revision(dossier.with_revision(text, "2026-10-30"))) == ""

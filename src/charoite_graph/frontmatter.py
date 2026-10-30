@@ -229,6 +229,23 @@ def with_field(text: str, key: str, value: str) -> str:
     return _put_line(text, key, f"{key}: {yaml_str(value)}")
 
 
+def without_field(text: str, key: str) -> str:
+    """Убрать поле `key:` из шапки вместе со значением (границы — `_field_span`);
+    поля или шапки нет — текст как был. BOM остаётся на месте."""
+    bom = _BOM if text.startswith(_BOM) else ""
+    fm, body = split(text[len(bom):])
+    span = _field_span(fm, key) if fm is not None else None
+    if not span:
+        return text
+    nl = "\r\n" if "\r\n" in fm else "\n"
+    fm2 = fm[:span[0]] + fm[span[1]:]
+    if not fm2.startswith(nl):
+        fm2 = nl + fm2.lstrip("\r\n")
+    if not fm2.endswith(nl):
+        fm2 = fm2.rstrip("\r\n") + nl
+    return bom + "---" + fm2 + "---" + nl + body
+
+
 def with_aliases(text: str, names: list[str]) -> str:
     """Дописать псевдонимы (`aliases:`) в шапку."""
     return with_list_field(text, "aliases", names)

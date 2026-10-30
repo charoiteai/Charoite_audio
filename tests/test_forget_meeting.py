@@ -33,6 +33,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 import forget_meeting as forget  # noqa: E402
 import charoite_paths  # noqa: E402
+from charoite_graph import dossier as dossier_mod  # noqa: E402
 
 STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
@@ -441,6 +442,51 @@ def test_link_inside_a_sentence_becomes_a_note_not_a_dangling_link(tmp_path):
     assert f"Встречи/{STAMP}" not in dossier
     assert "Выбран ЮPay" in dossier, "текст досье не должен рассыпаться"
     assert forget.REMOVED_NOTE in dossier, "человек должен понимать, почему тут пробел"
+
+
+def _revised_dossier(graph: pathlib.Path, sources: str) -> pathlib.Path:
+    """Досье, тело которого правила облачная ревизия (`ревизия:`, №841);
+    источники — голыми именами узлов, как пишет `render`."""
+    path = graph / "Досье" / "Ревизия.md"
+    path.write_text("---\nтема: Ревизия\nревизия: 2026-10-18\n---\n# Ревизия\n\n"
+                    "Выбран ЮPay ⚠ срок не сходится.\n\n## Источники\n"
+                    f"- **Встречи:** {sources}\n\n## Правки автора\n\n—\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("link", [f"[[{STAMP}]]", f"[[Встречи/{STAMP}.md]]", f"[[{STAMP}|15 июля]]",
+                                  f"[[{STAMP}#Итог]]"])
+def test_forget_lifts_the_revision_of_a_dossier_that_cites_the_meeting(tmp_path, link):
+    """Ночь не пересобирает досье с ревизией (№841): забытая встреча снимает
+    поле — иначе её пересказ пережил бы её. Строка «Источники» с другими
+    встречами остаётся (выход n841-out3 DS C2, Haiku C1)."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"{link} · [[2026-07-01_1000]]")
+    p = forget.plan(STAMP, root, graph)
+    assert path in p.edit and dossier_mod.revision(p.edit[path]) == "", p.edit.get(path)
+    forget.apply(p, yes=True)
+    text = path.read_text(encoding="utf-8")
+    assert dossier_mod.revision(text) == "" and "тема: Ревизия" in text
+    assert "[[2026-07-01_1000]]" in text and "⚠ срок не сходится" in text
+
+
+def test_forget_keeps_the_revision_of_a_dossier_about_other_meetings(tmp_path):
+    """Соседний штамп той же минуты и чужая встреча — не наша ссылка: поле стоит."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}05]] · [[2026-07-01_1000]]")
+    before = path.read_text(encoding="utf-8")
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_forget_does_not_touch_a_dossier_without_a_revision_for_a_bare_link(tmp_path):
+    """Без поля — правка как раньше: голую ссылку пересборка уберёт сама."""
+    root, graph = _world(tmp_path)
+    path = _revised_dossier(graph, f"[[{STAMP}]]")
+    path.write_text(path.read_text(encoding="utf-8").replace("ревизия: 2026-10-18\n", ""), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_surviving_nodes_are_backed_up_before_editing(tmp_path):

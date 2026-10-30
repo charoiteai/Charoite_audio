@@ -71,17 +71,15 @@ def all_graphs() -> list[pathlib.Path]:
 
 
 def _index_entry_from_disk(theme: str, members: list[str], loaded: dossier.DossierLoad,
-                           fp: str, today: str, terms: list[str] | None = None) -> dict:
+                           fp: str, today: str) -> dict:
     """Запись индекса для темы, которую этот прогон не пересобирал: досье
-    на диске живо — в индексе оно должно остаться (отпечаток — фактический).
-    `members` — состав досье (счёт источников), `terms` — имена для ключей
-    поиска, если шире состава."""
+    на диске живо — в индексе оно должно остаться (отпечаток — фактический)."""
     return {
         "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
         "источников": len(members),
         "собрано": _собрано(loaded) or today,
         "отпечаток": dossier.read_fingerprint(loaded) or fp,
-        "ключи": dossier.keywords(theme + " " + " ".join(terms or members)),
+        "ключи": dossier.keywords(theme + " " + " ".join(members)),
     }
 
 
@@ -193,9 +191,10 @@ class _GraphRun:
 
     Индекс — карта досье всех тем графа, а не только тех, что посетил
     прогон: темы сверх лимита, с отказом и не успевшие за ночь раньше
-    выпадали из _index/_ИНДЕКС (аудит 17.08). Досье темы, выпавшей из
-    кластеров, в индекс не идёт — файл остаётся на диске (n841-out2 Haiku M1). Поэтому `entries` заполняется со скана
-    записями с диска, а собранная тема заменяет свою запись.
+    выпадали из _index/_ИНДЕКС (аудит 17.08). Поэтому `entries` заполняется
+    со скана записями с диска, а собранная тема заменяет свою запись. Досье
+    темы, выпавшей из кластеров, в индекс не идёт — файл остаётся на диске
+    (n841-out2 Haiku M1, out3 Sonnet M1).
     """
 
     def __init__(self, graph: pathlib.Path, files: dict, cl: dict, today: str, stamp: str):
@@ -213,22 +212,11 @@ class _GraphRun:
         self.changed = self.broken_manual = 0
         self.labeled = 0          # метка в теле при тех же источниках — эту ночь не трогаем
         self.revised = 0          # тело правила облачная ревизия (`ревизия:` в шапке) — не пересобираем
-        self.stubs: dict[str, str] = {}   # заглушки слияния из `scan` — для `dossier.hold`
-
-    def hold(self, loaded: dossier.DossierLoad, members: list[str]) -> dossier.Hold:
-        return dossier.hold(loaded.text, members, self.stubs)
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
-        """Неприменённая пересборка оставляет прежнее досье в индексе. У
-        удержанной ревизией темы счёт — по источникам самого досье, ключи — по
-        ним и составу кластера: канон после слияния ищется по своему имени
-        (n841-out2 DS M3). Решает здесь, а не каждый вызов: путей `keep` пять
-        (выход n841-out1 Sonnet I2)."""
+        """Неприменённая пересборка оставляет прежнее досье в индексе."""
         if loaded.state != "missing":
-            h = self.hold(loaded, members)
-            own = list(h.sources) or members if h.held else members
-            self.entries[theme] = _index_entry_from_disk(
-                theme, own, loaded, fp, self.today, list(dict.fromkeys([*own, *members])))
+            self.entries[theme] = _index_entry_from_disk(theme, members, loaded, fp, self.today)
 
     def write_index(self, dry: bool) -> None:
         """Один раз за прогон: как только у графа кончились кандидаты, а для
@@ -276,24 +264,24 @@ class Candidate:
 
 
 def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_GraphRun, list[Candidate]]:
-    stubs: dict[str, str] = {}
-    files, backlinks = dossier.scan(graph, schema=CHAROITE, stubs=stubs)
+    files, backlinks = dossier.scan(graph, schema=CHAROITE)
     cl = dossier.clusters(files, backlinks, schema=CHAROITE) if files else {}
     g = _GraphRun(graph, files, cl, today, stamp)
-    g.stubs = stubs
     found = []
     for theme, members in cl.items():
         path = g.folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
         loaded = g.reads.load(path)
-        h = g.hold(loaded, members)
         g.keep(theme, members, loaded, fp)
         same = dossier.read_fingerprint(loaded) == fp and loaded.state != "missing"
         # Тело правила облачная ревизия: пересказ модели стёр бы её (25.10
         # `--full` — текст −80 %, ⚠ 999 → 0), повторить её некому. Проверка —
-        # до классов, иначе `--full` взял бы SAME (вход n841-in1 DS M1)
-        if h.held:
-            _skip_held(g, theme, h, same)
+        # до классов, иначе `--full` взял бы SAME (вход n841-in1 DS M1).
+        # Снимает поле «забыть встречу» или владелец (выход out3: состав по
+        # разделу «Источники» три круга подряд давал ложный уход источника)
+        rev = dossier.revision(loaded.text)
+        if rev:
+            _skip_held(g, theme, rev, same)
             continue
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
         # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
@@ -310,27 +298,19 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
                 g.unchanged += 1
             continue
         cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
-        # строка — когда тема и правда идёт в сборку (n841-out2 DS M1, Sonnet M1)
-        if h.revision:
-            print(f"  ↻ {graph.name} · {theme}: ревизия {h.revision} снята — "
-                  f"{h.why_not()}, пересборка")
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
 
 
-def _skip_held(g: _GraphRun, theme: str, h: dossier.Hold, same: bool) -> None:
+def _skip_held(g: _GraphRun, theme: str, rev: str, same: bool) -> None:
     """Пропуск темы с ревизией в теле. Строка лога — только когда тема
-    отстаёт от графа: новые источники или правка прежних (вход n841-in1 DS M3,
-    выход out1 DS M1)."""
+    отстаёт от графа (вход n841-in1 DS M3)."""
     g.skipped += 1
     g.revised += 1
-    if h.unparsed:
-        print(f"  ⏭ {g.graph.name} · {theme}: ревизия {h.revision} — ночь не трогает; "
-              "раздел «Источники» не того вида, что пишет сборка: состав не проверить")
-    elif h.new or not same:
-        lag = f"новых источников {h.new}" if h.new else "источники правились"
-        print(f"  ⏭ {g.graph.name} · {theme}: ревизия {h.revision} — ночь не трогает; {lag}")
+    if not same:
+        print(f"  ⏭ {g.graph.name} · {theme}: ревизия {rev} — ночь не трогает; "
+              "источники сменились (пересобрать — убрать строку `ревизия:` из шапки)")
 
 
 def _graph_key(c: Candidate) -> tuple:
@@ -374,10 +354,10 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         g.keep(theme, members, loaded, fp)
     # Поле могли поставить, пока тема ждала очереди: решение «переписать
     # можно» — по тому снимку, с которым идём к модели (вход n841-in1 S-I1)
-    h = g.hold(loaded, members)
-    if h.held:
+    rev = dossier.revision(loaded.text)
+    if rev:
         g.keep(theme, members, loaded, fp)
-        _skip_held(g, theme, h, cand.cls == SAME)
+        _skip_held(g, theme, rev, cand.cls == SAME)
         return None
     allowed, manual, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:

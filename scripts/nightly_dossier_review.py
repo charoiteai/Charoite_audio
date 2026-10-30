@@ -460,8 +460,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         manual = manual if manual and manual != "—" else None
         text = (head + fixed + "\n\n## Источники\n" + (sources + "\n\n" if sources else "\n")
                 + "## Правки автора\n\n" + (manual or "—") + "\n")
-        # Тело теперь ревизии: ночная пересборка его не трогает, пока живы
-        # источники (`dossier.hold`, №841); поле — в той же записи, что строка
+        # Тело теперь ревизии: ночная пересборка его не трогает, снимает поле
+        # «забыть встречу» (№841); поле — в той же записи, что строка
         # «Применено» отчёта, и не разойдётся с ним (вход n841-in1 S-C2)
         text = dossier.with_revision(text, stamp[:10])
 

@@ -810,29 +810,33 @@ def test_revised_theme_with_the_same_sources_is_left_alone(nd, tmp_path, capsys,
 @pytest.mark.parametrize("full", [False, True])
 def test_new_source_does_not_rebuild_a_revised_theme(nd, tmp_path, capsys, full):
     """CHANGED и воскресный `--full` (вход n841-in1 DS M1): новый источник
-    тему с ревизией не пересобирает, отставание видно строкой лога, в индексе
-    — источники самого досье, а не нового кластера."""
+    тему с ревизией не пересобирает, отставание видно строкой лога, тема
+    остаётся в индексе."""
     graph, path = _revised_graph(nd, tmp_path)
     before = path.read_bytes()
     _new_meeting(graph)
     r = nd.run(graph, {}, full=full, dry=False, limit=None)
     out = capsys.readouterr().out
     assert nd.calls == [] and r["ревизия"] == 1, r
-    assert "· тема: ревизия 2026-10-18 — ночь не трогает; новых источников 1" in out
+    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники сменились" in out
     assert path.read_bytes() == before
     [entry] = dossier.load_index(graph / CHAROITE.dossier_dir)
-    assert entry["источников"] == 3 and "тема_новая" not in entry["ключи"], entry
+    assert entry["тема"] == "тема", entry
 
 
-def test_gone_source_lifts_the_revision_and_rebuilds(nd, tmp_path, capsys):
-    """Приватность: встречу забыли — досье с её пересказом не держим, тема
-    пересобирается без неё, поле снимается."""
+def test_gone_source_holds_until_the_field_is_lifted(nd, tmp_path, capsys):
+    """Источник ушёл — ночь сама защиту не снимает: состав по разделу
+    «Источники» три круга давал ложный уход (n841-out3). Снимает поле «забыть
+    встречу» (`dossier.without_revision`) — тогда тема пересобирается без неё."""
     graph, path = _revised_graph(nd, tmp_path, meetings=3)
+    before = path.read_bytes()
     (graph / "Встречи" / "тема_3.md").unlink()
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    out = capsys.readouterr().out
+    assert nd.calls == [] and r["ревизия"] == 1 and path.read_bytes() == before, r
+    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники сменились" in capsys.readouterr().out
+    path.write_text(dossier.without_revision(path.read_text(encoding="utf-8")), encoding="utf-8")
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
     assert nd.calls == ["тема"] and r["собрано"] == 1 and r["ревизия"] == 0, r
-    assert "· тема: ревизия 2026-10-18 снята — источников ушло 1, пересборка" in out
     text = path.read_text(encoding="utf-8")
     assert dossier.revision(text) == "" and "тема_3" not in text
 
@@ -861,8 +865,8 @@ def test_revision_set_after_the_scan_is_read_before_the_build(nd, tmp_path, monk
 
 
 def test_edited_source_is_logged_without_a_rebuild(nd, tmp_path, capsys):
-    """Правка прежнего источника — отпечаток разошёлся, новых нет: строка
-    лога про правку, а не «новых источников 0» (выход out1 DS M1)."""
+    """Правка прежнего источника — отпечаток разошёлся: строка лога, без
+    пересборки (выход out1 DS M1)."""
     graph, path = _revised_graph(nd, tmp_path)
     before = path.read_bytes()
     src = graph / "Встречи" / "тема_1.md"
@@ -870,7 +874,7 @@ def test_edited_source_is_logged_without_a_rebuild(nd, tmp_path, capsys):
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
     out = capsys.readouterr().out
     assert nd.calls == [] and r["ревизия"] == 1, r
-    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники правились" in out
+    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники сменились" in out
     assert path.read_bytes() == before
 
 
@@ -890,52 +894,3 @@ def test_merged_source_keeps_the_revision(nd, tmp_path, capsys):
     assert "снята" not in out and path.read_bytes() == before
     keys = dossier.load_index(graph / CHAROITE.dossier_dir)[0]["ключи"]
     assert dossier.keywords("тема_1б")[0] in keys, "канон после слияния ищется по имени (n841-out2 DS M3)"
-
-
-@pytest.mark.parametrize("full", [False, True])
-def test_unparsed_sources_keep_the_revision_and_say_so(nd, tmp_path, capsys, full):
-    """Раздел «Источники» переименован руками — проверить состав нечем, а
-    ревизию повторить некому: держим, строка в логе, и на `--full` (n841-out2
-    Haiku C1 против out1 DS I2: вечное удержание видно строкой каждую ночь)."""
-    graph, path = _revised_graph(nd, tmp_path)
-    path.write_text(path.read_text(encoding="utf-8").replace(
-        "## Источники", "## Откуда собрано"), encoding="utf-8")
-    before = path.read_bytes()
-    r = nd.run(graph, {}, full=full, dry=False, limit=None)
-    out = capsys.readouterr().out
-    assert nd.calls == [] and r["ревизия"] == 1 and path.read_bytes() == before, r
-    assert "· тема: ревизия 2026-10-18 — ночь не трогает; раздел «Источники» не того вида" in out
-    entry = dossier.load_index(graph / CHAROITE.dossier_dir)[0]
-    assert entry["источников"] == 3, "у неразобранного — счёт по составу кластера"
-
-
-@pytest.mark.parametrize("full", [False, True])
-def test_lifted_line_only_when_the_theme_is_rebuilt(nd, tmp_path, capsys, full):
-    """Источник досье правили руками, состав кластера тот же: защита снята, но
-    без `--full` тема без изменений — строки «пересборка» нет (n841-out2 DS M1,
-    Sonnet M1)."""
-    graph, path = _revised_graph(nd, tmp_path)
-    path.write_text(path.read_text(encoding="utf-8").replace("[[тема_1]]", "[[тема_x]]"),
-                    encoding="utf-8")
-    r = nd.run(graph, {}, full=full, dry=False, limit=None)
-    out = capsys.readouterr().out
-    assert ("снята — источников ушло 1, пересборка" in out) is full, out
-    assert nd.calls == (["тема"] if full else []) and r["ревизия"] == 0, r
-
-
-def test_scan_hands_out_only_the_stubs_it_applied(tmp_path):
-    """Заглушка-тёзка живого файла и цепочка мимо живого узла: `scan` их не
-    применяет — и наружу не отдаёт; остальное — с концом цепочки (n841-out2
-    DS I1)."""
-    graph = tmp_path / "Г"
-    (graph / "Встречи").mkdir(parents=True)
-    stub = "---\ntags: [дубль, redirect]\n---\n# {a} → [[Встречи/{b}]]\n\n⚠️ **Дубль. Смерджен Tier3-NLI.**\n"
-    for a, b in (("а", "б"), ("б", "в"), ("г", "д"), ("д", "е")):
-        (graph / "Встречи" / f"{a}.md").write_text(stub.format(a=a, b=b), encoding="utf-8")
-    (graph / "Ядра").mkdir()
-    for live in ("в", "е"):
-        (graph / "Встречи" / f"{live}.md").write_text("# Встреча\n", encoding="utf-8")
-    (graph / "Ядра" / "д.md").write_text("# живой тёзка заглушки\n", encoding="utf-8")
-    stubs = {"чужое": "x"}
-    dossier.scan(graph, schema=CHAROITE, stubs=stubs)
-    assert stubs == {"а": "в", "б": "в", "г": "д"}, stubs

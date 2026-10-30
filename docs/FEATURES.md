@@ -306,8 +306,8 @@ nothing across meetings. A dossier whose fingerprint matches but whose body stil
 carries a label is left alone by the night, `--full` included, and counted
 (`метка в теле N` in the skip line). A dossier edited by the cloud review
 (`ревизия:` in its front matter) is not retold by the night either, even with new
-sources (`ревизия N` in the skip line); a source that left the cluster lifts the hold
-and the topic is rebuilt without it. To check what a query would
+sources (`ревизия N` in the skip line); forgetting a meeting the dossier links lifts
+the hold and the topic is rebuilt without it, anything else — delete the `ревизия:` line. To check what a query would
 find: `scripts/nightly_dossier.py --find "your question"`.
 
 **Cloud dossier review — optional** (`scripts/nightly_dossier_review.py`). The
