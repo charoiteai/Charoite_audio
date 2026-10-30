@@ -464,7 +464,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             continue
 
         head, old_body, sources, manual = split_dossier(old)   # шапка как была
-        if sources is None:
+        if sources is None:     # недостижимо: `review` бракует такое досье до облака; страховка типа
             rejected.append(f"- **{theme}** — в досье нет раздела «## Источники» — не трогаем")
             continue
         manual = manual if manual and manual != "—" else None

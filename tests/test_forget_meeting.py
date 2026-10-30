@@ -574,8 +574,8 @@ def test_forget_drops_revision_of_a_dossier_copy_in_a_snapshot(tmp_path, place):
 
 
 def test_forget_strips_a_meeting_line_without_splitting_others(tmp_path):
-    """`_strip_meeting` режет только по `\\n`: U+2028 и `\\x0b` в соседних
-    строках остаются (out5 DS I5)."""
+    """Разделители, которые не конец строки Markdown (U+2028, `\\x0b`), в
+    соседних строках остаются дословно (out5 DS I5, out7 DS M2)."""
     root, graph = _world(tmp_path)
     node = graph / "Ядра" / "Выбор платёжного провайдера.md"
     before = node.read_text(encoding="utf-8")
@@ -584,15 +584,38 @@ def test_forget_strips_a_meeting_line_without_splitting_others(tmp_path):
     assert "ЮPay\u2028срок\x0bпозже\n" in p.edit[node], p.edit.get(node)
 
 
-@pytest.mark.parametrize("sep", ["\r", "\u2028"])
+@pytest.mark.parametrize("sep", ["\r", "\n", "\r\n"])
 def test_forget_drops_only_the_meeting_item_whatever_ends_the_line(tmp_path, sep):
-    """Одиночный `\\r` и U+2028 — тоже конец строки: уходит пункт о встрече,
+    """Конец строки Markdown — `\\r`, `\\n`, `\\r\\n`: уходит пункт о встрече,
     соседний пункт и разделители остаются (out6 Haiku I2, Sonnet M2, DS M1)."""
     root, graph = _world(tmp_path)
     node = graph / "Ядра" / "Срок.md"
     node.write_bytes(f"- [[Встречи/{STAMP}]] — факт{sep}- срок: 1 августа{sep}".encode("utf-8"))
     p = forget.plan(STAMP, root, graph)
     assert p.edit[node] == f"- срок: 1 августа{sep}", p.edit.get(node)
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\x0c", "\x85"])
+def test_forget_keeps_a_meeting_item_whole_across_a_non_markdown_break(tmp_path, sep):
+    """U+2028, `\\x0c`, `\\x85` — не конец строки Markdown: пункт о встрече
+    уходит целиком, с хвостом; ссылка внутри фразы после них — пометкой, без
+    потери начала фразы (out7 Haiku C1, Sonnet I1, DS I2)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(f"- [[Встречи/{STAMP}]] — факт{sep}продолжение\nСрок{sep}- [[Встречи/{STAMP}]] — "
+                    "перенесли\n- другое\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == f"Срок{sep}- {forget.REMOVED_NOTE} — перенесли\n- другое\n", p.edit.get(node)
+
+
+def test_forget_names_a_link_it_could_not_cut(tmp_path):
+    """Перевод строки в алиасе: построчное вырезание ссылку не видит — путь
+    файла в «проверь сам», а не молча (out7 Sonnet I1, Haiku I1)."""
+    root, graph = _world(tmp_path)
+    node = graph / "Ядра" / "Срок.md"
+    node.write_text(f"см. [[Встречи/{STAMP}|тема\nплатёж]]\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert any(c.startswith("Ядра/Срок.md: ссылка на встречу осталась") for c in p.check), p.check
 
 
 def test_surviving_nodes_are_backed_up_before_editing(tmp_path):

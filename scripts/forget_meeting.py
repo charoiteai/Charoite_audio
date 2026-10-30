@@ -203,6 +203,11 @@ def _link_re(stamps: str | list[str]) -> re.Pattern[str]:
     return re.compile(rf"\[\[{MEETINGS_DIR}/(?:{alt})(?:\|[^\]]*)?\]\]")
 
 
+# Строка Markdown (CommonMark, Obsidian): конец — только `\r\n`, `\r` или `\n`, с
+# разделителем; U+2028, `\x0b`, `\x0c`, `\x85` — внутри строки (out7 Haiku C1, DS I2)
+_MD_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
+
+
 def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
     """Граф из аргумента или все графы vault — встреча живёт в одном из них.
 
@@ -1058,6 +1063,11 @@ def plan(stamp: str, root: pathlib.Path,
             fixed = _strip_meeting(text, link) if linked else text
             if revised:
                 fixed = dossier.without_revision(fixed)
+            if link.search(fixed):
+                # ссылка через перевод строки в алиасе построчному вырезанию не видна —
+                # не молчать (out7 Sonnet I1, Haiku I1)
+                where = f"{rel} (снимок)" if in_snap else rel
+                p.check.append(f"{where}: ссылка на встречу осталась после правки — убери руками")
             if fixed != text:
                 p.edit[f] = fixed
     # Сами факты (тема, участники, решения) живут в памяти-компаньоне
@@ -1107,8 +1117,8 @@ def _strip_meeting(text: str, link: re.Pattern[str]) -> str:
     """
     out = []
     # разделители строк — как были: `"\n".join` менял U+2028 и `\x0b` (out5 DS I5),
-    # а одиночный `\r` без `splitlines` склеивал файл в один пункт (out6 Haiku I2)
-    for line in text.splitlines(keepends=True):
+    # а одиночный `\r` склеивал файл в один пункт (out6 Haiku I2)
+    for line in _MD_LINE.findall(text):
         if not link.search(line):
             out.append(line)
             continue
