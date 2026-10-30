@@ -5,6 +5,43 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.101.0](https://github.com/charoiteai/Charoite_audio/compare/v0.100.0...v0.101.0) (2026-10-30)
+
+
+### Features
+
+* **audio:** dead call channel content is a trace event during a call ([#884](https://github.com/charoiteai/Charoite_audio/issues/884)) ([0c91187](https://github.com/charoiteai/Charoite_audio/commit/0c9118706cba1c09025076f07b5725efa41359db))
+* **debrief:** deadline gate on the debrief's tasks section ([#875](https://github.com/charoiteai/Charoite_audio/issues/875)) ([7003732](https://github.com/charoiteai/Charoite_audio/commit/70037324fa5824902f3e8e04a2e41370165f1ada))
+* **dossier:** one plan for the dossier body by its meetings (part 1) ([#889](https://github.com/charoiteai/Charoite_audio/issues/889)) ([74a780b](https://github.com/charoiteai/Charoite_audio/commit/74a780b918cfdb8efa0c76cd63117cb03690b1b3))
+* **graph:** second extraction pass with 6000-char chunks behind a flag ([#821](https://github.com/charoiteai/Charoite_audio/issues/821)) ([#866](https://github.com/charoiteai/Charoite_audio/issues/866)) ([63e2395](https://github.com/charoiteai/Charoite_audio/commit/63e2395d3ca889d34af670ca7e9b65b603f9b5f4))
+* **graph:** second pass on by default for the measured model, explicit key wins ([#822](https://github.com/charoiteai/Charoite_audio/issues/822)) ([#870](https://github.com/charoiteai/Charoite_audio/issues/870)) ([453eea7](https://github.com/charoiteai/Charoite_audio/commit/453eea77359624ab578224ea79d9fee8fc001ed4))
+* **llm:** model call ledger per consumer ([#807](https://github.com/charoiteai/Charoite_audio/issues/807)) ([#869](https://github.com/charoiteai/Charoite_audio/issues/869)) ([2e2f1cc](https://github.com/charoiteai/Charoite_audio/commit/2e2f1ccb6474beafd5665397592ce4936e4d1805))
+* **probes:** memory bench in two layers — fact ranks once, synthesis replay from saved packets ([#890](https://github.com/charoiteai/Charoite_audio/issues/890)) ([d5ad477](https://github.com/charoiteai/Charoite_audio/commit/d5ad477720c14ca0541d52c1d5bcdd2d143b2b3f))
+
+
+### Bug Fixes
+
+* **brain:** send every meeting decision, participant and topic to memory ([#877](https://github.com/charoiteai/Charoite_audio/issues/877)) ([902320a](https://github.com/charoiteai/Charoite_audio/commit/902320aa919404d6368eb49c19dbf4e48b1bd01d))
+* **dossier:** keep a cloud-reviewed body from the night rebuild ([#841](https://github.com/charoiteai/Charoite_audio/issues/841)) ([#881](https://github.com/charoiteai/Charoite_audio/issues/881)) ([ac1e6c3](https://github.com/charoiteai/Charoite_audio/commit/ac1e6c3e458629772936be129d38a67f62bd7f75))
+* file snapshot sees a write that keeps mtime; one graph lock dir (№853) ([#887](https://github.com/charoiteai/Charoite_audio/issues/887)) ([47ffe9f](https://github.com/charoiteai/Charoite_audio/commit/47ffe9fea5d417b3d9f0928ce94658d0418aa5fd))
+* **forget:** drop a meeting item as a block, delete night dossiers that retell it ([#888](https://github.com/charoiteai/Charoite_audio/issues/888)) ([0161b6a](https://github.com/charoiteai/Charoite_audio/commit/0161b6a0bcfdcffa0219890e85233aa350fa6b2b))
+* **graph:** an entity type outside the parse list gives no new node ([#885](https://github.com/charoiteai/Charoite_audio/issues/885)) ([66ca698](https://github.com/charoiteai/Charoite_audio/commit/66ca698be7948c227e5fa88337cb4aa12c537099))
+* **graph:** bare name guessed by substring is judged by the namesake gate ([#876](https://github.com/charoiteai/Charoite_audio/issues/876)) ([33a6889](https://github.com/charoiteai/Charoite_audio/commit/33a688919a32227cc0e4343d929e982041c2d1aa))
+* **graph:** keep stable node description, meeting episode on its line ([#882](https://github.com/charoiteai/Charoite_audio/issues/882)) ([f5b38b9](https://github.com/charoiteai/Charoite_audio/commit/f5b38b9a7cf21ebc924f59c6862c701023683ab9))
+* **graph:** merge reworded duplicate decisions on the way out of extract ([#824](https://github.com/charoiteai/Charoite_audio/issues/824)) ([#871](https://github.com/charoiteai/Charoite_audio/issues/871)) ([63f98d1](https://github.com/charoiteai/Charoite_audio/commit/63f98d1379eabd0535d0e6114861e7a12916cab8))
+* **graph:** second pass keeps opposite and specific decisions ([#833](https://github.com/charoiteai/Charoite_audio/issues/833)) ([#872](https://github.com/charoiteai/Charoite_audio/issues/872)) ([2216f53](https://github.com/charoiteai/Charoite_audio/commit/2216f53247d593a58adcb70ef0974c225e136a80))
+* **memory:** dossier band in EXPAND and LIVE profiles ([#893](https://github.com/charoiteai/Charoite_audio/issues/893)) ([7ff31be](https://github.com/charoiteai/Charoite_audio/commit/7ff31be3d1706e94cd1a77774cad15c608e2150a))
+* **nightly:** Sunday dossier night stays incremental, full rebuild only by hand ([#879](https://github.com/charoiteai/Charoite_audio/issues/879)) ([2ee773c](https://github.com/charoiteai/Charoite_audio/commit/2ee773c05c5d4e14af0d48e14eda6fd7d0d2dde4))
+* **pii:** mask lowercase names, drop speaker labels and speech spans ([#874](https://github.com/charoiteai/Charoite_audio/issues/874)) ([c86e9c1](https://github.com/charoiteai/Charoite_audio/commit/c86e9c16bf0a4fdfb8a6ebfabee85b16992af2b6))
+* **privacy:** non-UTF-8 text, media by signature, push hint after squash ([#880](https://github.com/charoiteai/Charoite_audio/issues/880)) ([1839377](https://github.com/charoiteai/Charoite_audio/commit/1839377a04d379121e1258741e35593c6cd01a6a))
+* **tests:** refuse a run under background QoS instead of failing on timeouts ([#817](https://github.com/charoiteai/Charoite_audio/issues/817)) ([#868](https://github.com/charoiteai/Charoite_audio/issues/868)) ([d260f87](https://github.com/charoiteai/Charoite_audio/commit/d260f87958f310cd75588578dac27fc2cacd1ee8))
+* **tier3:** judge only cores with an essence of their own ([#628](https://github.com/charoiteai/Charoite_audio/issues/628)) ([#886](https://github.com/charoiteai/Charoite_audio/issues/886)) ([5a71bbb](https://github.com/charoiteai/Charoite_audio/commit/5a71bbb9ee282e433543b600c3969bf1791d0586))
+
+
+### Performance Improvements
+
+* **daemon:** live minutes draft every 600 s instead of 150 s ([#892](https://github.com/charoiteai/Charoite_audio/issues/892)) ([efcea77](https://github.com/charoiteai/Charoite_audio/commit/efcea7766a6dbf753324f8035621057f340ba6c2))
+
 ## [0.100.0](https://github.com/charoiteai/Charoite_audio/compare/v0.99.0...v0.100.0) (2026-10-27)
 
 
