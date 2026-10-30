@@ -194,7 +194,7 @@ def test_body_without_now_heading_is_held(world):
     """Автор переименовал «## Сейчас» — тело не разобрано, дописывать некуда (out1 Sonnet I3)."""
     snap, built, members = world
     text = dossier.with_composition(_dossier(snap, built), [OLD]).replace("## Сейчас", "## Сегодня")
-    assert _plan(text, members, snap) == dossier.Plan("hold", "unparsed")
+    assert _plan(text, members, snap) == dossier.Plan("hold", "unparsed", (NEW,))
 
 
 def test_composition_survives_bom(world):
@@ -243,10 +243,13 @@ def test_meeting_missing_from_snapshot_is_gone(tmp_path):
 
 
 @pytest.mark.parametrize("held,action", [(False, "rebuild"), (True, "hold")])
-def test_meeting_that_left_the_theme_is_gone(world, held, action):
-    """Ссылку встречи на ядро сняли — файл жив, но тело её пересказывать не вправе (out1 Haiku I2)."""
-    snap, _, members = world
-    text = _dossier(snap, members)
+def test_meeting_that_left_the_theme_is_gone(tmp_path, held, action):
+    """Встреча сама больше не ссылается на ядро — файл жив, но тело её пересказывать
+    не вправе (out1 Haiku I2)."""
+    g = _graph(tmp_path)
+    (g / "Встречи" / f"{NEW}.md").write_text("Продолжение без ссылки.\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD, "Пётр"]), [OLD, NEW])
     if held:
         text = dossier.with_revision(text, "2026-07-23")
     p = _plan(text, [THEME, OLD, "Пётр"], snap)
@@ -259,14 +262,14 @@ def test_fork_stub_is_not_gone(tmp_path):
     (g / "Встречи" / "Старое имя.md").write_text(
         f"# Старое имя → [[Встречи/{OLD}]] · [[Встречи/{NEW}]]\n", encoding="utf-8")
     snap = dossier.scan_snapshot(g, schema=CHAROITE)
-    assert "Старое имя" in snap.stubs and "Старое имя" not in snap.redirects
+    assert snap.stubs["Старое имя"] == (OLD, NEW) and "Старое имя" not in snap.redirects
     text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, "Старое имя"])
     assert _plan(text, [THEME, OLD], snap) == dossier.Plan("skip", "same")
 
 
 def test_stub_ring_does_not_hang(world):
     snap, built, _ = world
-    ring = dossier.GraphSnapshot(snap.files, snap.backlinks, {"A": "B", "B": "A"}, frozenset())
+    ring = dossier.GraphSnapshot(snap.files, snap.backlinks, {"A": "B", "B": "A"}, {"A": ("B",), "B": ("A",)})
     text = dossier.with_composition(_dossier(snap, built), [OLD, "A"])
     p = _plan(text, built, ring)
     assert (p.action, p.gone) == ("rebuild", ("A",))
@@ -308,3 +311,57 @@ def test_has_field_and_set_list_field_keep_crlf():
     assert "\r\nсостав: [\"a\", \"b\"]\r\n" in out
     assert frontmatter.has_field(out, dossier.COMPOSITION_FIELD)
     assert frontmatter.list_field(out, dossier.COMPOSITION_FIELD) == ["a", "b"]
+
+
+def test_fork_stub_with_every_target_gone_is_gone(tmp_path):
+    """Развилка жива, пока жива хоть одна цель; обе забыты — уход (out2 Haiku C2)."""
+    g = _graph(tmp_path)
+    (g / "Встречи" / "Старое имя.md").write_text(
+        f"# Старое имя → [[Встречи/{OLD}]] · [[Встречи/{NEW}]]\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, "Старое имя"])
+    snap.files[NEW]["path"].unlink()
+    assert _plan(text, [THEME, OLD], snap, on_disk=True).action == "skip"
+    snap.files[OLD]["path"].unlink()
+    p = _plan(text, [THEME, OLD], snap, on_disk=True)
+    assert (p.action, p.gone) == ("rebuild", (OLD, "Старое имя"))
+
+
+def test_live_file_named_like_a_stub_can_be_gone(tmp_path):
+    """Имя занято и заглушкой, и живым файлом: судит живой файл (out2 Haiku I1)."""
+    g = _graph(tmp_path)
+    (g / "Люди" / f"{NEW}.md").write_text(f"# {NEW} → [[Встречи/{OLD}]]\n", encoding="utf-8")
+    snap = dossier.scan_snapshot(g, schema=CHAROITE)
+    assert NEW in snap.stubs and NEW in snap.files
+    text = _dossier(snap, [THEME, OLD, NEW])
+    snap.files[NEW]["path"].unlink()
+    p = _plan(text, [THEME, OLD, NEW], snap, on_disk=True)
+    assert (p.action, p.gone) == ("rebuild", (NEW,))
+
+
+@pytest.mark.parametrize("value", ["# потом", "Null", "NULL"])
+def test_composition_comment_or_null_is_unreadable(world, value):
+    snap, built, members = world
+    text = dossier.with_revision(_dossier(snap, built), "2026-07-23")
+    text = text.replace("tags:", f"{dossier.COMPOSITION_FIELD}: {value}\ntags:", 1)
+    assert _plan(text, members, snap) == dossier.Plan("hold", "no_composition")
+
+
+def test_unparsed_hold_names_the_gone_meeting(tmp_path):
+    """hold тела без «## Сейчас» всё равно называет забытое (out2 Haiku C3)."""
+    snap = dossier.scan_snapshot(_graph(tmp_path, new_meeting=False), schema=CHAROITE)
+    text = dossier.with_composition(_dossier(snap, [THEME, OLD]), [OLD, NEW]).replace("## Сейчас", "## Сегодня")
+    p = _plan(text, [THEME, OLD], snap)
+    assert (p.action, p.reason, p.gone) == ("hold", "unparsed", (NEW,))
+
+
+def test_bom_only_file_is_rebuilt(world):
+    snap, _, members = world
+    assert _plan("\ufeff\n", members, snap) == dossier.Plan("rebuild", "new")
+
+
+def test_composition_of_other_kind_leaving_is_not_gone(world):
+    """В составе узел не встреча, и его нет в теме — не уход."""
+    snap, built, _ = world
+    text = dossier.with_composition(_dossier(snap, built), [OLD, "Пётр"])
+    assert _plan(text, [THEME, OLD], snap) == dossier.Plan("skip", "same")

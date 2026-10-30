@@ -39,12 +39,12 @@ import re
 import shutil
 import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 from charoite_graph import frontmatter, graph_names
 from charoite_graph.graph_schema import GraphSchema, name_date
-from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
+from charoite_graph.redirects import is_merged as _is_merged, stub_info as _stub_info, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
 # Сколько источников максимум уходит в один запрос к модели. Больше — сводка
 # начинает терять детали, а генерация упирается в контекст.
@@ -149,12 +149,13 @@ def _title(p: pathlib.Path) -> str:
 @dataclass(frozen=True)
 class GraphSnapshot:
     """Один обход графа: файлы, обратные ссылки, стрелки заглушек alias → канон и
-    имена всех заглушек слияния. Составу досье нужны оба: встреча, ставшая
-    заглушкой, не ушла, и у развилки без одной цели тоже (n843-in3 I4, out1 Haiku I1)."""
+    все цели каждой заглушки слияния (у развилки их несколько). Составу досье нужны
+    цели: встреча, ставшая заглушкой, жива, пока жива хоть одна цель (n843-in3 I4,
+    out1 Haiku I1, out2 Haiku C2)."""
     files: dict[str, dict]
     backlinks: dict[str, set[str]]
     redirects: dict[str, str]
-    stubs: frozenset[str] = frozenset()
+    stubs: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
@@ -175,7 +176,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
     backlinks: dict[str, set[str]] = defaultdict(set)
     # alias → канон: заглушки сами не темы, но входящие ссылки на них живые
     redirects: dict[str, str] = {}
-    stubs: set[str] = set()
+    stubs: dict[str, tuple[str, ...]] = {}
 
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -207,7 +208,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
             # цель — из первой строки заголовка (redirects.stub_target), а не
             # первая [[ссылка]] в файле: та могла быть из frontmatter (luna I5)
             target = _stub_target(text)
-            stubs.add(_title(p))
+            stubs[_title(p)] = tuple(graph_names.link_target_stem(x) for x in _stub_info(text).targets)
             if target:
                 redirects[_title(p)] = target.rsplit("/", 1)[-1].removesuffix(".md").strip()
             continue
@@ -264,7 +265,7 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
         who = backlinks.pop(alias, set())
         if who and canon in files:
             backlinks[canon] |= who - {canon}
-    return GraphSnapshot(files, dict(backlinks), redirects, frozenset(stubs))
+    return GraphSnapshot(files, dict(backlinks), redirects, stubs)
 
 
 def meeting_date(meta: dict, *, schema: GraphSchema) -> str | None:
@@ -722,9 +723,12 @@ def composition(text: str | None, *, schema: GraphSchema) -> list[str] | None:
     «Источники» (досье, собранные до поля). None — состав не читается: досье без
     «Источников» собрано руками (n843-in3 I3), как и `состав:` без значения (out1 Sonnet I1)."""
     if text and frontmatter.has_field(text, COMPOSITION_FIELD):
-        if frontmatter.scalar_field(text, COMPOSITION_FIELD) in ("", "~", "null", "Null", "NULL"):
+        names = frontmatter.list_field(text, COMPOSITION_FIELD)
+        # пустой состав пишется только `[]`; пустое значение, `null`, комментарий —
+        # не «встреч нет», а «не читается»: иначе все встречи темы стали бы новыми (out2 Haiku I2)
+        if not names and frontmatter.scalar_field(text, COMPOSITION_FIELD) != "[]":
             return None
-        return [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, COMPOSITION_FIELD)]
+        return [graph_names.link_target_stem(n) for n in names]
     sources = split_dossier(text or "")[2]
     return None if sources is None else _source_meetings(sources, schema)
 
@@ -750,20 +754,26 @@ def membership_delta(composed: list[str], rejected: list[str], members: list[str
                      on_disk: bool) -> tuple[list[str], list[str]]:
     """(новые встречи темы, ушедшие встречи состава). Ушла — файла нет в снимке, при
     `on_disk=True` (сверка под замком) и на диске, или живая встреча выпала из темы:
-    ссылку на ядро сняли, тело её пересказывать не вправе (out1 Haiku I2). Заглушка
-    слияния — не уход. Узлы других видов уходом не считаются, новое ядро без новой
-    встречи — не новое (n843-in2 C1, I5)."""
+    ссылку на ядро сняли, тело её пересказывать не вправе (out1 Haiku I2); своё ядро
+    темы меняло состав 2 раза из 814 смен за неделю (замер 30.10), общие узлы — 68 %, и
+    они встречу не уводят. Заглушка слияния жива, пока жива хоть одна её цель.
+    Узлы других видов уходом не считаются, новое ядро без новой встречи — не новое
+    (n843-in2 C1, I5)."""
     had = {_canon(n, snap) for n in composed}
     skip = had | {_canon(n, snap) for n in rejected}
     meetings = {m for m in members
                 if m in snap.files and schema.is_meeting_folder(snap.files[m].get("kind", ""))}
     new = sorted(meetings - skip)
+    def live(n: str) -> bool:
+        return n in snap.files and not (on_disk and not snap.files[n]["path"].exists())
+
     def left(n: str) -> bool:
-        if n in snap.stubs:
-            return False
-        if n not in snap.files or (on_disk and not snap.files[n]["path"].exists()):
-            return True
-        return n not in meetings and schema.is_meeting_folder(snap.files[n].get("kind", ""))
+        if n in snap.files:     # живой файл раньше одноимённой заглушки (out2 Haiku I1)
+            if not live(n):
+                return True
+            return n not in meetings and schema.is_meeting_folder(snap.files[n].get("kind", ""))
+        targets = snap.stubs.get(n)
+        return targets is None or not any(live(_canon(t, snap)) for t in targets)
     return new, sorted(n for n in had if left(n))
 
 
@@ -789,16 +799,17 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
     if loaded.state == "unreadable":
         return Plan("hold", "unreadable")
     text = loaded.text or ""
-    if not text.strip():
+    if not text.removeprefix("\ufeff").strip():
         return Plan("rebuild", "new")
     held = bool(revision(text))
-    if not VALID_RE.search(text):
-        return Plan("hold", "unparsed")
     composed = composition(text, schema=schema)
     if composed is None:
         return Plan("hold", "no_composition")
     rejected = [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, REJECTED_FIELD)]
     new, gone = membership_delta(composed, rejected, members, snap, schema=schema, on_disk=on_disk)
+    # ушедшее идёт в план и при hold: отчёт обязан назвать забытое (out2 Haiku C3)
+    if not VALID_RE.search(text):
+        return Plan("hold", "unparsed", tuple(new), tuple(gone))
     if gone:
         return Plan("hold" if held else "rebuild", "gone", tuple(new), tuple(gone))
     labeled = labeled_body(text)
