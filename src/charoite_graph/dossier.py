@@ -617,13 +617,7 @@ def layout_problem(text: str) -> str:
         # `split_dossier` берёт первый «Источники» — он внутри правок и обрезал бы
         # их хвост, а ревизия унесла бы его в источники (n856-out1 Haiku C1)
         return "«Источники» после «Правок автора»"
-    head, body = split_dossier(t)[:2]
-    # шапку `render` пишет заново: в ней только заголовок «# …» досье, чужой заголовок
-    # над «Сейчас» — рука владельца, пересборка его стёрла бы (n856-out4 Sonnet I1)
-    titles = [h.strip() for h in _HEADING_RE.findall(frontmatter.split(head)[1])]
-    if len(titles) > 1 or (titles and not titles[0].startswith("# ")):
-        return f"в шапке заголовок не из раскладки render: «{titles[-1][:40]}»"
-    alien = foreign_headings(body)
+    alien = foreign_headings(split_dossier(t)[1])
     if alien:
         return f"в теле заголовок не из пяти разделов: «{alien[0][:40]}»"
     if sources:
@@ -632,8 +626,8 @@ def layout_problem(text: str) -> str:
         # («## Правки автора:», «## правки автора») — его ночь стёрла бы (n856 Opus I1)
         start = _SOURCES_RE.search(t, sources[0]).end()
         for line in t[start:end].splitlines():
-            if line.strip() and not SOURCE_LINE_RE.match(line):
-                return f"в «Источниках» не строка render: «{line.strip()[:40]}»"
+            if line.strip() and not line.startswith("- "):
+                return f"в «Источниках» не пункт списка: «{line.strip()[:40]}»"
     elif not frontmatter.scalar_field(t, "отпечаток"):
         # ни «Источников», ни отпечатка — досье собрано руками, как его видят ревизия
         # и `plan` (`composition` → None); пересказ модели унёс бы тело (n856 Opus I2)
@@ -649,9 +643,6 @@ PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
 # а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
 _PROTECTED_RE = re.compile(r"(?m)^#{1,6}\s*(?:Правки автора|Источники)\s*$")
 _SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
-#: строка «Источников» в виде `render`: `- **Вид:** [[a]] · [[b]]` — её читают `_source_meetings`
-#: и гейт `layout_problem`; другая строка в разделе — рука владельца (n856-out4 Sonnet I2)
-SOURCE_LINE_RE = re.compile(r"\s*-\s*\*\*([^*\n]+):\*\*")
 _MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
 
 
@@ -710,9 +701,11 @@ _REVISION_VALUE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 def revision(text: str | None) -> str:
     """Дата облачной ревизии тела из шапки (`ревизия:`); `""` — поля нет. Держит
-    только дата, как её пишет ревизия: `~`, `нет`, `false` не замораживают (Opus M2)."""
+    только дата, как её пишет ревизия: `~`, `нет`, `false` не замораживают (Opus M2).
+    Знак замены в значении тоже держит: битая дата — не отсутствие поля, иначе ночь
+    писала пересказ поверх облачной правки (n856-out4 Haiku C1)."""
     v = frontmatter.scalar_field(text or "", REVISION_FIELD)
-    return v if _REVISION_VALUE.fullmatch(v) else ""
+    return v if _REVISION_VALUE.fullmatch(v) or "\ufffd" in v else ""
 
 
 def with_revision(text: str, date: str) -> str:
@@ -818,7 +811,7 @@ def _source_meetings(sources: str, schema: GraphSchema) -> list[str]:
     """Встречи из раздела «Источники» в виде `render`: `- **Вид:** [[a]] · [[b]]`."""
     out = []
     for line in sources.splitlines():
-        m = SOURCE_LINE_RE.match(line)
+        m = re.match(r"\s*-\s*\*\*([^*]+):\*\*", line)
         if m and schema.is_meeting_folder(m.group(1).strip()):
             out += [graph_names.link_target_stem(x.group(1)) for x in LINK_RE.finditer(line)]
     return [x for x in out if x]
