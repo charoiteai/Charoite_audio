@@ -165,17 +165,24 @@ capture hub (audio.py)
 |---|---|---|
 | `None`, channel ≤ `MIN_DIARIZE_S` (20 s) | not labelled: too short to judge | channel is not silence; the live voice count still holds |
 | `None`, channel > 20 s | engine failure | `_channel_lost`: the live transcript stays, the meeting is marked as not rebuilt |
-| `[]` | labelled, no speech | the channel is silent (sherpa-onnx gives `[]` on silence and noise, measured 21 of 21) |
+| `[]` | labelled, no speech | the channel is silent (sherpa-onnx gives `[]` on silence and noise, measured 21 of 21); from Nemotron on the call channel only while its speech stayed under the call threshold — otherwise a refusal |
 | segments | labelled | to `resolve_channel_segments` |
 
 Exception: on a call, Nemotron heard next to no speech on the microphone
 (`mic_thin`) and sherpa then failed — the microphone counts as empty.
 
 **Nemotron after the meeting.** `diarize_in_env` returns a
-`foreign_python.Outcome` (`ok`, `failed`, `empty`, `skipped`, `rejected` with a
-reason). The rebuild collapses it to the table above inside `_nemotron`; a
-single segment covering at least `DEGENERATE_SHARE` (90 %) of the channel is a
-refusal, not one speaker.
+`foreign_python.Outcome` of one of three kinds: `ok` (with segments),
+`unavailable` (nothing to run with — the installer can cure it) or `failed`.
+The rebuild collapses it inside `_nemotron`: anything but `ok` falls back to
+sherpa. Whether an `ok` answer is usable is a rule of the channel, not of the
+engine, and sherpa answers are never judged this way:
+
+| Channel | Usable Nemotron answer | Where |
+|---|---|---|
+| call channel | not one segment covering ≥ `DEGENERATE_SHARE` (90 %) of the recording; `[]` only without the call threshold | `call_channel_engine` |
+| microphone, on a call | at least `MIN_MIC_SECONDS` of speech (less is `mic_thin`); one segment for the whole recording is fine — the owner's monologue | `mic_channel_engine`, `_mic_thin` |
+| microphone, in a room | at least `MIN_MIC_SECONDS` of speech; not one segment covering ≥ 90 %; not all 8 slots taken while the live session heard 3+ voices — the slots are the people | `room_mic_engine` |
 
 **Microphone engine follows the call channel.** The microphone goes to Nemotron
 only when the call channel was labelled by Nemotron, or when there is no call
