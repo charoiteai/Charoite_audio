@@ -109,16 +109,25 @@ class _DossierReads:
 def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, str | None, int]:
     """Решение ДО модели: можно ли сохранить единственный авторский текст.
 
-    Третий элемент — отказ для сводки; повреждение не означает отказ модели.
+    Третий элемент — отказ для сводки; повреждение не означает отказ модели,
+    -1 — раскладка разделов не та (`dossier.layout_problem`, №856).
     """
     if loaded.state == "unreadable":
         print(f"  ✗ {theme}: прежнее досье не прочитано — не трогаю")
         return False, None, 1
     text = loaded.text or ""
+    if not text.removeprefix("\ufeff").strip():
+        return True, None, 0
+    why = dossier.layout_problem(text)
+    if why:
+        # `_scan` такую тему не берёт; здесь — файл, переписанный после скана
+        print(f"  ⏭ {theme}: {why} — ночь не трогает")
+        return False, None, -1
     if loaded.state == "damaged":
-        section = dossier.KEEP_RE.search(text)
-        # заголовок раздела — литерал регулярки, поэтому знак замены во всём совпадении означает знак замены в тексте раздела
-        if section is None or "\ufffd" in section.group():
+        # после `layout_problem` правки — всё от их заголовка до конца файла;
+        # заголовка нет (в нём самом знак замены) — правки не найти
+        section = dossier._MANUAL_RE.search(text)
+        if section is None or "\ufffd" in text[section.start():]:
             print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
             return False, None, 0
     return True, dossier.preserve_manual(text), 0
@@ -211,6 +220,7 @@ class _GraphRun:
         self.changed = self.broken_manual = 0
         self.labeled = 0          # метка в теле при тех же источниках — эту ночь не трогаем
         self.revised = 0          # тело правила облачная ревизия (`ревизия:` в шапке) — не пересобираем
+        self.layout = 0           # раскладка разделов не та, что пишет `render` (собрано руками) — не трогаем
 
     def keep(self, theme: str, members: list[str], loaded: dossier.DossierLoad, fp: str) -> None:
         """Неприменённая пересборка оставляет прежнее досье в индексе."""
@@ -241,7 +251,7 @@ class _GraphRun:
                 "занят": self.locked, "не_успели": self.late,
                 "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed,
                 "метка_в_теле": self.labeled,
-                "ревизия": self.revised}
+                "ревизия": self.revised, "раскладка": self.layout}
 
     def report(self) -> None:
         if self.skipped:
@@ -249,7 +259,7 @@ class _GraphRun:
                   f"сверх лимита {self.over_limit}, граф занят {self.locked}, "
                   f"не успели за ночь {self.late}, правки автора повреждены {self.broken_manual}, "
                   f"досье изменилось {self.changed}, метка в теле {self.labeled}, "
-                  f"ревизия {self.revised}")
+                  f"ревизия {self.revised}, раскладка не та {self.layout}")
 
 
 class Candidate:
@@ -281,6 +291,17 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         rev = dossier.revision(loaded.text)
         if rev:
             _skip_held(g, theme, rev, same)
+            continue
+        # Раскладка разделов не та, что пишет `render`: правки выше «Сейчас», лишний
+        # «Источники» или «Правки автора» в теле, досье руками без «Сейчас» —
+        # пересборка унесла бы тело в правки или правки за край раздела (n856-in1,
+        # in2: Haiku C1 — ночь переписывала досье без отпечатка). Новое и пустое — собрать
+        text = loaded.text or ""
+        why = dossier.layout_problem(text) if text.removeprefix("\ufeff").strip() else ""
+        if why:
+            g.skipped += 1
+            g.layout += 1
+            print(f"  ⏭ {graph.name} · {theme}: {why} — ночь не трогает")
             continue
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
         # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
@@ -360,6 +381,11 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return None
     allowed, manual, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
+        if failures < 0:
+            g.skipped += 1
+            g.layout += 1
+            g.keep(theme, members, loaded, fp)
+            return None
         g.отказы += failures
         if failures == 0:
             # Отказ из-за повреждённых «Правок автора» — это пропуск темы,
@@ -393,9 +419,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return clock() - g0
     gen_s = clock() - g0
 
-    text = dossier.render(theme, body, members, g.files, fp, g.today)
-    if manual:
-        text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
+    text = dossier.render(theme, body, members, g.files, fp, g.today, manual)
 
     copy = None
     wait = lock_wait()

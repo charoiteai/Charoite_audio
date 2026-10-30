@@ -276,8 +276,54 @@ def test_ручные_правки_переживают_пересборку(tmp
               "## Сейчас\nстарый текст\n\n## Правки автора\n\nВажное замечание руками\n")
     assert dossier.preserve_manual(старое) == "Важное замечание руками"
     # пустой раздел не считается правкой
-    assert dossier.preserve_manual("## Правки автора\n\n—\n") is None
+    assert dossier.preserve_manual("## Сейчас\nа\n## Правки автора\n\n—\n") is None
     assert dossier.preserve_manual("нет такого раздела") is None
+
+
+_BODY = "## Сейчас\nа\n## Как пришли\nх\n"
+_SRC = "## Источники\n- [[x]]\n"
+
+
+@pytest.mark.parametrize("text, why, kept", [
+    # заголовок правок пишет владелец в Obsidian: без пробела, с хвостовым пробелом,
+    # третьим уровнем — раздел тот же, что видит `split_dossier` (№856)
+    (f"# Т\n{_BODY}{_SRC}## Правки автора\nмоё\n", "", "моё"),
+    (f"# Т\n{_BODY}{_SRC}##Правки автора\nмоё\n", "", "моё"),
+    (f"# Т\n{_BODY}{_SRC}## Правки автора \nмоё\n", "", "моё"),
+    (f"# Т\n{_BODY}{_SRC}### Правки автора\nмоё\n", "", "моё"),
+    # свои «### Источники» внутри правок — текст владельца (n856-in1 S-C1)
+    (f"# Т\n{_BODY}{_SRC}## Правки автора\nмоё\n### Источники\nмоя ссылка\n", "",
+     "моё\n### Источники\nмоя ссылка"),
+    (f"# Т\n{_BODY}## Правки автора\nмоё\n{_SRC}", "", "моё"),
+    (f"# Т\n{_BODY}## Правки автора\nмоё\n", "", "моё"),
+    (f"# Т\n{_BODY}{_SRC}", "", None),
+    # «Правки автора» в теле увели бы настоящие правки (n856-in1 Haiku C1)
+    (f"# Т\n{_BODY}## Правки автора\nчужое\n{_SRC}## Правки автора\nмоё\n",
+     "заголовков «Правки автора» 2", None),
+    # лишний «Источники» в теле резал хвост тела (n856-in2 Sonnet C1)
+    (f"# Т\n{_BODY}{_SRC}{_SRC}## Правки автора\nмоё\n",
+     "до «Правок автора» заголовков «Источники» 2", None),
+    (f"# Т\n## Правки автора\nмоё\n{_BODY}{_SRC}", "«Правки автора» выше «Сейчас»", None),
+    (f"# Т\n{_SRC}{_BODY}## Правки автора\nмоё\n", "«Источники» выше «Сейчас»", None),
+    ("# Т\nсобрано руками\n## Правки автора\nмоё\n", "нет раздела «Сейчас»", None),
+])
+def test_layout_problem_and_preserve_manual_read_one_section(text, why, kept):
+    assert dossier.layout_problem(text) == why
+    if not why:
+        assert dossier.preserve_manual(text) == kept
+        # пересборка с теми же правками отдаёт их тем же разделом
+        again = dossier.render("Т", _BODY, [], {}, "fp", "2026-10-30", dossier.preserve_manual(text))
+        assert dossier.layout_problem(again) == ""
+        assert dossier.preserve_manual(again) == kept
+
+
+def test_render_writes_the_manual_section_itself():
+    """Подстановка литерала в готовый текст попадала и в тело (n856-in1 S-I3)."""
+    body = _BODY + "цитата: ## Правки автора\n\n—\n"
+    text = dossier.render("Т", body, [], {}, "fp", "2026-10-30", "моё")
+    assert text.endswith("## Правки автора\n\nмоё\n")
+    assert "цитата: ## Правки автора\n\n—\n" in text
+    assert dossier.render("Т", _BODY, [], {}, "fp", "2026-10-30").endswith("## Правки автора\n\n—\n")
 
 
 def test_брак_модели_не_проходит_валидацию():
@@ -291,6 +337,11 @@ def test_брак_модели_не_проходит_валидацию():
     # тему в голове очереди (n815-in1 C2); `_build` снимает метку ДО этой
     # проверки, и `looks_valid` судит только формат
     assert dossier.looks_valid(норм.replace("люди", "Собеседник 4 обещал письмо"))
+    # защищённый заголовок в теле модели — брак: резка по нему теряла бы хвост
+    # тела, а досье с двумя такими заголовками ночь не пересобирает (n856-in2 Sonnet I2)
+    for head in ("## Правки автора", "##Правки автора", "### Источники"):
+        assert not dossier.looks_valid(норм + f"{head}\n—\n"), head
+    assert dossier.looks_valid(норм + "- правки автора учтены\n")
 
 
 def test_предисловие_модели_отрезается():

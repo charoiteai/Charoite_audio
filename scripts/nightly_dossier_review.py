@@ -220,6 +220,11 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     if sources is None:
         # собрано руками или старым форматом — облаку не сверять и не трогать
         return None, "в досье нет раздела «## Источники» — не трогаем"
+    # раскладка не та, что пишет `render`: сборка ниже по `split_dossier` унесла бы
+    # хвост тела под «Источники» или правки выше «Сейчас» во второй раздел (n856-in1 Haiku I3)
+    layout = dossier.layout_problem(current)
+    if layout:
+        return None, f"{layout} — не трогаем"
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
     # метки деятелем — тем же словом, что в источниках, иначе модель вернёт их в ответ (№815)
     labeled_body = old_body

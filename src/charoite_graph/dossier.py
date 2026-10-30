@@ -425,8 +425,11 @@ VALID_RE = re.compile(r"^\s*##\s*Сейчас", re.M)
 
 
 def looks_valid(body: str) -> bool:
-    """Брак ловим до записи: без этого в граф попадают «Принято, что дальше?»."""
-    if not VALID_RE.search(body or ""):
+    """Брак ловим до записи: без этого в граф попадают «Принято, что дальше?».
+    Заголовок «Источники» или «Правки автора» в теле — тоже брак: резка по нему
+    молча теряла бы хвост тела, а файл с двумя такими заголовками ночь больше не
+    пересобирает (`layout_problem`, n856-in2 Sonnet I2)."""
+    if not VALID_RE.search(body or "") or _PROTECTED_RE.search(body):
         return False
     have = sum(1 for h in ("## Сейчас", "## Как пришли", "## Решено",
                            "## Открыто", "## Кто в теме") if h in body)
@@ -494,8 +497,10 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
 
 
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
-           fp: str, today: str) -> str:
-    """Готовый файл досье: frontmatter для машины, текст для человека."""
+           fp: str, today: str, manual: str | None = None) -> str:
+    """Готовый файл досье: frontmatter для машины, текст для человека.
+    `manual` — текст «Правок автора» прежнего досье (`preserve_manual`): раздел
+    пишет сама, подстановка литерала в готовый текст попадала и в тело (n856-in1 S-I3)."""
     kinds: dict[str, list[str]] = defaultdict(list)
     for m in members:
         if m in files:
@@ -525,11 +530,10 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
     for kind in sorted(kinds):
         links = " · ".join(f"[[{m}]]" for m in sorted(kinds[kind]))
         fm.append(f"- **{kind}:** {links}")
-    fm += ["", "## Правки автора", "", "—", ""]
+    fm += ["", "## Правки автора", "", manual or "—", ""]
     return "\n".join(fm)
 
 
-KEEP_RE = re.compile(r"## Правки автора\n(.*?)$", re.S)
 BACKUP_DIR = ".backup"       # копии досье до пересборки и ревизии: `Досье/.backup/<штамп>/`
 
 
@@ -561,12 +565,39 @@ def backup(folder: pathlib.Path, stamp: str, path: pathlib.Path, keep: int = 40)
 
 
 def preserve_manual(old_text: str) -> str | None:
-    """Ручные правки переживают пересборку — иначе досье никто не будет править."""
-    m = KEEP_RE.search(old_text or "")
-    if not m:
-        return None
-    kept = m.group(1).strip()
+    """Ручные правки переживают пересборку — иначе досье никто не будет править.
+    Раздел — тот же, что видит `split_dossier`: у своего литерала «##Правки автора»
+    и «## Правки автора␠» были без правок, и пересборка их стирала (№856). Зовут
+    после `layout_problem`: тогда правки — всё после их заголовка."""
+    kept = (split_dossier(old_text or "")[3] or "").strip()
     return kept if kept and kept != "—" else None
+
+
+def layout_problem(text: str) -> str:
+    """Почему пересборка взяла бы из досье не тот раздел; "" — можно.
+    Нужны «## Сейчас»; не больше одного заголовка «Правки автора», и он ниже
+    «Сейчас»; до него — не больше одного «Источники», тоже ниже «Сейчас». Всё после
+    «Правок автора» — текст владельца: свои «### Источники» в нём не мешают
+    (n856-in1 S-C1). Иначе правки выше «Сейчас» уносили тело, «Правки автора» в теле
+    уводили настоящие правки, лишний «Источники» в теле — хвост тела (n856-in1, in2).
+    Замер 30.10: проходят 1065 из 1077 досье, все 12 прочих собраны руками, без
+    отпечатка ночи (нет «Сейчас» 10, нет «Источников» 2)."""
+    t = text or ""
+    head = VALID_RE.search(t)
+    if not head:
+        return "нет раздела «Сейчас»"
+    manual = list(_MANUAL_RE.finditer(t))
+    if len(manual) > 1:
+        return f"заголовков «Правки автора» {len(manual)}"
+    if manual and manual[0].start() < head.start():
+        return "«Правки автора» выше «Сейчас»"
+    end = manual[0].start() if manual else len(t)
+    sources = [m.start() for m in _SOURCES_RE.finditer(t, 0, end)]
+    if len(sources) > 1:
+        return f"до «Правок автора» заголовков «Источники» {len(sources)}"
+    if sources and sources[0] < head.start():
+        return "«Источники» выше «Сейчас»"
+    return ""
 
 
 PROTECTED_HEADINGS = ("## Правки автора", "## Источники")

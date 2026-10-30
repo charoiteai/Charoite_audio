@@ -1061,6 +1061,15 @@ rebuilt without it: the retelling must not outlive its source. Any other change 
 lifted by hand — delete the `ревизия:` line. A topic that drops out of the clusters
 altogether (fewer than three members left) is not visited by the night at all, with or
 without the field.
+The night carries «Правки автора» over by the same anchored headings `split_dossier`
+reads (`dossier.preserve_manual`, `render(..., manual)`), so `##Правки автора` or a
+trailing space typed in Obsidian no longer loses the edits (№856). A dossier whose
+layout is not the one `render` writes (`dossier.layout_problem`: no «Сейчас», two
+«Правки автора» headings, a second «Источники» before them, either of them above
+«Сейчас») is held before the model, logged and counted (`раскладка не та N`,
+`раскладка` in the result); the cloud review leaves it alone too. A model body with
+either heading inside fails `looks_valid`. On 30.10 all 12 such dossiers out of 1077
+were handmade, with no night fingerprint.
 
 `dossier.plan` (№843, not yet called by the night) is the one decision these checks
 are moving to: skip, add, rebuild or hold, from the meetings the body was built from

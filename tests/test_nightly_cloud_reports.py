@@ -399,6 +399,23 @@ def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
     assert fixed is None and "Источники" in why and not called, "облако вызвано зря"
 
 
+@pytest.mark.parametrize("tail, want", [
+    ("\n## Источники\n- [[A]]\n\n## Правки автора\n\nв теле\n\n## Правки автора\n\nмоё\n",
+     "заголовков «Правки автора» 2"),
+    ("\n## Источники\n- [[A]]\n\n## Источники\n- [[B]]\n", "до «Правок автора» заголовков «Источники» 2"),
+])
+def test_foreign_layout_is_left_alone_before_the_cloud(tmp_path, monkeypatch, tail, want):
+    """Раскладка не та, что пишет `render`: сборка по `split_dossier` унесла бы
+    хвост тела под «Источники» или чужие правки (n856-in1 Haiku I3)."""
+    ndr = _load("nightly_dossier_review")
+    path = tmp_path / "Ручное.md"
+    path.write_text(_DOSSIER + tail, encoding="utf-8")
+    called = []
+    monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: called.append(1))
+    fixed, why = ndr.review("Ручное", path, tmp_path, {}, [], "m", {"sufler": {"cloud_enrich": True, "cloud_mask": False}})
+    assert fixed is None and why == f"{want} — не трогаем" and not called, "облако вызвано зря"
+
+
 def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch):
     ndr = _load("nightly_dossier_review")
     graph = tmp_path / "g"

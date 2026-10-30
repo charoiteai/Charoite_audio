@@ -144,11 +144,76 @@ def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     reasons = (result["без_изменений"] + result["сверх_лимита"]
                + result["занят"] + result["не_успели"]
                + result["правки_повреждены"] + result["досье_изменилось"]
-               + result["метка_в_теле"] + result["ревизия"])
+               + result["метка_в_теле"] + result["ревизия"]
+               + result["раскладка"])
     assert reasons == result["пропущено"]
     _all_index(folder)
     _account(result, counts, paths, capsys, verified=(paths["Альфа"], paths["Гамма"]))
     assert paths["Бета"].read_bytes() == before
+
+
+@pytest.mark.parametrize("head", ["##Правки автора", "## Правки автора ", "### Правки автора"])
+def test_owner_heading_spelling_keeps_the_edits(night, monkeypatch, capsys, head):
+    """№856: заголовок правок, набранный владельцем без пробела или с хвостом,
+    литерал ночи не видел — пересборка писала «—» поверх правок."""
+    nd, graph, folder, paths, calls = night
+    paths["Бета"].write_text(
+        paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head), encoding="utf-8")
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["собрано"] == 3 and result["раскладка"] == 0
+    text = paths["Бета"].read_text(encoding="utf-8")
+    assert "новое тело" in text
+    assert text.endswith("## Правки автора\n\nоставить решение автора\n")
+    assert dossier.layout_problem(text) == ""
+
+
+@pytest.mark.parametrize("edit", ["twice", "above", "no_now"])
+def test_foreign_layout_is_held_before_the_model(night, monkeypatch, capsys, edit):
+    """Раскладка не та, что пишет `render`: ночь не зовёт модель и не трогает файл
+    (n856-in1 Haiku C1, in2 Haiku C1), пропуск — своим счётчиком (in2 Sonnet I1)."""
+    nd, graph, folder, paths, calls = night
+    text = paths["Бета"].read_text(encoding="utf-8")
+    text = {"twice": text.replace("## Сейчас\nстарое тело\n",
+                                  "## Сейчас\nстарое тело\n## Правки автора\nв теле\n"),
+            "above": text.replace("## Сейчас\nстарое тело\n## Правки автора\n\nоставить решение автора\n",
+                                  "## Правки автора\n\nоставить решение автора\n## Сейчас\nстарое тело\n"),
+            "no_now": text.replace("## Сейчас\n", "")}[edit]
+    paths["Бета"].write_text(text, encoding="utf-8")
+    before = paths["Бета"].read_bytes()
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert [c[0] for c in calls] == ["Альфа", "Гамма"]
+    assert result["собрано"] == 2 and result["отказы"] == 0
+    assert result["пропущено"] == 1 and result["раскладка"] == 1
+    assert result["правки_повреждены"] == 0
+    assert paths["Бета"].read_bytes() == before
+    assert not list((folder / ".backup").glob("*/Бета.md"))
+    _all_index(folder)
+    log = capsys.readouterr().out
+    assert "Бета: " in log and "ночь не трогает" in log and "раскладка не та 1" in log
+
+
+def test_layout_changed_after_scan_is_held_without_a_refusal(night, monkeypatch, capsys):
+    """Файл переписали руками между сканом и сборкой: сборка судит свежий снимок
+    тем же предикатом (`_manual_for_rebuild` → -1), это пропуск, а не отказ."""
+    nd, graph, folder, paths, calls = night
+    original = nd._scan
+
+    def scan(*a, **kw):
+        g, found = original(*a, **kw)
+        p = paths["Бета"]
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            "## Сейчас\nстарое тело\n", "## Сейчас\nстарое тело\n## Правки автора\nв теле\n"),
+            encoding="utf-8")
+        os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 120))
+        return g, found
+
+    monkeypatch.setattr(nd, "_scan", scan)
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert [c[0] for c in calls] == ["Альфа", "Гамма"]
+    assert result["отказы"] == 0 and result["раскладка"] == 1 and result["пропущено"] == 1
+    assert "в теле" in paths["Бета"].read_text(encoding="utf-8")
+    assert not list((folder / ".backup").glob("*/Бета.md"))
+    _all_index(folder)
 
 
 def test_damaged_manual_refusal_is_not_a_model_failure(night, monkeypatch, capsys):
@@ -187,7 +252,8 @@ def test_dossier_edited_during_generation_is_not_overwritten(night, monkeypatch,
         reasons = (result["без_изменений"] + result["сверх_лимита"]
                    + result["занят"] + result["не_успели"]
                    + result["правки_повреждены"] + result["досье_изменилось"]
-               + result["метка_в_теле"] + result["ревизия"])
+               + result["метка_в_теле"] + result["ревизия"]
+               + result["раскладка"])
         assert reasons == result["пропущено"]
         assert paths["Бета"].read_bytes() == edited["bytes"]
         assert "правка во время генерации" in paths["Бета"].read_text(encoding="utf-8")

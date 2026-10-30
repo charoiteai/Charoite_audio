@@ -541,9 +541,10 @@ def test_backup_line_only_when_a_dossier_was_replaced(nd, tmp_path, capsys):
     assert len(copies) == 1 and "· старая:" in copies[0], lines
 
 
-@pytest.mark.parametrize("failures, attempts", [(0, 0), (1, 1)])
+@pytest.mark.parametrize("failures, attempts", [(0, 0), (1, 1), (-1, 0)])
 def test_attempts_count_refusals_before_the_model(nd, tmp_path, monkeypatch, failures, attempts):
-    """Мутант #819: повреждённые «Правки автора» — не попытка, нечитаемое досье — попытка."""
+    """Мутант #819: повреждённые «Правки автора» — не попытка, нечитаемое досье — попытка;
+    чужая раскладка (№856, -1) — пропуск, не попытка."""
     graph = _graph(tmp_path, "Г", {"одна": None})
     monkeypatch.setattr(nd, "_manual_for_rebuild", lambda theme, loaded: (False, None, failures))
     assert nd.run_all([graph], {}, full=False, dry=False).attempts == attempts
