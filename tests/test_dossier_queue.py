@@ -529,8 +529,10 @@ def test_retry_is_colder_than_the_first_attempt(nd, tmp_path, monkeypatch):
         return "не по формату" if len(temps) == 1 else GOOD
 
     monkeypatch.setattr(nd, "generate", generate)
+    # попытки идут по тем же температурам, что в метке `вход:` (финальный Opus №842, M2)
+    monkeypatch.setattr(nd.dossier, "GEN_TEMPERATURES", (0.4, 0.1))
     r = nd.run(graph, {}, full=False, dry=False, limit=None)
-    assert temps == [0.2, 0.05] and r["собрано"] == 1, (temps, r)
+    assert temps == [0.4, 0.1] and r["собрано"] == 1, (temps, r)
 
 
 def test_backup_line_only_when_a_dossier_was_replaced(nd, tmp_path, capsys):
@@ -958,6 +960,47 @@ def test_generate_calls_the_model_with_what_the_label_hashes(monkeypatch):
     monkeypatch.setattr(nd.dossier, "GEN_TEMPERATURES", (0.4, 0.1))
     assert nd.generate("т", [], {}, {"llm": {"model": "q"}}) == GOOD.strip()
     assert seen == [{"model": "q", "temperature": 0.4, "system": "S", "num_predict": 77, "think": True}]
+
+
+@pytest.mark.parametrize("fell", [True, False])
+def test_generate_reports_whether_the_fallback_answered(monkeypatch, fell):
+    """Флаг стрима «отвечал запас» уходит наружу (финальный Opus №842, M1)."""
+    import llm as llm_mod
+    nd = _script()
+
+    class Fake:
+        def __init__(self, c):
+            self._fell_back_local = False
+
+        def stream(self, prompt, **kw):
+            self._fell_back_local = fell
+            yield GOOD
+
+    monkeypatch.setattr(llm_mod, "LLM", Fake)
+    monkeypatch.setattr(nd.dossier, "build_prompt", lambda *a, **k: "промпт")
+    seen = []
+    assert nd.generate("т", [], {}, {"llm": {"model": "q"}}, fell_back=seen) == GOOD.strip()
+    assert seen == [fell]
+
+
+@pytest.mark.parametrize("fell, label", [([True], ""), ([False], "g1"), ([False, True], "")])
+def test_body_from_the_fallback_gets_no_input_label(nd, tmp_path, monkeypatch, fell, label):
+    """Тело от облачного запаса с меткой облачной модели навсегда сошло бы за
+    «тот же генератор» (финальный Opus №842, M1): метку решает последняя попытка."""
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    monkeypatch.setattr(nd, "generator_label", lambda c: "g1")
+    attempts = []
+
+    def generate(theme, members, files, c, fell_back=None, **kw):
+        attempts.append(1)
+        fell_back.append(fell[len(attempts) - 1])
+        return GOOD if len(attempts) == len(fell) else "не по формату"
+
+    monkeypatch.setattr(nd, "generate", generate)
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    assert r["собрано"] == 1 and len(attempts) == len(fell), r
+    assert dossier.read_input(dossier.load_dossier(path)) == label
 
 
 def test_new_generator_marks_unchanged_themes_but_does_not_rebuild(nd, tmp_path, monkeypatch, capsys):

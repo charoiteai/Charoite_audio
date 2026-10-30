@@ -125,9 +125,11 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
-             temperature: float | None = None) -> str:
+             temperature: float | None = None, fell_back: list | None = None) -> str:
     """Сводка локальной моделью. Думать не просим: на структурной задаче
-    рассуждение съедает бюджет генерации и документ выходит беднее."""
+    рассуждение съедает бюджет генерации и документ выходит беднее.
+    `fell_back` получает флаг стрима «облако не ответило, отвечал запас»:
+    метка `вход:` такому телу не годится (финальный Opus №842, M1)."""
     sys.path.insert(0, str(CODE / "src"))
     from llm import LLM  # noqa: PLC0415
 
@@ -139,6 +141,8 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
         temperature = dossier.GEN_TEMPERATURES[0]
     for chunk in llm.stream(prompt, model=model, temperature=temperature, **dossier.gen_call()):
         out.append(chunk)
+    if fell_back is not None:
+        fell_back.append(bool(getattr(llm, "_fell_back_local", False)))
     return "".join(out).strip()
 
 
@@ -146,8 +150,8 @@ def generator_label(c: dict) -> str:
     """`вход:` генератора этой ночи (№842) — модель та, что ответит на деле
     (`LLM.effective_model`, как у ключа кэша сводок), и окно — только у Ollama:
     mlx-server и облако его в вызов не берут (out2 Sonnet I1; облако без тумблера
-    `LLM` сам переводит в `ollama`); ответ облачного запаса метка не видит, как и
-    `effective_model`. Конфиг без модели — `""`: метки нет; любой сбой — `""` и
+    `LLM` сам переводит в `ollama`); ответ облачного запаса метка не видит —
+    его тело `_build` пишет без метки. Конфиг без модели — `""`: метки нет; любой сбой — `""` и
     строка: метка прогон не роняет (out1 M2), о конфиге скажет `generate`."""
     model = (c.get("llm") or {}).get("model")
     if not model:
@@ -410,13 +414,14 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return None
     g0 = clock()
     body = ""
+    fell_back: list = []
     for temperature in dossier.GEN_TEMPERATURES:
         try:
             # метка деятелем — тем же словом, что во входе: отказом она красила
             # бы ночь и держала тему в голове очереди (n815-in1 C2); «Правки
             # автора» ниже вставляются как были
             body = graph_names.unlabel_speakers(dossier.trim_to_format(
-                generate(theme, members, g.files, c, temperature=temperature)))
+                generate(theme, members, g.files, c, temperature=temperature, fell_back=fell_back)))
         except Exception as e:  # noqa: BLE001
             print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
             body = ""
@@ -434,7 +439,10 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         return clock() - g0
     gen_s = clock() - g0
 
-    text = dossier.render(theme, body, members, g.files, fp, g.today, g.gen)
+    # ответил облачный запас — генератор не тот, что в метке: тело без `вход:`
+    # (чужая метка навсегда сошла бы за «тот же генератор», финальный Opus M1)
+    gen = "" if fell_back and fell_back[-1] else g.gen
+    text = dossier.render(theme, body, members, g.files, fp, g.today, gen)
     if manual:
         text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
 
