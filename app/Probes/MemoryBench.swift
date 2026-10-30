@@ -151,7 +151,7 @@ final class MemoryBench: XCTestCase {
             if let tokens = reply?.promptTokens { rankLine += ", промпт у Ollama \(tokens) ток." }
             report += rankLine
             if withModel {
-                // судья прежний — вся выдача с шапками, как до №752: ранг судит только тела (n752-out3, Haiku I1)
+                // судья прежний — вся выдача с шапками, как до №752; ранг — тем же текстом (n752-out3 Haiku I1, out7 Haiku C1)
                 let inFound = c.must.filter { norm(outcome.text).contains(norm($0)) }.count
                 // отказ первой строкой и ни одного факта в ответе: оговорка
                 // «точной даты нет» перед найденным фактом — не отказ (out2, DS I2).

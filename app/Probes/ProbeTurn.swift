@@ -231,30 +231,20 @@ enum ProbeTurn {
         }
     }
 
-    /// Ранг факта в выдаче — наименьший `Part.rank` куска, где факт стоит во
-    /// фрагменте, а не в шапке «• путь» или «Связано с» (имя файла несёт дату
-    /// и тему встречи, n752-in1, Sonnet I2). −1 — слот гейта. Ранг — порядок
-    /// упаковки, не позиция поиска (Sonnet I1): кривая по рукам — только из
-    /// настоящих прогонов этих рук.
-    /// Тело — текст без первой строки и без второй «Связано с» у соседа по
-    /// ссылке; факт, разорванный переводом строки, ловит `norm` судьи,
-    /// схлопывающий пробелы (n752-out1, Sonnet I6 и Minor).
+    /// Ранг факта в выдаче — наименьший `Part.rank` куска, где факт стоит в
+    /// тексте, который видит модель: шапка «• путь» и «Связано с» тоже (тот же
+    /// судья, что `inFound` и false_refusal; n752-out7, Haiku C1 — прежняя
+    /// отсечка шапок из n752-in1 Sonnet I2 давала «нет» при факте в выжившей
+    /// шапке). −1 — слот гейта. Ранг — порядок упаковки, не позиция поиска
+    /// (Sonnet I1): кривая по рукам — только из настоящих прогонов этих рук.
+    /// Факт, разорванный переводом строки, ловит `norm` судьи, схлопывающий
+    /// пробелы (n752-out1, Sonnet I6 и Minor).
     static func factRank(_ fact: String, in parts: [ArchiveSearch.Part]?,
                          norm: (String) -> String) -> Int? {
         let needle = norm(fact)
         // минимум — ранг выживания: слот гейта (−1) `fit` выбрасывает последним, факт в гейте
         // переживает любое окно; «гейт» при факте и в куске 2 — верно (n752-out6, Haiku C1)
-        return (parts ?? []).filter { norm(pieceBody($0.text)).contains(needle) }.map(\.rank).min()
-    }
-
-    /// Тело куска без шапки — только для рангов факта. false_refusal судит вся
-    /// выдача с шапками, как до №752: модель видит шапки (n752-out3, Haiku I1).
-    static func pieceBody(_ text: String) -> String {
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
-        if lines.first?.trimmingCharacters(in: .whitespaces).hasPrefix("Связано с [[") == true {
-            lines = lines.dropFirst()
-        }
-        return lines.joined(separator: "\n")
+        return (parts ?? []).filter { norm($0.text).contains(needle) }.map(\.rank).min()
     }
 
     /// Отказ подготовки пробы: тест бросает его и падает с причиной до работы.
