@@ -139,7 +139,10 @@ final class MemoryBench: XCTestCase {
                 case let r?: return "\(fact)→\(r)"
                 }
             }
-            report += "\n  ранги: \(ranks.joined(separator: ", ")); кусков \(outcome.parts?.count ?? 0), "
+            // длины кусков — рука pN не равна N кускам по 1000: упаковщик режет (n752-out1, Haiku C1)
+            let lengths = (outcome.parts ?? []).map(\.text.count)
+            report += "\n  ранги: \(ranks.joined(separator: ", ")); кусков \(lengths.count)"
+                + (lengths.isEmpty ? "" : " длиной \(lengths.min()!)–\(lengths.max()!) зн.") + ", "
                 + "оценка промпта \(ChatRetrieval.estimatedTokens(ProbeTurn.system(question: c.q, outcome: outcome)) + ChatRetrieval.messageTokens(c.q)) ток."
                 + (reply?.promptTokens.map { ", промпт у Ollama \($0) ток." } ?? "")
             if withModel {
@@ -266,7 +269,7 @@ final class MemoryBench: XCTestCase {
         let clock = ContinuousClock()
         var synthTime = Duration.zero
         var then = 0, now = 0, total = 0, sameBody = 0, sameAnswer = 0, asked = 0
-        var abstainThen = 0, abstainNow = 0, abstainTotal = 0
+        var abstainThen = 0, abstainNow = 0, abstainTotal = 0, refusalThen = 0, refusalNow = 0
         var unanswered: [String] = []
         for (p, outcome) in zip(packets, outcomes) {
             if !p.abstain && outcome.text.isEmpty {
@@ -300,6 +303,13 @@ final class MemoryBench: XCTestCase {
                 let got = p.must.filter { norm(answer).contains(norm($0)) }.count
                 (then, now, total) = (then + was, now + got, total + p.must.count)
                 report += ", факты при записи \(was)/\(p.must.count), сейчас \(got)/\(p.must.count)"
+                // false_refusal — тем же судьёй, что прямой прогон (n752-out1, Haiku I6)
+                let inFound = p.must.filter { norm(outcome.text).contains(norm($0)) }.count
+                if inFound > 0 && was == 0 && ChatRetrieval.isAbsence(p.answer ?? "") { refusalThen += 1 }
+                if inFound > 0 && got == 0 && ChatRetrieval.isAbsence(answer) {
+                    refusalNow += 1
+                    report += "\n  false_refusal: отказ при \(inFound)/\(p.must.count) фактах в выдаче"
+                }
             }
             report += "\n  ответ: " + answer.replacingOccurrences(of: "\n", with: "\n  ")
         }
@@ -310,6 +320,7 @@ final class MemoryBench: XCTestCase {
         report += "\n\nИТОГО: факты при записи \(then)/\(total), повтор \(now)/\(total); "
             + "запрос тот же \(sameBody)/\(asked), ответ дословно тот же \(sameAnswer)/\(asked)"
             + (abstainTotal > 0 ? "; воздержание при записи \(abstainThen)/\(abstainTotal), сейчас \(abstainNow)/\(abstainTotal)" : "")
+            + "; false_refusal при записи \(refusalThen), сейчас \(refusalNow)"
             + "\nвремя: синтез \(seconds(synthTime)) с на \(asked) вопр.\n"
         print(report)
         XCTAssertTrue(ProbeTurn.writePrivate(report, to: out), "отчёт повтора не записан: \(out)")

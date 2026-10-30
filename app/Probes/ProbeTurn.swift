@@ -330,6 +330,7 @@ enum ProbeTurn {
     /// нельзя было сравнить, не видя, чем они отличаются.
     static func header(_ title: String, arm: (name: String, params: ChatRetrieval.Params)) -> String {
         let (name, p) = arm
+        // для pN это заказ, а не факт: длины кусков — в строке «ранги» (n752-out1, Haiku C1)
         return "\(title)\nрука: \(name) (limit \(p.limit), snippet \(p.snippet), budget \(p.budget)); "
             + "движок: \(engine); соседи по ссылке: \(inferenceIsLocal ? "да" : "нет"); модель: \(model)\n"
     }
