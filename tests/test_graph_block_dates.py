@@ -64,8 +64,8 @@ def test_the_chronicle_line_is_dated_by_its_own_link():
     """Строка «_(было: … → стало: …)_» датируется ссылкой строки — отдельного
     разбора её грамматики в поиске нет."""
     text = "# Иван\nСтарое описание.\n"
-    out, event = graph_updater._supersede_description(
-        text, "Новое описание", "Встречи/2026-09-30_1000")
+    out, event, _ = graph_updater._supersede_description(
+        text, "Старое описание, уточнённое", "Встречи/2026-09-30_1000")
     assert event is not None
     line = next(ln for ln in out.splitlines() if "было:" in ln)
     assert gs.block_date(line, CHAROITE) == _ts("2026-09-30")

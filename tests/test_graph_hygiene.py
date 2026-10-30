@@ -773,8 +773,8 @@ def test_people_description_is_superseded_with_dates_not_silently(tmp_path):
     g.upsert_entity(graph, "Люди", "Пётр", "person", "руководитель проекта бюджета", "Встречи/2026-09-01_1000", "")
     text = node.read_text(encoding="utf-8")
     assert "# Пётр\nаналитик, руководитель проекта миграции\n" in text and text.count("_(было:") == 1
-    assert "## Хроника\n- [[Встречи/2026-09-01_1000]] — _(в этой встрече: «руководитель проекта бюджета», 2026-09-01)_\n" \
-        in text, text
+    assert "## Встречи\n- [[Встречи/2026-09-01_1000]] _(в этой встрече: «руководитель проекта бюджета»)_\n" in text, text
+    assert "руководитель проекта бюджета" not in text.split("## Встречи", 1)[0], "эпизод — не в хронике (n846-out1)"
     # эпизод с новым числом при надмножестве слов — тоже эпизод (Sonnet I1, n846-in1)
     g.upsert_entity(graph, "Люди", "Пётр", "person", "аналитик, руководитель проекта миграции, подключится к 14:30",
                     "Встречи/2026-09-02_1000", "")
@@ -788,7 +788,12 @@ def test_people_description_is_superseded_with_dates_not_silently(tmp_path):
     assert "# Пётр\nбывший аналитик, руководитель проекта миграции, ушёл в другой отдел\n" in text \
         and text.count("_(было:") == 2
     chron = text.split("## Хроника\n", 1)[1].split("\n## ", 1)[0]
-    assert all(g._CHRONICLE_LINE_RE.match(ln) for ln in chron.splitlines() if ln), "эпизод — машинная строка, режется"
+    assert all(g._CHRONICLE_LINE_RE.match(ln) for ln in chron.splitlines() if ln), "в хронике только вытеснения"
+    # повтор эпизода от встречи к встрече — по строке на встречу в «## Встречи», хроника не растёт (Sonnet I1)
+    for d in (10, 11, 12):
+        g.upsert_entity(graph, "Люди", "Пётр", "person", "Участник", f"Встречи/2026-09-{d}_1000", "")
+    after = node.read_text(encoding="utf-8")
+    assert after.split("## Встречи", 1)[0] == text.split("## Встречи", 1)[0], "верх и хроника не тронуты"
     # узел без описания получает первое без строки хроники — это не вытеснение; «—» не описание
     old = graph / "Люди" / "Старый.md"
     old.write_text("# Старый\n\n## Встречи\n- [[Встречи/2026-05-05_1000]]\n", encoding="utf-8")
@@ -897,7 +902,7 @@ def test_people_chronicle_keeps_last_ten_and_archives_the_rest(tmp_path):
     # узел без «## Встречи» (человек снёс): раздел встреч встаёт ПЕРЕД архивом (Minor DS/GLM r1)
     (graph / "Люди" / "Безвстреч.md").write_text(
         "# Безвстреч\nаналитик\n\n## Хроника\n" + "\n".join(line.format(i) for i in range(12, 0, -1)) + "\n", encoding="utf-8")
-    g.upsert_entity(graph, "Люди", "Безвстреч", "person", "директор", "Встречи/2026-03-01_1000", "")
+    g.upsert_entity(graph, "Люди", "Безвстреч", "person", "аналитик, директор", "Встречи/2026-03-01_1000", "")
     text = (graph / "Люди" / "Безвстреч.md").read_text(encoding="utf-8")
     assert text.index("## Хроника") < text.index("## Встречи") < text.index("## Архив хроники"), text
     assert "- [[Встречи/2026-03-01_1000]]\n\n## Архив хроники\n" in text
@@ -1063,7 +1068,7 @@ def test_description_supersede_edges(tmp_path):
     arc = graph / "Люди" / "Архивный.md"
     arc.write_text("# Архивный\nаналитик\n\n## Встречи-архив\n- старое\n\n## Встречи\n- [[Встречи/2026-01-01_1000]]\n",
                    encoding="utf-8")
-    g.upsert_entity(graph, "Люди", "Архивный", "person", "директор по данным", "Встречи/2026-09-01_1000", "")
+    g.upsert_entity(graph, "Люди", "Архивный", "person", "аналитик, директор по данным", "Встречи/2026-09-01_1000", "")
     t = arc.read_text(encoding="utf-8")
     assert t.index("## Встречи-архив") < t.index("## Хроника") < t.index("\n## Встречи\n")
     # ё/е — одно слово: «ведёт»/«ведет» не рождают строку хроники (DS Minor)
@@ -2320,7 +2325,7 @@ def test_entity_writer_goes_through_the_update_gate(tmp_path, monkeypatch, capsy
     # сменился под рукой дважды: гейт отказывает обе попытки → LostRace.CHANGED
     monkeypatch.setattr(g.safe_write, "write_text",
                         lambda path, text, **kw: False if path == node else real_write(path, text, **kw))
-    g.upsert_entity(graph, "Системы", "Витрина", "система", "совсем новое описание слоя данных", "Встречи/2026-09-16_1000", "")
+    g.upsert_entity(graph, "Системы", "Витрина", "система", "старое описание витрины, слой данных", "Встречи/2026-09-16_1000", "")
     assert node.read_text(encoding="utf-8") == "# Витрина\nстарое описание витрины\n\n## Встречи\n", "чужая версия не затёрта"
     assert "встреча в узел не дописана: Системы/Витрина: сменились под рукой" in unlinked.read_text(encoding="utf-8")
     assert "«Витрина» — сменились под рукой, встреча Встречи/2026-09-16_1000 не дописана" in capsys.readouterr().out
@@ -2334,9 +2339,9 @@ def test_entity_writer_goes_through_the_update_gate(tmp_path, monkeypatch, capsy
                 return False
         return real_write(path, text, **kw)
     monkeypatch.setattr(g.safe_write, "write_text", flaky)
-    g.upsert_entity(graph, "Системы", "Витрина", "система", "совсем новое описание слоя данных", "Встречи/2026-09-16_1100", "")
+    g.upsert_entity(graph, "Системы", "Витрина", "система", "старое описание витрины, слой данных", "Встречи/2026-09-16_1100", "")
     text = node.read_text(encoding="utf-8")
-    assert text.split("## Встречи", 1)[1].count("[[Встречи/2026-09-16_1100]]") == 1 and "совсем новое описание слоя данных" in text
+    assert text.split("## Встречи", 1)[1].count("[[Встречи/2026-09-16_1100]]") == 1 and "старое описание витрины, слой данных\n" in text
     assert unlinked.read_text(encoding="utf-8").count("описание вытеснено") == 1, "событие — один раз, не на каждую попытку гейта"
     monkeypatch.setattr(g.safe_write, "write_text", real_write)
     # новый узел: чужой файл появился между проверкой и записью — дописываем в него, не затираем
@@ -2449,7 +2454,14 @@ def test_refines_rule_table():
                      ("Спикер", "Специалист по данным"),
                      ("аналитик", "руководитель проекта"),                        # смена роли — руками или ревизией
                      ("в отпуске до 2026-09-20", "в отпуске"),                    # дата изъята — не уточнение
-                     ("курирует проект до 2026", "курирует проект до 2026 и бюджет 5")]:
+                     ("курирует проект до 2026", "курирует проект до 2026 и бюджет 5"),
+                     ("в отпуске 2026-09-20", "в отпуске"),                        # число изъято (Sonnet I2, Haiku I3)
+                     ("дедлайн 2026-09-20", "дедлайн перенесён"),
+                     ("Участник", "Участник 14:30"),                               # число внесено с нуля (DS M2)
+                     # цена, принятая сознательно (DS C1): снятое слово — эпизод; строгое
+                     # подмножество в замере — 10 из 304, все — сжатие устойчивого до «Участник»
+                     ("не участвует в проекте", "участвует в проекте"), ("бывший аналитик", "аналитик"),
+                     ("Ведущий планёрок кластера и держатель денег", "Ведущий планёрок")]:
         assert not refines(old, new), (old, new)
 
 
@@ -2465,3 +2477,15 @@ def test_null_description_does_not_drop_meeting(tmp_path):
     g.upsert_entity(graph, "Люди", "Пустой", "person", None, "Встречи/2026-10-03_1000", "")
     t = (graph / "Люди" / "Пустой.md").read_text(encoding="utf-8")
     assert "# Пустой\nаналитик\n" in t and "## Хроника" not in t and "2026-10-03_1000" in t, t
+
+
+def test_shaped_drops_non_string_fields_of_people_and_entities(capsys):
+    """Строковые поля записей людей и сущностей — строка или нет поля: «роль»: null
+    ронял встречу, «вклад»: null писал «None» в заметку (Haiku C1 n846-in1, DS I2 n846-out1)."""
+    got = g._shaped({"люди": [{"имя": "Икс", "роль": None, "вклад": 5}, {"имя": 42}, "Строка"],
+                     "сущности": [{"имя": "Витрина", "тип": ["система"], "суть": None}]})
+    assert got["люди"] == [{"имя": "Икс"}, {}, "Строка"], got
+    assert got["сущности"] == [{"имя": "Витрина"}], got
+    out = capsys.readouterr().out
+    assert "«люди.вклад» — int" in out and "«люди.имя» — int" in out and "«сущности.тип» — list" in out
+    assert "люди.роль" not in out, "null — молча, как у полей верхнего уровня"

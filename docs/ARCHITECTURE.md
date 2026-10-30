@@ -892,8 +892,8 @@ becomes a link; a pronoun or a word fragment stays text. People and systems
 carry a «last mention» line that is updated mechanically, and a description
 is a dated fact: only a refinement (every old word kept, no new numbers) or a
 new date supersedes it with a trace in «## Хроника» (№194); a role from one
-meeting leaves the top alone and goes in as an «в этой встрече» line (№846),
-and machine lines past ten move to «## Архив хроники»
+meeting leaves the top alone and is noted on that meeting's line in
+«## Встречи» as «в этой встрече: …» (№846), and machine lines past ten move to «## Архив хроники»
 at the end of the node. The indexes `Люди/_ЛЮДИ.md`, `Системы/_СИСТЕМЫ.md`,
 `Команды/_КОМАНДЫ.md` are rebuilt for the touched folders after every
 meeting (newest on top) and in full at night, while `_MOC.md` stays a
