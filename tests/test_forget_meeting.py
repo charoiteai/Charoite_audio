@@ -2585,9 +2585,6 @@ def test_forget_edits_a_dossier_outside_the_night_paths(tmp_path):
     # со ссылкой и на другую встречу — теряет только ссылку
     ('---\nвстречи:\n  - "[[Встречи/{s}]] и [[Встречи/{o}]]"\n---\n',
      f'---\nвстречи:\n  - "{forget.REMOVED_NOTE} и [[Встречи/{{o}}]]"\n---\n'),
-    # пункт шапки — одна строка и внутри блочного скаляра чужого ключа (n845-fix3 Haiku I2)
-    ("---\nописание: |\n  - [[Встречи/{s}]] — выбрали\n    подробности\n  конец\n---\n",
-     "---\nописание: |\n    подробности\n  конец\n---\n"),
     # код внутри пункта о встрече — его тело
     ("- [[Встречи/{s}]] — факт\n\n  ```\n  код\n  ```\n- другое\n", "- другое\n"),
 ])
@@ -2598,6 +2595,25 @@ def test_forget_takes_one_line_in_the_yaml_header(tmp_path, before, after):
     node = _core(graph, before.format(s=STAMP, o=OTHER))
     p = forget.plan(STAMP, root, graph)
     assert p.edit[node] == after.format(o=OTHER), p.edit.get(node)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="№637: пункт шапки уходит одной строкой — перенос "
+                   "скаляра остаётся, YAML ломается; правка шапки по узлам YAML; входов 0 из 10 прогонов "
+                   "по шапкам графов (n845-fix4)")
+@pytest.mark.parametrize("before, after", [
+    # перенос скаляра пункта: остаток превращает список в строку (n845-fix2 Haiku I1, fix4 Sonnet M1)
+    ('---\nвстречи:\n  - "[[Встречи/{s}]] — выбрали\n    перенос"\n  - другое\n---\n',
+     "---\nвстречи:\n  - другое\n---\n"),
+    # строка блочного скаляра чужого ключа: отступ скаляра — по первой строке, остаток не разбирается
+    # (n845-fix3 Haiku I2, fix4 Haiku I1)
+    ("---\nописание: |\n  - [[Встречи/{s}]] — выбрали\n    подробности\n  конец\n---\n",
+     "---\nописание: |\n  конец\n---\n"),
+])
+def test_forget_leaves_a_parseable_yaml_header(tmp_path, before, after):
+    root, graph = _world(tmp_path)
+    node = _core(graph, before.format(s=STAMP))
+    p = forget.plan(STAMP, root, graph)
+    assert p.edit[node] == after, p.edit.get(node)
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="№637: оград забывание не различает — пункт о встрече "
