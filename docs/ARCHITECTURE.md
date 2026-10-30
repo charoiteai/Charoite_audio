@@ -1290,10 +1290,12 @@ meeting with the owner talking looks the same as a dead channel — the trace
 line ("system audio is not recorded since 18:13") is true in both cases, the
 summary would not be. Known limit: with headphones and a silent owner the mic
 share stays low and the failure is not flagged; a channel that goes to zeros
-before the call threshold (≈30–80 s of the other side's speech) or is zeros from
-the moment it opens never becomes a call and is not flagged either. After a
-frame loss the series boundary, like its age, starts at the end of the loss. The pulse carries
-`content_age_s`.
+before the call threshold (≈30–80 s of the other side's speech), or one that has
+never carried sound since the channel opened, never becomes a call and is not
+flagged either; a channel that dies after the call is recognised is flagged by
+the same rules. After a frame loss the age of the series and its boundary both
+start at the end of the loss. The pulse carries `content_age_s` — the raw time
+since the last sound, without that reset.
 
 **Stickiness is set by the writer; layers in the app are owned (№310).** The
 daemon classified hub status lines by substring against three and two Russian
