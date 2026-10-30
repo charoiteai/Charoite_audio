@@ -301,7 +301,9 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         if why:
             g.skipped += 1
             g.layout += 1
-            print(f"  ⏭ {graph.name} · {theme}: {why} — ночь не трогает")
+            # знак замены в заголовке тоже прячет «Сейчас» — причина не «собрано руками» (n856-out1 Haiku M2)
+            broken = " (в файле знак замены)" if loaded.state == "damaged" else ""
+            print(f"  ⏭ {graph.name} · {theme}: {why}{broken} — ночь не трогает")
             continue
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
         # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре

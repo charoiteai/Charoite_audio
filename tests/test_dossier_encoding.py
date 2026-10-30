@@ -152,10 +152,11 @@ def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     assert paths["Бета"].read_bytes() == before
 
 
-@pytest.mark.parametrize("head", ["##Правки автора", "## Правки автора ", "### Правки автора"])
+@pytest.mark.parametrize("head", ["##Правки автора", "## Правки автора "])
 def test_owner_heading_spelling_keeps_the_edits(night, monkeypatch, capsys, head):
     """№856: заголовок правок, набранный владельцем без пробела или с хвостом,
-    литерал ночи не видел — пересборка писала «—» поверх правок."""
+    литерал ночи не видел — пересборка писала «—» поверх правок (`###` литерал
+    находил подстрокой, n856-out1 Sonnet M2)."""
     nd, graph, folder, paths, calls = night
     paths["Бета"].write_text(
         paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head), encoding="utf-8")
