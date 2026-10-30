@@ -306,14 +306,17 @@ def public_text(data: bytes) -> tuple[str, bool] | None:
     return data.decode("utf-8", "replace"), True
 
 
+def gh_escape(v: str, prop: bool = False) -> str:
+    """Чужой текст в выводе CI: `%` и перевод строки, а в свойствах команды ещё
+    `:` и `,` — иначе имя файла дописало бы свою команду workflow (Haiku out8 M1).
+    Раннер разбирает команды и из stderr: путь туда идёт так же (финальный Opus, M4)."""
+    v = v.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return v.replace(":", "%3A").replace(",", "%2C") if prop else v
+
+
 def gh_warning(path: str, line: str, text: str) -> str:
-    """Команда аннотации GitHub: имя файла чужое — `%`, перевод строки, а в
-    свойствах ещё `:` и `,` экранируются, иначе имя дописало бы свою команду
-    (Haiku out8 M1)."""
-    def esc(v: str, prop: bool) -> str:
-        v = v.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-        return v.replace(":", "%3A").replace(",", "%2C") if prop else v
-    return f"::warning file={esc(path, True)},line={esc(line, True)}::{esc(text, False)}"
+    """Команда аннотации GitHub по находке в теле не в UTF-8."""
+    return f"::warning file={gh_escape(path, True)},line={gh_escape(line, True)}::{gh_escape(text)}"
 
 
 def scan_public(files: list[pathlib.Path], lossy: dict[str, list[str]]) -> list[str]:
@@ -582,6 +585,18 @@ def raw_objects(shas: list[str]) -> dict[str, str]:
 _KNOWN_HEADERS = {"tree", "parent", "author", "committer", "encoding", "gpgsig", "gpgsig-sha256"}
 
 
+def commit_encoding(raw: str) -> str | None:
+    """Кодировка сообщения из заголовка `encoding`, если она не UTF-8. По ней git
+    перекодирует сообщение в `log --encoding=UTF-8`, и кириллица, записанная
+    байтами UTF-8 под чужим заголовком, приходит валидным UTF-8 из кракозябр —
+    маркер не виден, а push отправит сырые байты (финальный Opus №570, I1)."""
+    for line in raw.split("\n\n", 1)[0].split("\n"):
+        if line.startswith("encoding "):
+            enc = line[len("encoding "):].strip()
+            return None if enc.lower().replace("_", "-") in ("utf-8", "utf8") else enc
+    return None
+
+
 def extra_headers(raw: str) -> list[tuple[str, str]]:
     """(имя, текст) заголовков коммита вне %B: mergetag несёт текст влитого тега."""
     found: list[tuple[str, str]] = []
@@ -781,6 +796,9 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         hits += _people_report(texts, {}, refs=refs, mask=mask) if people else []
         return 0, hits
     for sha, raw in raw_objects([m.sha for m in metas]).items():
+        enc = commit_encoding(raw)
+        if enc is not None:
+            hits.append(f"{sha[:9]} сообщение: кодировка {clean(enc)} — {NOT_UTF8}; перезапиши коммит в UTF-8")
         for key, text in extra_headers(raw):
             texts.append((f"{sha[:9]} заголовок {key}", clean(text)))
             for k in kinds(text):
@@ -1223,17 +1241,17 @@ def _run(a: argparse.Namespace) -> int:
         lossy: dict[str, list[str]] = {}
         hits = scan_public(tracked_files(), lossy)
         for f, found in lossy.items():
-            print(f"⚠ {f}: не UTF-8 — тело судили с заменой байтов, находок {len(found)}; "
+            print(f"⚠ {gh_escape(f)}: не UTF-8 — тело судили с заменой байтов, находок {len(found)}; "
                   "перекодируй в UTF-8, локальный хук откажет", file=sys.stderr)
             for h in found:
-                print(f"  ⚠ {h}", file=sys.stderr)
+                print(f"  ⚠ {gh_escape(h)}", file=sys.stderr)
                 # аннотация PR: зелёный шаг CI иначе прячет находку в логе (выход out8, Sonnet I1)
                 path, line, what = h.rsplit(":", 2)
                 print(gh_warning(path, line, what.strip()))
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
             for h in hits:
-                print(f"  {h}", file=sys.stderr)
+                print(f"  {gh_escape(h)}", file=sys.stderr)
             print("Это проверка ФОРМАТОВ. Имена и внутренние названия ловит "
                   "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
             return 1

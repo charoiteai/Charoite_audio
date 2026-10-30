@@ -1204,6 +1204,38 @@ def test_public_only_never_says_clean_with_a_lossy_file(repo):
     assert p.returncode == 0 and "чисто" not in p.stdout and "только ASCII" in p.stdout, p.stdout
 
 
+
+def test_public_only_stderr_carries_no_workflow_command_from_a_file_name(repo):
+    """Путь в stderr — тот же чужой текст, что и в аннотации: раннер разбирает
+    команды и оттуда (финальный Opus №570, M4)."""
+    (repo.work / "a\n::error::pwn.txt").write_bytes(("Иван" + "ов И. И.\n").encode("cp1251"))
+    repo.commit("cp1251")
+    p = guard_run(repo.work, "--public-only", env=repo.env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert not any(ln.startswith("::error") for ln in (p.stdout + p.stderr).splitlines()), p.stderr
+
+
+def test_commit_message_in_a_foreign_encoding_is_refused(repo):
+    """`encoding cp1251` в заголовке: git перекодирует сообщение по нему, и
+    кириллический маркер приходит кракозябрами — судить нечего (финальный Opus №570, I1)."""
+    repo.write("a.md", "раз\n")
+    git(repo.work, "add", "-A", env=repo.env)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "-c", "i18n.commitEncoding=cp1251",
+        "commit", "-q", "-m", f"fix: запуск на {MARKER}", env=repo.env)
+    sha = repo.head()
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert f"{sha[:9]} сообщение: кодировка cp1251" in p.stderr, p.stderr
+
+
+def test_commit_marked_utf8_is_judged_as_usual(repo):
+    repo.write("a.md", "раз\n")
+    git(repo.work, "add", "-A", env=repo.env)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "-c", "i18n.commitEncoding=UTF8",
+        "commit", "-q", "-m", "чистое сообщение", env=repo.env)
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stdout + p.stderr
+
 @pytest.mark.parametrize("data,kind", [
     (b"plain", "text"),
     (b"x\0" + ("jane.doe" + "@" + "mail-host" + ".ru").encode(), "text"),
