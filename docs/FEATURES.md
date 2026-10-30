@@ -195,10 +195,13 @@
    relabelled from such a segment (headset failure).
 2. **Graph update** — entities (People/Systems), decisions, action items,
    Cores with status + chronicle; a meeting note with wiki-links. A
-   person's or system's description is a dated fact too: a substantially
-   new one replaces it, and the old wording stays in the node's chronicle
-   as "was … → now …, date" — a rephrasing of the same thing is not a new
-   fact. The chronicle keeps the last ten such lines; older ones move to
+   person's or system's description is a dated fact too: a refinement
+   (all old words and numbers kept, no new numbers) or the same words with as many numbers, other values (a date too), replaces it, and the
+   old wording stays in the node's chronicle as "was … → now …, date" — a
+   rephrasing of the same thing is not a new fact. A role from a single
+   meeting leaves the top alone and is noted on that meeting's line as "in this meeting: …":
+   otherwise an episode ("participant") wiped the stable fact. A meeting older
+   than the node's last mention (a backlog or an import) leaves the top alone too. The chronicle keeps the last ten such lines; older ones move to
    "## Архив хроники" at the end of the node — nothing is lost, the top of
    the node stays readable. A system, team or model node is not created when
    the name is not a name (a pronoun, a fragment), is one letter away from an

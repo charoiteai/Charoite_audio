@@ -680,6 +680,9 @@ def _dedup(items: list) -> list:
 # Форма ответа разбора по промпту `_extract`: какие поля строки, какие списки.
 _TEXT_FIELDS = ("название", "проект")
 _LIST_FIELDS = ("люди", "сущности", "решения", "связи", "темы", "ядра")
+# Строковые поля элементов списков: null или число в «роль» ронял встречу
+# (`_flat(None)`), а в заметку встречи уходило «None» (Haiku C1 n846-in1, DS I2 n846-out1)
+_ITEM_TEXT_FIELDS = {"люди": ("имя", "роль", "вклад"), "сущности": ("имя", "тип", "суть")}
 
 
 def _answer(cfg: dict, transcript: str, project_rule: str = "", **kw) -> dict | None:
@@ -693,8 +696,9 @@ def _answer(cfg: dict, transcript: str, project_rule: str = "", **kw) -> dict | 
 
 def _shaped(got: dict | None) -> dict | None:
     """Поля схемы — своего вида: строковое поле не строкой отбрасывается, списочное
-    строкой становится списком из неё, иным видом — пустым списком. Прочие ключи —
-    как пришли."""
+    строкой становится списком из неё, иным видом — пустым списком; у записей
+    людей и сущностей строковое поле не строкой отбрасывается так же. Прочие
+    ключи — как пришли."""
     if not isinstance(got, dict):
         return got
     for key in _TEXT_FIELDS:
@@ -712,6 +716,19 @@ def _shaped(got: dict | None) -> dict | None:
         if value is not None:
             print(f"граф: поле «{key}» — {type(value).__name__}, а не список — отброшено")
         got[key] = []
+    for key, fields in _ITEM_TEXT_FIELDS.items():
+        for item in got.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            for field in fields:
+                if (key, field) == ("сущности", "имя") and type(item.get(field)) is int:
+                    # «имя»: 1494 системы доходило до узла на базе (Opus M1); число у человека и в
+                    # тексте («роль»: 2026 вставала верхом навсегда) — отброшено, как прежде (n846-opus-fix)
+                    item[field] = str(item[field])
+                if field in item and not isinstance(item[field], str):
+                    if item[field] is not None:
+                        print(f"граф: «{key}.{field}» — {type(item[field]).__name__}, а не строка — отброшено")
+                    del item[field]
     return got
 
 
@@ -2473,7 +2490,7 @@ def _entity_new_text(title: str, typ: str, desc: str, day: str, meeting_line: st
     """Текст нового узла сущности: шапка, заголовок, описание, дата, «## Встречи»."""
     return (f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {title}\n"
             + (f"{desc}\n\n" if desc else "\n")   # без описания — одна пустая, как на всех остальных путях
-            + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
+            + (f"_(последнее упоминание: {day})_\n\n" if _seen_day(day) else "")
             + f"## Встречи\n{meeting_line}\n")
 
 
@@ -2481,8 +2498,9 @@ def _stamp_entity(text: str, meeting_line: str, desc: str, meeting_link: str, da
                   label: str, events: list[tuple[str, str]]) -> tuple[str, int]:
     """Преобразование существующего узла под гейтом rewrite_file: ссылка на встречу
     уже есть — менять нечего; заглушкой стал под рукой — не пишем; иначе описание
-    вытесняется существенно новым фактом со следом в «## Хроника» (№194, Q4 аудита
-    памяти 07.09; пересказ того же новым фактом не считается, пустое не вытесняет),
+    вытесняется уточнением со следом в «## Хроника» (№194, Q4 аудита памяти 07.09;
+    пересказ того же новым фактом не считается, пустое не вытесняет), эпизод —
+    в строку этой встречи (№846, правило — `_supersede_description`),
     строка встречи ложится в «## Встречи» — заголовок целиком и только в теле
     («## Встречи-архив» и «## …» в шапке — не раздел, DS r1 по #539 / GLM r2), нет
     раздела — перед «## Архив хроники» (архив — всегда хвост, DS/GLM r1 по #542)
@@ -2495,9 +2513,11 @@ def _stamp_entity(text: str, meeting_line: str, desc: str, meeting_link: str, da
     if redirects.is_merged(text):
         events.append(("узел стал заглушкой под рукой", label))
         return text, 0
-    text, event = _supersede_description(text, desc, meeting_link, name=label.rsplit("/", 1)[-1])
+    text, event, episode = _supersede_description(text, desc, meeting_link, name=label.rsplit("/", 1)[-1])
     if event:
         events.append(event)
+    if episode:
+        meeting_line += f" _(в этой встрече: «{_unlinked(episode)}»)_"
     m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, _body_at(text))
     if m:
         text = text[:m.end()] + f"\n{meeting_line}" + text[m.end():]
@@ -2579,13 +2599,16 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     meeting_line = f"- [[{meeting_link}]] — {contrib}" if contrib else f"- [[{meeting_link}]]"
     # Прочерк любого вида от модели — не описание, ни в новом узле, ни в
     # старом: иначе следующая встреча вытесняла бы «–» строкой хроники с
-    # фиктивным «было» (Important DS r3 по #539)
-    if _is_placeholder(desc):
+    # фиктивным «было» (Important DS r3 по #539). Не строка («роль»: null у
+    # вложенной записи — `_shaped` смотрит только верхний уровень) — тоже не
+    # описание: `_flat(None)` ронял всю встречу (Haiku C1, n846-in1)
+    if not isinstance(desc, str) or _is_placeholder(desc):
         desc = ""
     # Механически у человека/системы обновляются две вещи: дата последнего
     # упоминания (Sonnet 28.08 I6; ретрай старой встречи её не откатывает) и
-    # описание — но только существенно новым фактом и со следом в «## Хроника»
-    # (№194): раньше описание писалось один раз и устаревало молча.
+    # описание — но только уточнением или актуализацией и со следом в «## Хроника»
+    # (№194): раньше описание писалось один раз и устаревало молча; эпизод
+    # встречи верх не трогает, ложится строкой «в этой встрече» (№846).
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     if not p.exists():
         if node is not None:
@@ -2626,9 +2649,18 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
 _LAST_SEEN_RE = re.compile(r"^_\(последнее упоминание: (\d{4}-\d{2}-\d{2})\)_[ \t]*\r?$", re.M)
 
 
+def _seen_day(day: str) -> bool:
+    """День встречи годится в «последнее упоминание»: дата и не из будущего.
+    Будущая (часы машины, ручное имя встречи) встала бы навсегда — максимум назад
+    не откатывается — и глушила или снимала охрану поздней встречи в
+    `_supersede_description` (n846-opus-fix, n846-opus-fix2)."""
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)) and day <= time.strftime("%Y-%m-%d")
+
+
 def _touch_last_seen(text: str, day: str) -> str:
-    """Строка «_(последнее упоминание: ДАТА)_» — обновить, не откатывая назад."""
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+    """Строка «_(последнее упоминание: ДАТА)_» — обновить, не откатывая назад;
+    будущий день не ставится (`_seen_day`)."""
+    if not _seen_day(day):
         return text
     m = _LAST_SEEN_RE.search(text)
     if m:
@@ -2690,8 +2722,17 @@ def _fact_words(s: str) -> tuple[set[str], tuple[str, ...]]:
     буквы выброшены; слова множеством (порядок не смысл), числа — в порядке
     появления: у дат, долей и версий порядок и есть смысл, «с 12.09» и
     «с 09.12» множеством совпадали (Important DS r4 по #539)."""
-    words = re.findall(r"\w+", _fact_norm(s))
-    return {w for w in words if len(w) >= 2 and not w.isdigit()}, tuple(w for w in words if w.isdigit())
+    words, nums = set(), []
+    for w in re.findall(r"\w+", _fact_norm(s)):
+        if w.isdigit():
+            nums.append(w)
+            continue
+        if any(c.isdigit() for c in w):      # «32b», «15ч»: число — в числа, слово — скелетом «#b» (Opus I2)
+            nums += re.findall(r"\d+", w)
+            w = re.sub(r"\d+", "#", w)
+        if len(w) >= 2:
+            words.add(w)
+    return words, tuple(nums)
 
 
 def _same_fact(old: str, new: str) -> bool:
@@ -2718,6 +2759,30 @@ def _same_fact(old: str, new: str) -> bool:
     wa, da = _fact_words(old)
     wb, db = _fact_words(new)
     return bool(wa or da) and wa == wb and da == db
+
+
+def _refines(old: str, new: str) -> bool:
+    """Новое описание вправе встать наверх узла: уточнение (все слова прежнего
+    на месте, чисел, которых не было, нет) или актуализация (те же слова,
+    другие числа — «до 20.09» → «до 27.09»). Иное — роль на ЭТОЙ встрече, а не
+    смена устойчивого факта: верх держится, эпизод — пометкой в строку встречи
+    (№846). Замер 30.10 по 304 вытеснениям с 16.10: прежнее правило ставило
+    наверх эпизод в 21 случае из 30 выборки («Техлид ветки, ведёт систему A» →
+    «Технический эксперт»), уточнение — в одном; это правило вытеснило бы 3
+    из 304. Новые числа запрещены уточнению: «Участник» → «Ключевой участник,
+    подключится к 14:30» — надмножество слов, но эпизод (Sonnet I1, n846-in1);
+    уточнение не теряет и прежних чисел, а актуализация меняет числа, а не
+    вносит их с нуля (Sonnet I2, Haiku I3, DS M2, n846-out1).
+    Цена — смена роли («аналитик» → «руководитель проекта») и снятое слово
+    («не участвует» → «участвует», «бывший аналитик» → «аналитик») наверх сами
+    не встают: эпизод виден в строке встречи, верх правит человек или ревизия.
+    Снятое слово не вытесняет сознательно: в замере строгое подмножество слов —
+    10 из 304, все десять — сжатие до общего слова (8 — «участник…», 2 — «разработчик»):
+    верх беднел, нового факта не было. «Не» есть в 4 прежних — среди 26–72 снятых слов,
+    так что правило «снято „не“ — вытеснять» вернуло бы и их (DS C1, шаг Haiku)."""
+    wa, da = _fact_words(old)
+    wb, db = _fact_words(new)
+    return (wa <= wb and db == da) or (wa == wb and len(da) == len(db) > 0 and da != db)
 
 
 CHRONICLE_KEEP = 10   # строк вытеснений в «## Хроника» человека/системы; старшие — в «## Архив хроники»
@@ -2765,37 +2830,49 @@ def _cap_chronicle(text: str, keep: int = CHRONICLE_KEEP) -> str:
     return text.rstrip("\n") + "\n\n## Архив хроники\n" + "\n".join(overflow) + "\n"
 
 
-def _supersede_description(text: str, desc: str, meeting_link: str, name: str = "") -> tuple[str, tuple[str, str] | None]:
+def _supersede_description(text: str, desc: str, meeting_link: str,
+                           name: str = "") -> tuple[str, tuple[str, str] | None, str]:
     """Описание узла человека/системы новым фактом с датой (№194).
 
-    Возвращает (текст, событие для журнала или None) — журналирует вызывающий
+    Возвращает (текст, событие для журнала или None, эпизод или "") — журналирует вызывающий
     ПОСЛЕ записи файла, иначе журнал сообщал бы о вытеснении, которого в узле
     нет (Minor DS r2). Пустое описание в узле — заполняется без следа (это не
-    вытеснение); «—», «–», «-» описанием не считаются. Существенно другое —
-    заменяет прежнее, а прежнее уходит в «## Хроника» первой строкой ЦЕЛИКОМ:
-    «- [[встреча]] — _(было: «X» → стало: «Y», ДАТА)_» (обрезка теряла бы факт,
-    Important DS r1). Раздел живёт перед «## Встречи»; ссылка встречи в
+    вытеснение); «—», «–», «-» описанием не считаются. Уточнение или
+    актуализация (`_refines`) заменяет прежнее, а прежнее уходит в «## Хроника»
+    первой строкой ЦЕЛИКОМ: «- [[встреча]] — _(было: «X» → стало: «Y», ДАТА)_»
+    (обрезка теряла бы факт, Important DS r1). Иное новое — эпизод: верх
+    держится, третьим значением возвращается текст эпизода — вызывающий кладёт
+    его в строку ЭТОЙ встречи в «## Встречи» (№846: эпизод стирал устойчивое
+    описание; в хронике эпизод на каждую встречу съедал бы десять мест и рос
+    архивом — Sonnet I1, DS M1, n846-out1; ретрай гасит has_link). Раздел живёт перед «## Встречи»; ссылка встречи в
     строке хроники гасит ретрай через has_link, как и у Ядер. Концы строк:
     read_text в upsert_entity сводит CRLF к LF, здесь всегда «\n».
     """
     nl = "\n"
     new = _flat(desc)
     if not new or _is_placeholder(new):
-        return text, None
+        return text, None, ""
     old, start, end = _current_description(text)
     if start < 0:
-        return text, None
+        return text, None, ""
     if not old:
         # пустая строка перед следующим блоком, и ровно одна: у узла из одного
         # заголовка хвоста нет, и второй перенос давал три пустых (GLM r3)
         tail = text[end:]
-        return text[:start] + new + nl + (nl if tail.strip() else "") + tail, None
+        return text[:start] + new + nl + (nl if tail.strip() else "") + tail, None, ""
     if _same_fact(old, new):
         if _fact_norm(old) == _fact_norm(new):
-            return text, None
-        return text, ("описание — пересказ", f"{name}: «{_clip(new)}» ≈ «{_clip(old)}»")
+            return text, None, ""
+        return text, ("описание — пересказ", f"{name}: «{_clip(new)}» ≈ «{_clip(old)}»"), ""
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
+    # встреча старше последнего упоминания (долг встреч, импорт) верх не трогает:
+    # иначе запоздалый разбор откатывал верх, а эпизоды после №846 его не сменят (Opus I1)
+    # будущую дату писатели не ставят (`_seen_day`), а лежащую в узле (ручная правка,
+    # откат часов) охрана не читает: иначе верх замерзал (n846-opus-fix, n846-opus-fix3)
+    seen = _LAST_SEEN_RE.search(text, _body_at(text))
+    if (when and seen and _seen_day(seen.group(1)) and day < seen.group(1)) or not _refines(old, new):
+        return text, ("описание удержано", f"{name}: «{_clip(old)}», в этой встрече «{_clip(new)}»"), _clip(new)
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
     event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")
     text = text[:start] + new + nl + nl + text[end:]
@@ -2803,11 +2880,11 @@ def _supersede_description(text: str, desc: str, meeting_link: str, name: str = 
     body = _body_at(text)
     m = re.compile(r"^## Хроника[ \t]*$", re.M).search(text, body)
     if m:
-        return _cap_chronicle(text[:m.start()] + head + text[m.end():]), event
+        return _cap_chronicle(text[:m.start()] + head + text[m.end():]), event, ""
     m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, body)      # не «## Встречи-архив» (DS r1)
     if m:
-        return text[:m.start()] + head + nl + nl + text[m.start():], event
-    return text.rstrip("\n") + nl + nl + head + nl, event
+        return text[:m.start()] + head + nl + nl + text[m.start():], event, ""
+    return text.rstrip("\n") + nl + nl + head + nl, event, ""
 
 
 def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -> str:
@@ -3079,6 +3156,14 @@ def resolve_core_path(d: pathlib.Path, name: str,
 
 def _flat(s: str) -> str:
     return " ".join(s.split())
+
+
+def _unlinked(s: str) -> str:
+    """Текст модели внутри строки «## Встречи»: «[[…]]» там — ложная ссылка встречи
+    (`has_link` и счёт встреч указателя её видят, n846-out2 M1). Между соседними «[»
+    встаёт пробел: ссылки нет при любом числе скобок, а «[[1,2],[3,4]]» не теряет
+    скобок (n846-out3 Sonnet I1, Haiku I2)."""
+    return re.sub(r"\[(?=\[)", "[ ", s)
 
 
 def _clip(s: str, limit: int = 160) -> str:
