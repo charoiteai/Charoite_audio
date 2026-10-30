@@ -1070,8 +1070,8 @@ and not in `не_принято:`, is appended — under a review too. A meeting
 composition whose file is gone, or which left the topic, sends the body to a rebuild,
 or to a hold under a review; a stub with one arrow is judged by its canon, and a
 stub without a single target (`GraphSnapshot.stubs`: a fork, no link, or a ring) is
-never gone. The night runs the plan for every topic: deleting a stub does not change
-the fingerprint. The body
+never gone; deleting an alias stub makes its name gone. Part 2 will run the plan for
+every topic: deleting a stub does not change the fingerprint. The body
 is never appended to when the file is damaged, has no «## Сейчас», carries a
 diarization label, or would grow past `GROW_LIMIT`.
 
