@@ -939,8 +939,9 @@ def load_index(folder: pathlib.Path) -> list[dict]:
     return entries
 
 
-def lookup(folder: pathlib.Path, query: str, limit: int = 3) -> list[dict]:
+def lookup(folder: pathlib.Path, query: str, limit: int | None = 3) -> list[dict]:
     """Подбор досье под запрос — по пересечению основ. Без сети и без моделей.
+    `limit=None` — все совпадения по убыванию счёта.
 
     Возвращает записи индекса с полем «счёт»; пусто — темы нет, работает
     обычный поиск по графу.

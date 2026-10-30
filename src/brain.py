@@ -118,6 +118,17 @@ class Packed(NamedTuple):
 
 
 NODES_HEAD = "Из узлов графа проекта:\n"
+NODES_SEP = "\n\n"
+
+
+def fragment_share(budget: int, status: Verdict, *, with_nodes: bool) -> int:
+    """Сколько знаков блока гарантировано фрагментам выдачи (шапка с ними): без
+    узлов — весь бюджет; с узлами — бюджет без разделителя и, при неуверенной
+    выдаче, без доли узлов. Одно место для `_memory_block` и инварианта полос
+    профиля (входной круг по №855: долю узлов знал только упаковщик)."""
+    if not with_nodes:
+        return budget
+    return budget - len(NODES_SEP) - (0 if status is Verdict.CONFIDENT else int(budget * NODES_SHARE))
 
 
 def _memory_block(result: graph_search.Result | None, *, nodes: str = "", budget: int) -> Packed:
@@ -141,11 +152,12 @@ def _memory_block(result: graph_search.Result | None, *, nodes: str = "", budget
             lead = f"{lead[:-1]} ({scope}):" if lead.endswith(":") else f"{lead} ({scope})"
         frag_part = f"{lead}\n{frags}"
     if nodes_part and frag_part:
-        n_budget = 0 if result.status is Verdict.CONFIDENT else int(budget * NODES_SHARE)
-        f_budget = budget - n_budget
+        # разделитель — внутри бюджета: прежде текст выходил длиннее на два знака (Haiku m1 по №855)
+        f_budget = fragment_share(budget, result.status, with_nodes=True)
+        n_budget = budget - len(NODES_SEP) - f_budget
         n_take = min(len(nodes_part), n_budget + max(0, f_budget - len(frag_part)))
-        f_take = min(len(frag_part), budget - n_take)
-        text = nodes_part[:n_take] + "\n\n" + frag_part[:f_take]
+        f_take = min(len(frag_part), budget - len(NODES_SEP) - n_take)
+        text = nodes_part[:n_take] + NODES_SEP + frag_part[:f_take]
     else:
         n_take = min(len(nodes_part), budget) if nodes_part else 0
         f_take = 0 if nodes_part else min(len(frag_part), budget)
@@ -207,7 +219,8 @@ def warm(cfg: dict, *, graph: pathlib.Path | None = None,
 
 
 def _vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
-                  timeout: float, dossiers: bool = True, graph: pathlib.Path | None = None,
+                  timeout: float, dossiers: bool = True, dossier_limit: int = 2,
+                  dossier_chars: int | None = None, graph: pathlib.Path | None = None,
                   embedder: graph_search.Embedder | None = None) -> graph_search.Result:
     """Выдача по ГРАФУ ПРОЕКТА как значение: `status` (Verdict) — уверенно /
     слабо / не проверено семантикой / пусто, `fragments` — досье и фрагменты без
@@ -226,6 +239,7 @@ def _vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
     if mem is None:
         raise MemoryUnavailable("граф не настроен — памяти по нему нет")
     result = mem.search(query, limit=limit, snippet_chars=snippet_chars, dossiers=dossiers,
+                        dossier_limit=dossier_limit, dossier_chars=dossier_chars,
                         embed_timeout=max(0.5, min(6.0, timeout / 2)))
     if not result.ready:
         raise MemoryNotReady("память по графу ещё прогревается")
@@ -259,7 +273,10 @@ class Profile(NamedTuple):
     досье: `dossiers=False` выключает сводки тем из выдачи и вердикта (бенч меряет
     их вклад). Умолчание `True` — значение `EXPAND` и `LIVE`: их вход — тема, и
     сводка темы отвечает на неё первой; у `ANSWER` — `False` по замеру. Ось —
-    аргумент вызова, не состояние общего индекса."""
+    аргумент вызова, не состояние общего индекса. `dossier_limit` и
+    `dossier_chars` — полоса досье: сколько тем и потолок одного блока «📁» с
+    шапкой; умолчания — числа движка (`None` — тело `snippet_chars * 3`), профиль
+    с досье задаёт их сам — так требует тест полос."""
     name: str
     limit: int
     snippet_chars: int
@@ -267,6 +284,8 @@ class Profile(NamedTuple):
     budget: int
     synth: Synth | None = None
     dossiers: bool = True
+    dossier_limit: int = 2
+    dossier_chars: int | None = None
 
 
 EXPAND_SYSTEM = ("Ты сжимаешь память прошлых встреч в короткие факты. "
@@ -283,9 +302,18 @@ EXPAND_SYSTEM = ("Ты сжимаешь память прошлых встреч
 ANSWER = Profile("answer", limit=4, snippet_chars=600, timeout=2.5, budget=3000,
                  synth=Synth("small", num_predict=220, abstain="(из общих знаний)"),
                  dossiers=False)
+# Полоса досье EXPAND и LIVE — одна тема, блок до 450 знаков (замер 30.10 на тех же 37
+# вопросах, только выдача): две сводки по 3·snippet (~2120 знаков у expand, ~1525 у live)
+# шли первыми и срезали блоки — expand 12 против 20 без досье (✓→✗ 10, все «срезано
+# бюджетом»), live 16 против 17. Факт сводки стоит рано (12 из 16 — до знака 450);
+# симуляция упаковки на замеренных длинах: одна тема с телом от 380 до 500 знаков — expand
+# 20, live 20, четыре вопроса live, которые находит только сводка, на месте. 450 — наибольший
+# блок, при котором и на неуверенной выдаче с узлами первое окно лучшего фрагмента остаётся
+# в блоке (тест полос; 550 не держал его на 49 знаков у expand и 89 у live) (№855).
 EXPAND = Profile("expand", limit=3, snippet_chars=700, timeout=8, budget=3000,
-                 synth=Synth("small", system=EXPAND_SYSTEM))
-LIVE = Profile("live", limit=4, snippet_chars=500, timeout=6, budget=2600)
+                 synth=Synth("small", system=EXPAND_SYSTEM), dossier_limit=1, dossier_chars=450)
+LIVE = Profile("live", limit=4, snippet_chars=500, timeout=6, budget=2600,
+               dossier_limit=1, dossier_chars=450)
 PROFILES: dict[str, Profile] = {p.name: p for p in (ANSWER, LIVE, EXPAND)}
 
 
@@ -305,7 +333,8 @@ def search(profile: Profile, query: str, *, cfg: dict | None = None,
                          "нет ключа (модель — часть ключа, см. shared)")
     return _vault_search(cfg or {}, query, limit=profile.limit,
                          snippet_chars=profile.snippet_chars, timeout=profile.timeout,
-                         dossiers=profile.dossiers, graph=graph, embedder=embedder)
+                         dossiers=profile.dossiers, dossier_limit=profile.dossier_limit,
+                         dossier_chars=profile.dossier_chars, graph=graph, embedder=embedder)
 
 
 def pack(profile: Profile, result: graph_search.Result | None, *, nodes: str = "") -> Packed:

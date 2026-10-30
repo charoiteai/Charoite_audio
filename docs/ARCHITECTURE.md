@@ -1987,7 +1987,13 @@ record (`Packed`), not a string: `text` goes into the prompt, while `lead`,
 parses the header to score a fact. `ANSWER` goes without dossiers: on the owner's
 37 questions (seed 0) topic summaries first ate the 2000-character block of the
 previous budget, and the answer found 8 of 37 with them against 16 without;
-`LIVE` and `EXPAND` keep dossiers — their input is a topic, not a question. The
+`LIVE` and `EXPAND` keep dossiers — their input is a topic, not a question —
+but as a band: one topic, the whole "📁" block (header included) at most 450
+characters (`Profile.dossier_limit`, `dossier_chars`). Two summaries of
+3·snippet came first and cut the snippets: on the same 37 questions `EXPAND`
+found 12 with them against 20 without, `LIVE` 16 against 17; with the band both
+find 20, and the four `LIVE` questions only a summary answers stay found. A test
+over `PROFILES` keeps the best snippet in the budget after the band. The
 panel-question answer goes with the role's system, without the meeting memory:
 the memory the daemon keeps in the shared system for the live hint is not needed
 by the answer — its own search provides it; the answer block budget is 3000

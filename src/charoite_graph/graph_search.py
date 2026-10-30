@@ -693,6 +693,24 @@ def diversify(scored: list[tuple[float, str]], limit: int, penalty: float = 0.45
     return picked
 
 
+def dossier_block(theme: str, body: str, snippet_chars: int, chars: int | None = None) -> str:
+    """Блок «📁» сводки темы. `chars=None` — прежний вид: тело `snippet_chars * 3`
+    знаков до схлопывания пробелов. С потолком — весь блок вместе с шапкой не
+    длиннее `chars`: пробелы схлопнуты до среза, обрыв — по границе слова с «…»
+    (входной круг Sonnet I4, M1, M2 по №855)."""
+    head = f"📁 Досье «{theme}»\n  "
+    if chars is None:
+        return head + " ".join(body[:snippet_chars * 3].split())
+    flat = " ".join(body.split())
+    room = chars - len(head)
+    if len(flat) > room:
+        cut = flat[:max(0, room - 1)]
+        if " " in cut:
+            cut = cut[:cut.rfind(" ")]
+        flat = cut + "…"
+    return (head + flat)[:chars]
+
+
 def snippet(text: str, rx: re.Pattern, chars: int, rare_first: Sequence[str], dense: bool = False) -> str:
     """Окно вокруг самого информативного места: максимум РАЗНЫХ игл запроса в
     окне (первое совпадение часто в шапке, ответ — в середине). Короткий файл
@@ -1535,13 +1553,17 @@ class GraphSearch:
     # ---------------------------------------------------------------- поиск
     def search(self, query: str, *, limit: int = 4, snippet_chars: int = 500,
                semantic: bool = True, embed_timeout: float = 6.0,
-               dossiers: bool = True) -> Result:
+               dossiers: bool = True, dossier_limit: int = 2,
+               dossier_chars: int | None = None) -> Result:
         """Выдача по запросу. Индекс не прогрет — Result(ready=False): у
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
         обновляется фоном, ответ — по текущему. `dossiers=False` — ось бенча:
         сводки тем не ищутся вовсе (`_dossier_blocks` не зовётся), секция и
         вердикт считаются без них; файлы досье остаются ролью DOSSIER и в слоты
-        первичной выдачи не идут, как и всегда."""
+        первичной выдачи не идут, как и всегда. `dossier_limit` и `dossier_chars` —
+        полоса сводок: сколько тем и потолок одного блока «📁» вместе с шапкой;
+        `None` — прежнее тело `snippet_chars * 3` (MCP и выдача для человека). Числа
+        полосы даёт профиль потребителя (`brain.Profile`, №855)."""
         if not self.ready:
             gen = self._gen
             return Result([], 0, ready=False, query=query, skipped=gen.skipped, unread=gen.unread,
@@ -1676,7 +1698,8 @@ class GraphSearch:
                     sem.append((sim * recency_factor(ts, now) * raw_dampener(d.rel, self.schema) * placeholder_factor(d.base), d.rel))
 
         if dossiers:
-            dossier_pairs, dossier_cov = self._dossier_blocks(query, snippet_chars, gen)
+            dossier_pairs, dossier_cov = self._dossier_blocks(query, snippet_chars, gen,
+                                                              limit=dossier_limit, chars=dossier_chars)
         else:
             # ось бенча: сводки тем выключены — ни секции, ни свидетельства в вердикте
             dossier_pairs, dossier_cov = [], 0.0
@@ -1741,7 +1764,7 @@ class GraphSearch:
                       sources=dossier_rels + tuple(shown))
 
     def _dossier_blocks(self, query: str, snippet_chars: int, gen: Generation,
-                        limit: int = 2) -> tuple[list[tuple[str, str]], float]:
+                        limit: int = 2, chars: int | None = None) -> tuple[list[tuple[str, str]], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
         моделей. -> (блоки, лучшая доля ключей темы в запросе — в вердикт как покрытие).
 
@@ -1751,25 +1774,28 @@ class GraphSearch:
         имя на диске знает только обход, а тема из JSON в путь не склеивается —
         ни `../` вне папки, ни расхождение регистра или формы Unicode между
         темой и файлом (выходной круг DS I1 / GLM M3). Сводки, которой в снимке
-        ещё нет, в ответе нет — до следующего обхода. Блоки — парами (`rel`
-        сводки, текст): путь идёт в `Result.sources`."""
+        ещё нет, в ответе нет — до следующего обхода: `limit` набирается из годных
+        тем, а не срезает индекс до отсева, иначе тема вне снимка оставляла секцию
+        пустой при годной следующей (входной круг Sonnet I1 по №855). Блоки —
+        парами (`rel` сводки, текст): путь идёт в `Result.sources`."""
         if self.schema.dossier_dir is None:
             return [], 0.0              # у хранилища нет роли досье — секции нет
         folder = self.graph / self.schema.dossier_dir
         try:
-            entries = dossier.lookup(folder, query, limit=limit)
+            entries = dossier.lookup(folder, query, limit=None)
         except (OSError, ValueError, KeyError, TypeError):   # битый индекс — без секции, не без ответа
             return [], 0.0
         out: list[tuple[str, str]] = []
         best = 0.0
         for e in entries:
+            if len(out) >= limit:
+                break
             if e.get("счёт", 0) < 0.3:
                 continue
             d = gen.dossiers.get(norm_text(f"{self.schema.dossier_dir}/{e['тема']}"))
             if d is None:
                 continue
-            head = " ".join((d.body or d.text)[:snippet_chars * 3].split())
-            out.append((d.rel, f"📁 Досье «{e['тема']}»\n  {head}"))
+            out.append((d.rel, dossier_block(e["тема"], d.body or d.text, snippet_chars, chars)))
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
 
