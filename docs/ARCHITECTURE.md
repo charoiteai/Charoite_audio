@@ -2078,6 +2078,21 @@ files with an `_answers` suffix and does not overwrite the retrieval report.
 Both are readable by the owner only (0600), and a report that could not be
 written fails the run.
 
+`CHAROITE_BENCH_ARM=p<N>` (`p1`–`p999`) orders N pieces of 1000 characters with an
+N×1000 budget; any other value fails the run instead of overwriting the `chat` report.
+Each question in the report lists the rank of every fact in what search delivered (piece rank, `гейт` for the gate slot, or
+`нет`), piece lengths, the prompt estimate and Ollama's `prompt_eval_count`; search
+and synthesis time are totalled separately. Every run also saves its context packets
+(question, delivery, request body, answer, model, server and window) to
+`$TMPDIR/charoite_bench_packet_<arm>[_answers]_<stamp>.txt` (0600, the path is printed at the start of the run);
+they hold memory excerpts, so delete them once reviewed. Layer 2:
+`CHAROITE_BENCH_REPLAY=<packets>` repeats synthesis from the saved packets without
+the graph or search, and reports per question whether the request body is identical
+and the facts at record time against now (`charoite_bench_replay_<arm>.txt`). Packets
+are checked before the first model call: silent (recorded while the model did not answer),
+partial (not the whole question set, a torn file) and duplicated packets fail the run, as do
+a different model, server or window.
+
 Each question in the report carries the search verdict (`confident`, `weak`,
 `unverified`, `empty`, `unavailable`). With synthesis the bench counts
 `FALSE_REFUSAL` — the answer opens with a refusal and holds none of the facts
