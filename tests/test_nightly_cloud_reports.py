@@ -400,8 +400,8 @@ def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("tail, want", [
-    ("\n## Источники\n- [[A]]\n\n## Правки автора\n\nв теле\n\n## Правки автора\n\nмоё\n",
-     "заголовков «Правки автора» 2"),
+    ("\n## Правки автора\n\nв теле\n\n## Источники\n- [[A]]\n\n## Правки автора\n\nмоё\n",
+     "«Источники» после «Правок автора»"),
     ("\n## Источники\n- [[A]]\n\n## Источники\n- [[B]]\n", "до «Правок автора» заголовков «Источники» 2"),
 ])
 def test_foreign_layout_is_left_alone_before_the_cloud(tmp_path, monkeypatch, tail, want):

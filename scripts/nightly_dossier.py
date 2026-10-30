@@ -302,7 +302,8 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
             g.skipped += 1
             g.layout += 1
             # знак замены в заголовке тоже прячет «Сейчас» — причина не «собрано руками» (n856-out1 Haiku M2)
-            broken = " (в файле знак замены)" if loaded.state == "damaged" else ""
+            broken = (" (в файле знак замены)" if loaded.state == "damaged" and not dossier.VALID_RE.search(text)
+                      else "")
             print(f"  ⏭ {graph.name} · {theme}: {why}{broken} — ночь не трогает")
             continue
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы

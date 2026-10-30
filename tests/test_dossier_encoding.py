@@ -168,14 +168,13 @@ def test_owner_heading_spelling_keeps_the_edits(night, monkeypatch, capsys, head
     assert dossier.layout_problem(text) == ""
 
 
-@pytest.mark.parametrize("edit", ["twice", "above", "no_now"])
+@pytest.mark.parametrize("edit", ["sources_after", "above", "no_now"])
 def test_foreign_layout_is_held_before_the_model(night, monkeypatch, capsys, edit):
     """Раскладка не та, что пишет `render`: ночь не зовёт модель и не трогает файл
     (n856-in1 Haiku C1, in2 Haiku C1), пропуск — своим счётчиком (in2 Sonnet I1)."""
     nd, graph, folder, paths, calls = night
     text = paths["Бета"].read_text(encoding="utf-8")
-    text = {"twice": text.replace("## Сейчас\nстарое тело\n",
-                                  "## Сейчас\nстарое тело\n## Правки автора\nв теле\n"),
+    text = {"sources_after": text + "\n## Источники\n- [[x]]\n",
             "above": text.replace("## Сейчас\nстарое тело\n## Правки автора\n\nоставить решение автора\n",
                                   "## Правки автора\n\nоставить решение автора\n## Сейчас\nстарое тело\n"),
             "no_now": text.replace("## Сейчас\n", "")}[edit]
@@ -202,9 +201,7 @@ def test_layout_changed_after_scan_is_held_without_a_refusal(night, monkeypatch,
     def scan(*a, **kw):
         g, found = original(*a, **kw)
         p = paths["Бета"]
-        p.write_text(p.read_text(encoding="utf-8").replace(
-            "## Сейчас\nстарое тело\n", "## Сейчас\nстарое тело\n## Правки автора\nв теле\n"),
-            encoding="utf-8")
+        p.write_text(p.read_text(encoding="utf-8") + "\n## Источники\n- [[в теле]]\n", encoding="utf-8")
         os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 120))
         return g, found
 
