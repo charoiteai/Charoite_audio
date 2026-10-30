@@ -16,11 +16,31 @@ enum ProbeTurn {
     static let model = "qwen3.6:35b-a3b"
     static let engine = "local"
 
-    /// Рука бенча: `CHAROITE_BENCH_ARM=legacy` — прежние 5×1200 с бюджетом
-    /// поиска по умолчанию, иначе — параметры чата.
-    static var arm: (name: String, params: ChatRetrieval.Params) {
-        ProcessInfo.processInfo.environment["CHAROITE_BENCH_ARM"] == "legacy"
-            ? ("legacy", .legacyProbe) : ("chat", .chat)
+    /// Имя руки, которое понимает `arm()`: им же повтор допускает имя из файла
+    /// пачек в путь отчёта (n752-out2, DS M2).
+    static func isKnownArm(_ name: String) -> Bool {
+        name == "chat" || name == "legacy" || name.range(of: #"^p[1-9][0-9]{0,2}$"#, options: .regularExpression) != nil
+    }
+
+    /// Рука бенча из `CHAROITE_BENCH_ARM`: пусто или `chat` — параметры чата,
+    /// `legacy` — прежние 5×1200 с бюджетом поиска по умолчанию, `p<N>` —
+    /// N кусков по 1000 знаков с бюджетом N×1000 (число кусков на деле задаёт
+    /// бюджет, отчёт пишет их счёт; кусок с шапкой длиннее 1000, и последний
+    /// упаковщик режет, а p1–p2 упираются в потолок источника 600/800 —
+    /// с p3+ не сравнимы, n752-out1 Sonnet I3). Прочее — ошибка: опечатка `p4l` молча
+    /// перезаписывала бы отчёт руки `chat` (n752-in1, Sonnet I5, DS M5).
+    static func arm() throws -> (name: String, params: ChatRetrieval.Params) {
+        let raw = (ProcessInfo.processInfo.environment["CHAROITE_BENCH_ARM"] ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        switch raw {
+        case "", "chat": return ("chat", .chat)
+        case "legacy": return ("legacy", .legacyProbe)
+        default:
+            guard isKnownArm(raw), let n = Int(raw.dropFirst()) else {
+                throw SetupError(description: "CHAROITE_BENCH_ARM=\(raw): ждём chat, legacy или p<N> (1–999)")
+            }
+            return (raw, ChatRetrieval.Params(limit: n, snippet: 1000, budget: n * 1000))
+        }
     }
 
     static var inferenceIsLocal: Bool {
@@ -51,18 +71,46 @@ enum ProbeTurn {
     /// Ответ модели или nil — модель не ответила (бенч считает такой вопрос
     /// с нулём фактов и падает своим сообщением).
     static func answer(question: String, outcome: ArchiveSearch.Outcome) async -> String? {
-        let local = inferenceIsLocal
-        let system = ChatRetrieval.baseSystem(inferenceIsLocal: local)
-            + ChatRetrieval.contextBlock(outcome).block
+        guard let body = body(question: question, outcome: outcome) else { return nil }
+        return await send(body)?.text
+    }
+
+    /// Тело запроса хода — JSON с упорядоченными ключами: два тела равны,
+    /// только если равны запросы (повтор пачки сверяет его, n752-in1, DS I4).
+    static func body(question: String, outcome: ArchiveSearch.Outcome) -> Data? {
+        let prompt = system(question: question, outcome: outcome)
+        return try? JSONSerialization.data(withJSONObject: ChatRetrieval.requestBody(
+            model: model,
+            messages: [["role": "system", "content": prompt], ["role": "user", "content": question]],
+            stream: false, temperature: 0), options: [.sortedKeys])
+    }
+
+    /// Системный текст хода: основа и блок графа после окна. Окно — и здесь:
+    /// повтор пачки после правки `Window` не пошлёт ход, которого чат не
+    /// сделал бы (n752-out1, DS M7); на выдаче из `search` это тождество.
+    static func system(question: String, outcome: ArchiveSearch.Outcome) -> String {
+        let base = ChatRetrieval.baseSystem(inferenceIsLocal: inferenceIsLocal)
+        return base + ChatRetrieval.contextBlock(ChatRetrieval.fit(outcome, system: base, prompt: question)).block
+    }
+
+    /// Сервер модели без пути и учётных данных — для сверки пачки с получателем
+    /// (n752-out1, Sonnet I5, DS I1).
+    static var server: String {
+        guard let c = URLComponents(string: AppSettings.ollamaURL) else { return "?" }
+        return "\(c.scheme ?? "?")://\(c.host ?? "?")" + (c.port.map { ":\($0)" } ?? "")
+    }
+
+    /// Ответ и счёт токенов промпта у Ollama: оценка окна — верхняя, отчёт
+    /// пишет, сколько ушло на деле (n752-in1, DS C2).
+    struct Reply { let text: String; let promptTokens: Int? }
+
+    static func send(_ body: Data) async -> Reply? {
         guard let url = URL(string: AppSettings.ollamaURL + "/api/chat") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 600
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ChatRetrieval.requestBody(
-            model: model,
-            messages: [["role": "system", "content": system], ["role": "user", "content": question]],
-            stream: false, temperature: 0))
+        req.httpBody = body
         // Прокси обнуляем, как в проде: системный прокси ломает запрос к localhost.
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
@@ -70,7 +118,133 @@ enum ProbeTurn {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let msg = obj["message"] as? [String: Any],
               let text = msg["content"] as? String, !text.isEmpty else { return nil }
-        return text
+        return Reply(text: text, promptTokens: obj["prompt_eval_count"] as? Int)
+    }
+
+    /// Пачка хода — выдача руки после окна и всё, чем отчёт судит ответ.
+    /// Повтор (`CHAROITE_BENCH_REPLAY`) шлёт её через тот же `body`/`send`:
+    /// правка промпта или блока графа видна в повторе, а поле `body` говорит,
+    /// тот ли это запрос, что при записи (n752-in1, H C3, DS I3).
+    struct Packet: Codable {
+        struct Piece: Codable { let text: String; let rel: String?; let rank: Int }
+        let arm: String
+        let limit: Int, snippet: Int, budget: Int
+        let model: String
+        /// соседа по ссылке берут только при локальной модели (№695): повтор
+        /// на другой хост отказывает (n752-in1, Sonnet I4)
+        let local: Bool
+        let server: String
+        /// окно при записи: выдача в пачке уже подрезана им, и выросшее окно
+        /// повтор не воспроизведёт (n752-out2, Haiku I-1)
+        let window: Int
+        let q: String
+        /// судья — тот, что при записи: правка набора не переписывает «при записи» (DS I2)
+        let must: [String]
+        let abstain: Bool
+        let verdict: String
+        let text: String
+        let rels: [String]?
+        let note: String
+        let parts: [Piece]?
+        let body: String?
+        let answer: String?
+
+        /// `body` nil — модель не спрашивали (прогон без синтеза): такую пачку
+        /// повтор не берёт (DS I3)
+        init(arm: (name: String, params: ChatRetrieval.Params), q: String, must: [String], abstain: Bool,
+             outcome: ArchiveSearch.Outcome, body: Data?, answer: String?) {
+            self.arm = arm.name
+            limit = arm.params.limit
+            snippet = arm.params.snippet
+            budget = arm.params.budget
+            model = ProbeTurn.model
+            local = ProbeTurn.inferenceIsLocal
+            server = ProbeTurn.server
+            window = ChatRetrieval.Window.input
+            self.q = q
+            self.must = must
+            self.abstain = abstain
+            verdict = outcome.verdict.rawValue
+            text = outcome.text
+            rels = outcome.rels
+            note = outcome.note
+            parts = outcome.parts?.map { Piece(text: $0.text, rel: $0.rel, rank: $0.rank) }
+            self.body = body.map { String(decoding: $0, as: UTF8.self) }
+            self.answer = answer
+        }
+
+        func outcome() throws -> ArchiveSearch.Outcome {
+            guard let v = ArchiveSearch.Verdict(rawValue: verdict) else {
+                throw SetupError(description: "пачка: вердикт \(verdict) не известен — «\(q)»")
+            }
+            return ArchiveSearch.Outcome(text: text, rels: rels, verdict: v, note: note,
+                                         parts: parts?.map { ArchiveSearch.Part(text: $0.text, rel: $0.rel, rank: $0.rank) })
+        }
+    }
+
+    /// Пачки пишутся по ходу, строка JSON на вопрос: прогон, упавший на
+    /// 30-м вопросе, оставляет 29 пачек (n752-in1, Sonnet I6). Файл — 0600
+    /// в проверенном каталоге отчётов, своё имя на каждый прогон: упавший
+    /// перезапуск не стирает эталон (n752-out1, Sonnet I4).
+    final class PacketLog {
+        let path: String
+        private let handle: FileHandle
+
+        init(_ name: String) throws {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            path = try reportPath("\(name)_\(stamp)")
+            guard writePrivate("", to: path), let h = FileHandle(forWritingAtPath: path) else {
+                throw SetupError(description: "пачки не открылись: \(path)")
+            }
+            handle = h
+        }
+
+        deinit { try? handle.close() }
+
+        func append(_ p: Packet) throws {
+            var line = try JSONEncoder().encode(p)
+            line.append(0x0A)
+            try handle.write(contentsOf: line)
+        }
+
+        /// Оборванная последняя строка (прогон убит посреди записи) — пропуск
+        /// с пометкой, а не отказ всему файлу; кривая строка в середине — отказ
+        /// (n752-out1, Sonnet I7).
+        static func read(_ raw: String) throws -> (packets: [Packet], torn: Bool) {
+            let path = (raw as NSString).expandingTildeInPath
+            guard let data = FileManager.default.contents(atPath: path) else {
+                throw SetupError(description: "пачек нет: \(path)")
+            }
+            let lines = data.split(separator: 0x0A)
+            var out: [Packet] = []
+            for (i, line) in lines.enumerated() {
+                do { out.append(try JSONDecoder().decode(Packet.self, from: Data(line))) } catch {
+                    // единственная строка не разобралась — это формат, а не обрыв (n752-out2, DS M1)
+                    guard i == lines.count - 1, !out.isEmpty else {
+                        throw SetupError(description: "пачка \(i + 1) не разобралась (формат сменился? перезапиши): "
+                                         + "\(path) — \(error)")
+                    }
+                    return (out, true)
+                }
+            }
+            return (out, false)
+        }
+    }
+
+    /// Ранг факта в выдаче — наименьший `Part.rank` куска, где факт стоит в
+    /// тексте, который видит модель: шапка «• путь» и «Связано с» тоже (тот же
+    /// судья, что `inFound` и false_refusal; n752-out7, Haiku C1 — прежняя
+    /// отсечка шапок из n752-in1 Sonnet I2 давала «нет» при факте в выжившей
+    /// шапке). −1 — слот гейта. Ранг — порядок упаковки, не позиция поиска
+    /// (Sonnet I1): кривая по рукам — только из настоящих прогонов этих рук.
+    /// Факт, разорванный переводом строки, ловит `norm` судьи, схлопывающий
+    /// пробелы (n752-out1, Sonnet I6 и Minor).
+    static func factRank(_ fact: String, in parts: [ArchiveSearch.Part]?,
+                         norm: (String) -> String) -> Int? {
+        let needle = norm(fact)
+        // минимум — ранг выживания: слот гейта (−1) `fit` выбрасывает последним, факт в гейте
+        // переживает любое окно; «гейт» при факте и в куске 2 — верно (n752-out6, Haiku C1)
+        return (parts ?? []).filter { norm($0.text).contains(needle) }.map(\.rank).min()
     }
 
     /// Отказ подготовки пробы: тест бросает его и падает с причиной до работы.
@@ -161,9 +335,10 @@ enum ProbeTurn {
 
     /// Шапка отчёта: рука, параметры, движок и модель — чтобы два отчёта
     /// нельзя было сравнить, не видя, чем они отличаются.
-    static func header(_ title: String) -> String {
+    static func header(_ title: String, arm: (name: String, params: ChatRetrieval.Params)) -> String {
         let (name, p) = arm
-        return "\(title)\nрука: \(name) (limit \(p.limit), snippet \(p.snippet), budget \(p.budget)); "
+        // для pN это заказ, а не факт: длины кусков — в строке «ранги» (n752-out1, Haiku C1)
+        return "\(title)\nрука: \(name) (заказ: limit \(p.limit), snippet \(p.snippet), budget \(p.budget)); "
             + "движок: \(engine); соседи по ссылке: \(inferenceIsLocal ? "да" : "нет"); модель: \(model)\n"
     }
 }
