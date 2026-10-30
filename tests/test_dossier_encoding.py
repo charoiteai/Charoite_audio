@@ -366,9 +366,12 @@ def test_strict_utf8_never_refuses_author_text(night, monkeypatch, capsys, kind)
     if kind == "empty":
         path.write_bytes(b"")
     elif kind == "no_heading":
-        path.write_bytes(b"# old dossier without a manual section\n")
+        # без «Сейчас» или без отпечатка файл собран руками — его ночь держит (`layout_problem`, №856)
+        path.write_bytes("---\nотпечаток: старый\n---\n# old dossier without a manual section\n"
+                         "## Сейчас\nстарое\n".encode())
     elif kind == "literal_replacement":
-        path.write_text("## Правки автора\n\nавтор написал \ufffd\n", encoding="utf-8")
+        path.write_text("---\nотпечаток: старый\n---\n## Сейчас\nстарое\n## Правки автора\n\n"
+                        "автор написал \ufffd\n", encoding="utf-8")
     else:
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
     counts = _watch(monkeypatch, paths)

@@ -118,16 +118,14 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
     text = loaded.text or ""
     if not text.removeprefix("\ufeff").strip():
         return True, None, 0
-    why = dossier.layout_problem(text)
-    if why:
+    if dossier.layout_problem(text):
         # `_scan` такую тему не берёт; здесь — файл, переписанный после скана
-        print(f"  ⏭ {theme}: {why} — ночь не трогает")
         return False, None, -1
     if loaded.state == "damaged":
-        # после `layout_problem` правки — всё от их заголовка до конца файла;
-        # заголовка нет (в нём самом знак замены) — правки не найти
-        section = dossier._MANUAL_RE.search(text)
-        if section is None or "\ufffd" in text[section.start():]:
+        # знак замены за телом — в правках или в «Источниках», где мог стоять битый
+        # заголовок правок (n856 Opus I1); правок не найти — тоже отказ
+        _, _, sources, manual = dossier.split_dossier(text)
+        if manual is None or "\ufffd" in (sources or "") + manual:
             print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
             return False, None, 0
     return True, dossier.preserve_manual(text), 0
@@ -299,12 +297,7 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         text = loaded.text or ""
         why = dossier.layout_problem(text) if text.removeprefix("\ufeff").strip() else ""
         if why:
-            g.skipped += 1
-            g.layout += 1
-            # знак замены в заголовке тоже прячет «Сейчас» — причина не «собрано руками» (n856-out1 Haiku M2)
-            broken = (" (в файле знак замены)" if loaded.state == "damaged" and not dossier.VALID_RE.search(text)
-                      else "")
-            print(f"  ⏭ {graph.name} · {theme}: {why}{broken} — ночь не трогает")
+            _skip_layout(g, theme, why, loaded)
             continue
         # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
         # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
@@ -324,6 +317,17 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
+
+
+def _skip_layout(g: _GraphRun, theme: str, why: str, loaded: dossier.DossierLoad) -> None:
+    """Пропуск темы с чужой раскладкой (`dossier.layout_problem`): строка лога с графом —
+    и из скана, и из сборки по свежему снимку (n856 Opus M1)."""
+    g.skipped += 1
+    g.layout += 1
+    # знак замены в заголовке тоже прячет «Сейчас» — причина не «собрано руками» (n856-out1 Haiku M2)
+    broken = (" (в файле знак замены)" if loaded.state == "damaged"
+              and not dossier.VALID_RE.search(loaded.text or "") else "")
+    print(f"  ⏭ {g.graph.name} · {theme}: {why}{broken} — ночь не трогает")
 
 
 def _skip_held(g: _GraphRun, theme: str, rev: str, same: bool) -> None:
@@ -385,8 +389,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     allowed, manual, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
         if failures < 0:
-            g.skipped += 1
-            g.layout += 1
+            _skip_layout(g, theme, dossier.layout_problem(loaded.text or ""), loaded)
             g.keep(theme, members, loaded, fp)
             return None
         g.отказы += failures
