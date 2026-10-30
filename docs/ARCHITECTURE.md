@@ -1283,10 +1283,14 @@ zero for ≥ 600 s, and the microphone carried speech in ≥ 20 % of that window
 real failure, none on legitimate silence. `audible` closes the series when
 content returns; a frame loss wins over dead content (one alarm about the
 channel, the count restarts after the channel is back); a quiet restart does
-not close it. The live status line is quiet and gives no restart advice; the
-summary names only a series still open at the end ("system audio not recorded
-since 18:13 until the end of the recording — the other side only through the
-microphone"). The pulse carries `content_age_s`.
+not close it. The live status line is quiet and gives no restart advice. The
+series stays out of the "recording incomplete" summary: the call is sticky and
+the hub has no end-of-call signal, so after a call an in-person part of the
+meeting with the owner talking looks the same as a dead channel — the trace
+line ("system audio is not recorded since 18:13") is true in both cases, the
+summary would not be. Known limit: with headphones and a silent owner the mic
+share stays low and the failure is not flagged. The pulse carries
+`content_age_s`.
 
 **Stickiness is set by the writer; layers in the app are owned (№310).** The
 daemon classified hub status lines by substring against three and two Russian

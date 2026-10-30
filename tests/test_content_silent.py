@@ -153,14 +153,15 @@ def _ev(kind, at, stopped_at):
             "silent_s": at - stopped_at, "died": True, "cause": "silent_content", "reason": ""}
 
 
-def test_summary_marks_only_a_silence_open_at_the_end():
+def test_a_silence_is_not_an_incomplete_recording():
+    """Серия `silent` в итог «запись неполная» не входит: звонок мог кончиться, а
+    очная часть встречи — идти; сигнала конца звонка у хаба нет (Critical Haiku out3).
+    Срез хвоста №733 серия тоже не задевает."""
     t = time.time()
     open_ = [_ev("silent", t, t - 600)]
-    note = channel_trace.summary_of(open_)
-    assert note and note.startswith(channel_trace.SUMMARY_MARK) and "до конца записи" in note
+    assert channel_trace.summary_of(open_) is None
     assert not channel_trace.lost_till_end(open_, "blackhole"), "срез хвоста №733 не задет"
-    closed = open_ + [_ev("audible", t + 60, t - 600)]
-    assert channel_trace.summary_of(closed) is None, "вернувшееся содержимое — канал жив"
+    assert channel_trace.summary_of(open_ + [_ev("audible", t + 60, t - 600)]) is None
 
 
 def test_live_line_is_a_trace_line_and_does_not_eat_the_episode_budget(monkeypatch):
@@ -177,9 +178,9 @@ def test_live_line_is_a_trace_line_and_does_not_eat_the_episode_budget(monkeypat
     assert trace._episodes_shown["blackhole"] == 0 and "blackhole" not in trace._open_shown
 
 
-def test_a_silence_cut_by_a_frame_loss_does_not_reach_the_end_of_the_summary(monkeypatch):
-    """Серия, погашенная кадровой потерей, закрыта в следе: канал вернулся и звучит —
-    итог не говорит «не писался до конца записи» (DS C1 = Haiku C1 out1)."""
+def test_a_frame_loss_takes_the_silence_over(monkeypatch):
+    """Кадровая потеря забирает серию себе: защёлка снимается молча, без `audible`;
+    итог говорит о потере, не о тишине содержимого (DS C1 = Haiku C1 out1)."""
     _quiet(monkeypatch)
     hub = _hub("mic", "blackhole")
     trace = channel_trace.ChannelTrace(pathlib.Path(tempfile.mkdtemp()) / "x_live.md")
@@ -194,8 +195,10 @@ def test_a_silence_cut_by_a_frame_loss_does_not_reach_the_end_of_the_summary(mon
     hub._announce_back("blackhole", 6.0)
     hub._content_ts["blackhole"] = now + 7
     hub._check_content(now + 10)
+    assert "blackhole" not in hub._silent_open
+    assert [e["kind"] for e in trace.events] == ["silent", "lost", "back"]
     note = channel_trace.summary_of(trace.events) or ""
-    assert "не писался" not in note, note
+    assert "не пишется" not in note and "не писался" not in note, note
 
 
 def test_after_a_frame_loss_the_content_age_counts_again(monkeypatch):
@@ -292,7 +295,7 @@ def test_watchdog_closing_the_silence_during_the_stop_is_one_audible(monkeypatch
 
 def test_a_quiet_restart_does_not_close_a_dead_content_series(monkeypatch):
     """Тихий перезапуск (`gap`) мимо реестра потерь: защёлка хаба стоит, содержимое
-    нулевое — итог говорит «не писался до конца записи» (Important Sonnet = Haiku out2)."""
+    нулевое — второй `silent` о той же серии не выходит (Important Sonnet = Haiku out2)."""
     _quiet(monkeypatch)
     hub = _hub("mic", "blackhole")
     got = []
@@ -303,9 +306,8 @@ def test_a_quiet_restart_does_not_close_a_dead_content_series(monkeypatch):
     hub._channel_event(a.CH_GAP, "blackhole", now + 5, now - 40, 45.0,
                        a.Loss("перезапуск", retriable=True, died=True, cause="restarted"))
     hub._check_content(now + 700)
-    assert [e.kind for e in got] == [a.CH_SILENT, a.CH_GAP]
-    note = channel_trace.summary_of([e.as_dict() for e in got]) or ""
-    assert "не писался" in note, note
+    assert [e.kind for e in got] == [a.CH_SILENT, a.CH_GAP], "серия одна, повтора нет"
+    assert "blackhole" in hub._silent_open, "защёлка стоит: содержимое так и нулевое"
 
 
 def test_no_status_line_when_the_trace_closes_mid_pass(monkeypatch):

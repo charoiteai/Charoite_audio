@@ -2044,8 +2044,8 @@ class AudioHub:
             mic_chunks = len(self._mic_speech)
         opened = self._silent_open.get(label)
         if label in self._lost:
-            # серию в следе закрывает само событие потери (`_silent_till_end`),
-            # здесь — только защёлка и новый отсчёт после возврата
+            # потеря забирает интервал себе (одна тревога о канале): защёлка
+            # снимается молча, отсчёт — заново после возврата
             self._silent_open.pop(label, None)
             self._content_floor[label] = now
             return

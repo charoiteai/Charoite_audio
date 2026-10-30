@@ -372,8 +372,10 @@ def summary_of(events: list[dict]) -> str | None:
     # вся встреча; состоялось ли продолжение, телефон в момент закрытия не знает,
     # и формулировка этого не утверждает (Critical DS выходного круга по №200)
     cuts = [e for e in events if e.get("kind") == KIND_STOPPED]
-    silent = _silent_till_end(events)
-    if not eps and not cuts and not silent:
+    # серия `silent` (№654) в итог не входит: «запись неполная» о ней неверно, когда
+    # звонок кончился, а очная часть встречи идёт — у хаба нет сигнала конца звонка
+    # (Critical Haiku out3); строка следа и статус верны в обоих случаях
+    if not eps and not cuts:
         return None
     parts = []
     for label in dict.fromkeys(e.label for e in eps):
@@ -389,26 +391,7 @@ def summary_of(events: list[dict]) -> str | None:
         total_s = _dur(total) + (" без учёта эпизодов с неизвестной границей" if unknown else "")
         parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {total_s})")
     parts.extend(_phone_text(e) for e in cuts)
-    parts.extend(f"{NAMES.get(label, label)} не писался с {_hm(at)} до конца записи — "
-                 "собеседники только через микрофон" for label, at in silent.items())
     return SUMMARY_MARK + ": " + "; ".join(parts)
-
-
-def _silent_till_end(events: list[dict]) -> dict[str, float | None]:
-    """Серии `silent`, открытые до конца записи: метка -> граница. Закрывает серию
-    `audible` и кадровое событие реестра потерь той же метки: потеря забирает
-    интервал себе (одна тревога о канале), возврат кадров начинает отсчёт заново —
-    без этого серия, погашенная потерей, жила бы до конца записи (DS C1 = Haiku C1
-    out1). `gap` серию не закрывает: тихий перезапуск мимо реестра, защёлка хаба
-    стоит, и содержимое по-прежнему нулевое (Important out2)."""
-    open_: dict[str, float | None] = {}
-    for e in events:
-        kind, label = e.get("kind"), e.get("label", "?")
-        if kind == KIND_SILENT:
-            open_.setdefault(label, e.get("stopped_at"))
-        elif kind in (KIND_AUDIBLE, "lost", "back", "end"):
-            open_.pop(label, None)
-    return open_
 
 
 def events_of(live: pathlib.Path) -> list[dict]:
