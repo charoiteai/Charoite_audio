@@ -2361,10 +2361,10 @@ def test_forget_main_exits_1_when_the_graph_lock_is_busy(tmp_path, память,
 
 
 def test_forget_main_exits_1_when_yes_did_nothing(tmp_path, monkeypatch, память):
-    """С --yes ничего не сделано и отказа нет — код 1, не 0 (мутант последней ветки CI №845)."""
+    """С --yes план пуст, отказа нет — код 1, не 0 (мутант последней ветки CI №845)."""
     root, graph = _world(tmp_path)
     monkeypatch.setattr(forget, "_root", lambda: root)
-    monkeypatch.setattr(forget, "apply", lambda p, **k: False)
+    monkeypatch.setattr(forget, "plan", lambda stamp, *a, **k: forget.Plan(stamp=stamp))
     monkeypatch.setattr(sys, "argv", ["forget_meeting.py", STAMP, "--graph", str(graph), "--yes"])
     assert forget.main() == 1
 
@@ -2585,9 +2585,9 @@ def test_forget_edits_a_dossier_outside_the_night_paths(tmp_path):
     # со ссылкой и на другую встречу — теряет только ссылку
     ('---\nвстречи:\n  - "[[Встречи/{s}]] и [[Встречи/{o}]]"\n---\n',
      f'---\nвстречи:\n  - "{forget.REMOVED_NOTE} и [[Встречи/{{o}}]]"\n---\n'),
-    # перенос скаляра пункта шапки уходит с ним, следующий ключ — нет (n845-fix2 Haiku I1)
-    ('---\nвстречи:\n  - "[[Встречи/{s}]] — выбрали\n    перенос"\n  - другое\naliases:\n---\n',
-     "---\nвстречи:\n  - другое\naliases:\n---\n"),
+    # пункт шапки — одна строка и внутри блочного скаляра чужого ключа (n845-fix3 Haiku I2)
+    ("---\nописание: |\n  - [[Встречи/{s}]] — выбрали\n    подробности\n  конец\n---\n",
+     "---\nописание: |\n    подробности\n  конец\n---\n"),
     # код внутри пункта о встрече — его тело
     ("- [[Встречи/{s}]] — факт\n\n  ```\n  код\n  ```\n- другое\n", "- другое\n"),
 ])
@@ -2600,7 +2600,7 @@ def test_forget_takes_one_line_in_the_yaml_header(tmp_path, before, after):
     assert p.edit[node] == after.format(o=OTHER), p.edit.get(node)
 
 
-@pytest.mark.xfail(strict=True, reason="№637: оград забывание не различает — пункт о встрече "
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="№637: оград забывание не различает — пункт о встрече "
                    "внутри кода уносит строки кода блоком; 0 из 15 568 файлов графов (n845-fix2)")
 def test_forget_keeps_code_lines_after_a_meeting_item_inside_a_fence(tmp_path):
     root, graph = _world(tmp_path)
