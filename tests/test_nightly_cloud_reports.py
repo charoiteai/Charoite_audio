@@ -499,6 +499,29 @@ def test_owner_edit_between_the_check_and_the_write_is_kept(tmp_path, monkeypatc
     assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 0
     text = path.read_text(encoding="utf-8")
     assert text.endswith("правка владельца после копии\n") and "Идёт пилот" in text
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "## Отклонено\n\n- **Одно** — досье сменилось под рукой" in report
+    # оплаченная правка — в отчёт со своей причиной, не «тумблер выключен» (n853-out2 Haiku I-1)
+    assert "## Предложено, но не применено: досье сменилось под рукой" in report and "### Одно" in report
+    assert "Запись выключена" not in report
+    # копия остаётся — текст до правки владельца (n853-out2 Sonnet M2)
+    (copy,) = (folder / ".backup").rglob("Одно.md")
+    assert "правка владельца" not in copy.read_text(encoding="utf-8")
+
+
+def test_no_snapshot_before_the_write_means_no_write(tmp_path, monkeypatch):
+    """Без снимка `write_text(expect=None)` — запись без гейта: fail-closed (n853-out2 Sonnet M1)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch)
+    path = folder / "Одно.md"
+    before = path.read_text(encoding="utf-8")
+    body = _body(ndr)
+    monkeypatch.setattr(ndr, "review", lambda theme, *a, **k: (body, ""))
+    monkeypatch.setattr(ndr.safe_write, "stat_snapshot", lambda p: None)
+    ndr.run(graph, _EDIT_CFG, dry=False, limit=6)
+    assert path.read_text(encoding="utf-8") == before
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "снимок досье не взят" in report
 
 
 def test_dossier_changed_during_the_cloud_call_is_left_alone(tmp_path, monkeypatch):
@@ -520,6 +543,7 @@ def test_dossier_changed_during_the_cloud_call_is_left_alone(tmp_path, monkeypat
     assert text.endswith("правка владельца во время ревизии\n") and "Идёт пилот" in text
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
     assert "## Отклонено\n\n- **Одно** — досье сменилось под рукой" in report
+    assert "## Предложено, но не применено: досье сменилось под рукой" in report   # n853-out2 Haiku I-1
     assert not (folder / ".backup").exists(), "копия без записи — мусор"
 
 

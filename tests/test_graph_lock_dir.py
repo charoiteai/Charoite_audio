@@ -55,13 +55,24 @@ def test_every_graph_lock_taker_uses_one_lock_dir(tmp_path, monkeypatch):
     assert next(iter(dirs)).is_relative_to(data), dirs
 
 
+def _lock_dir_copies(source: str) -> list[int]:
+    """Строки, где `.parent` берётся прямо от вызова `graph_backups(...)` — формула замка руками.
+    По AST, а не по строке: `root=_root()` и перенос `.parent` строкой регэксп не видел
+    (n853-out2 Sonnet I1)."""
+    import ast
+    return [n.lineno for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.Attribute) and n.attr == "parent" and isinstance(n.value, ast.Call)
+            and getattr(n.value.func, "attr", getattr(n.value.func, "id", None)) == "graph_backups"]
+
+
 def test_lock_dir_formula_lives_in_one_place():
     """Новое место замка, вписавшее формулу руками, разошлось бы с соседями молча, а
     тест выше его не знает (n853-out1 Sonnet M1): формула — только в `charoite_paths`."""
-    import re
+    # сторож обязан видеть то написание, которое скопируют чаще всего
+    assert _lock_dir_copies('d = charoite_paths.graph_backups(g, "cloud_backup", root=_root()).parent') == [1]
+    assert _lock_dir_copies('d = (graph_backups(g, "cloud_backup",\n    root=r)\n    .parent)') == [1]
+    assert _lock_dir_copies('d = charoite_paths.graph_lock_dir(g, root=_root())') == []
     root = pathlib.Path(__file__).resolve().parent.parent
-    copy = re.compile(r"graph_backups\([^)]*\)\s*\.parent")
     found = [f"{p.relative_to(root)}:{n}" for d in ("src", "scripts") for p in sorted((root / d).rglob("*.py"))
-             if p.name != "charoite_paths.py"
-             for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1) if copy.search(line)]
+             if p.name != "charoite_paths.py" for n in _lock_dir_copies(p.read_text(encoding="utf-8"))]
     assert not found, found

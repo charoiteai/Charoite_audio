@@ -448,6 +448,9 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # запись без замка графа — тот самый путь в карантин (аудит 26.08); ошибка вызова, не режим
         raise ValueError("_review_loop: запись включена, а каталог замка графа не передан")
     done, notes, applied, rejected, failed, unchanged = 0, [], [], [], [], []
+    # оплаченный ответ облака, не записанный из-за гонки с владельцем, — в отчёт со своей
+    # причиной: у `notes` причина одна на раздел, тумблер или замок (n853-out2 Haiku I-1)
+    raced = []
     for path in fresh[:limit]:
         theme = path.stem
         members = cl[theme]
@@ -536,8 +539,13 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                     # снимок до чтения: между сверкой текста и записью идёт копия, и
                     # правка владельца в это окно (Obsidian замок не берёт) затиралась бы (n853-out1 Haiku I1)
                     seen = safe_write.stat_snapshot(path)
+                    if seen is None:
+                        # без снимка `expect=None` — запись без гейта: не пишем (n853-out2 Sonnet M1)
+                        failed.append(f"- **{theme}** — сбой: снимок досье не взят перед записью")
+                        continue
                     if path.read_text(encoding="utf-8") != old:
                         rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
+                        raced.append(_proposed(theme, fixed))
                         continue
                     # и состав — под тем же замком, что берёт «забыть встречу»: забытое за время
                     # облачного вызова не получит поле на пересказе (Sonnet C2, DS C1 второе окно)
@@ -555,7 +563,9 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                     continue
                 # с переносом прав и меток файла (DS M2 по #561)
                 if not safe_write.write_text(path, text, expect=seen):
+                    # копия в `.backup/{stamp}/` остаётся: текст до правки владельца, не мусор
                     rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
+                    raced.append(_proposed(theme, fixed))
                     continue
         if not taken:
             # Замок не взят: граф занят соседом (разбор ночной встречи, ревизия до
@@ -577,7 +587,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                        f"`{CHAROITE.dossier_dir}/.backup/{stamp}/`")
         print(f"  ✓ {theme}: правки применены ({stats})")
 
-    if (notes or applied or rejected or failed or unchanged) and not dry:
+    if (notes or raced or applied or rejected or failed or unchanged) and not dry:
         # Отчёт пишется в ОБОИХ режимах: с включённой правкой владелец раньше
         # узнавал о переписанном досье только из строки в логе (карточка №87).
         dest = graph / f"Служебное_ревизия_досье_{stamp}.md"
@@ -596,7 +606,11 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             # причина — фактическая: тумблер или замок, а не всегда «тумблер»
             # (аудит 13.09, GLM M5)
             report += ("## Предложено, но не применено\n\n" + why_readonly + "\n\n"
-                       + "\n".join(notes))
+                       + "\n".join(notes) + "\n\n")
+        if raced:
+            report += ("## Предложено, но не применено: досье сменилось под рукой\n\n"
+                       "Владелец правил досье за время ревизии — правку ниже можно перенести руками.\n\n"
+                       + "\n".join(raced))
         safe_write.write_text(dest, report.rstrip() + "\n")   # обрыв не оставит обрезанный отчёт (GLM M3)
         print(f"  отчёт: {dest.name}")
         # ретеншн ПОСЛЕ записи: отчёты копились бесконечно (аудит GLM 17.08)
