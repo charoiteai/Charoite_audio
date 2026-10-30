@@ -205,8 +205,9 @@ def test_after_a_frame_loss_the_content_age_counts_again(monkeypatch):
     """Старые часы содержимого после возврата канала не дают `silent` сразу (Sonnet I1 out1)."""
     _quiet(monkeypatch)
     hub = _hub("mic", "blackhole")
-    got = []
+    got, said = [], []
     hub.on_channel = got.append
+    hub.on_status = said.append
     now = time.time()
     _dead_call(hub, now)
     hub._lost["blackhole"] = a.Loss("умер", retriable=False, died=True)
@@ -217,6 +218,13 @@ def test_after_a_frame_loss_the_content_age_counts_again(monkeypatch):
     hub._mic_speech.extend(now + a.CONTENT_SILENT_S - i for i in range(60))
     hub._check_content(now + a.CONTENT_SILENT_S + 1)
     assert [e.kind for e in got] == [a.CH_SILENT]
+    assert got[0].stopped_at == now, "граница серии — выход из потери, а не часы до неё (Opus I1)"
+    assert got[0].silent_s == a.CONTENT_SILENT_S + 1
+    assert time.strftime("%H:%M", time.localtime(now)) in str(said[-1]), "статус — та же граница"
+    hub._content_ts["blackhole"] = now + a.CONTENT_SILENT_S + 2
+    hub._check_content(now + a.CONTENT_SILENT_S + 3)
+    assert [e.kind for e in got] == [a.CH_SILENT, a.CH_AUDIBLE]
+    assert got[1].stopped_at == now, "«в нулях был с» — та же граница, что у тревоги"
 
 
 def test_content_back_before_the_stop_closes_the_silence(monkeypatch):

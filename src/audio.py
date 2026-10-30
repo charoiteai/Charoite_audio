@@ -2052,20 +2052,25 @@ class AudioHub:
         if opened is not None:
             self._close_silence(label, now)
             return
-        if not self._call or ts is None or now - max(ts, self._content_floor.get(label, ts)) < CONTENT_SILENT_S:
+        if not self._call or ts is None:
+            return
+        # граница серии — та же, что у возраста: после потери отсчёт и граница
+        # начинаются с её конца, а не с часов до неё (Important Opus)
+        since = max(ts, self._content_floor.get(label, ts))
+        if now - since < CONTENT_SILENT_S:
             return
         step = speech_gate.step_seconds(self.chunk_s, self.overlap_s)
         if mic_chunks * step / CONTENT_SILENT_S < CONTENT_MIC_SHARE:
             return                    # микрофон тоже молчит — звонок кончился, а не канал умер
-        self._silent_open[label] = ts  # защёлка до события: следующий проход не повторит
-        self._channel_event(CH_SILENT, label, now, ts, now - ts,
+        self._silent_open[label] = since  # защёлка до события: следующий проход не повторит
+        self._channel_event(CH_SILENT, label, now, since, now - since,
                             Loss("звонок идёт, а содержимого нет", retriable=False, died=True,
                                  cause="silent_content"))
         if self._channel_closed:
             return                    # след закрыт посреди прохода — статус молчит с ним (Minor Haiku out2)
         # только факт о канале: «собеседники через микрофон» ложно, если звонок кончился,
         # а встреча идёт очно — сигнала конца звонка у хаба нет (Important Sonnet out4)
-        self._say(f"⚠️ системный звук не пишется с {time.strftime('%H:%M', time.localtime(ts))}")
+        self._say(f"⚠️ системный звук не пишется с {time.strftime('%H:%M', time.localtime(since))}")
 
     def _close_silence(self, label: str, now: float) -> None:
         """Содержимое вернулось — серия `silent` закрывается одним `audible`.
