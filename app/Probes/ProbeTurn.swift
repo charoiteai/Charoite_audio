@@ -19,7 +19,9 @@ enum ProbeTurn {
     /// Рука бенча из `CHAROITE_BENCH_ARM`: пусто или `chat` — параметры чата,
     /// `legacy` — прежние 5×1200 с бюджетом поиска по умолчанию, `p<N>` —
     /// N кусков по 1000 знаков с бюджетом N×1000 (число кусков на деле задаёт
-    /// бюджет, отчёт пишет их счёт). Прочее — ошибка: опечатка `p4l` молча
+    /// бюджет, отчёт пишет их счёт; кусок с шапкой длиннее 1000, и последний
+    /// упаковщик режет, а p1–p2 упираются в потолок источника 600/800 —
+    /// с p3+ не сравнимы, n752-out1 Sonnet I3). Прочее — ошибка: опечатка `p4l` молча
     /// перезаписывала бы отчёт руки `chat` (n752-in1, Sonnet I5, DS M5).
     static func arm() throws -> (name: String, params: ChatRetrieval.Params) {
         let raw = (ProcessInfo.processInfo.environment["CHAROITE_BENCH_ARM"] ?? "")
@@ -71,12 +73,26 @@ enum ProbeTurn {
     /// Тело запроса хода — JSON с упорядоченными ключами: два тела равны,
     /// только если равны запросы (повтор пачки сверяет его, n752-in1, DS I4).
     static func body(question: String, outcome: ArchiveSearch.Outcome) -> Data? {
-        let system = ChatRetrieval.baseSystem(inferenceIsLocal: inferenceIsLocal)
-            + ChatRetrieval.contextBlock(outcome).block
+        let prompt = system(question: question, outcome: outcome)
         return try? JSONSerialization.data(withJSONObject: ChatRetrieval.requestBody(
             model: model,
-            messages: [["role": "system", "content": system], ["role": "user", "content": question]],
+            messages: [["role": "system", "content": prompt], ["role": "user", "content": question]],
             stream: false, temperature: 0), options: [.sortedKeys])
+    }
+
+    /// Системный текст хода: основа и блок графа после окна. Окно — и здесь:
+    /// повтор пачки после правки `Window` не пошлёт ход, которого чат не
+    /// сделал бы (n752-out1, DS M7); на выдаче из `search` это тождество.
+    static func system(question: String, outcome: ArchiveSearch.Outcome) -> String {
+        let base = ChatRetrieval.baseSystem(inferenceIsLocal: inferenceIsLocal)
+        return base + ChatRetrieval.contextBlock(ChatRetrieval.fit(outcome, system: base, prompt: question)).block
+    }
+
+    /// Сервер модели без пути и учётных данных — для сверки пачки с получателем
+    /// (n752-out1, Sonnet I5, DS I1).
+    static var server: String {
+        guard let c = URLComponents(string: AppSettings.ollamaURL) else { return "?" }
+        return "\(c.scheme ?? "?")://\(c.host ?? "?")" + (c.port.map { ":\($0)" } ?? "")
     }
 
     /// Ответ и счёт токенов промпта у Ollama: оценка окна — верхняя, отчёт
@@ -112,7 +128,11 @@ enum ProbeTurn {
         /// соседа по ссылке берут только при локальной модели (№695): повтор
         /// на другой хост отказывает (n752-in1, Sonnet I4)
         let local: Bool
+        let server: String
         let q: String
+        /// судья — тот, что при записи: правка набора не переписывает «при записи» (DS I2)
+        let must: [String]
+        let abstain: Bool
         let verdict: String
         let text: String
         let rels: [String]?
@@ -121,7 +141,9 @@ enum ProbeTurn {
         let body: String?
         let answer: String?
 
-        init(arm: (name: String, params: ChatRetrieval.Params), q: String,
+        /// `body` nil — модель не спрашивали (прогон без синтеза): такую пачку
+        /// повтор не берёт (DS I3)
+        init(arm: (name: String, params: ChatRetrieval.Params), q: String, must: [String], abstain: Bool,
              outcome: ArchiveSearch.Outcome, body: Data?, answer: String?) {
             self.arm = arm.name
             limit = arm.params.limit
@@ -129,7 +151,10 @@ enum ProbeTurn {
             budget = arm.params.budget
             model = ProbeTurn.model
             local = ProbeTurn.inferenceIsLocal
+            server = ProbeTurn.server
             self.q = q
+            self.must = must
+            self.abstain = abstain
             verdict = outcome.verdict.rawValue
             text = outcome.text
             rels = outcome.rels
@@ -150,13 +175,15 @@ enum ProbeTurn {
 
     /// Пачки пишутся по ходу, строка JSON на вопрос: прогон, упавший на
     /// 30-м вопросе, оставляет 29 пачек (n752-in1, Sonnet I6). Файл — 0600
-    /// в проверенном каталоге отчётов, новый на каждый прогон.
+    /// в проверенном каталоге отчётов, своё имя на каждый прогон: упавший
+    /// перезапуск не стирает эталон (n752-out1, Sonnet I4).
     final class PacketLog {
         let path: String
         private let handle: FileHandle
 
         init(_ name: String) throws {
-            path = try reportPath(name)
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            path = try reportPath("\(name)_\(stamp)")
             guard writePrivate("", to: path), let h = FileHandle(forWritingAtPath: path) else {
                 throw SetupError(description: "пачки не открылись: \(path)")
             }
@@ -171,12 +198,25 @@ enum ProbeTurn {
             try handle.write(contentsOf: line)
         }
 
-        static func read(_ raw: String) throws -> [Packet] {
+        /// Оборванная последняя строка (прогон убит посреди записи) — пропуск
+        /// с пометкой, а не отказ всему файлу; кривая строка в середине — отказ
+        /// (n752-out1, Sonnet I7).
+        static func read(_ raw: String) throws -> (packets: [Packet], torn: Bool) {
             let path = (raw as NSString).expandingTildeInPath
             guard let data = FileManager.default.contents(atPath: path) else {
                 throw SetupError(description: "пачек нет: \(path)")
             }
-            return try data.split(separator: 0x0A).map { try JSONDecoder().decode(Packet.self, from: Data($0)) }
+            let lines = data.split(separator: 0x0A)
+            var out: [Packet] = []
+            for (i, line) in lines.enumerated() {
+                do { out.append(try JSONDecoder().decode(Packet.self, from: Data(line))) } catch {
+                    guard i == lines.count - 1 else {
+                        throw SetupError(description: "пачка \(i + 1) не разобралась: \(path)")
+                    }
+                    return (out, true)
+                }
+            }
+            return (out, false)
         }
     }
 
@@ -185,13 +225,18 @@ enum ProbeTurn {
     /// и тему встречи, n752-in1, Sonnet I2). −1 — слот гейта. Ранг — порядок
     /// упаковки, не позиция поиска (Sonnet I1): кривая по рукам — только из
     /// настоящих прогонов этих рук.
+    /// Тело — текст без первой строки и без второй «Связано с» у соседа по
+    /// ссылке; факт, разорванный переводом строки, ловит `norm` судьи,
+    /// схлопывающий пробелы (n752-out1, Sonnet I6 и Minor).
     static func factRank(_ fact: String, in parts: [ArchiveSearch.Part]?,
                          norm: (String) -> String) -> Int? {
         let needle = norm(fact)
         return (parts ?? []).filter { part in
-            part.text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
-                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("Связано с") }
-                .contains { norm(String($0)).contains(needle) }
+            var lines = part.text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
+            if lines.first?.trimmingCharacters(in: .whitespaces).hasPrefix("Связано с [[") == true {
+                lines = lines.dropFirst()
+            }
+            return norm(lines.joined(separator: "\n")).contains(needle)
         }.map(\.rank).min()
     }
 

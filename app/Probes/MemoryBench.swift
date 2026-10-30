@@ -45,8 +45,8 @@ final class MemoryBench: XCTestCase {
         let kind = withModel ? "_answers" : ""
         let reportPath = try ProbeTurn.reportPath("bench_\(armName)\(kind)")
         let foundPath = try ProbeTurn.reportPath("bench_\(armName)\(kind)_found")
-        let packets = try ProbeTurn.PacketLog("bench_packet_\(armName)\(kind)")
         let index = try await ProbeTurn.isolateIndex(self)
+        let packets = try ProbeTurn.PacketLog("bench_packet_\(armName)\(kind)")
         var report = ProbeTurn.header(withModel
             ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез тем же ходом, что чат)"
             : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)", arm: arm)
@@ -74,7 +74,8 @@ final class MemoryBench: XCTestCase {
                 reply = await ProbeTurn.send(body)
                 synthTime += asked.duration(to: clock.now)
             }
-            try packets.append(.init(arm: arm, q: c.q, outcome: outcome, body: body, answer: reply?.text))
+            try packets.append(.init(arm: arm, q: c.q, must: c.must, abstain: c.abstain,
+                                     outcome: outcome, body: body, answer: reply?.text))
             if found.isEmpty && !c.abstain { emptyFound += 1 }
             dump += "=== \(c.q) [\(outcome.verdict.rawValue)]\n\(found)\n\n"
             let verdictLine = "вердикт поиска: \(outcome.verdict.rawValue)"
@@ -139,7 +140,7 @@ final class MemoryBench: XCTestCase {
                 }
             }
             report += "\n  ранги: \(ranks.joined(separator: ", ")); кусков \(outcome.parts?.count ?? 0), "
-                + "оценка \(ChatRetrieval.estimatedTokens(found)) ток."
+                + "оценка промпта \(ChatRetrieval.estimatedTokens(ProbeTurn.system(question: c.q, outcome: outcome)) + ChatRetrieval.messageTokens(c.q)) ток."
                 + (reply?.promptTokens.map { ", промпт у Ollama \($0) ток." } ?? "")
             if withModel {
                 let inFound = c.must.filter { norm(found).contains(norm($0)) }.count
@@ -177,7 +178,8 @@ final class MemoryBench: XCTestCase {
         }
         report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов \(withModel ? "в ответе" : "в выдаче поиска") "
                 + "(\(Int(ratio * 100))%)\n"
-        report += "время: поиск \(seconds(searchTime)) с, синтез \(seconds(synthTime)) с на \(cases.count) вопр.\n"
+        report += "время: поиск \(seconds(searchTime)) с, синтез "
+            + (withModel ? "\(seconds(synthTime)) с" : "— (модель не спрашивали)") + " на \(cases.count) вопр.\n"
         report += "пачки: \(packets.path)\n"
         // файл — по руке: второй прогон другой руки не затирает первый
         print(report)
@@ -229,62 +231,98 @@ final class MemoryBench: XCTestCase {
     /// Слой 2: синтез по пачкам прошлого прогона — без графа и поиска. Ход тот
     /// же (`ProbeTurn.body`/`send`), поэтому правка промпта видна; «запрос тот
     /// же» — тело совпало с записанным байт в байт. Ответ при температуре 0 —
-    /// не оракул (n752-in1, DS I4): сравниваются факты обоих ответов.
+    /// не оракул (n752-in1, DS I4): сравниваются факты обоих ответов, судья —
+    /// записанный в пачке. Все пачки сверяются до первого запроса к модели
+    /// (n752-out1, Sonnet I1); молчание модели валит прогон, как в прямом (DS C1).
     private func replayPackets(_ path: String, cases: [Case]) async throws {
-        let packets = try ProbeTurn.PacketLog.read(path)
+        let (packets, torn) = try ProbeTurn.PacketLog.read(path)
         guard let first = packets.first else { throw ProbeTurn.SetupError(description: "пачек нет в файле: \(path)") }
-        guard packets.allSatisfy({ $0.arm == first.arm }) else {
-            throw ProbeTurn.SetupError(description: "в файле пачки разных рук: \(path)")
+        guard first.arm.range(of: #"^(chat|legacy|p[1-9][0-9]{0,2})$"#, options: .regularExpression) != nil,
+              packets.allSatisfy({ $0.arm == first.arm }) else {
+            throw ProbeTurn.SetupError(description: "в файле пачки разных или незнакомых рук: \(path)")
         }
         let byQ = Dictionary(cases.map { ($0.q, $0) }, uniquingKeysWith: { a, _ in a })
-        var report = "БЕНЧ ПАМЯТИ — ПОВТОР СИНТЕЗА ПО ПАЧКАМ\nрука: \(first.arm) (limit \(first.limit), "
-            + "snippet \(first.snippet), budget \(first.budget)); модель: \(ProbeTurn.model); пачки: \(path)\n"
-        var then = 0, now = 0, total = 0, sameBody = 0, sameAnswer = 0, asked = 0
+        var outcomes: [ArchiveSearch.Outcome] = []
         for p in packets {
-            guard let c = byQ[p.q] else {
-                throw ProbeTurn.SetupError(description: "вопроса пачки нет в наборе — набор сменился: «\(p.q)»")
+            guard let c = byQ[p.q], c.must == p.must, c.abstain == p.abstain else {
+                throw ProbeTurn.SetupError(description: "вопрос пачки не совпал с набором (нет или факты сменились): «\(p.q)»")
             }
-            guard p.local == ProbeTurn.inferenceIsLocal, p.model == ProbeTurn.model else {
-                throw ProbeTurn.SetupError(description: "пачка записана при модели \(p.model), локальной \(p.local) — "
-                                           + "сейчас \(ProbeTurn.model), \(ProbeTurn.inferenceIsLocal): повтор не тот ход")
+            guard p.body != nil else {
+                throw ProbeTurn.SetupError(description: "пачка без синтеза — повторять нечего, запиши с CHAROITE_BENCH_ANSWERS=1: «\(p.q)»")
             }
-            let outcome = try p.outcome()
-            if !c.abstain && outcome.text.isEmpty {
-                total += c.must.count
-                report += "\n· \(c.q)\n  источников нет — модель не спрашиваю"
+            guard p.local == ProbeTurn.inferenceIsLocal, p.model == ProbeTurn.model, p.server == ProbeTurn.server else {
+                throw ProbeTurn.SetupError(description: "пачка записана при \(p.model) на \(p.server) — сейчас "
+                                           + "\(ProbeTurn.model) на \(ProbeTurn.server): повтор не тот ход")
+            }
+            outcomes.append(try p.outcome())
+        }
+        let out = try ProbeTurn.reportPath("bench_replay_\(first.arm)")
+        let missing = cases.filter { c in !packets.contains { $0.q == c.q } }.map(\.q)
+        var report = "БЕНЧ ПАМЯТИ — ПОВТОР СИНТЕЗА ПО ПАЧКАМ\nрука: \(first.arm) (limit \(first.limit), "
+            + "snippet \(first.snippet), budget \(first.budget)); модель: \(ProbeTurn.model) на \(ProbeTurn.server); "
+            + "пачки: \(path)\nв наборе \(cases.count), пачек \(packets.count)"
+            + (torn ? ", последняя строка оборвана — пропущена" : "")
+            + (missing.isEmpty ? "" : "; без пачки: " + missing.joined(separator: " | ")) + "\n"
+        let clock = ContinuousClock()
+        var synthTime = Duration.zero
+        var then = 0, now = 0, total = 0, sameBody = 0, sameAnswer = 0, asked = 0
+        var abstainThen = 0, abstainNow = 0, abstainTotal = 0
+        var unanswered: [String] = []
+        for (p, outcome) in zip(packets, outcomes) {
+            if !p.abstain && outcome.text.isEmpty {
+                total += p.must.count
+                report += "\n· \(p.q)\n  источников нет — модель не спрашиваю"
                 continue
             }
-            guard let body = ProbeTurn.body(question: c.q, outcome: outcome) else {
-                throw ProbeTurn.SetupError(description: "тело запроса не собралось: «\(c.q)»")
+            guard let body = ProbeTurn.body(question: p.q, outcome: outcome) else {
+                throw ProbeTurn.SetupError(description: "тело запроса не собралось: «\(p.q)»")
             }
             asked += 1
             let same = p.body == String(decoding: body, as: UTF8.self)
             if same { sameBody += 1 }
-            let answer = await ProbeTurn.send(body)?.text ?? ""
-            if !answer.isEmpty, answer == p.answer { sameAnswer += 1 }
-            report += "\n· \(c.q)\n  запрос тот же: \(same ? "да" : "нет")"
-            if c.abstain {
+            let started = clock.now
+            let reply = await ProbeTurn.send(body)
+            synthTime += started.duration(to: clock.now)
+            guard let answer = reply?.text else {
+                unanswered.append(p.q)
+                total += p.must.count
+                continue
+            }
+            if answer == p.answer { sameAnswer += 1 }
+            report += "\n· \(p.q)\n  запрос тот же: \(same ? "да" : "нет")"
+            if p.abstain {
                 let a = p.answer.map { ChatRetrieval.isAbsence($0, lines: 2) } ?? false
                 let b = ChatRetrieval.isAbsence(answer, lines: 2)
+                (abstainThen, abstainNow, abstainTotal) = (abstainThen + (a ? 1 : 0), abstainNow + (b ? 1 : 0), abstainTotal + 1)
                 report += ", воздержание при записи: \(a ? "да" : "нет"), сейчас: \(b ? "да" : "нет")"
             } else {
-                let was = c.must.filter { norm(p.answer ?? "").contains(norm($0)) }.count
-                let got = c.must.filter { norm(answer).contains(norm($0)) }.count
-                (then, now, total) = (then + was, now + got, total + c.must.count)
-                report += ", факты при записи \(was)/\(c.must.count), сейчас \(got)/\(c.must.count)"
+                let was = p.must.filter { norm(p.answer ?? "").contains(norm($0)) }.count
+                let got = p.must.filter { norm(answer).contains(norm($0)) }.count
+                (then, now, total) = (then + was, now + got, total + p.must.count)
+                report += ", факты при записи \(was)/\(p.must.count), сейчас \(got)/\(p.must.count)"
             }
             report += "\n  ответ: " + answer.replacingOccurrences(of: "\n", with: "\n  ")
         }
+        if !unanswered.isEmpty {
+            report += "\n\nМОДЕЛЬ НЕ ОТВЕТИЛА (факты в счёте с нулём): \(unanswered.count)\n"
+                + unanswered.map { "· \($0)" }.joined(separator: "\n")
+        }
         report += "\n\nИТОГО: факты при записи \(then)/\(total), повтор \(now)/\(total); "
-            + "запрос тот же \(sameBody)/\(asked), ответ дословно тот же \(sameAnswer)/\(asked)\n"
+            + "запрос тот же \(sameBody)/\(asked), ответ дословно тот же \(sameAnswer)/\(asked)"
+            + (abstainTotal > 0 ? "; воздержание при записи \(abstainThen)/\(abstainTotal), сейчас \(abstainNow)/\(abstainTotal)" : "")
+            + "\nвремя: синтез \(seconds(synthTime)) с на \(asked) вопр.\n"
         print(report)
-        let out = try ProbeTurn.reportPath("bench_replay_\(first.arm)")
         XCTAssertTrue(ProbeTurn.writePrivate(report, to: out), "отчёт повтора не записан: \(out)")
         print("отчёт: \(out)")
+        XCTAssertTrue(unanswered.isEmpty, "модель не ответила на \(unanswered.count) из \(asked) — проверь Ollama "
+                      + "(\(ProbeTurn.model)); смотри \(out)")
     }
 
+    /// Судья фактов: регистр, «ё», и любые цепочки пробелов — один пробел:
+    /// факт, разорванный переводом строки во фрагменте, не теряется (n752-out1, Sonnet I6).
     private func norm(_ s: String) -> String {
         s.lowercased().replacingOccurrences(of: "ё", with: "е")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     /// Минимальный разбор: файл — список записей «- q:», «must: [...]» и
