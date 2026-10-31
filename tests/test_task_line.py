@@ -302,11 +302,18 @@ def test_fix_action_items_does_not_write_while_the_graph_lock_is_held(tmp_path, 
 
 def test_fix_action_items_names_the_real_lock_wait(tmp_path, monkeypatch, capsys):
     # минуты — из той же константы, что и ожидание (мутант «// → *» выживал, CI #616);
-    # замок подменён занятым, чтобы не ждать пять минут настоящего
+    # отказ подставлен на границе captured snapshot, чтобы не ждать пять минут
     fix, _, (note,) = _script_run(tmp_path, monkeypatch, ("Минутки.md", "## Поручения\n*   **Оля** — сверить цифры\n"))
-    monkeypatch.setattr(fix, "_graph_lock", lambda graph, root: contextlib.nullcontext(False))
+    original = note.read_bytes()
+
+    def busy_snapshot(graph, root, wait):
+        assert wait == fix.LOCK_WAIT
+        return contextlib.nullcontext(None)
+
+    monkeypatch.setattr(fix.graphs, "mutation_snapshot", busy_snapshot)
     assert fix.main() == 1
     assert f"замок графа занят дольше {fix.LOCK_WAIT // 60} мин" in capsys.readouterr().err
+    assert note.read_bytes() == original
 
 
 def test_fix_action_items_keeps_an_edit_made_between_its_read_and_its_write(tmp_path, monkeypatch):
