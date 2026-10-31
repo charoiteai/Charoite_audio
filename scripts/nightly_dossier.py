@@ -763,6 +763,8 @@ def main() -> int:
             present.append(g)
         else:
             print(f"{g}: нет такой папки")
+            if args.graph and not args.all_graphs:
+                return 1
 
     signal.signal(signal.SIGTERM, _terminate)
     result = run_all(present, c, full=args.full, dry=args.dry, limit=args.limit,
