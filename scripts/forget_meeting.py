@@ -1465,9 +1465,8 @@ def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> None:
 
 def _addition_is_locked(path: pathlib.Path, roots: tuple[pathlib.Path, ...], *, unlink: bool = False) -> bool:
     """Фактическое место новой мутации; unlink конечной ссылки не меняет её цель."""
-    if not any(path.parent.resolve().is_relative_to(root) for root in roots):
-        return False
-    return (unlink and path.is_symlink()) or any(path.resolve().is_relative_to(root) for root in roots)
+    return any(path.parent.resolve().is_relative_to(root) for root in roots) and (
+        (unlink and path.is_symlink()) or any(path.resolve().is_relative_to(root) for root in roots))
 
 
 def _compatible_plan(p: Plan, fresh: Plan, needed: list[pathlib.Path]) -> Plan:
