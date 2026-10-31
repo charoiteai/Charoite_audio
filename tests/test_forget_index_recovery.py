@@ -14,8 +14,11 @@ import pytest
 
 from test_forget_night_processes import (
     REPO, STAMP, OTHER, THIRD, THEME, _world, _seed_indexes, _body,
-    charoite_paths, dossier, forget, night, CHAROITE,
+    charoite_paths, CHAROITE,
 )
+from charoite_graph import dossier
+import forget_meeting as forget
+import nightly_dossier as night
 
 NEIGHBOR = "Neighbor dossier"
 TIMEOUT_S = 15

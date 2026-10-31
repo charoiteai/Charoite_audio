@@ -205,7 +205,7 @@ class Plan:
     # (n841-opus-fix2 Sonnet C1 = DS C2 = Haiku C1)
     snaps: dict[pathlib.Path, tuple[int, int] | None] = dataclasses.field(default_factory=dict)
     # Повторный обход под замками дополняет план новыми путями; старые снимки сохраняются.
-    rescan: typing.Callable[[], Plan] | None = dataclasses.field(default=None, repr=False, compare=False)
+    rescan: typing.Callable[[], Plan] | None = None
     data_root: pathlib.Path | None = None
 
     def describe(self) -> str:
@@ -1398,10 +1398,8 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
                 print(f"\nничего не сделано: {path} сменился после плана — запустите снова")
                 p.refused = True    # отказ дня не прячется за успехом соседки
                 return False
-        if not _refresh_graph_plan(p, needed):
-            p.refused = True
-            return False
-        done = _apply_locked(p)
+        _refresh_graph_plan(p, needed)
+        done = None if p.refused else _apply_locked(p)
         if done is not None:
             for d in needed:
                 folder = p.lock_dirs[d] / CHAROITE.dossier_dir
@@ -1425,27 +1423,32 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
     return True
 
 
-def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> bool:
+def _refuse_graph_plan(p: Plan, reason: str) -> None:
+    print(reason)
+    p.refused = True
+
+
+def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> None:
     """Новые следы — из обхода под уже взятыми замками; старые правки не принимаем заново."""
     if p.rescan is None or not needed:
-        return True
+        return
     try:
         fresh = p.rescan()
     except OSError as e:
-        print(f"ничего не сделано: план графа не уточнён ({e}) — запустите снова")
-        return False
+        _refuse_graph_plan(p, f"ничего не сделано: план графа не уточнён ({e}) — запустите снова")
+        return
     acts = [*fresh.delete, *fresh.edit]
     if any(d not in needed and any(_under(q, g, d) for q in acts)
            for d, g in fresh.lock_dirs.items()):
-        print("ничего не сделано: появились следы в другом графе — запустите снова")
-        return False
+        _refuse_graph_plan(p, "ничего не сделано: появились следы в другом графе — запустите снова")
+        return
     roots = [r for d in needed for r in (d, p.lock_dirs[d])]
     for name in ("delete", "copy_first"):
         target = getattr(p, name)
         target.extend(q for q in getattr(fresh, name) if _under(q, *roots) and q not in target)
     for path, text in fresh.edit.items():
-        if _under(path, *roots) and path not in p.edit:
-            p.edit[path] = text
+        if _under(path, *roots):
+            p.edit.setdefault(path, text)
     for path, seen in fresh.snaps.items():
         if _under(path, *roots):
             p.snaps.setdefault(path, seen)
@@ -1453,12 +1456,10 @@ def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> bool:
         target = getattr(p, name)
         target.extend(item for item in getattr(fresh, name) if item not in target)
     if any(safe_write.stat_snapshot(path) != seen for path, seen in p.snaps.items()):
-        print("ничего не сделано: файл сменился во время уточнения плана — запустите снова")
-        return False
+        _refuse_graph_plan(p, "ничего не сделано: файл сменился во время уточнения плана — запустите снова")
+        return
     if any(any(e == d or d in e.parents for d in p.delete) for e in p.edit):
-        print("ничего не сделано: правка внутри удаляемого — запустите снова")
-        return False
-    return True
+        _refuse_graph_plan(p, "ничего не сделано: правка внутри удаляемого — запустите снова")
 
 
 def _under(path: pathlib.Path, *roots: pathlib.Path) -> bool:

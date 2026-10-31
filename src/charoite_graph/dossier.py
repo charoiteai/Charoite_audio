@@ -993,7 +993,7 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     try:
         tmp.write_text(
             json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
-                        "досье": entries}, ensure_ascii=False, indent=1),
+                        "досье": entries}, ensure_ascii=False, indent=" "),
             encoding="utf-8")
         tmp.replace(folder / INDEX_JSON)
     finally:
