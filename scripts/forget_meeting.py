@@ -118,14 +118,16 @@ def _forget_in_manifests(p: "Plan", run: pathlib.Path, rels: list[str]) -> None:
             continue
         seen = safe_write.stat_snapshot(manifest)      # до чтения: гейт apply (n841-opus-fix2 DS I2)
         try:
-            text = manifest.read_text(encoding="utf-8")
+            # newline="" распознаёт LF/CRLF/CR, сохраняя исходные окончания строк.
+            with manifest.open(encoding="utf-8", newline="") as stream:
+                lines = stream.readlines()
         except (OSError, UnicodeDecodeError):
             p.notes.append(f"манифест не прочитан — строки встречи в нём остались: {manifest}")
             continue
-        lines = text.split("\n")
-        kept = [ln for ln in lines if not any(r in ln for r in rels)]
+        kept = [ln for number, ln in enumerate(lines, 1)
+                if not _manifest_line_matches(ln, manifest, rels, p, number)]
         if len(kept) != len(lines):
-            p.edit[manifest] = "\n".join(kept)
+            p.edit[manifest] = "".join(kept)
             p.snaps[manifest] = seen
 
 
@@ -481,6 +483,37 @@ def _manifests(arch: pathlib.Path,
     if arch not in cache:
         cache[arch] = _manifest_folders(arch)
     return cache[arch]
+
+
+def _manifest_line_matches(line: str, manifest: pathlib.Path, rels: list[str],
+                           p: Plan, number: int) -> bool:
+    """Путь записи — сама встреча или файл внутри неё, с границей папки (№852).
+
+    TSV: первое поле или известная запись гонки dedup; JSONL: `file`.
+    Остальные поля могут упоминать соседние встречи и не задают владельца строки.
+    Неразобранную запись сохраняем, называя файл и строку без её содержимого.
+    """
+    line = line.removesuffix("\n").removesuffix("\r")
+    if not line.strip():
+        return False
+    if manifest.suffix == ".jsonl":
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            record = None
+        path = record.get("file") if isinstance(record, dict) else None
+    elif line.startswith("#"):
+        prefix = "# оставлена: "
+        suffix = " — изменилась во время переноса, резерв выше лишний"
+        # Тире входит и в имя встречи: снимаем только известную обёртку писателя.
+        path = (line[len(prefix):-len(suffix)]
+                if line.startswith(prefix) and line.endswith(suffix) else None)
+    else:
+        path = line.split("\t", 1)[0] if "\t" in line else None
+    if not isinstance(path, str) or not path:
+        p.notes.append(f"строка манифеста оставлена — путь не разобран: {manifest}:{number}")
+        return False
+    return any(path == rel or path.startswith(rel + "/") for rel in rels)
 
 
 def _archive_folders(g: pathlib.Path, stamp: str,

@@ -1617,6 +1617,176 @@ def test_a_kind_of_graph_copies_outside_the_registry_is_refused(tmp_path):
         charoite_paths.graph_backups(tmp_path / "граф", "новый_вид", root=tmp_path)
 
 
+@pytest.mark.parametrize("manifest_name,escaped", [
+    ("manifest.tsv", False), ("manifest.jsonl", False), ("manifest.jsonl", True),
+])
+def test_forget_manifest_matches_only_the_path_field_and_its_children(tmp_path, manifest_name, escaped):
+    """№852: «Тема» не забирает «Тема 2» и совпадение вне поля пути."""
+    import json
+
+    mine = "2026-07-15 — Тема"
+    theirs = "2026-07-15 — Тема 2"
+    root, graph = _archive_only(tmp_path, {mine: STAMP, theirs: "2026-07-15_1500"})
+    charoite_paths.use_data_root(root, replace=True)
+    run = charoite_paths.graph_backups(graph, "fix_action_items", root=root) / "20260720-030000"
+    for name, stamp in ((mine, STAMP), (theirs, "2026-07-15_1500")):
+        folder = run / "Встречи-архив" / name
+        folder.mkdir(parents=True)
+        (folder / "meeting.meta.json").write_text(json.dumps({"meeting_id": stamp}), encoding="utf-8")
+        (folder / "Минутки.md").write_text("синтетические минутки\n", encoding="utf-8")
+
+    rel = f"Встречи-архив/{mine}"
+    other = f"Встречи-архив/{theirs}"
+
+    def row(path, detail="контроль"):
+        if manifest_name.endswith(".tsv"):
+            return f"{path}\t{detail}\tпосле\n"
+        return json.dumps({"file": path, "old": detail}, ensure_ascii=escaped) + "\n"
+
+    kept = (row(other) + row(f"{other}/Минутки.md")
+            + row("Ядра/Иная тема.md", rel)
+            + row(f"Другая папка/{rel}/Минутки.md")
+            + row(f"{rel}.md"))
+    header = "файл\tsha256 до\tsha256 после\n" if manifest_name.endswith(".tsv") else ""
+    manifest = run / manifest_name
+    manifest.write_text(header + row(rel) + kept + row(f"{rel}/Минутки.md")
+                        + row(f"{rel}/вложенная/Заметки.md"), encoding="utf-8")
+
+    p = forget.plan(STAMP, root, graph)
+    assert forget.apply(p, yes=True)
+
+    assert manifest.read_text(encoding="utf-8") == header + kept
+    assert not (run / rel).exists()
+    assert (run / other / "Минутки.md").exists()
+    assert not any("манифест" in note for note in p.notes)
+
+
+@pytest.mark.parametrize("broken", [
+    '{"file": "Встречи-архив/2026-07-15 — Тема",',
+    '{"old": "Встречи-архив/2026-07-15 — Тема"}',
+    '{"file": 123, "old": "Встречи-архив/2026-07-15 — Тема"}',
+    '{"file": "", "old": "Встречи-архив/2026-07-15 — Тема"}',
+    '["Встречи-архив/2026-07-15 — Тема"]',
+])
+def test_forget_keeps_unparseable_manifest_rows_and_notes_the_line(tmp_path, broken):
+    """Битую запись нельзя уверенно приписать встрече — сохраняем и называем."""
+    run = tmp_path / "run"
+    run.mkdir()
+    manifest = run / "manifest.jsonl"
+    rel = "Встречи-архив/2026-07-15 — Тема"
+    manifest.write_text(f'{{"file": "{rel}/Минутки.md"}}\n{broken}\n', encoding="utf-8")
+    p = forget.Plan(stamp=STAMP)
+
+    forget._forget_in_manifests(p, run, [rel])
+
+    assert p.edit[manifest] == broken + "\n"
+    assert len(p.notes) == 1
+    assert f"{manifest}:2" in p.notes[0]
+    assert "оставлена" in p.notes[0]
+    assert forget.apply(p, yes=True)
+    assert manifest.read_text(encoding="utf-8") == broken + "\n"
+
+
+@pytest.mark.parametrize("title", ["Тема", "Тема — подробности"])
+def test_forget_manifest_removes_only_its_known_dedup_comments(tmp_path, title):
+    """Писатель dedup оставляет путь и в строке гонки; тире внутри имени — часть пути."""
+    manifest = tmp_path / "manifest.tsv"
+    rel = f"Встречи-архив/2026-07-15 — {title}"
+
+    def comment(path):
+        # Формат scripts/dedup_graph.py::park_copy, включая точный конец строки.
+        return f"# оставлена: {path} — изменилась во время переноса, резерв выше лишний\n"
+
+    kept = comment(rel + " 2") + comment(rel + ".md") + comment("Иная/" + rel)
+    manifest.write_text(comment(rel) + kept + comment(rel + "/Минутки 2.md"), encoding="utf-8")
+    p = forget.Plan(stamp=STAMP)
+
+    forget._forget_in_manifests(p, tmp_path, [rel])
+
+    assert p.edit.get(manifest) == kept
+    assert p.notes == []
+    assert forget.apply(p, yes=True)
+    assert manifest.read_bytes() == kept.encode("utf-8")
+
+
+@pytest.mark.parametrize("broken", [
+    "Встречи-архив/2026-07-15 — Тема",
+    "Встречи-архив/2026-07-15 — Тема/Минутки.md",
+    "# оставлена: Встречи-архив/2026-07-15 — Тема — неизвестная причина",
+    "# неизвестный комментарий\tВстречи-архив/2026-07-15 — Тема",
+    "\tпустое поле пути",
+])
+def test_forget_manifest_keeps_broken_tsv_rows_with_diagnostics(tmp_path, broken):
+    """Непонятный TSV нельзя удалять даже при точном совпадении оборванного пути."""
+    manifest = tmp_path / "manifest.tsv"
+    rel = "Встречи-архив/2026-07-15 — Тема"
+    header = "файл\tsha256 до\tsha256 после\nкопия\tоригинал\tбайт\tsha256\n"
+    manifest.write_text(header + f"{rel}/Минутки.md\tдо\tпосле\n{broken}\n", encoding="utf-8")
+    p = forget.Plan(stamp=STAMP)
+
+    forget._forget_in_manifests(p, tmp_path, [rel])
+
+    assert p.edit[manifest] == header + broken + "\n"
+    assert len(p.notes) == 1
+    assert f"{manifest}:4" in p.notes[0]
+    assert broken not in p.notes[0]
+    assert forget.apply(p, yes=True)
+    assert manifest.read_bytes() == (header + broken + "\n").encode("utf-8")
+
+
+@pytest.mark.parametrize("manifest_name", ["manifest.tsv", "manifest.jsonl"])
+@pytest.mark.parametrize("endings", [("\r\n", "\r\n", "\r\n"), ("\r\n", "\n", "")])
+def test_forget_manifest_preserves_retained_line_bytes(tmp_path, manifest_name, endings):
+    """Перезапись манифеста сохраняет CRLF, смешанные окончания и последний хвост."""
+    import json
+
+    manifest = tmp_path / manifest_name
+    rel = "Встречи-архив/2026-07-15 — Тема"
+
+    def row(path):
+        if manifest_name.endswith(".tsv"):
+            return f"{path}\tдо\tпосле"
+        return json.dumps({"file": path}, ensure_ascii=False)
+
+    before = row(rel + " 2") + endings[0]
+    removed = row(rel + "/Минутки.md") + endings[1]
+    after = row("Иная/" + rel) + endings[2]
+    manifest.write_bytes((before + removed + after).encode("utf-8"))
+    p = forget.Plan(stamp=STAMP)
+
+    forget._forget_in_manifests(p, tmp_path, [rel])
+
+    expected = (before + after).encode("utf-8")
+    assert p.edit[manifest].encode("utf-8") == expected
+    assert forget.apply(p, yes=True)
+    assert manifest.read_bytes() == expected
+
+
+@pytest.mark.parametrize("manifest_name", ["manifest.tsv", "manifest.jsonl"])
+def test_forget_manifest_rejects_a_stale_snapshot_before_any_deletion(tmp_path, manifest_name):
+    """Чужая запись после plan отменяет весь apply, а не затирается старым манифестом."""
+    import json
+
+    manifest = tmp_path / manifest_name
+    rel = "Встречи-архив/2026-07-15 — Тема"
+    row = (f"{rel}\tдо\tпосле" if manifest_name.endswith(".tsv")
+           else json.dumps({"file": rel}, ensure_ascii=False))
+    manifest.write_bytes((row + "\r\n").encode("utf-8"))
+    victim = tmp_path / "target.md"
+    victim.write_bytes(b"target")
+    p = forget.Plan(stamp=STAMP, delete=[victim])
+    forget._forget_in_manifests(p, tmp_path, [rel])
+    assert manifest in p.edit and manifest in p.snaps
+    newer = manifest.read_bytes() + b"new row after plan\n"
+    manifest.write_bytes(newer)
+
+    assert forget.apply(p, yes=True) is False
+    assert p.refused
+    assert victim.read_bytes() == b"target"
+    assert manifest.read_bytes() == newer
+    assert not manifest.with_suffix(manifest.suffix + ".tmp").exists()
+
+
 def _archive_only(tmp: pathlib.Path, folders: dict[str, object | None]) -> tuple[pathlib.Path, pathlib.Path]:
     """Мир, где от встреч остались только папки архива: имя папки → meeting_id
     её манифеста (None — манифеста нет)."""
