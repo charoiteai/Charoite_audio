@@ -290,13 +290,17 @@ def test_damaged_graph_source_stays_in_cluster(night, capsys):
 
 def test_unreadable_refuses_before_model_and_keeps_index(night, monkeypatch, capsys):
     nd, graph, folder, paths, calls = night
+    dossier.refresh_index(folder, THEMES)
+    before = {name: (folder / name).read_bytes() for name in (dossier.INDEX_JSON, dossier.INDEX_MD)}
     counts = _watch(monkeypatch, paths, unreadable=paths["Бета"])
     result = nd.run(graph, {}, full=False, dry=False, limit=12)
-    _all_index(folder)  # main теряет тему именно здесь
+    _all_index(folder)
+    assert {name: (folder / name).read_bytes() for name in before} == before
+    assert result["индекс_не_обновлён"]
     assert [c[0] for c in calls] == ["Альфа", "Гамма"]
     assert result["собрано"] == 2 and result["отказы"] == 1
     assert result["битые"] == 0 and counts == Counter(
-        {paths["Альфа"]: 3, paths["Гамма"]: 3, paths["Бета"]: 1})
+        {paths["Альфа"]: 3, paths["Гамма"]: 2, paths["Бета"]: 1})
     assert "не прочитано" in capsys.readouterr().out
 
 

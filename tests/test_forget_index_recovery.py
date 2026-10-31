@@ -106,7 +106,7 @@ def test_markdown_failure_has_a_working_repair_command_using_the_same_lock(tmp_p
     with (lock_dir / "cloud.lock").open("a+b") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         busy = subprocess.run(command, capture_output=True, text=True, env=env, cwd=REPO, timeout=TIMEOUT_S)
-        assert busy.returncode == 0, busy.stdout + busy.stderr
+        assert busy.returncode != 0, busy.stdout + busy.stderr
         assert all((folder / name).read_bytes() == data for name, data in before.items())
         fcntl.flock(held, fcntl.LOCK_UN)
     repaired = subprocess.run(command, capture_output=True, text=True, env=env, cwd=REPO, timeout=TIMEOUT_S)

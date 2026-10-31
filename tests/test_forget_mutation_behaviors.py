@@ -149,8 +149,9 @@ def test_nightly_index_failure_contributes_to_the_cli_failure_verdict(tmp_path):
             p = graphs[0] / "Встречи" / f"{stamp}.md"
             p.write_text(p.read_text(encoding="utf-8") + f"[[Ядра/{last}]]\n", encoding="utf-8")
     result = _run(root, graphs, "index-error-verdict")
-    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr
     assert "индекс не обновлён" in result.stdout
+    assert "отказов модели: 2 из 4 попыток" in result.stdout
 
 
 def test_dossier_index_is_a_readable_utf8_version_one_document(tmp_path):
@@ -180,7 +181,8 @@ def _worker(case, root, graphs):
 
     socket.socket.connect = denied
     socket.create_connection = denied
-    forget._graph_roots = lambda explicit: [explicit] if explicit else graphs
+    discovered = graphs[:-1] if case == "new-graph" else list(graphs)
+    forget._graph_roots = lambda explicit: [explicit] if explicit else list(discovered)
     forget.brain_forget = lambda *args, **kwargs: ""
     forget._brain_flags = lambda *args: {"brain_enabled": False, "brain_explicit": False}
     if case in ("empty-index", "index-error-verdict"):
@@ -217,6 +219,7 @@ def _worker(case, root, graphs):
                 assert taken
                 if case == "new-graph":
                     (graph / "Встречи" / f"{STAMP}.md").write_text("# Republished meeting\n", encoding="utf-8")
+                    discovered.append(graph)
                 elif case == "archive-owner":
                     (graph / forget.ARCHIVE_DIR / "Unclaimed" / "meeting.meta.json").write_text(
                         json.dumps({"meeting_id": STAMP}), encoding="utf-8")

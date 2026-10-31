@@ -241,6 +241,7 @@ class _GraphRun:
         self.pending = 0          # кандидатов графа ещё в очереди
         self.busy = False         # сосед держал замок дольше LOCK_WAIT
         self.indexed = False
+        self.index_failed = False
         self.built = self.skipped = self.отказы = 0
         # Раздельно, иначе ночь с занятым графом выглядит как «всё без
         # изменений» (круг-2 по PR #438, DS Minor 9).
@@ -270,12 +271,13 @@ class _GraphRun:
             with _graph_lock(self.graph, 0) as taken:
                 if not taken:
                     print(f"  ⏸ {self.graph.name}: индекс не опубликован — замок графа недоступен")
+                    self.index_failed = True
                     return
                 try:
                     dossier.rebuild_index(self.graph, schema=CHAROITE, read=self.reads.current)
                 except OSError as e:
                     print(f"  ✗ {self.graph.name}: индекс не обновлён ({e})")
-                    self.отказы += 1
+                    self.index_failed = True
 
     def done(self, dry: bool) -> None:
         self.pending -= 1
@@ -290,6 +292,7 @@ class _GraphRun:
                 "правки_повреждены": self.broken_manual, "досье_изменилось": self.changed,
                 "метка_в_теле": self.labeled,
                 "ревизия": self.revised,
+                "индекс_не_обновлён": self.index_failed,
                 "другой_вход": self.other_input, "без_входа": self.no_input}
 
     def report(self) -> None:
@@ -790,7 +793,7 @@ def main() -> int:
         print(f"⚠️ скан не удался: {', '.join(result.scan_failed)}")
     if отказов >= max(3, попыток // 10):
         return 4 if result.scan_failed else 2   # 4 — и то и другое (выход out3 №621)
-    return 1 if result.scan_failed else 0
+    return 1 if result.scan_failed or any(g.index_failed for g in result.graphs) else 0
 
 
 if __name__ == "__main__":

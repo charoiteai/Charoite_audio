@@ -166,19 +166,21 @@ class GraphSnapshot:
     stubs: frozenset[str] = frozenset()
 
 
-def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
+def scan(graph: pathlib.Path, *, schema: GraphSchema,
+         strict: bool = False) -> tuple[dict[str, dict], dict[str, set[str]]]:
     """Все .md графа → карта файлов и обратные ссылки (`scan_snapshot` без стрелок)."""
-    snap = scan_snapshot(graph, schema=schema)
+    snap = scan_snapshot(graph, schema=schema, strict=strict)
     return snap.files, snap.backlinks
 
 
-def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
+def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = False) -> GraphSnapshot:
     """Все .md графа → карта файлов и обратные ссылки.
 
     Возвращает (files, backlinks): files[title] = {path, text, mtime, kind},
     backlinks[title] = множество тех, кто на него ссылается. Роли папок — из
     схемы хранилища: какие файлы служебные, где сами досье, какая папка — ядра.
     Архив встреч читается: исключения схемы — правило обхода поиска, не досье.
+    `strict` передаёт ошибки чтения вызывающему вместо неполного снимка.
     """
     files: dict[str, dict] = {}
     backlinks: dict[str, set[str]] = defaultdict(set)
@@ -196,6 +198,8 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
         try:
             raw = p.read_bytes()
         except OSError:
+            if strict:
+                raise
             continue
         try:
             text = raw.decode("utf-8")
@@ -909,21 +913,22 @@ def rebuild_index(graph: pathlib.Path, *, schema: GraphSchema,
 
     Набор тем и fallback берутся из того же свежего scan/clusters, а не из
     старого JSON или очереди генерации. Досье вне кластеров остаются вне индекса.
+    Ошибка чтения источника или досье прерывает сборку до публикации индексов.
     """
     if schema.dossier_dir is None:
         return
-    files, backlinks = scan(graph, schema=schema)
+    files, backlinks = scan(graph, schema=schema, strict=True)
     current = clusters(files, backlinks, schema=schema)
     fallback = {theme: {"источников": len(members),
                         "отпечаток": fingerprint(members, files),
                         "источники": " ".join(members)}
                 for theme, members in current.items()}
-    refresh_index(graph / schema.dossier_dir, current, read=read, fallback=fallback)
+    refresh_index(graph / schema.dossier_dir, current, read=read, fallback=fallback, strict=True)
 
 
 def refresh_index(folder: pathlib.Path, themes: Iterable[str], *,
                   read: Callable[[pathlib.Path], DossierLoad] = load_dossier,
-                  fallback: dict[str, dict] | None = None) -> None:
+                  fallback: dict[str, dict] | None = None, strict: bool = False) -> None:
     """Оба индекса из текущих досье; вызывающий держит замок графа.
 
     Пути берутся с диска, не из JSON. Пустой набор тоже публикуется, а
@@ -936,6 +941,8 @@ def refresh_index(folder: pathlib.Path, themes: Iterable[str], *,
         if path.name == INDEX_MD or theme not in wanted:
             continue
         loaded = read(path)
+        if strict and loaded.state == "unreadable":
+            raise OSError(f"досье недоступно для чтения: {path}")
         if loaded.state == "missing":
             continue
         defaults = (fallback or {}).get(theme, {})

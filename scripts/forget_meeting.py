@@ -196,9 +196,10 @@ class Plan:
     # Замок графа — тот же, что у ревизии и ночной сборки досье: каталог данных графа
     # (родитель снимков). Без него правка «забыть» между сверкой соседа и его записью
     # затиралась, и ссылка с полем `ревизия:` возвращалась (круг n841-opus-fix Sonnet C2).
-    # Каталог замка → граф: замок берётся только у графов, которые план трогает
-    # (n841-opus-fix2 DS I1 — занятый чужой граф отменял всё)
+    # Каталог замка → граф. Обычный план блокирует весь обнаруженный scope:
+    # у графа без прежних действий мог появиться след до apply.
     lock_dirs: dict[pathlib.Path, pathlib.Path] = dataclasses.field(default_factory=dict)
+    graph_scope: tuple[pathlib.Path, ...] | None = None
     # Снимок `safe_write.stat_snapshot` файла правки, взятый до чтения: под замком
     # сверяем — сменился после плана (ревизия записала) — не затираем, ничего не делаем.
     # Байты, а не текст: `read_text` переводит CRLF, и сверка отказывала всегда
@@ -788,7 +789,8 @@ class _Ownership:
 def plan(stamp: str, root: pathlib.Path,
          graph: pathlib.Path | None = None, keep_graph: bool = False,
          import_folder: pathlib.Path | None = None,
-         day_named: set[pathlib.Path] | None = None) -> Plan:
+         day_named: set[pathlib.Path] | None = None, *,
+         _graphs: tuple[pathlib.Path, ...] | None = None) -> Plan:
     """Собрать план: что удалить, что переписать. Ничего не меняет.
 
     `import_folder` — папка импорта приложения: копия аудио в её `done/` и
@@ -798,10 +800,17 @@ def plan(stamp: str, root: pathlib.Path,
     `day_named` — папки остатка дня, уже названные планом другой встречи этого
     прогона (day_remainder); план дописывает в него свои.
     """
-    p = Plan(stamp=stamp, data_root=root)
+    roots = tuple(_graph_roots(graph)) if _graphs is None else _graphs
+    p = Plan(stamp=stamp, data_root=root, graph_scope=None if keep_graph else roots)
     named_before = set(day_named) if day_named is not None else None
-    p.rescan = lambda: plan(stamp, root, graph, keep_graph, import_folder,
-                            set(named_before) if named_before is not None else None)
+
+    def rescan() -> Plan:
+        if any(g not in roots for g in _graph_roots(graph)):
+            raise OSError("появился другой граф — запустите снова")
+        return plan(stamp, root, graph, keep_graph, import_folder,
+                    set(named_before) if named_before is not None else None, _graphs=roots)
+
+    p.rescan = rescan
 
     # Приложение зовёт «забыть» минутным ключом, а демон и импорт именуют
     # файлы посекундно: правило владения — в _Ownership (Critical DS r1 и r2
@@ -822,7 +831,7 @@ def plan(stamp: str, root: pathlib.Path,
     # план: файлы в transcripts/ и «Документации», узел, папки архива,
     # снимки, отметка brain_sent (круг DeepSeek по PR #622).
     minute = meeting_stamp.minute_of(stamp)
-    minute_owners = ([_Ownership(minute, root, g) for g in (_graph_roots(graph) or [None])]
+    minute_owners = ([_Ownership(minute, root, g) for g in (roots or [None])]
                      if minute != stamp else [])
     minute_ours = any(o.exact == stamp and o.by_word for o in minute_owners)
     minute_foreign = any(o.exact not in (None, stamp) for o in minute_owners)
@@ -987,7 +996,7 @@ def plan(stamp: str, root: pathlib.Path,
         return p
 
     node_seen = False                # узел цели нашёлся: минута либо наша, либо доказанно чужая
-    for g in _graph_roots(graph):
+    for g in roots:
         # Узел — по ключу графа: у второй встречи той же минуты он посекундный,
         # у первой минутный; минутную заметку берём только если она наша
         # (meeting_stamp.find_note, карточка №39).
@@ -1199,11 +1208,10 @@ def plan(stamp: str, root: pathlib.Path,
     # был четвёртым обходом и знал четыре места из семи — стенограмма в .prev, копии в
     # снимках и карантине оставались неназванными (круг 3 DS по PR #622). Команду не
     # выполняем: забыть по минуте чужую встречу необратимо, решает человек.
-    roots = _graph_roots(graph)
     rest: list[pathlib.Path] = []
     if minute != stamp and not minute_ours and not minute_foreign and not node_seen and not keep_graph \
             and all(owner != stamp for g in roots for _, owner in _manifests(g / ARCHIVE_DIR, manifests)):
-        rest = [f for f in plan(minute, root, graph, import_folder=import_folder).delete
+        rest = [f for f in plan(minute, root, graph, import_folder=import_folder, _graphs=roots).delete
                 if f not in p.delete]
         if rest:
             p.check.append(f"под минутой {minute} лежит встреча, чья она — не доказано ни сайдкаром, "
@@ -1379,7 +1387,8 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
     # (n841-opus-fix3 Sonnet I1 = Haiku I1)
     acts = [*p.delete, *p.edit]
     needed = sorted(d for d, g in p.lock_dirs.items()
-                    if any(_under(q, g, d) for q in acts))
+                    if (g in p.graph_scope if p.graph_scope is not None
+                        else any(_under(q, g, d) for q in acts)))
     with contextlib.ExitStack() as stack:
         for d in needed:
             try:
@@ -1430,7 +1439,7 @@ def _refuse_graph_plan(p: Plan, reason: str) -> None:
 
 def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> None:
     """Новые следы — из обхода под уже взятыми замками; старые правки не принимаем заново."""
-    if p.rescan is None or not needed:
+    if p.rescan is None or (not needed and p.graph_scope is None):
         return
     try:
         fresh = p.rescan()
