@@ -2379,6 +2379,17 @@ below the root: a module moved into a package, `src/<pkg>/x.py`, would have got
 the package directory as the code root and the same directory as the data root
 (№331; one batch form — №424).
 
+Explicit graph arguments for utilities using `graphs.resolve` share the
+configured graph's path spelling when `samefile` confirms the same directory.
+Case and NFC/NFD aliases therefore address the same graph lock on filesystems
+where those names identify one directory. Relative paths use the data root;
+a different graph or an unavailable identity check keeps the supplied path.
+Environment-based `graph_dir` lookup remains separate: `CHAROITE_GRAPH_DIR`,
+then `SUFLER_GRAPH_DIR`, takes priority without reading ambient config or
+changing the override's vault. A directly supplied config keeps its value.
+Utilities with their own path handling and existing backup folders are outside
+this normalization; backup layout is unchanged.
+
 The app reads a refusal after the daemon's stdout is drained. `Process`
 reports the exit on one queue and the last stdout bytes on another, so judging
 death at the exit lost the error status, and with it the refusal reason,
