@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -42,7 +43,7 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import Callable, Iterable, Literal
 from charoite_graph import frontmatter, graph_names
 from charoite_graph.graph_schema import GraphSchema, name_date
 from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
@@ -902,6 +903,61 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
 
 # ─────────────────────────── индекс ───────────────────────────
 
+def rebuild_index(graph: pathlib.Path, *, schema: GraphSchema,
+                  read: Callable[[pathlib.Path], DossierLoad] = load_dossier) -> None:
+    """Один актуальный обход графа для индекса; вызывающий держит его замок.
+
+    Набор тем и fallback берутся из того же свежего scan/clusters, а не из
+    старого JSON или очереди генерации. Досье вне кластеров остаются вне индекса.
+    """
+    if schema.dossier_dir is None:
+        return
+    files, backlinks = scan(graph, schema=schema)
+    current = clusters(files, backlinks, schema=schema)
+    fallback = {theme: {"источников": len(members),
+                        "отпечаток": fingerprint(members, files),
+                        "источники": " ".join(members)}
+                for theme, members in current.items()}
+    refresh_index(graph / schema.dossier_dir, current, read=read, fallback=fallback)
+
+
+def refresh_index(folder: pathlib.Path, themes: Iterable[str], *,
+                  read: Callable[[pathlib.Path], DossierLoad] = load_dossier,
+                  fallback: dict[str, dict] | None = None) -> None:
+    """Оба индекса из текущих досье; вызывающий держит замок графа.
+
+    Пути берутся с диска, не из JSON. Пустой набор тоже публикуется, а
+    заменённый файл не наследует отпечаток и ключи старого тела.
+    """
+    wanted = set(themes)
+    entries = []
+    for path in sorted(folder.glob("*.md")):
+        theme = path.stem
+        if path.name == INDEX_MD or theme not in wanted:
+            continue
+        loaded = read(path)
+        if loaded.state == "missing":
+            continue
+        defaults = (fallback or {}).get(theme, {})
+        text = loaded.text or ""
+        _, body = frontmatter.split(text)
+        assembled = frontmatter.scalar_field(text, "собрано")
+        try:
+            assembled = date.fromisoformat(assembled).isoformat()
+        except (TypeError, ValueError):
+            assembled = date.today().isoformat()
+        try:
+            count = max(0, int(frontmatter.scalar_field(text, "источников")))
+        except (TypeError, ValueError):
+            count = defaults.get("источников", 0)
+        keys = list(dict.fromkeys(keywords(theme + " " + defaults.get("источники", "")) + keywords(body)))[:24]
+        entries.append({"тема": theme, "файл": f"{folder.name}/{path.name}",
+                        "источников": count, "собрано": assembled,
+                        "отпечаток": read_fingerprint(loaded) or defaults.get("отпечаток", ""),
+                        "ключи": keys})
+    write_index(folder, entries)
+
+
 def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     """Два файла: json для поиска, md для человека и для grep.
 
@@ -926,20 +982,23 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
             pass
     entries = sorted(entries, key=lambda e: e["тема"].lower())
 
-    # Атомарно: индекс пишется вне замка графа (иначе занятый соседом граф
-    # оставлял бы на диске свежие досье и старый индекс — поиск смотрит
-    # только сюда и сутки их не видел бы, круг-2 по PR #438, DS Important 3),
-    # а без tmp+replace обрыв на середине дал бы битый json.
+    # Атомарная публикация каждого файла не заменяет общий замок графа:
+    # refresh_index вызывается под ним и собирает актуальные метаданные.
+    # Без tmp+replace обрыв на середине дал бы битый json.
     # Имя с pid: общий tmp давал двум одновременным прогонам смешать
     # байты и атомарно установить битый json — а load_index глотает
     # JSONDecodeError, и поиск сутки не видит ни одного досье
     # (круг-3 по PR #438, GLM Important 4).
     tmp = folder / f"{INDEX_JSON}.{os.getpid()}.tmp"
-    tmp.write_text(
-        json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
-                    "досье": entries}, ensure_ascii=False, indent=1),
-        encoding="utf-8")
-    tmp.replace(folder / INDEX_JSON)
+    try:
+        tmp.write_text(
+            json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
+                        "досье": entries}, ensure_ascii=False, indent=1),
+            encoding="utf-8")
+        tmp.replace(folder / INDEX_JSON)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
     lines = [
         "---", "type: индекс-досье", f"обновлён: {date.today().isoformat()}",
@@ -960,8 +1019,12 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
               "2. Открываем досье — там состояние, хроника, решения, открытые вопросы.",
               "3. За подробностями идём по ссылкам из раздела «Источники».", ""]
     tmp_md = folder / f"{INDEX_MD}.{os.getpid()}.tmp"
-    tmp_md.write_text("\n".join(lines), encoding="utf-8")
-    tmp_md.replace(folder / INDEX_MD)
+    try:
+        tmp_md.write_text("\n".join(lines), encoding="utf-8")
+        tmp_md.replace(folder / INDEX_MD)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp_md.unlink()
 
 
 def load_index(folder: pathlib.Path) -> list[dict]:
