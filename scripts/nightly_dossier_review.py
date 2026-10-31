@@ -536,17 +536,19 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # никогда (контракт night_wait_cap) — мёртвая ветка убрана.
         cap = live_gate.night_wait_cap(default=LOCK_WAIT)
         lock_wait = min(LOCK_WAIT, cap)
-        with graphs.mutation_lock(graph, _root(), lock_wait, cfg=cfg) as taken:
-            if taken:
+        with graphs.mutation_snapshot(graph, _root(), lock_wait, cfg=cfg) as captured:
+            if captured is not None:
+                write_path = captured.bind(path)
+                write_folder = captured.bind(folder)
                 try:
                     # снимок до чтения: между сверкой текста и записью идёт копия, и
                     # правка владельца в это окно (Obsidian замок не берёт) затиралась бы (n853-out1 Haiku I1)
-                    seen = safe_write.stat_snapshot(path)
+                    seen = safe_write.stat_snapshot(write_path)
                     if seen is None:
                         # без снимка `expect=None` — запись без гейта: не пишем (n853-out2 Sonnet M1)
                         failed.append(f"- **{theme}** — сбой: снимок досье не взят перед записью")
                         continue
-                    if path.read_text(encoding="utf-8") != old:
+                    if write_path.read_text(encoding="utf-8") != old:
                         rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
                         raced.append(_proposed(theme, fixed))
                         continue
@@ -559,18 +561,18 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                     failed.append(f"- **{theme}** — сбой: досье не перечитано перед записью ({e})")
                     continue
                 try:
-                    _backup(folder, stamp, path)
+                    _backup(write_folder, stamp, write_path)
                 except OSError as e:
                     # без копии не перезаписываем — правило tier3 (DS I2 / GLM I1 по #561)
                     failed.append(f"- **{theme}** — сбой: копия до правки не сделана ({e}) — без копии не перезаписываю")
                     continue
                 # с переносом прав и меток файла (DS M2 по #561)
-                if not safe_write.write_text(path, text, expect=seen):
+                if not safe_write.write_text(write_path, text, expect=seen):
                     # копия в `.backup/{stamp}/` остаётся: текст до правки владельца, не мусор
                     rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
                     raced.append(_proposed(theme, fixed))
                     continue
-        if not taken:
+        if captured is None:
             # Замок не взят: граф занят соседом (разбор ночной встречи, ревизия до
             # 30 мин) или недоступен (нет каталога, ФС без flock). Это не сбой ночи:
             # остаток прогона идёт отчётом-рекомендацией, оплаченный ответ облака

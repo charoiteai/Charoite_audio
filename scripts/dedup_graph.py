@@ -192,6 +192,17 @@ def park_copy(graph: pathlib.Path, copy: meeting_archive.ConflictCopy, dest: pat
 
 
 def park_copies(graph: pathlib.Path, apply: bool) -> None:
+    if not apply:
+        return _park_copies(graph, False)
+    with graphs.mutation_snapshot(graph, _root(), 0) as captured:
+        if captured is None:
+            print("граф занят или его идентичность недоступна — копии не трогаю")
+            return
+        return _park_copies(captured.graph, True, captured)
+
+
+def _park_copies(graph: pathlib.Path, apply: bool,
+                 captured: charoite_paths.GraphAddresses | None = None) -> None:
     """Второе правило: конфликтные копии «Имя N» документов встреч (№361)."""
     found = meeting_archive.conflict_copies(graph)
     if not found:
@@ -216,8 +227,10 @@ def park_copies(graph: pathlib.Path, apply: bool) -> None:
         print(f"конфликтных копий «Имя N»: {len(found)}; побайтно равных оригиналу нет — "
               f"убирать нечего; отличаются — {len(other)}, только отчёт")
     else:
+        if captured is None:
+            raise ValueError("copy mutation requires a captured graph snapshot")
         dest = charoite_paths.secure_dir(
-            charoite_paths.graph_backups(graph, COPIES_KIND, root=_root())
+            captured.backup_root(COPIES_KIND)
             / time.strftime("%Y%m%d-%H%M%S"))
         moved = 0
         failures: list[str] = []

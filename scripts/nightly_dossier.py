@@ -253,13 +253,13 @@ class _GraphRun:
             return
         self.indexed = True
         if not dry and (self.entries or self.folder.is_dir()):
-            with _graph_lock(self.graph, 0) as taken:
-                if not taken:
+            with _graph_snapshot(self.graph, 0) as captured:
+                if captured is None:
                     print(f"  ⏸ {self.graph.name}: индекс не опубликован — замок графа недоступен")
                     self.index_failed = True
                     return
                 try:
-                    dossier.rebuild_index(self.graph, schema=CHAROITE, read=self.reads.current)
+                    dossier.rebuild_index(captured.graph, schema=CHAROITE, read=self.reads.current)
                 except OSError as e:
                     print(f"  ✗ {self.graph.name}: индекс не обновлён ({e})")
                     self.index_failed = True
@@ -300,6 +300,10 @@ class Candidate:
                  собрано: str, loaded: dossier.DossierLoad, mtime: safe_write.Snapshot | None):
         self.g, self.theme, self.members, self.fp = g, theme, members, fp
         self.cls, self.собрано, self.loaded, self.mtime = cls, собрано, loaded, mtime
+
+
+def _graph_snapshot(graph: pathlib.Path, wait: float = LOCK_WAIT):
+    return graphs.mutation_snapshot(graph, _root(), wait)
 
 
 def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str,
@@ -458,8 +462,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
 
     copy = None
     wait = lock_wait()
-    with _graph_lock(g.graph, wait) as taken:
-        if not taken:
+    with _graph_snapshot(g.graph, wait) as captured:
+        if captured is None:
             # Занятость — свойство графа на прогон, а не темы: без отметки
             # каждая его тема ждала бы замок пять минут после генерации, и
             # бюджет ушёл бы на ожидание (вход in3 №621, Haiku C1, Sonnet I3).
@@ -471,6 +475,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             g.skipped += 1
             g.locked += 1
             return gen_s
+        path = captured.bind(path)
+        folder = captured.bind(g.folder)
         # Снимок — до сверочного чтения: правка автора между сверкой и
         # replace не затирается, запись идёт через гейт `expect` (выход out2
         # №621, DS C1; окно было и в базе).
@@ -508,7 +514,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии. Не вышла
         # копия — тему не перезаписываем, остальные не теряем (DS I2 / GLM I1 по #561)
         try:
-            copy = dossier.backup(g.folder, g.stamp, path)
+            copy = dossier.backup(folder, g.stamp, path)
         except OSError as e:
             print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
             g.отказы += 1

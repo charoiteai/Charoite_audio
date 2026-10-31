@@ -1011,6 +1011,8 @@ def plan(stamp: str, root: pathlib.Path,
             backup_bases = group.lock_dirs
         for base in backup_bases:
             p.lock_dirs[base] = g
+        if g in p.graph_groups:
+            g = p.graph_groups[g].graph
         # Узел — по ключу графа: у второй встречи той же минуты он посекундный,
         # у первой минутный; минутную заметку берём только если она наша
         # (meeting_stamp.find_note, карточка №39).

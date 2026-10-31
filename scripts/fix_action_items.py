@@ -145,7 +145,7 @@ def main() -> int:
         print("граф не найден — пропуск")
         return 0
 
-    lock = contextlib.nullcontext(True)
+    lock = contextlib.nullcontext(None)
     dest: pathlib.Path | None = None
     if args.apply:
         try:
@@ -153,17 +153,18 @@ def main() -> int:
         except (RootNotNamed, ValueError):
             print("для --apply нужен корень данных: CHAROITE_ROOT", file=sys.stderr)
             return 2
-        lock = _graph_lock(graph, root)
-        dest = charoite_paths.graph_backups(graph, COPIES_KIND, root=root) / time.strftime("%Y%m%d-%H%M%S")
-
-    files = [p for p in graph.rglob("*.md")
-             if "инутк" in p.name or "_minutes" in p.name]
+        lock = graphs.mutation_snapshot(graph, root, LOCK_WAIT)
     before = after = changed = written = 0
     refused: list[str] = []
-    with lock as taken:
-        if not taken:
+    with lock as captured:
+        if args.apply and captured is None:
             print(f"замок графа занят дольше {LOCK_WAIT // 60} мин — не пишу", file=sys.stderr)
             return 1
+        if captured is not None:
+            graph = captured.graph
+            dest = captured.backup_root(COPIES_KIND) / time.strftime("%Y%m%d-%H%M%S")
+        files = [p for p in graph.rglob("*.md")
+                 if "инутк" in p.name or "_minutes" in p.name]
         for p in files:
             rel = p.relative_to(graph)
             try:

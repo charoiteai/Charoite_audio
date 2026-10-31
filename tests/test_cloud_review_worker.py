@@ -1444,11 +1444,11 @@ def test_a_failed_second_copy_cleans_its_orphans_and_spares_a_neighbour(tmp_path
     (neighbour / "живой.md").write_text("сосед", encoding="utf-8")
 
     real = cloud_review.backup_graph
-    def half(g, s, source=None):
+    def half(g, s, source=None, **kwargs):
         if s.endswith("-облако"):
             (root / s).mkdir(parents=True, exist_ok=True)      # частичный каталог
             raise OSError(28, "No space left on device")
-        return real(g, s, source=source)
+        return real(g, s, source=source, **kwargs)
     monkeypatch.setattr(cloud_review, "backup_graph", half)
 
     class Result:
@@ -1522,8 +1522,8 @@ def test_a_sandbox_gone_before_launch_drops_to_read_only_not_into_transcripts(tm
     seen = {}
 
     real = cloud_review.backup_graph
-    def snatch(g, s, source=None):
-        dest = real(g, s, source=source)
+    def snatch(g, s, source=None, **kwargs):
+        dest = real(g, s, source=source, **kwargs)
         if s.endswith("-облако"):
             import shutil as _sh; _sh.rmtree(dest)   # внешняя рука унесла песочницу
         return dest
@@ -1682,8 +1682,8 @@ def test_a_sandbox_swapped_for_a_symlink_drops_to_read_only(tmp_path, monkeypatc
     seen = {}
 
     real = cloud_review.backup_graph
-    def swap(g, s, source=None):
-        dest = real(g, s, source=source)
+    def swap(g, s, source=None, **kwargs):
+        dest = real(g, s, source=source, **kwargs)
         if s.endswith("-облако"):
             import shutil as _sh
             _sh.rmtree(dest)
@@ -2615,7 +2615,7 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
     store = MeetingStatusStore(tmp_path / "data")
     store.processing(transcript, "ревизия")
     calls = []
-    real_lock = cloud_review.graph_lock
+    real_lock = cloud_review.graph_snapshot
 
     def neighbour(state):
         """сосед довозит ревизию, ПОКА мы ждём замок, и закрывает этап"""
@@ -2640,7 +2640,7 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
     def lock_never_taken(graph_, wait=None, **kwargs):
         assert kwargs.get("cfg") is cfg
         neighbour("ok")
-        yield False
+        yield None
 
     class Result:
         returncode = 0
@@ -2652,23 +2652,23 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "cloud_mask": False}}
-    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
+    monkeypatch.setattr(cloud_review, "graph_snapshot", lock_after_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert calls == [], "второй полный прогон запущен при свежей ревизии соседа"
     assert "второй прогон не запускаю" in log.read_text(encoding="utf-8")
     # замок не дождались, а сосед всё довёз — read-only прогон не переписывает его ревизию (DS I2)
-    monkeypatch.setattr(cloud_review, "graph_lock", lock_never_taken)
+    monkeypatch.setattr(cloud_review, "graph_snapshot", lock_never_taken)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert calls == [] and "замка не дождались" in log.read_text(encoding="utf-8")
     # ревизия, лежавшая ДО старта нетронутой, перезапуск не блокирует (дедуп на спавне — в graph_updater)
-    monkeypatch.setattr(cloud_review, "graph_lock", real_lock)
+    monkeypatch.setattr(cloud_review, "graph_snapshot", real_lock)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert len(calls) == 1, "прежняя ревизия заблокировала осознанный перезапуск"
     # сосед опубликовал файл и умер до доставки: этап не «ok» — идём работать
-    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_dead_neighbour)
+    monkeypatch.setattr(cloud_review, "graph_snapshot", lock_after_dead_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert len(calls) == 2, "ревизия убитого соседа осталась без доставки"
-    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
+    monkeypatch.setattr(cloud_review, "graph_snapshot", lock_after_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg, force=True) == cloud_review.RC_OK
     assert len(calls) == 3, "--force не запустил разбор"
 

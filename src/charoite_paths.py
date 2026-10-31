@@ -506,15 +506,22 @@ def legacy_graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
     Вид — только из `GRAPH_BACKUP_KINDS`: незнакомый вид — ValueError, чтобы новая копия
     графа не родилась мимо забывания.
     """
+    _check_graph_backup_kind(kind)
+    return _graph_backups_resolved(pathlib.Path(graph).resolve(), kind, root)
+
+
+def _check_graph_backup_kind(kind: str) -> None:
     if kind not in GRAPH_BACKUP_KINDS:
         raise ValueError(f"вид копий графа {kind!r} не в GRAPH_BACKUP_KINDS — "
                          "впишите его с раскладкой, иначе «забыть встречу» его не обойдёт")
-    g = pathlib.Path(graph).resolve()
-    # Имя + хеш ПОЛНОГО пути: два графа «Работа» из разных vault иначе
-    # делили бы один каталог — ротация одного стирала бы снимок другого,
-    # а restore возвращал бы файлы чужого графа (круг по PR #363, DeepSeek).
-    digest = hashlib.sha256(str(g).encode("utf-8")).hexdigest()[:8]
-    base = (root or resolve_root(__file__)) / BACKUPS_DIR / f"{g.name}-{digest}"
+
+
+def _graph_backups_resolved(graph: pathlib.Path, kind: str = "cloud_backup",
+                            root: pathlib.Path | None = None) -> pathlib.Path:
+    """Exact legacy layout for an already established spelling; no graph IO."""
+    _check_graph_backup_kind(kind)
+    digest = hashlib.sha256(str(graph).encode("utf-8")).hexdigest()[:8]
+    base = (root or resolve_root(__file__)) / BACKUPS_DIR / f"{graph.name}-{digest}"
     return base / kind
 
 
@@ -558,8 +565,8 @@ def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
     try:
         graph, _ = physical_graph(graph)
     except FileNotFoundError:
-        pass
-    return legacy_graph_backups(graph, kind, root)
+        return legacy_graph_backups(graph, kind, root)
+    return _graph_backups_resolved(graph, kind, root)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -569,6 +576,22 @@ class GraphAddresses:
     aliases: tuple[pathlib.Path, ...]
     primary: pathlib.Path
     lock_dirs: tuple[pathlib.Path, ...]
+
+    def backup_root(self, kind: str) -> pathlib.Path:
+        """A destination from this capture, without another filesystem lookup."""
+        if kind not in GRAPH_BACKUP_KINDS:
+            raise ValueError(f"unknown graph backup kind: {kind}")
+        return self.primary / kind
+
+    def bind(self, path: pathlib.Path) -> pathlib.Path:
+        """Map an owned lexical path onto this physical graph, without resolving."""
+        path = pathlib.Path(path).absolute()
+        for alias in sorted(self.aliases, key=lambda p: len(p.parts), reverse=True):
+            if path.is_relative_to(alias):
+                relative = path.relative_to(alias)
+                if ".." not in relative.parts:
+                    return self.graph / relative
+        raise ValueError(f"path is outside the captured graph: {path}")
 
     def mirrors(self, kind: str) -> tuple[pathlib.Path, ...]:
         if kind not in GRAPH_BACKUP_KINDS:
@@ -593,6 +616,7 @@ def graph_addresses(graph: pathlib.Path, *, root: pathlib.Path | None = None,
     selected = pathlib.Path(graph).absolute()
     representative, observed = physical_graph(selected)
     proven = {selected, representative}
+    legacy_inputs = {selected}
     for raw in aliases:
         alias = pathlib.Path(raw).absolute()
         try:
@@ -601,8 +625,15 @@ def graph_addresses(graph: pathlib.Path, *, root: pathlib.Path | None = None,
             continue
         if (physical, identity) == (representative, observed):
             proven.add(alias)
-    primary = legacy_graph_backups(representative, root=root).parent
-    bases = {legacy_graph_backups(alias, root=root).parent for alias in proven}
+            legacy_inputs.add(alias)
+    primary = _graph_backups_resolved(representative, root=root).parent
+    bases = {primary}
+    for alias in legacy_inputs:
+        resolved = alias.resolve(strict=True)
+        if physical_graph(resolved) != (representative, observed):
+            raise OSError(errno.ESTALE, "legacy spelling changed graph identity", str(alias))
+        proven.add(resolved)
+        bases.add(_graph_backups_resolved(resolved, root=root).parent)
     result = GraphAddresses(representative, observed, tuple(sorted(proven)), primary,
                             tuple(sorted(bases | {primary})))
     result.revalidate()

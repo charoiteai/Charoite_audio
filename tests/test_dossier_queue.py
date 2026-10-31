@@ -63,7 +63,7 @@ def nd(monkeypatch):
     monkeypatch.delenv(mod.live_gate.NIGHTLY_UNTIL_ENV, raising=False)
     monkeypatch.setattr(mod, "clock", clock)
     monkeypatch.setattr(mod.live_gate, "night_window_open", lambda *a, **k: True)
-    monkeypatch.setattr(mod, "_graph_lock", lambda *a: contextlib.nullcontext(True))
+    monkeypatch.setattr(mod, "_graph_snapshot", lambda graph, *a: mod.graphs.mutation_snapshot(graph, mod._root(), 0))
     mod.calls = []
 
     def generate(theme, members, files, c, **kw):
@@ -284,8 +284,8 @@ def test_busy_graph_does_not_burn_the_budget_on_each_theme(nd, tmp_path, monkeyp
     """Вход in3 №621, Haiku C1: замок ждал пять минут на каждую тему."""
     busy = _graph(tmp_path, "Занятый", {f"з{i}": None for i in range(5)})
     free = _graph(tmp_path, "Свободный", {f"с{i}": None for i in range(2)})
-    monkeypatch.setattr(nd, "_graph_lock",
-                        lambda graph, *a: contextlib.nullcontext(graph != busy))
+    monkeypatch.setattr(nd, "_graph_snapshot",
+                        lambda graph, *a: contextlib.nullcontext(nd.graphs.mutation_addresses(graph, root=nd._root()) if graph != busy else None))
     states = nd.run_all([busy, free], {}, full=False, dry=False).graphs
     r = {g.graph.name: g.result() for g in states}
     assert sum(t.startswith("з") for t in nd.calls) == 1, nd.calls
@@ -390,9 +390,9 @@ def test_lock_wait_is_capped_by_the_budget_left(nd, tmp_path, monkeypatch):
 
     def lock(graph, wait=nd.LOCK_WAIT):
         waits.append(wait)
-        return contextlib.nullcontext(True)
+        return contextlib.nullcontext(nd.graphs.mutation_addresses(graph, root=nd._root()))
 
-    monkeypatch.setattr(nd, "_graph_lock", lock)
+    monkeypatch.setattr(nd, "_graph_snapshot", lock)
     monkeypatch.delenv(nd.live_gate.NIGHTLY_UNTIL_ENV, raising=False)   # не окно ночи оболочки (Haiku out3 M2)
     nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
     assert waits == [70.0, 0], waits     # генерация: остаток бюджета; индекс: неблокирующий захват
@@ -430,9 +430,9 @@ def test_need_is_the_generation_not_the_lock_wait(nd, tmp_path, monkeypatch):
     @contextlib.contextmanager
     def slow_lock(graph, wait=nd.LOCK_WAIT):
         nd.fake_clock.t += 200          # сосед держал замок, но отпустил
-        yield True
+        yield nd.graphs.mutation_addresses(graph, root=nd._root())
 
-    monkeypatch.setattr(nd, "_graph_lock", slow_lock)
+    monkeypatch.setattr(nd, "_graph_snapshot", slow_lock)
     # 30 с генерации + 200 с замка на тему; need по генерации = 30:
     # старт 0 → 230 → 460 → 690; при бюджете 700 четвёртая тема (690 + 30 > 700) не влезает
     r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=700)
@@ -454,7 +454,7 @@ def test_unreadable_stat_of_a_present_dossier_does_not_write(nd, tmp_path, monke
 def test_zero_lock_wait_is_the_night_not_a_busy_graph(nd, tmp_path, monkeypatch):
     """Выход out3 №621, Sonnet M1: вышедшая ночь записывала граф в «занятые»."""
     graph = _graph(tmp_path, "Г", {f"т{i}": None for i in range(3)})
-    monkeypatch.setattr(nd, "_graph_lock", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(wait > 0))
+    monkeypatch.setattr(nd, "_graph_snapshot", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(nd.graphs.mutation_addresses(graph, root=nd._root()) if wait > 0 else None))
     monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default, **k: 0.0)
     states = nd.run_all([graph], {}, full=False, dry=False).graphs
     assert not states[0].busy
@@ -641,7 +641,7 @@ def test_a_failed_build_still_costs_its_generation(nd, tmp_path, monkeypatch, pa
 def test_a_build_that_found_the_graph_locked_is_an_attempt(nd, tmp_path, monkeypatch):
     """Мутант #819: тема, у которой модель отработала, а замок не дался, — попытка."""
     graph = _graph(tmp_path, "Г", {"одна": None})
-    monkeypatch.setattr(nd, "_graph_lock", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(False))
+    monkeypatch.setattr(nd, "_graph_snapshot", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(None))
     monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default, **k: default)
     r = nd.run_all([graph], {}, full=False, dry=False)
     assert r.attempts == 1 and r.graphs[0].locked == 1 and r.graphs[0].built == 0

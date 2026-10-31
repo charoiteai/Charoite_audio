@@ -190,14 +190,14 @@ def mutation_addresses(graph: pathlib.Path, *, root: pathlib.Path | None = None,
                                          aliases=() if configured is None else (configured,))
 
 
-def mutation_lock(graph: pathlib.Path, root: pathlib.Path, wait: float, *,
-                  cfg: dict | None = None, **kwargs):
-    """Capture before waiting; refuse changed alias evidence after acquisition."""
+def mutation_snapshot(graph: pathlib.Path, root: pathlib.Path, wait: float, *,
+                      cfg: dict | None = None, **kwargs):
+    """Yield the exact captured address group after locking and revalidation."""
     try:
         group = mutation_addresses(graph, root=root, cfg=cfg)
     except (OSError, ValueError) as e:
         kwargs.get("log", print)(f"graph identity unavailable: {e}")
-        return contextlib.nullcontext(False)
+        return contextlib.nullcontext(None)
 
     @contextlib.contextmanager
     def held():
@@ -209,9 +209,22 @@ def mutation_lock(graph: pathlib.Path, root: pathlib.Path, wait: float, *,
                         raise OSError("graph address group changed")
                 except (OSError, ValueError) as e:
                     kwargs.get("log", print)(f"graph identity unavailable: {e}")
-                    yield False
+                    yield None
                     return
-            yield taken
+            yield group if taken else None
+
+    return held()
+
+
+def mutation_lock(graph: pathlib.Path, root: pathlib.Path, wait: float, *,
+                  cfg: dict | None = None, **kwargs):
+    """Compatible bool view; capture still happens when the CM is created."""
+    captured = mutation_snapshot(graph, root, wait, cfg=cfg, **kwargs)
+
+    @contextlib.contextmanager
+    def held():
+        with captured as group:
+            yield group is not None
 
     return held()
 

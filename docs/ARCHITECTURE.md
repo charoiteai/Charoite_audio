@@ -2453,8 +2453,13 @@ Shared-lock CLI writers acquire the entire ordered group of primary and proven l
 with one total deadline. A partial acquisition releases the group. Forget retains
 the old in-graph mirrors and reads every registered backup kind, snapshot and
 quarantine at the primary and proven legacy addresses; plan refresh checks the
-whole identity/group before effects. Config/environment evidence is supplied by
-callers. Unknown historical spellings are never inferred from directory names.
+whole identity/group before effects. The same captured `GraphAddresses` supplies the physical graph view and every
+backup, sandbox, quarantine and cleanup root. Mutations do not recalculate these
+addresses from a path. `mutation_snapshot` exposes that capture; `mutation_lock`
+retains its boolean interface. Standalone backup helpers acquire a scope; callers
+already in a mutation pass the captured group explicitly. Legacy resolved
+spellings are separately proved before their pure address calculation.
+Config/environment evidence is supplied by callers. Unknown historical spellings are never inferred from directory names.
 
 This bridge covers cooperating upgraded processes and known legacy locks. Stop
 old graph writers before enabling new writes: an old process using an unknown
