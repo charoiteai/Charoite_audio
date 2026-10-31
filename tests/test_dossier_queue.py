@@ -927,6 +927,18 @@ def test_generator_input_moves_with_prompt_limits_and_model(monkeypatch):
         assert dossier.generator_input("m") != base
 
 
+def test_generator_input_keeps_the_persisted_utf8_label(monkeypatch):
+    """Сохранённая метка не меняется при том же входе: формат сериализации
+    закреплён примером с кириллицей, чтобы обновление не помечало все темы чужими."""
+    for name, value in (("PROMPT", "Справка"), ("MAX_SOURCES", 3),
+                        ("SRC_CHARS", 120), ("PROMPT_CHARS", 360),
+                        ("GEN_SYSTEM", "Система"), ("GEN_PREDICT", 64),
+                        ("GEN_THINK", False), ("GEN_TEMPERATURES", (0.2, 0.05))):
+        monkeypatch.setattr(dossier, name, value)
+    monkeypatch.setattr(dossier.graph_names, "UNLABELED_RULE", "Без имени")
+    assert dossier.generator_input("модель", 8192) == "1c0f0e89e425"
+
+
 def test_render_writes_input_field_only_when_given():
     files = {"Ядра/т": {"kind": "Ядра", "mtime": 1.0}}
     with_gen = dossier.render("т", GOOD, ["Ядра/т"], files, "fp", "2026-10-30", "abc123")
@@ -1038,6 +1050,30 @@ def test_new_generator_marks_unchanged_themes_but_does_not_rebuild(nd, tmp_path,
     assert sorted(nd.calls) == ["вторая", "тема"] and r["собрано"] == 2, r
     assert dossier.read_input(dossier.load_dossier(path)) == "g2"
     assert dossier.read_input(dossier.load_dossier(second)) == "g2"
+
+
+@pytest.mark.parametrize("missing_label", [False, True])
+def test_generator_report_shows_each_kind_of_outdated_label_separately(
+        nd, tmp_path, monkeypatch, capsys, missing_label):
+    """Каждая причина сама даёт строку отчёта; при совместном сценарии замена
+    `other_input or no_input` на `and` была незаметна."""
+    graph = _graph(tmp_path, "Г", {"тема": None})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    monkeypatch.setattr(nd, "generator_label", lambda c: "g1")
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    if missing_label:
+        path.write_text(path.read_text(encoding="utf-8").replace("вход: g1\n", ""), encoding="utf-8")
+    before = path.read_bytes()
+    nd.calls.clear()
+    capsys.readouterr()
+
+    monkeypatch.setattr(nd, "generator_label", lambda c: "g2")
+    result = nd.run(graph, {}, full=False, dry=False, limit=None)
+    other, absent = (0, 1) if missing_label else (1, 0)
+    assert result["другой_вход"] == other and result["без_входа"] == absent
+    assert f"собраны другим генератором {other}, без метки `вход:` {absent}" in capsys.readouterr().out
+    assert result["собрано"] == 0 and nd.calls == []
+    assert path.read_bytes() == before
 
 
 def test_same_generator_is_not_counted(nd, tmp_path, monkeypatch, capsys):
