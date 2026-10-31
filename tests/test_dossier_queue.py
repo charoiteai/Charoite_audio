@@ -395,7 +395,7 @@ def test_lock_wait_is_capped_by_the_budget_left(nd, tmp_path, monkeypatch):
     monkeypatch.setattr(nd, "_graph_lock", lock)
     monkeypatch.delenv(nd.live_gate.NIGHTLY_UNTIL_ENV, raising=False)   # не окно ночи оболочки (Haiku out3 M2)
     nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
-    assert waits == [70.0], waits         # 100 с бюджета минус 30 с генерации
+    assert waits == [70.0, 0], waits     # генерация: остаток бюджета; индекс: неблокирующий захват
     # и ночь до резерва хвоста — у --full без бюджета тоже (№749)
     monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV,
                        str(__import__("time").time() + nd.live_gate.NIGHT_TAIL_S + 60))

@@ -88,15 +88,25 @@ class _DossierReads:
 
     def __init__(self):
         self.loaded: dict[pathlib.Path, dossier.DossierLoad] = {}
+        self.versions: dict[pathlib.Path, safe_write.Snapshot | None] = {}
         self.damaged: set[pathlib.Path] = set()
 
     def load(self, path: pathlib.Path) -> dossier.DossierLoad:
         if path not in self.loaded:
+            self.versions[path] = safe_write.stat_snapshot(path)
             loaded = dossier.load_dossier(path)
             self.loaded[path] = loaded
-            if loaded.state == "damaged":
+            if loaded.state == "damaged" and path not in self.damaged:
                 self.damaged.add(path)
                 print(f"  ⚠️ битое досье: {path} — UTF-8 прочитан с заменой")
+        return self.loaded[path]
+
+    def current(self, path: pathlib.Path) -> dossier.DossierLoad:
+        """Под замком: повторно читаем лишь изменившийся файл, включая delete/recreate."""
+        seen = safe_write.stat_snapshot(path)
+        if path not in self.loaded or seen is None or seen != self.versions.get(path):
+            self.loaded.pop(path, None)
+            return self.load(path)
         return self.loaded[path]
 
     def reload(self, path: pathlib.Path) -> dossier.DossierLoad:
@@ -179,8 +189,9 @@ def _graph_lock(graph: pathlib.Path, wait: float = LOCK_WAIT):
     Локальная сборка досье замок не брала вовсе, хотя переписывает те же
     файлы и индекс: сосед мог читать наполовину записанную папку, а его
     сверка — принять наши правки за чужие (аудит графа 26.08, Codex).
-    Берём коротко, на одну запись: держать его весь прогон (до часа) значило
-    бы заставить ждать разбор только что закончившейся встречи.
+    Берём на публикацию досье или актуальный обход для индекса; длительность
+    обхода зависит от графа. Модель работает снаружи: замок на весь прогон
+    заставил бы ждать разбор только что закончившейся встречи.
     """
     try:
         lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
@@ -247,16 +258,24 @@ class _GraphRun:
             self.entries[theme] = _index_entry_from_disk(theme, members, loaded, fp, self.today)
 
     def write_index(self, dry: bool) -> None:
-        """Один раз за прогон: как только у графа кончились кандидаты, а для
-        остальных — в `finally` прогона. Без замка: write_index пишет через
-        tmp+replace, полуфайла не будет, а ждать соседа значило бы оставить
-        свежие досье невидимыми для поиска до следующей ночи (круг-2 по PR
-        #438, DS Important 3)."""
+        """Одна публикация из актуального графа под общим замком.
+
+        Генерация остаётся снаружи; entries со скана не вправе вернуть
+        удалённую тему или метаданные заменённого файла после «Забыть».
+        """
         if self.indexed:
             return
         self.indexed = True
-        if not dry and self.entries:
-            dossier.write_index(self.folder, list(self.entries.values()))
+        if not dry and (self.entries or self.folder.is_dir()):
+            with _graph_lock(self.graph, 0) as taken:
+                if not taken:
+                    print(f"  ⏸ {self.graph.name}: индекс не опубликован — замок графа недоступен")
+                    return
+                try:
+                    dossier.rebuild_index(self.graph, schema=CHAROITE, read=self.reads.current)
+                except OSError as e:
+                    print(f"  ✗ {self.graph.name}: индекс не обновлён ({e})")
+                    self.отказы += 1
 
     def done(self, dry: bool) -> None:
         self.pending -= 1

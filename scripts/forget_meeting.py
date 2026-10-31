@@ -57,6 +57,7 @@ import dataclasses
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -203,6 +204,9 @@ class Plan:
     # Байты, а не текст: `read_text` переводит CRLF, и сверка отказывала всегда
     # (n841-opus-fix2 Sonnet C1 = DS C2 = Haiku C1)
     snaps: dict[pathlib.Path, tuple[int, int] | None] = dataclasses.field(default_factory=dict)
+    # Повторный обход под замками дополняет план новыми путями; старые снимки сохраняются.
+    rescan: typing.Callable[[], Plan] | None = dataclasses.field(default=None, repr=False, compare=False)
+    data_root: pathlib.Path | None = None
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
@@ -794,7 +798,10 @@ def plan(stamp: str, root: pathlib.Path,
     `day_named` — папки остатка дня, уже названные планом другой встречи этого
     прогона (day_remainder); план дописывает в него свои.
     """
-    p = Plan(stamp=stamp)
+    p = Plan(stamp=stamp, data_root=root)
+    named_before = set(day_named) if day_named is not None else None
+    p.rescan = lambda: plan(stamp, root, graph, keep_graph, import_folder,
+                            set(named_before) if named_before is not None else None)
 
     # Приложение зовёт «забыть» минутным ключом, а демон и импорт именуют
     # файлы посекундно: правило владения — в _Ownership (Critical DS r1 и r2
@@ -1391,11 +1398,66 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
                 print(f"\nничего не сделано: {path} сменился после плана — запустите снова")
                 p.refused = True    # отказ дня не прячется за успехом соседки
                 return False
+        if not _refresh_graph_plan(p, needed):
+            p.refused = True
+            return False
         done = _apply_locked(p)
+        if done is not None:
+            for d in needed:
+                folder = p.lock_dirs[d] / CHAROITE.dossier_dir
+                if not folder.is_dir():
+                    continue
+                try:
+                    dossier.rebuild_index(p.lock_dirs[d], schema=CHAROITE)
+                except OSError as e:
+                    print(f"индекс досье не обновлён ({e}) — требуется обновление индексов")
+                    command = shlex.join([
+                        sys.executable,
+                        str(charoite_paths.code_root(__file__) / "scripts" / "nightly_dossier.py"),
+                        "--graph", str(p.lock_dirs[d]), "--limit", "0"])
+                    print(f"обновить индексы: CHAROITE_ROOT={shlex.quote(str(p.data_root or _root()))} {command}")
+                    p.refused = True
+                    p.check.append(f"{folder}: индекс не обновлён — выполните команду «обновить индексы» выше")
     if done is None:
         p.refused = True
         return False
     _report_and_forget_brain(p, *done, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
+    return True
+
+
+def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> bool:
+    """Новые следы — из обхода под уже взятыми замками; старые правки не принимаем заново."""
+    if p.rescan is None or not needed:
+        return True
+    try:
+        fresh = p.rescan()
+    except OSError as e:
+        print(f"ничего не сделано: план графа не уточнён ({e}) — запустите снова")
+        return False
+    acts = [*fresh.delete, *fresh.edit]
+    if any(d not in needed and any(_under(q, g, d) for q in acts)
+           for d, g in fresh.lock_dirs.items()):
+        print("ничего не сделано: появились следы в другом графе — запустите снова")
+        return False
+    roots = [r for d in needed for r in (d, p.lock_dirs[d])]
+    for name in ("delete", "copy_first"):
+        target = getattr(p, name)
+        target.extend(q for q in getattr(fresh, name) if _under(q, *roots) and q not in target)
+    for path, text in fresh.edit.items():
+        if _under(path, *roots) and path not in p.edit:
+            p.edit[path] = text
+    for path, seen in fresh.snaps.items():
+        if _under(path, *roots):
+            p.snaps.setdefault(path, seen)
+    for name in ("notes", "check"):
+        target = getattr(p, name)
+        target.extend(item for item in getattr(fresh, name) if item not in target)
+    if any(safe_write.stat_snapshot(path) != seen for path, seen in p.snaps.items()):
+        print("ничего не сделано: файл сменился во время уточнения плана — запустите снова")
+        return False
+    if any(any(e == d or d in e.parents for d in p.delete) for e in p.edit):
+        print("ничего не сделано: правка внутри удаляемого — запустите снова")
+        return False
     return True
 
 
