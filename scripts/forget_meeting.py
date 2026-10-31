@@ -499,7 +499,7 @@ def _manifest_line_matches(line: str, manifest: pathlib.Path, rels: list[str],
     elif manifest.suffix == ".jsonl":
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             record = None
         path = record.get("file") if isinstance(record, dict) else None
     elif line.startswith("#"):

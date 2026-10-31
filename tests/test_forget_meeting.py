@@ -1687,6 +1687,49 @@ def test_forget_keeps_unparseable_manifest_rows_and_notes_the_line(tmp_path, bro
     assert manifest.read_text(encoding="utf-8") == broken + "\n"
 
 
+def test_forget_preserves_over_nested_jsonl_and_reports_the_row(tmp_path):
+    """Глубокий JSON не обрывает plan: непонятная строка остаётся, цель забывается."""
+    import json
+
+    mine = "2026-07-15 — Тема"
+    theirs = "2026-07-15 — Тема 2"
+    root, graph = _archive_only(tmp_path, {mine: STAMP, theirs: "2026-07-15_1500"})
+    charoite_paths.use_data_root(root, replace=True)
+    run = charoite_paths.graph_backups(graph, "fix_action_items", root=root) / "20260720-030000"
+    for name, stamp in ((mine, STAMP), (theirs, "2026-07-15_1500")):
+        folder = run / "Встречи-архив" / name
+        folder.mkdir(parents=True)
+        (folder / "meeting.meta.json").write_text(json.dumps({"meeting_id": stamp}), encoding="utf-8")
+        (folder / "Минутки.md").write_text("синтетические минутки\n", encoding="utf-8")
+
+    rel = f"Встречи-архив/{mine}"
+    other = f"Встречи-архив/{theirs}"
+    # У C-декодера Python 3.12 предел глубины отличается от sys.getrecursionlimit().
+    depth = 10000
+    broken = "[" * depth + json.dumps(rel, ensure_ascii=False) + "]" * depth + "\r\n"
+    neighbour = json.dumps({"file": f"{other}/Минутки.md"}, ensure_ascii=False) + "\n"
+    original = (json.dumps({"file": f"{rel}/Минутки.md"}, ensure_ascii=False)
+                + "\r\n" + broken + neighbour).encode("utf-8")
+    expected = (broken + neighbour).encode("utf-8")
+    manifest = run / "manifest.jsonl"
+    manifest.write_bytes(original)
+
+    p = forget.plan(STAMP, root, graph)
+
+    assert manifest.read_bytes() == original
+    assert p.edit[manifest].encode("utf-8") == expected
+    notes = [note for note in p.notes if str(manifest) in note]
+    assert len(notes) == 1
+    assert f"{manifest}:2" in notes[0] and "оставлена" in notes[0]
+    assert broken.strip() not in notes[0]
+    assert forget.apply(p, yes=True)
+    assert manifest.read_bytes() == expected
+    assert not (run / rel).exists()
+    assert not (graph / rel).exists()
+    assert (run / other / "Минутки.md").read_text(encoding="utf-8") == "синтетические минутки\n"
+    assert (graph / other / "Саммари.md").read_text(encoding="utf-8") == "саммари\n"
+
+
 @pytest.mark.parametrize("title", ["Тема", "Тема — подробности"])
 def test_forget_manifest_removes_only_its_known_dedup_comments(tmp_path, title):
     """Писатель dedup оставляет путь и в строке гонки; тире внутри имени — часть пути."""
