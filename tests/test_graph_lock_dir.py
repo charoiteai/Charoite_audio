@@ -8,17 +8,81 @@
 без замка»), сюда они не входят."""
 
 import contextlib
+import json
+import os
 import pathlib
+import select
+import subprocess
 import sys
+import textwrap
+import unicodedata
+
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
 import cloud_review as cr  # noqa: E402
+import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402
 import fix_action_items as fa  # noqa: E402
 import forget_meeting as fm  # noqa: E402
 import migrate_placeholders as mp  # noqa: E402
 import nightly_dossier as nd  # noqa: E402
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.parametrize("alias_kind", ["case", "unicode", "symlink"])
+def test_cli_alias_contends_with_cloud_review_lock(tmp_path, monkeypatch, alias_kind):
+    data = tmp_path / "data"
+    data.mkdir()
+    data = charoite_paths.use_data_root(data)
+    graph = tmp_path / "vault" / "Работа-й"
+    graph.mkdir(parents=True)
+    if alias_kind == "symlink":
+        alias = tmp_path / "graph-link"
+        alias.symlink_to(graph, target_is_directory=True)
+    else:
+        name = graph.name.lower() if alias_kind == "case" else unicodedata.normalize("NFD", graph.name)
+        alias = graph.with_name(name)
+        if not alias.exists():
+            pytest.skip(f"ФС различает написания пути: {alias_kind}")
+    assert alias.samefile(graph)
+    (data / "config").mkdir()
+    (data / "config" / "config.yaml").write_text(
+        "sufler:\n  graph_dir: " + json.dumps(str(graph), ensure_ascii=False) + "\n", encoding="utf-8")
+    for name in ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(fa, "LOCK_WAIT", 0)
+    env = dict(os.environ, CHAROITE_ROOT=str(data), HOME=str(tmp_path))
+    worker = textwrap.dedent("""
+        import pathlib, select, sys
+        repo, data = map(pathlib.Path, sys.argv[1:])
+        sys.path[:0] = [str(repo / 'src'), str(repo / 'scripts')]
+        import charoite_paths
+        charoite_paths.use_data_root(data)
+        import cloud_review, graphs
+        with cloud_review.graph_lock(graphs.graph_dir(), wait=0) as acquired:
+            print('held' if acquired else 'not-held', flush=True)
+            assert acquired
+            assert select.select([sys.stdin], [], [], 15)[0], 'release was not received'
+            assert sys.stdin.readline().strip() == 'release'
+    """)
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    process = subprocess.Popen([sys.executable, "-c", worker, str(repo), str(data)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, env=env)
+    try:
+        assert select.select([process.stdout], [], [], 10)[0], "cloud_review did not take the lock"
+        assert process.stdout.readline().strip() == "held"
+        # Другой процесс держит настоящий flock; утилите менять граф нельзя.
+        with fa._graph_lock(fa.graph_dir(str(alias)), data) as acquired:
+            assert acquired is False
+    finally:
+        _, stderr = process.communicate("release\n", timeout=20)
+        assert process.returncode == 0, stderr
+    # После управляемого освобождения та же обёртка утилиты получает замок.
+    with fa._graph_lock(fa.graph_dir(str(alias)), data) as acquired:
+        assert acquired is True
 
 
 def test_every_graph_lock_taker_uses_one_lock_dir(tmp_path, monkeypatch):

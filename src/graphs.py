@@ -129,8 +129,17 @@ ENV_GRAPH = "SUFLER_GRAPH_DIR"
 ENV_GRAPH_NAMES = ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR")
 
 
+def _resolve_path(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
+    """Раскрыть путь без чтения config и проверки других каталогов."""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    p = pathlib.Path(s).expanduser()
+    return p if p.is_absolute() else (root or data_root()) / p
+
+
 def resolve(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
-    """Строка из конфига → путь графа. None — пусто.
+    """Явный аргумент утилиты → путь графа. None — пусто.
 
     `~` раскрывается; относительный путь считается от корня данных, а не от
     текущего каталога процесса. До этого 24 места в Python читали ключ сами:
@@ -138,13 +147,23 @@ def resolve(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
     запускает его из корня данных) и ломался у ночных скриптов и launchd —
     граф писался в одно место, а искался в другом (аудит DeepSeek 16.08,
     карточка №36).
+
+    Для того же каталога возвращаем написание из config.yaml: регистр и
+    NFC/NFD на APFS могут различаться, а адрес замка зависит от строки пути
+    (№857). Другой или недоступный путь остаётся как задан.
     """
-    s = str(raw or "").strip()
-    if not s:
+    p = _resolve_path(raw, root)
+    if p is None:
         return None
-    p = pathlib.Path(s).expanduser()
-    if not p.is_absolute():
-        p = (root or data_root()) / p
+    sufler = load_config().get("sufler")
+    if isinstance(sufler, dict):
+        try:
+            canonical = _resolve_path(sufler.get("graph_dir"))
+            if canonical is not None and p.samefile(canonical):
+                return canonical
+        except (OSError, RuntimeError, ValueError):
+            # Нет доступа, домашней папки или корректного пути: тождество не доказано.
+            pass
     return p
 
 
@@ -169,12 +188,12 @@ def graph_dir(cfg: dict | None = None, *, env: bool = True) -> pathlib.Path | No
     if env:
         raw = env_override()
         if raw is not None:
-            return resolve(raw)
+            return _resolve_path(raw)
     if cfg is None:
         cfg = load_config()
     if not isinstance(cfg, dict):
         cfg = {}
-    return resolve((cfg.get("sufler") or {}).get("graph_dir"))
+    return _resolve_path((cfg.get("sufler") or {}).get("graph_dir"))
 
 
 def configured_graph() -> pathlib.Path | None:
