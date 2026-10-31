@@ -3,14 +3,18 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import pathlib
+import sys
 import types
 
 import pytest
 
 import charoite_paths as paths
-import cloud_review as cloud
-import forget_meeting as forget
 import graphs
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+import cloud_review as cloud  # noqa: E402
+import forget_meeting as forget  # noqa: E402
 
 
 STAMP = "2030-01-01_1000"
