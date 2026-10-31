@@ -99,10 +99,14 @@ def _account(result, counts, paths, capsys, damaged=1, verified=()):
 
 
 @pytest.mark.parametrize("where", ["body", "fingerprint"])
-def test_damaged_body_or_fingerprint_rebuilds_every_theme(night, monkeypatch, capsys, where):
+@pytest.mark.parametrize("head", ["## Правки автора", "##Правки автора"])
+def test_damaged_body_or_fingerprint_rebuilds_every_theme(night, monkeypatch, capsys, where, head):
     nd, graph, folder, paths, calls = night
     old, new = (("старое тело", b"old\xffbody") if where == "body"
                 else ("отпечаток: старый", "отпечаток: ".encode() + b"old\xfffp"))
+    # повреждение вне правок при заголовке, как его набирает владелец, — пересборка (n856-min1 M2)
+    paths["Бета"].write_text(paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head),
+                             encoding="utf-8")
     before = _damage(paths["Бета"], old, new)
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=False, limit=12)
@@ -117,10 +121,14 @@ def test_damaged_body_or_fingerprint_rebuilds_every_theme(night, monkeypatch, ca
 
 
 @pytest.mark.parametrize("where", ["manual", "heading"])
-def test_damaged_author_text_refuses_before_model(night, monkeypatch, capsys, where):
+@pytest.mark.parametrize("head", ["## Правки автора", "##Правки автора", "## Правки автора "])
+def test_damaged_author_text_refuses_before_model(night, monkeypatch, capsys, where, head):
     nd, graph, folder, paths, calls = night
     old, new = (("решение", b"re\xffsolution") if where == "manual"
                 else ("Правки", b"Pr\xffavki"))
+    # повреждённые правки с заголовком, как его набирает владелец, — тоже отказ (n856-min1 M2)
+    paths["Бета"].write_text(paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head),
+                             encoding="utf-8")
     before = _damage(paths["Бета"], old, new)
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=False, limit=12)
@@ -130,6 +138,66 @@ def test_damaged_author_text_refuses_before_model(night, monkeypatch, capsys, wh
     _account(result, counts, paths, capsys, verified=(paths["Альфа"], paths["Гамма"]))
     assert paths["Бета"].read_bytes() == before
     assert not list((folder / ".backup").glob("*/Бета.md"))
+
+
+@pytest.mark.parametrize("head", ["##Правки автора", "## Правки автора "])
+def test_owner_heading_spelling_keeps_the_edits(night, head):
+    """№856: заголовок правок, набранный владельцем без пробела или с хвостом,
+    литерал ночи не видел — пересборка писала «—» поверх правок."""
+    nd, graph, folder, paths, calls = night
+    paths["Бета"].write_text(
+        paths["Бета"].read_text(encoding="utf-8").replace("## Правки автора", head), encoding="utf-8")
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["собрано"] == 3
+    text = paths["Бета"].read_text(encoding="utf-8")
+    assert "новое тело" in text
+    assert text.endswith("## Правки автора\n\nоставить решение автора\n")
+
+
+@pytest.mark.parametrize("head", ["## Правки автора", "##Правки автора", "## Источники"])
+def test_rebuild_keeps_body_after_an_inline_heading_mention(night, monkeypatch, head):
+    """Сырое тело прошло валидацию: render сохраняет и поздние разделы на диске."""
+    nd, graph, folder, paths, calls = night
+    body = GOOD.replace("## Решено\nт", f"## Решено\n- ввели раздел {head}")
+    monkeypatch.setattr(nd, "generate", lambda *a, **kw: body)
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["собрано"] == 3 and result["отказы"] == 0
+    for path in paths.values():
+        text = path.read_text(encoding="utf-8")
+        assert dossier.split_dossier(text)[1] == body
+        assert text.endswith("## Правки автора\n\nоставить решение автора\n")
+
+
+@pytest.mark.parametrize("retry_succeeds", [True, False])
+def test_rebuild_validates_after_removing_protected_sections(night, monkeypatch, retry_succeeds):
+    """№856 Terra I2: сырые пять разделов не оправдывают запись одного после очистки."""
+    nd, graph, folder, paths, calls = night
+    raw = GOOD.replace("## Как пришли", "## Источники\nмодельные источники\n## Как пришли")
+    assert dossier.looks_valid(raw)
+    assert not dossier.looks_valid(dossier.strip_protected(raw))
+    before = {path: path.read_bytes() for path in paths.values()}
+    attempts = Counter()
+    temperatures = []
+
+    def generate(theme, members, files, c, *, temperature, **kwargs):
+        attempts[theme] += 1
+        temperatures.append(temperature)
+        return GOOD if retry_succeeds and attempts[theme] == 2 else raw
+
+    monkeypatch.setattr(nd, "generate", generate)
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert attempts == Counter({theme: 2 for theme in THEMES})
+    assert temperatures == [0.2, 0.05] * len(THEMES)
+    if retry_succeeds:
+        assert result["собрано"] == 3 and result["отказы"] == 0
+        for path in paths.values():
+            text = path.read_text(encoding="utf-8")
+            assert dossier.split_dossier(text)[1] == GOOD
+            assert text.endswith("## Правки автора\n\nоставить решение автора\n")
+    else:
+        assert result["собрано"] == 0 and result["отказы"] == 3
+        assert {path: path.read_bytes() for path in paths.values()} == before
+        assert not (folder / ".backup").exists()
 
 
 def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):

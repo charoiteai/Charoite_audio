@@ -117,7 +117,8 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
     text = loaded.text or ""
     if loaded.state == "damaged":
         section = dossier.KEEP_RE.search(text)
-        # заголовок раздела — литерал регулярки, поэтому знак замены во всём совпадении означает знак замены в тексте раздела
+        # в заголовке шаблона знака замены нет (`#`, пробелы, «Правки автора»), поэтому знак
+        # замены во всём совпадении означает знак замены в тексте раздела
         if section is None or "\ufffd" in section.group():
             print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
             return False, None, 0
@@ -427,6 +428,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
             body = ""
             break          # отказ считается ниже, в ветке `if not body`
+        body = dossier.strip_protected(body)
         if dossier.looks_valid(body):
             break
         print(f"  … {theme}: ответ не по формату (температура {temperature})")
