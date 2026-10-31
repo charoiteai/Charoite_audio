@@ -22,6 +22,73 @@ import nightly_dossier as night
 def _no_brain_requests(monkeypatch):
     monkeypatch.setattr(forget, "brain_forget", lambda *args, **kwargs: "")
 
+    def denied(*args, **kwargs):
+        raise AssertionError("network access is forbidden in this synthetic test")
+
+    monkeypatch.setattr(socket.socket, "connect", denied)
+    monkeypatch.setattr(socket.socket, "connect_ex", denied)
+    monkeypatch.setattr(socket, "create_connection", denied)
+
+
+def test_changed_minute_note_ownership_refuses_before_deleting_the_neighbor(tmp_path):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    charoite_paths.use_data_root(root, replace=True)
+    target, neighbor = STAMP + "01", STAMP + "02"
+    (root / "transcripts" / f"{STAMP}.md").unlink()
+    transcript = root / "transcripts" / f"{target}.md"
+    transcript.write_text("# Synthetic target\n", encoding="utf-8")
+    node = graph / "Встречи" / f"{STAMP}.md"
+    node.write_text(f"# Synthetic target\nСтенограмма: `{target}.md`\n", encoding="utf-8")
+    p = forget.plan(target, root, graph)
+    assert node in p.delete
+    lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=root))
+    with file_locks.graph_lock(lock_dir, 0) as taken:
+        assert taken
+        other = root / "transcripts" / f"{neighbor}.md"
+        other.write_text("# Synthetic neighbor\n", encoding="utf-8")
+        body = f"# Synthetic neighbor\nСтенограмма: `{neighbor}.md`\n"
+        node.write_text(body, encoding="utf-8")
+    assert node not in forget.plan(target, root, graph).delete
+    assert not forget.apply(p, yes=True) and p.refused
+    assert node.read_text(encoding="utf-8") == body
+    assert transcript.exists() and other.exists()
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_empty_preview_checks_a_late_graph_trace_only_when_confirmed(tmp_path, monkeypatch, confirmed):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    charoite_paths.use_data_root(root, replace=True)
+    (root / "transcripts" / f"{STAMP}.md").unlink()
+    node = graph / "Встречи" / f"{STAMP}.md"
+    node.unlink()
+    p = forget.plan(STAMP, root, graph)
+    assert not p.delete and not p.edit
+    lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=root))
+    with file_locks.graph_lock(lock_dir, 0) as taken:
+        assert taken
+        node.write_text("# Synthetic late meeting\n", encoding="utf-8")
+    if not confirmed:
+        def denied(*args, **kwargs):
+            raise AssertionError("preview must not acquire a graph lock")
+
+        monkeypatch.setattr(file_locks, "graph_lock", denied)
+    assert forget.apply(p, yes=confirmed) is confirmed
+    assert node.exists() is not confirmed
+
+
+def test_confirmed_plan_still_empty_after_rescan_does_not_report_deletion(tmp_path):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    charoite_paths.use_data_root(root, replace=True)
+    (root / "transcripts" / f"{STAMP}.md").unlink()
+    (graph / "Встречи" / f"{STAMP}.md").unlink()
+    p = forget.plan(STAMP, root, graph)
+    assert not p.delete and not p.edit
+    assert not forget.apply(p, yes=True) and not p.refused
+    assert not (graph / CHAROITE.dossier_dir / dossier.INDEX_JSON).exists()
+
 
 @pytest.mark.parametrize("second_graph", [False, True])
 def test_late_meeting_in_known_graph_without_preview_actions_is_forgotten(tmp_path, monkeypatch, second_graph):
@@ -131,6 +198,44 @@ def test_authoritative_rebuild_refuses_unreadable_input_without_publishing(tmp_p
     assert _indexes(graph) == before
 
 
+@pytest.mark.parametrize("directory", ["source", "dossier"])
+def test_authoritative_rebuild_refuses_directory_enumeration_failure(tmp_path, monkeypatch, directory):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    _seed_indexes(graph)
+    before = _indexes(graph)
+    blocked = graph / ("Встречи" if directory == "source" else CHAROITE.dossier_dir)
+    original = os.scandir
+
+    def scandir(path):
+        if not isinstance(path, int) and pathlib.Path(path) == blocked:
+            raise PermissionError("synthetic directory enumeration failure")
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with pytest.raises(OSError):
+        dossier.rebuild_index(graph, schema=CHAROITE)
+    assert _indexes(graph) == before
+
+
+def test_strict_source_scan_preserves_schema_exclusions(tmp_path, monkeypatch):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    hidden = graph / ".synthetic-backup"
+    hidden.mkdir()
+    (hidden / "Hidden.md").write_text("# Excluded backup\n", encoding="utf-8")
+    expected = dossier.scan(graph, schema=CHAROITE)
+    original = os.scandir
+
+    def scandir(path):
+        if not isinstance(path, int) and pathlib.Path(path) in {hidden, graph / CHAROITE.dossier_dir}:
+            raise AssertionError("source scan entered an excluded directory")
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert dossier.scan(graph, schema=CHAROITE, strict=True) == expected
+
+
 def _night_cli(root, graph, fault=""):
     config = root / "config" / "config.yaml"
     config.parent.mkdir(exist_ok=True)
@@ -140,7 +245,8 @@ def _night_cli(root, graph, fault=""):
         capture_output=True, text=True, cwd=REPO, env=dict(os.environ, CHAROITE_ROOT=str(root)), timeout=15)
 
 
-@pytest.mark.parametrize("fault", ["json", "markdown", "source", "dossier"])
+@pytest.mark.parametrize("fault", ["json", "markdown", "source", "dossier",
+                                  "source-directory", "dossier-directory"])
 def test_recovery_cli_fails_on_publication_or_read_error_and_can_retry(tmp_path, fault):
     root, graphs = _world(tmp_path)
     graph = graphs[0]
@@ -149,7 +255,7 @@ def test_recovery_cli_fails_on_publication_or_read_error_and_can_retry(tmp_path,
     failed = _night_cli(root, graph, fault)
     assert failed.returncode != 0, failed.stdout + failed.stderr
     assert "индекс не обновлён" in failed.stdout, failed.stdout
-    if fault in {"source", "dossier", "json"}:
+    if fault in {"source", "dossier", "json", "source-directory", "dossier-directory"}:
         assert _indexes(graph) == before
     repaired = _night_cli(root, graph)
     assert repaired.returncode == 0, repaired.stdout + repaired.stderr
@@ -185,6 +291,16 @@ def _night_worker(root, graph, fault):
             return original(path)
 
         pathlib.Path.read_bytes = read
+    elif fault in {"source-directory", "dossier-directory"}:
+        original = os.scandir
+        blocked = graph / ("Встречи" if fault == "source-directory" else CHAROITE.dossier_dir)
+
+        def scandir(path):
+            if not isinstance(path, int) and pathlib.Path(path) == blocked:
+                raise PermissionError("synthetic directory enumeration failure")
+            return original(path)
+
+        os.scandir = scandir
     sys.argv = ["nightly_dossier.py", "--graph", str(graph), "--limit", "0"]
     return night.main()
 

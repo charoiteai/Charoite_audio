@@ -173,6 +173,20 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema,
     return snap.files, snap.backlinks
 
 
+def _strict_source_paths(graph: pathlib.Path, schema: GraphSchema) -> Iterable[pathlib.Path]:
+    """Обход для публикации: ошибка перечисления не превращается в пустую папку."""
+    def failed(error: OSError) -> None:
+        raise error
+
+    for top, directories, names in os.walk(graph, onerror=failed):
+        folder = pathlib.Path(top)
+        directories[:] = [name for name in directories if not name.startswith(".")
+                          and not schema.is_dossier((folder / name / "_").relative_to(graph).as_posix())]
+        for name in names:
+            if name.endswith(".md"):
+                yield folder / name
+
+
 def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = False) -> GraphSnapshot:
     """Все .md графа → карта файлов и обратные ссылки.
 
@@ -188,7 +202,8 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = Fa
     redirects: dict[str, str] = {}
     stubs: set[str] = set()
 
-    for p in graph.rglob("*.md"):
+    paths = _strict_source_paths(graph, schema) if strict else graph.rglob("*.md")
+    for p in paths:
         rel = p.relative_to(graph)
         # служебное, бэкапы и сами досье в кластеры не берём
         if any(part.startswith(".") for part in rel.parts):
@@ -936,7 +951,12 @@ def refresh_index(folder: pathlib.Path, themes: Iterable[str], *,
     """
     wanted = set(themes)
     entries = []
-    for path in sorted(folder.glob("*.md")):
+    if strict:
+        with os.scandir(folder) as items:
+            paths = sorted(pathlib.Path(item.path) for item in items if item.name.endswith(".md"))
+    else:
+        paths = sorted(folder.glob("*.md"))
+    for path in paths:
         theme = path.stem
         if path.name == INDEX_MD or theme not in wanted:
             continue

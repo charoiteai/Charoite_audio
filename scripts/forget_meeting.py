@@ -1368,7 +1368,7 @@ def _backup(path: pathlib.Path, stamp: str) -> pathlib.Path | None:
 def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_explicit: bool = False) -> bool:
     """Выполнить план. Без yes — только показать; вернёт False, что не делал."""
     print(p.describe())
-    if not p.delete and not p.edit:
+    if not p.delete and not p.edit and (not yes or p.rescan is None or p.graph_scope is None):
         return False
     if not yes:
         print("\nничего не сделано. Повторите с --yes, если это то, что нужно:\n"
@@ -1408,7 +1408,9 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
                 p.refused = True    # отказ дня не прячется за успехом соседки
                 return False
         _refresh_graph_plan(p, needed)
-        done = None if p.refused else _apply_locked(p)
+        if p.refused or (not p.delete and not p.edit):
+            return False
+        done = _apply_locked(p)
         if done is not None:
             for d in needed:
                 folder = p.lock_dirs[d] / CHAROITE.dossier_dir
@@ -1452,6 +1454,10 @@ def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> None:
         _refuse_graph_plan(p, "ничего не сделано: появились следы в другом графе — запустите снова")
         return
     roots = [r for d in needed for r in (d, p.lock_dirs[d])]
+    fresh_delete = set(fresh.delete)
+    if any(_under(q, *roots) and q not in fresh_delete for q in p.delete):
+        _refuse_graph_plan(p, "ничего не сделано: набор удаляемого в графе сменился — запустите снова")
+        return
     for name in ("delete", "copy_first"):
         target = getattr(p, name)
         target.extend(q for q in getattr(fresh, name) if _under(q, *roots) and q not in target)
