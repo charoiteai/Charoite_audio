@@ -1763,6 +1763,33 @@ def test_forget_manifest_preserves_retained_line_bytes(tmp_path, manifest_name, 
 
 
 @pytest.mark.parametrize("manifest_name", ["manifest.tsv", "manifest.jsonl"])
+@pytest.mark.parametrize("blank", ["\n", "\r\n", " \t\r\n", "\r"])
+def test_forget_manifest_retains_blank_lines_without_diagnostics(tmp_path, manifest_name, blank):
+    """Удаление чужой строки не должно заодно убирать пустые строки или пробелы."""
+    import json
+
+    manifest = tmp_path / manifest_name
+    rel = "Встречи-архив/2026-07-15 — Тема"
+
+    def row(path):
+        if manifest_name.endswith(".tsv"):
+            return f"{path}\tдо\tпосле"
+        return json.dumps({"file": path}, ensure_ascii=False)
+
+    neighbour = row(rel + " 2") + "\n"
+    manifest.write_bytes((blank + row(rel) + "\r\n" + blank + neighbour + blank).encode("utf-8"))
+    p = forget.Plan(stamp=STAMP)
+
+    forget._forget_in_manifests(p, tmp_path, [rel])
+
+    expected = (blank + blank + neighbour + blank).encode("utf-8")
+    assert p.edit[manifest].encode("utf-8") == expected
+    assert p.notes == []
+    assert forget.apply(p, yes=True)
+    assert manifest.read_bytes() == expected
+
+
+@pytest.mark.parametrize("manifest_name", ["manifest.tsv", "manifest.jsonl"])
 def test_forget_manifest_rejects_a_stale_snapshot_before_any_deletion(tmp_path, manifest_name):
     """Чужая запись после plan отменяет весь apply, а не затирается старым манифестом."""
     import json

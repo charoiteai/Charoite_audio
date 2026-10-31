@@ -495,8 +495,8 @@ def _manifest_line_matches(line: str, manifest: pathlib.Path, rels: list[str],
     """
     line = line.removesuffix("\n").removesuffix("\r")
     if not line.strip():
-        return False
-    if manifest.suffix == ".jsonl":
+        path = None
+    elif manifest.suffix == ".jsonl":
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
@@ -511,9 +511,10 @@ def _manifest_line_matches(line: str, manifest: pathlib.Path, rels: list[str],
     else:
         path = line.split("\t", 1)[0] if "\t" in line else None
     if not isinstance(path, str) or not path:
-        p.notes.append(f"строка манифеста оставлена — путь не разобран: {manifest}:{number}")
-        return False
-    return any(path == rel or path.startswith(rel + "/") for rel in rels)
+        if line.strip():
+            p.notes.append(f"строка манифеста оставлена — путь не разобран: {manifest}:{number}")
+        path = ""
+    return bool(path) and any(path == rel or path.startswith(rel + "/") for rel in rels)
 
 
 def _archive_folders(g: pathlib.Path, stamp: str,
