@@ -154,6 +154,20 @@ def test_owner_heading_spelling_keeps_the_edits(night, head):
     assert text.endswith("## Правки автора\n\nоставить решение автора\n")
 
 
+@pytest.mark.parametrize("head", ["## Правки автора", "##Правки автора", "## Источники"])
+def test_rebuild_keeps_body_after_an_inline_heading_mention(night, monkeypatch, head):
+    """Сырое тело прошло валидацию: render сохраняет и поздние разделы на диске."""
+    nd, graph, folder, paths, calls = night
+    body = GOOD.replace("## Решено\nт", f"## Решено\n- ввели раздел {head}")
+    monkeypatch.setattr(nd, "generate", lambda *a, **kw: body)
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert result["собрано"] == 3 and result["отказы"] == 0
+    for path in paths.values():
+        text = path.read_text(encoding="utf-8")
+        assert dossier.split_dossier(text)[1] == body
+        assert text.endswith("## Правки автора\n\nоставить решение автора\n")
+
+
 def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     """Отказ из-за битых «Правок автора» — пропуск темы, а не отказ модели."""
     nd, graph, folder, paths, calls = night

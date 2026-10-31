@@ -493,15 +493,6 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
                          unlabeled_rule=graph_names.UNLABELED_RULE)
 
 
-def _body_without_manual(body: str) -> str:
-    """Тело модели без защищённых разделов: заголовок правок в ответе модели — любой, что
-    находит `KEEP_RE`, — начал бы «правки» в теле, следующая ночь взяла бы хвост тела и
-    «Источники» в правки, и они росли бы от ночи к ночи (n856-min1 Haiku I1)."""
-    body = strip_protected(body)
-    m = KEEP_RE.search(body)
-    return (body[:m.start()] if m else body).strip()
-
-
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
            fp: str, today: str) -> str:
     """Готовый файл досье: frontmatter для машины, текст для человека."""
@@ -527,7 +518,7 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
         "> Собрано автоматически ночным проходом. Правки руками сохранятся:",
         "> при пересборке раздел «Правки автора» не трогается.",
         "",
-        _body_without_manual(body),
+        strip_protected(body).strip(),
         "",
         "## Источники",
     ]
@@ -585,10 +576,10 @@ def preserve_manual(old_text: str) -> str | None:
 PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
 
 
-# Заголовок любого уровня и без пробела тоже: «### Правки автора» и
+# Заголовок с отступом, любым числом решёток и без пробела тоже: «### Правки автора» и
 # «##Правки автора» строка из стенограммы подсунет так же легко, как «## »,
 # а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
-_PROTECTED_RE = re.compile(r"(?m)^#{1,6}\s*(?:Правки автора|Источники)\s*$")
+_PROTECTED_RE = re.compile(r"(?m)^[ \t]*#+\s*(?:Правки автора|Источники)\s*$")
 _SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
 _MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
 

@@ -295,7 +295,9 @@ def test_заголовок_правок_как_его_набирает_влад
     assert dossier.preserve_manual(text.replace(head, "## Правки автора: черновик")) is None
 
 
-@pytest.mark.parametrize("head", ["##Правки автора", "## Источники", "  ## Правки автора"])
+@pytest.mark.parametrize("head", ["##Правки автора", "## Источники", "  ## Правки автора",
+                                  "\t## Правки автора", "####### Правки автора",
+                                  "  ####### Источники"])
 def test_render_cuts_a_protected_heading_out_of_the_model_body(head):
     """Заголовок правок в ответе модели начал бы раздел в теле: следующая ночь брала бы
     хвост тела и «Источники» в правки, и они росли бы (n856-min1 Haiku I1)."""
@@ -305,6 +307,16 @@ def test_render_cuts_a_protected_heading_out_of_the_model_body(head):
     assert len(re.findall(r"#+[ \t]*(?:Правки автора|Источники)", text)) == 2
     text = text.replace("## Правки автора\n\n—\n", "## Правки автора\n\nмоё\n")
     assert dossier.preserve_manual(text) == "моё"
+
+
+@pytest.mark.parametrize("head", ["## Правки автора", "##Правки автора", "## Источники"])
+def test_render_keeps_an_inline_mention_of_a_protected_heading(head):
+    """№856 min2 I1: обсуждение раздела в пункте не обрывает тело досье."""
+    body = ("## Сейчас\nсостояние\n## Как пришли\nхроника\n"
+            f"## Решено\n- ввели раздел {head}\n"
+            "## Открыто\nвопросы\n## Кто в теме\nлюди\n")
+    text = dossier.render("Т", body, [], {}, "fp", "2026-10-31")
+    assert dossier.split_dossier(text)[1] == body.strip()
 
 
 def test_брак_модели_не_проходит_валидацию():

@@ -306,8 +306,9 @@ is not overwritten. The «Правки автора» heading is found with any 
 `#`, with or without the space after them and with trailing spaces, the way
 the owner types it in Obsidian — a superset of the old literal match; the
 section runs to the end of the file. The literal missed `##Правки автора`,
-and the rebuild wrote «—» over the owner's edits (#856). The same headings are
-cut out of the model's body, so a rebuilt body cannot open the section.
+and the rebuild wrote «—» over the owner's edits (#856). Protected heading
+lines are cut out of the model's body by `strip_protected`; inline mentions
+of those headings stay in the body.
 
 ### A graph node is never lost mid-write
 
