@@ -566,7 +566,8 @@ def test_busy_graph_lock_turns_the_rest_of_the_run_into_a_report(tmp_path, monke
     before = (folder / "Одно.md").read_text(encoding="utf-8")
     assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 2
     assert (folder / "Одно.md").read_text(encoding="utf-8") == before
-    assert takes == [ndr.LOCK_WAIT], "после первого отказа замок больше не ждём"
+    assert len(takes) == 1, "после первого отказа замок больше не ждём"
+    assert 0 <= takes[0] <= ndr.LOCK_WAIT, "общий deadline не увеличивает ожидание"
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
     assert "## Предложено, но не применено" in report and "замок графа не взят" in report
     assert "### Одно\n" in report and "### Два\n" in report

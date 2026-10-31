@@ -36,7 +36,7 @@ import time
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
-import file_locks  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
 import graphs  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 import task_line  # noqa: E402
@@ -65,15 +65,7 @@ def graph_dir(explicit: str | None) -> pathlib.Path | None:
 
 
 def _graph_lock(graph: pathlib.Path, root: pathlib.Path):
-    """Общий замок пишущих в граф (file_locks): разбор встречи, облачная ревизия,
-    ночь и контроль задач пишут те же файлы минуток. Без него запись шла
-    «tmp + replace» поверх чужой правки, сделанной между чтением и записью
-    (Opus C3 входного круга №366)."""
-    try:
-        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=root))
-    except OSError as e:
-        raise SystemExit(f"замок графа не взять ({e}) — не пишу")
-    return file_locks.graph_lock(lock_dir, LOCK_WAIT)
+    return graphs.mutation_lock(graph, root, LOCK_WAIT)
 
 
 class StatusChanged(Exception):

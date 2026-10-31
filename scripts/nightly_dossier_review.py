@@ -34,11 +34,11 @@ import time
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
 import cloud  # noqa: E402
 import cloud_door  # noqa: E402
 from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
-import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import pii_mask  # noqa: E402
@@ -389,7 +389,10 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     why_readonly = "Запись выключена: `sufler.cloud_edit_graph: false`. Включите тумблер, если хотите, чтобы облако правило граф само."
     if may_edit:
         try:
-            lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
+            group = graphs.mutation_addresses(graph, root=_root(), cfg=cfg)
+            for directory in group.lock_dirs:
+                charoite_paths.secure_dir(directory)
+            lock_dir = group.primary
         except OSError as e:
             print(f"  замок графа не взять ({e}) — правки не пишу, только отчёт")
             may_edit = False
@@ -533,7 +536,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # никогда (контракт night_wait_cap) — мёртвая ветка убрана.
         cap = live_gate.night_wait_cap(default=LOCK_WAIT)
         lock_wait = min(LOCK_WAIT, cap)
-        with file_locks.graph_lock(lock_dir, lock_wait) as taken:
+        with graphs.mutation_lock(graph, _root(), lock_wait, cfg=cfg) as taken:
             if taken:
                 try:
                     # снимок до чтения: между сверкой текста и записью идёт копия, и

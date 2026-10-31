@@ -12,11 +12,13 @@ iCloud-Obsidian: одного захардкоженного пути мало �
 from __future__ import annotations
 
 import os
+import contextlib
 import pathlib
 import sys
 import time
 
 import once
+import charoite_paths
 from charoite_paths import resolve_root
 
 ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
@@ -175,6 +177,43 @@ def graph_dir(cfg: dict | None = None, *, env: bool = True) -> pathlib.Path | No
     if not isinstance(cfg, dict):
         cfg = {}
     return resolve((cfg.get("sufler") or {}).get("graph_dir"))
+
+
+def mutation_addresses(graph: pathlib.Path, *, root: pathlib.Path | None = None,
+                       cfg: dict | None = None) -> charoite_paths.GraphAddresses:
+    """Supply known config/env evidence to the strict, config-free paths owner."""
+    try:
+        configured = graph_dir(cfg)
+    except (ValueError, RuntimeError, TypeError, AttributeError):
+        configured = None
+    return charoite_paths.graph_addresses(graph, root=root,
+                                         aliases=() if configured is None else (configured,))
+
+
+def mutation_lock(graph: pathlib.Path, root: pathlib.Path, wait: float, *,
+                  cfg: dict | None = None, **kwargs):
+    """Capture before waiting; refuse changed alias evidence after acquisition."""
+    try:
+        group = mutation_addresses(graph, root=root, cfg=cfg)
+    except (OSError, ValueError) as e:
+        kwargs.get("log", print)(f"graph identity unavailable: {e}")
+        return contextlib.nullcontext(False)
+
+    @contextlib.contextmanager
+    def held():
+        with charoite_paths.graph_lock_group(group, wait, **kwargs) as taken:
+            if taken:
+                try:
+                    fresh = mutation_addresses(graph, root=root, cfg=cfg)
+                    if fresh != group:
+                        raise OSError("graph address group changed")
+                except (OSError, ValueError) as e:
+                    kwargs.get("log", print)(f"graph identity unavailable: {e}")
+                    yield False
+                    return
+            yield taken
+
+    return held()
 
 
 def configured_graph() -> pathlib.Path | None:

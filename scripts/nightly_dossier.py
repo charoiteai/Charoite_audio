@@ -35,9 +35,9 @@ from datetime import date, datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
 from charoite_graph import dossier, graph_names  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
-import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
@@ -184,22 +184,7 @@ LOCK_WAIT = 5 * 60          # дольше держит только завис�
 
 @contextlib.contextmanager
 def _graph_lock(graph: pathlib.Path, wait: float = LOCK_WAIT):
-    """Общий замок пишущих в граф: разбор встречи, облачная ревизия — и мы.
-
-    Локальная сборка досье замок не брала вовсе, хотя переписывает те же
-    файлы и индекс: сосед мог читать наполовину записанную папку, а его
-    сверка — принять наши правки за чужие (аудит графа 26.08, Codex).
-    Берём на публикацию досье или актуальный обход для индекса; длительность
-    обхода зависит от графа. Модель работает снаружи: замок на весь прогон
-    заставил бы ждать разбор только что закончившейся встречи.
-    """
-    try:
-        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
-    except OSError as e:
-        print(f"  замок графа не взять ({e}) — не пишу")
-        yield False
-        return
-    with file_locks.graph_lock(lock_dir, wait) as taken:
+    with graphs.mutation_lock(graph, _root(), wait) as taken:
         yield taken
 
 

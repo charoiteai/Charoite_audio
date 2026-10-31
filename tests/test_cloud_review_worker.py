@@ -2623,19 +2623,22 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
         store.review(transcript, state)
 
     @contextlib.contextmanager
-    def lock_after_neighbour(graph_, wait=None):
+    def lock_after_neighbour(graph_, wait=None, **kwargs):
+        assert kwargs.get("cfg") is cfg
         neighbour("ok")
-        with real_lock(graph_, wait) as got:
+        with real_lock(graph_, wait, **kwargs) as got:
             yield got
 
     @contextlib.contextmanager
-    def lock_after_dead_neighbour(graph_, wait=None):
+    def lock_after_dead_neighbour(graph_, wait=None, **kwargs):
+        assert kwargs.get("cfg") is cfg
         neighbour("running")           # опубликовал, но убит до доставки
-        with real_lock(graph_, wait) as got:
+        with real_lock(graph_, wait, **kwargs) as got:
             yield got
 
     @contextlib.contextmanager
-    def lock_never_taken(graph_, wait=None):
+    def lock_never_taken(graph_, wait=None, **kwargs):
+        assert kwargs.get("cfg") is cfg
         neighbour("ok")
         yield False
 

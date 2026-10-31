@@ -35,7 +35,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
-import file_locks  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
+import graphs  # noqa: E402
 import graph_updater  # noqa: E402
 import live_gate  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
@@ -248,17 +249,9 @@ def manual_hints(graph: pathlib.Path, manual: list[str]) -> dict[str, list[str]]
 
 
 def _graph_lock(graph: pathlib.Path, data_root: pathlib.Path | None):
-    """Общий замок пишущих в граф (правило file_locks: делят ВСЕ контуры —
-    разбор встречи, облачная ревизия, ночь; GLM по #454). Без корня данных
-    (тесты) — замка нет, работаем как есть."""
     if data_root is None:
         return contextlib.nullcontext(True)
-    try:
-        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=data_root))
-    except OSError as e:
-        raise SystemExit(f"замок графа не взять ({e}) — не пишу")
-    print(f"замок графа: {lock_dir / 'cloud.lock'}")   # расхождение корней видно сразу (GLM r2)
-    return file_locks.graph_lock(lock_dir, LOCK_WAIT)
+    return graphs.mutation_lock(graph, data_root, LOCK_WAIT)
 
 
 def apply(graph: pathlib.Path, backup: pathlib.Path, log=print,

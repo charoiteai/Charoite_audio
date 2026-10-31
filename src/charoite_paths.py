@@ -36,10 +36,14 @@
 from __future__ import annotations
 
 import fcntl
+import contextlib
+import dataclasses
+import errno
 import hashlib
 import os
 import pathlib
 import shutil
+import sys
 import threading
 import typing
 
@@ -483,7 +487,7 @@ GRAPH_BACKUP_KINDS: dict[str, str | None] = {
 }
 
 
-def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
+def legacy_graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
                   root: pathlib.Path | None = None) -> pathlib.Path:
     """Куда класть служебные снимки графа — ВНЕ синхронизируемой папки.
 
@@ -512,6 +516,121 @@ def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
     digest = hashlib.sha256(str(g).encode("utf-8")).hexdigest()[:8]
     base = (root or resolve_root(__file__)) / BACKUPS_DIR / f"{g.name}-{digest}"
     return base / kind
+
+
+def physical_graph(graph: pathlib.Path) -> tuple[pathlib.Path, tuple[int, int]]:
+    """Existing directory proved against an open fd; never guess after failure.
+
+    The inode pair is a transient identity witness, not a persistent storage key.
+    No case or Unicode folding: distinct directories must stay distinct.
+    """
+    graph = pathlib.Path(graph)
+    fd = os.open(graph, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        seen = os.fstat(fd)
+        if sys.platform == "darwin":
+            raw = fcntl.fcntl(fd, getattr(fcntl, "F_GETPATH", 50), b"\0" * 1024)
+            representative = pathlib.Path(os.fsdecode(raw.split(b"\0", 1)[0]))
+        elif sys.platform.startswith("linux"):
+            representative = pathlib.Path(os.readlink(f"/proc/self/fd/{fd}"))
+        else:
+            raise OSError(errno.ENOTSUP, "physical graph identity is unsupported", str(graph))
+        if not representative.is_absolute():
+            raise OSError(errno.ESTALE, "physical graph path is not absolute", str(graph))
+        identity = (seen.st_dev, seen.st_ino)
+        for candidate in (graph, representative):
+            current = candidate.stat()
+            if (current.st_dev, current.st_ino) != identity:
+                raise OSError(errno.ESTALE, "graph identity changed", str(graph))
+        return representative, identity
+    finally:
+        os.close(fd)
+
+
+def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
+                  root: pathlib.Path | None = None) -> pathlib.Path:
+    """Calculate the physical primary; absent graphs keep the pure legacy API.
+
+    This calculator is also used by read-only/text-only callers. Writers must
+    separately capture and lock strict ``graph_addresses``; they never use the
+    missing-path compatibility result as mutation authority.
+    """
+    try:
+        graph, _ = physical_graph(graph)
+    except FileNotFoundError:
+        pass
+    return legacy_graph_backups(graph, kind, root)
+
+
+@dataclasses.dataclass(frozen=True)
+class GraphAddresses:
+    graph: pathlib.Path
+    observed: tuple[int, int]
+    aliases: tuple[pathlib.Path, ...]
+    primary: pathlib.Path
+    lock_dirs: tuple[pathlib.Path, ...]
+
+    def mirrors(self, kind: str) -> tuple[pathlib.Path, ...]:
+        if kind not in GRAPH_BACKUP_KINDS:
+            raise ValueError(f"unknown graph backup kind: {kind}")
+        return tuple(base / kind for base in self.lock_dirs)
+
+    def revalidate(self) -> None:
+        for alias in self.aliases:
+            if physical_graph(alias) != (self.graph, self.observed):
+                raise OSError(errno.ESTALE, "graph alias changed", str(alias))
+
+
+def graph_addresses(graph: pathlib.Path, *, root: pathlib.Path | None = None,
+                    aliases: typing.Iterable[pathlib.Path] = ()) -> GraphAddresses:
+    """Strict mutation identity and only proven legacy addresses; no config IO.
+
+    The selected argument is required evidence. Optional caller-supplied aliases
+    are admitted only after proving they name that same open directory. Once
+    captured, every admitted spelling becomes required revalidation evidence.
+    Unknown directories and combinations of historical spellings are not scanned.
+    """
+    selected = pathlib.Path(graph).absolute()
+    representative, observed = physical_graph(selected)
+    proven = {selected, representative}
+    for raw in aliases:
+        alias = pathlib.Path(raw).absolute()
+        try:
+            physical, identity = physical_graph(alias)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        if (physical, identity) == (representative, observed):
+            proven.add(alias)
+    primary = legacy_graph_backups(representative, root=root).parent
+    bases = {legacy_graph_backups(alias, root=root).parent for alias in proven}
+    result = GraphAddresses(representative, observed, tuple(sorted(proven)), primary,
+                            tuple(sorted(bases | {primary})))
+    result.revalidate()
+    return result
+
+
+@contextlib.contextmanager
+def graph_lock_group(group: GraphAddresses, wait: float, **kwargs):
+    """Acquire the complete bounded address group, then prove it again."""
+    import file_locks
+    try:
+        for directory in group.lock_dirs:
+            secure_dir(directory)
+    except OSError as e:
+        kwargs.get("log", print)(f"graph lock unavailable: {e}")
+        yield False
+        return
+    with file_locks.graph_locks(group.lock_dirs, wait, **kwargs) as taken:
+        if not taken:
+            yield False
+            return
+        try:
+            group.revalidate()
+        except OSError as e:
+            kwargs.get("log", print)(f"graph identity unavailable: {e}")
+            yield False
+            return
+        yield True
 
 
 def graph_lock_dir(graph: pathlib.Path, root: pathlib.Path | None = None) -> pathlib.Path:

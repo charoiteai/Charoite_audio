@@ -66,10 +66,11 @@ def _root() -> pathlib.Path:
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
 import charoite_paths  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
+import graphs  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import cloud_door  # noqa: E402
-import file_locks  # noqa: E402
 import graph_updater
 import install_profile  # noqa: E402
 import graph_links  # noqa: E402
@@ -510,22 +511,9 @@ def displaced_dir(qdir: pathlib.Path) -> pathlib.Path:
     return qdir.parent / DISPLACED_DIR / qdir.name
 
 
-def graph_lock(graph: pathlib.Path, wait: float | None = None):
-    """Замок графа для этого разбора — общий с ночной ревизией досье.
-
-    Реализация переехала в src/file_locks.py: тот же `cloud.lock` берёт
-    и nightly_dossier_review, иначе два пишущих контура сверяют правки
-    друг друга (аудит облака 26.08, GLM I3). Здесь остаётся адрес
-    каталога снимков этого графа и наш дефолт ожидания.
-    """
-    wait = LOCK_WAIT if wait is None else wait   # константу можно подменить в тестах
-    try:
-        base = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
-    except OSError as e:
-        # нет права на каталог данных — как и без бэкапа: только чтение
-        print(f"замок графа не взять ({e}) — работаю на чтение")
-        return contextlib.nullcontext(False)
-    return file_locks.graph_lock(base, wait, poll=LOCK_POLL)
+def graph_lock(graph: pathlib.Path, wait: float | None = None, *, cfg: dict | None = None):
+    wait = LOCK_WAIT if wait is None else wait
+    return graphs.mutation_lock(graph, _root(), wait, cfg=cfg, poll=LOCK_POLL)
 
 
 @dataclasses.dataclass
@@ -1372,7 +1360,7 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # выключен) — без замка сосед-воркер видел эти файлы как правку
         # облака и убирал в карантин (аудит облака, DS M4).
         if may_edit or deliver:
-            if not stack.enter_context(graph_lock(graph)):
+            if not stack.enter_context(graph_lock(graph, cfg=cfg)):
                 # Не дождавшийся замка тоже мог пережидать соседа, который
                 # всё довёз: read-only прогон переписал бы его ревизию
                 # (publish замком не гейтится) — DS I2 по #550.
