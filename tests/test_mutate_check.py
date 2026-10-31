@@ -196,6 +196,17 @@ def test_скрипты_с_загрузкой_по_пути_судятся_св�
     assert test in mc.tests_for(REPO, REPO / "scripts" / f"{module}.py")
 
 
+@pytest.mark.parametrize("module", ["scripts/forget_meeting.py", "scripts/nightly_dossier.py",
+                                   "src/charoite_graph/dossier.py"])
+def test_graph_process_and_recovery_suites_are_selected_for_their_real_modules(module):
+    found = mc.tests_for(REPO, REPO / module)
+    required = {"tests/test_forget_night_processes.py", "tests/test_forget_index_recovery.py",
+                "tests/test_forget_mutation_behaviors.py", "tests/test_graph_ci_regressions.py"}
+    if module.startswith("scripts/"):
+        required.add("tests/test_plan_revalidation.py")
+    assert required <= set(found)
+
+
 def _исход(ok: bool) -> "mc.RunResult":
     """Исход подменённого прогона: зелёный или красный."""
     return mc.RunResult(mc.PASSED if ok else mc.FAILED, rc=0 if ok else 1)

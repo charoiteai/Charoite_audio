@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -42,7 +43,7 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import Callable, Iterable, Literal
 from charoite_graph import frontmatter, graph_names
 from charoite_graph.graph_schema import GraphSchema, name_date
 from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
@@ -165,19 +166,35 @@ class GraphSnapshot:
     stubs: frozenset[str] = frozenset()
 
 
-def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
+def scan(graph: pathlib.Path, *, schema: GraphSchema,
+         strict: bool = False) -> tuple[dict[str, dict], dict[str, set[str]]]:
     """Все .md графа → карта файлов и обратные ссылки (`scan_snapshot` без стрелок)."""
-    snap = scan_snapshot(graph, schema=schema)
+    snap = scan_snapshot(graph, schema=schema, strict=strict)
     return snap.files, snap.backlinks
 
 
-def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
+def _strict_source_paths(graph: pathlib.Path, schema: GraphSchema) -> Iterable[pathlib.Path]:
+    """Обход для публикации: ошибка перечисления не превращается в пустую папку."""
+    def failed(error: OSError) -> None:
+        raise error
+
+    for top, directories, names in os.walk(graph, onerror=failed):
+        folder = pathlib.Path(top)
+        directories[:] = [name for name in directories if not name.startswith(".")
+                          and not schema.is_dossier((folder / name / "_").relative_to(graph).as_posix())]
+        for name in names:
+            if name.endswith(".md"):
+                yield folder / name
+
+
+def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = False) -> GraphSnapshot:
     """Все .md графа → карта файлов и обратные ссылки.
 
     Возвращает (files, backlinks): files[title] = {path, text, mtime, kind},
     backlinks[title] = множество тех, кто на него ссылается. Роли папок — из
     схемы хранилища: какие файлы служебные, где сами досье, какая папка — ядра.
     Архив встреч читается: исключения схемы — правило обхода поиска, не досье.
+    `strict` передаёт ошибки чтения вызывающему вместо неполного снимка.
     """
     files: dict[str, dict] = {}
     backlinks: dict[str, set[str]] = defaultdict(set)
@@ -185,7 +202,8 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
     redirects: dict[str, str] = {}
     stubs: set[str] = set()
 
-    for p in graph.rglob("*.md"):
+    paths = _strict_source_paths(graph, schema) if strict else graph.rglob("*.md")
+    for p in paths:
         rel = p.relative_to(graph)
         # служебное, бэкапы и сами досье в кластеры не берём
         if any(part.startswith(".") for part in rel.parts):
@@ -195,6 +213,8 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema) -> GraphSnapshot:
         try:
             raw = p.read_bytes()
         except OSError:
+            if strict:
+                raise
             continue
         try:
             text = raw.decode("utf-8")
@@ -902,6 +922,72 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
 
 # ─────────────────────────── индекс ───────────────────────────
 
+def rebuild_index(graph: pathlib.Path, *, schema: GraphSchema,
+                  read: Callable[[pathlib.Path], DossierLoad] = load_dossier) -> None:
+    """Один актуальный обход графа для индекса; вызывающий держит его замок.
+
+    Набор тем и fallback берутся из того же свежего scan/clusters, а не из
+    старого JSON или очереди генерации. Досье вне кластеров остаются вне индекса.
+    Ошибка чтения источника или досье прерывает сборку до публикации индексов.
+    """
+    if schema.dossier_dir is None:
+        return
+    folder = graph / schema.dossier_dir
+    if not folder.resolve().is_relative_to(graph.resolve()):
+        raise OSError(f"папка досье вне графа: {folder}")
+    files, backlinks = scan(graph, schema=schema, strict=True)
+    current = clusters(files, backlinks, schema=schema)
+    fallback = {theme: {"источников": len(members),
+                        "отпечаток": fingerprint(members, files),
+                        "источники": " ".join(members)}
+                for theme, members in current.items()}
+    refresh_index(folder, current, read=read, fallback=fallback, strict=True)
+
+
+def refresh_index(folder: pathlib.Path, themes: Iterable[str], *,
+                  read: Callable[[pathlib.Path], DossierLoad] = load_dossier,
+                  fallback: dict[str, dict] | None = None, strict: bool = False) -> None:
+    """Оба индекса из текущих досье; вызывающий держит замок графа.
+
+    Пути берутся с диска, не из JSON. Пустой набор тоже публикуется, а
+    заменённый файл не наследует отпечаток и ключи старого тела.
+    """
+    wanted = set(themes)
+    entries = []
+    if strict:
+        with os.scandir(folder) as items:
+            paths = sorted(pathlib.Path(item.path) for item in items if item.name.endswith(".md"))
+    else:
+        paths = sorted(folder.glob("*.md"))
+    for path in paths:
+        theme = path.stem
+        if path.name == INDEX_MD or theme not in wanted:
+            continue
+        loaded = read(path)
+        if strict and loaded.state == "unreadable":
+            raise OSError(f"досье недоступно для чтения: {path}")
+        if loaded.state == "missing":
+            continue
+        defaults = (fallback or {}).get(theme, {})
+        text = loaded.text or ""
+        _, body = frontmatter.split(text)
+        assembled = frontmatter.scalar_field(text, "собрано")
+        try:
+            assembled = date.fromisoformat(assembled).isoformat()
+        except (TypeError, ValueError):
+            assembled = date.today().isoformat()
+        try:
+            count = max(0, int(frontmatter.scalar_field(text, "источников")))
+        except (TypeError, ValueError):
+            count = defaults.get("источников", 0)
+        keys = list(dict.fromkeys(keywords(theme + " " + defaults.get("источники", "")) + keywords(body)))[:24]
+        entries.append({"тема": theme, "файл": f"{folder.name}/{path.name}",
+                        "источников": count, "собрано": assembled,
+                        "отпечаток": read_fingerprint(loaded) or defaults.get("отпечаток", ""),
+                        "ключи": keys})
+    write_index(folder, entries)
+
+
 def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     """Два файла: json для поиска, md для человека и для grep.
 
@@ -926,20 +1012,25 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
             pass
     entries = sorted(entries, key=lambda e: e["тема"].lower())
 
-    # Атомарно: индекс пишется вне замка графа (иначе занятый соседом граф
-    # оставлял бы на диске свежие досье и старый индекс — поиск смотрит
-    # только сюда и сутки их не видел бы, круг-2 по PR #438, DS Important 3),
-    # а без tmp+replace обрыв на середине дал бы битый json.
+    # Атомарная публикация каждого файла не заменяет общий замок графа:
+    # refresh_index вызывается под ним и собирает актуальные метаданные.
+    # Без tmp+replace обрыв на середине дал бы битый json.
     # Имя с pid: общий tmp давал двум одновременным прогонам смешать
     # байты и атомарно установить битый json — а load_index глотает
     # JSONDecodeError, и поиск сутки не видит ни одного досье
     # (круг-3 по PR #438, GLM Important 4).
     tmp = folder / f"{INDEX_JSON}.{os.getpid()}.tmp"
-    tmp.write_text(
-        json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
-                    "досье": entries}, ensure_ascii=False, indent=1),
-        encoding="utf-8")
-    tmp.replace(folder / INDEX_JSON)
+    # Эксклюзивное создание не идёт по подложенной ссылке. При занятом имени
+    # не удаляем чужой tmp: в finally попадает только созданный нами файл.
+    stream = tmp.open("x", encoding="utf-8")
+    try:
+        with stream:
+            stream.write(json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
+                                     "досье": entries}, ensure_ascii=False, indent=" "))
+        tmp.replace(folder / INDEX_JSON)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
     lines = [
         "---", "type: индекс-досье", f"обновлён: {date.today().isoformat()}",
@@ -960,8 +1051,14 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
               "2. Открываем досье — там состояние, хроника, решения, открытые вопросы.",
               "3. За подробностями идём по ссылкам из раздела «Источники».", ""]
     tmp_md = folder / f"{INDEX_MD}.{os.getpid()}.tmp"
-    tmp_md.write_text("\n".join(lines), encoding="utf-8")
-    tmp_md.replace(folder / INDEX_MD)
+    stream = tmp_md.open("x", encoding="utf-8")
+    try:
+        with stream:
+            stream.write("\n".join(lines))
+        tmp_md.replace(folder / INDEX_MD)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp_md.unlink()
 
 
 def load_index(folder: pathlib.Path) -> list[dict]:

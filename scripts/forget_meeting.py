@@ -57,6 +57,7 @@ import dataclasses
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -195,14 +196,18 @@ class Plan:
     # Замок графа — тот же, что у ревизии и ночной сборки досье: каталог данных графа
     # (родитель снимков). Без него правка «забыть» между сверкой соседа и его записью
     # затиралась, и ссылка с полем `ревизия:` возвращалась (круг n841-opus-fix Sonnet C2).
-    # Каталог замка → граф: замок берётся только у графов, которые план трогает
-    # (n841-opus-fix2 DS I1 — занятый чужой граф отменял всё)
+    # Каталог замка → граф. Обычный план блокирует весь обнаруженный scope:
+    # у графа без прежних действий мог появиться след до apply.
     lock_dirs: dict[pathlib.Path, pathlib.Path] = dataclasses.field(default_factory=dict)
+    graph_scope: tuple[pathlib.Path, ...] | None = None
     # Снимок `safe_write.stat_snapshot` файла правки, взятый до чтения: под замком
     # сверяем — сменился после плана (ревизия записала) — не затираем, ничего не делаем.
     # Байты, а не текст: `read_text` переводит CRLF, и сверка отказывала всегда
     # (n841-opus-fix2 Sonnet C1 = DS C2 = Haiku C1)
     snaps: dict[pathlib.Path, tuple[int, int] | None] = dataclasses.field(default_factory=dict)
+    # Повторный обход под замками дополняет план новыми путями; старые снимки сохраняются.
+    rescan: typing.Callable[[], Plan] | None = None
+    data_root: pathlib.Path | None = None
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
@@ -784,7 +789,8 @@ class _Ownership:
 def plan(stamp: str, root: pathlib.Path,
          graph: pathlib.Path | None = None, keep_graph: bool = False,
          import_folder: pathlib.Path | None = None,
-         day_named: set[pathlib.Path] | None = None) -> Plan:
+         day_named: set[pathlib.Path] | None = None, *,
+         _graphs: tuple[pathlib.Path, ...] | None = None) -> Plan:
     """Собрать план: что удалить, что переписать. Ничего не меняет.
 
     `import_folder` — папка импорта приложения: копия аудио в её `done/` и
@@ -794,7 +800,17 @@ def plan(stamp: str, root: pathlib.Path,
     `day_named` — папки остатка дня, уже названные планом другой встречи этого
     прогона (day_remainder); план дописывает в него свои.
     """
-    p = Plan(stamp=stamp)
+    roots = tuple(_graph_roots(graph)) if _graphs is None else _graphs
+    p = Plan(stamp=stamp, data_root=root, graph_scope=None if keep_graph else roots)
+    named_before = set(day_named) if day_named is not None else None
+
+    def rescan() -> Plan:
+        if any(g not in roots for g in _graph_roots(graph)):
+            raise OSError("появился другой граф — запустите снова")
+        return plan(stamp, root, graph, keep_graph, import_folder,
+                    set(named_before) if named_before is not None else None, _graphs=roots)
+
+    p.rescan = rescan
 
     # Приложение зовёт «забыть» минутным ключом, а демон и импорт именуют
     # файлы посекундно: правило владения — в _Ownership (Critical DS r1 и r2
@@ -815,7 +831,7 @@ def plan(stamp: str, root: pathlib.Path,
     # план: файлы в transcripts/ и «Документации», узел, папки архива,
     # снимки, отметка brain_sent (круг DeepSeek по PR #622).
     minute = meeting_stamp.minute_of(stamp)
-    minute_owners = ([_Ownership(minute, root, g) for g in (_graph_roots(graph) or [None])]
+    minute_owners = ([_Ownership(minute, root, g) for g in (roots or [None])]
                      if minute != stamp else [])
     minute_ours = any(o.exact == stamp and o.by_word for o in minute_owners)
     minute_foreign = any(o.exact not in (None, stamp) for o in minute_owners)
@@ -980,7 +996,7 @@ def plan(stamp: str, root: pathlib.Path,
         return p
 
     node_seen = False                # узел цели нашёлся: минута либо наша, либо доказанно чужая
-    for g in _graph_roots(graph):
+    for g in roots:
         # Узел — по ключу графа: у второй встречи той же минуты он посекундный,
         # у первой минутный; минутную заметку берём только если она наша
         # (meeting_stamp.find_note, карточка №39).
@@ -1192,11 +1208,10 @@ def plan(stamp: str, root: pathlib.Path,
     # был четвёртым обходом и знал четыре места из семи — стенограмма в .prev, копии в
     # снимках и карантине оставались неназванными (круг 3 DS по PR #622). Команду не
     # выполняем: забыть по минуте чужую встречу необратимо, решает человек.
-    roots = _graph_roots(graph)
     rest: list[pathlib.Path] = []
     if minute != stamp and not minute_ours and not minute_foreign and not node_seen and not keep_graph \
             and all(owner != stamp for g in roots for _, owner in _manifests(g / ARCHIVE_DIR, manifests)):
-        rest = [f for f in plan(minute, root, graph, import_folder=import_folder).delete
+        rest = [f for f in plan(minute, root, graph, import_folder=import_folder, _graphs=roots).delete
                 if f not in p.delete]
         if rest:
             p.check.append(f"под минутой {minute} лежит встреча, чья она — не доказано ни сайдкаром, "
@@ -1337,23 +1352,36 @@ def _block_end(lines: list[str], item: int, body: int, told: list[str] | None) -
     return len(lines) if gap is None else gap
 
 
-def _backup(path: pathlib.Path, stamp: str) -> pathlib.Path | None:
-    """Копия узла до правки — рядом с графом, в скрытой папке."""
+def _backup_destination(path: pathlib.Path, stamp: str) -> pathlib.Path | None:
+    """То же место копии для проверки плана и для её последующей записи."""
     for parent in path.parents:
         if (parent / MEETINGS_DIR).is_dir() or (parent / ARCHIVE_DIR).is_dir():
             # Одинаковые имена в разных папках — разные заметки. Плоская
             # копия перезаписывала предыдущий оригинал при одном забывании.
-            dest = parent / BACKUP_DIR / stamp / path.relative_to(parent)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, dest)
-            return dest
+            return parent / BACKUP_DIR / stamp / path.relative_to(parent)
     return None
+
+
+def _backup(path: pathlib.Path, stamp: str) -> pathlib.Path | None:
+    """Копия узла до правки — рядом с графом, в скрытой папке."""
+    dest = _backup_destination(path, stamp)
+    if dest is not None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+    return dest
+
+
+def _plan_locks(p: Plan) -> list[pathlib.Path]:
+    acts = [*p.delete, *p.edit]
+    return sorted(d for d, g in p.lock_dirs.items()
+                  if (g in p.graph_scope if p.graph_scope is not None
+                      else any(_under(q, g, d) for q in acts)))
 
 
 def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_explicit: bool = False) -> bool:
     """Выполнить план. Без yes — только показать; вернёт False, что не делал."""
     print(p.describe())
-    if not p.delete and not p.edit:
+    if not p.delete and not p.edit and (not yes or p.rescan is None):
         return False
     if not yes:
         print("\nничего не сделано. Повторите с --yes, если это то, что нужно:\n"
@@ -1370,9 +1398,7 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
     # Путь записи — лексический (симлинк в графе пишется как файл графа), поэтому сверяем
     # и его, и его цель: `resolve()` одного уводил симлинк за граф, замок не брался
     # (n841-opus-fix3 Sonnet I1 = Haiku I1)
-    acts = [*p.delete, *p.edit]
-    needed = sorted(d for d, g in p.lock_dirs.items()
-                    if any(_under(q, g, d) for q in acts))
+    needed = _plan_locks(p)
     with contextlib.ExitStack() as stack:
         for d in needed:
             try:
@@ -1391,12 +1417,119 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
                 print(f"\nничего не сделано: {path} сменился после плана — запустите снова")
                 p.refused = True    # отказ дня не прячется за успехом соседки
                 return False
+        _refresh_graph_plan(p, needed)
+        if p.refused or (not p.delete and not p.edit):
+            return False
         done = _apply_locked(p)
+        if done is not None:
+            for d in needed:
+                folder = p.lock_dirs[d] / CHAROITE.dossier_dir
+                if not folder.is_dir():
+                    continue
+                try:
+                    dossier.rebuild_index(p.lock_dirs[d], schema=CHAROITE)
+                except OSError as e:
+                    print(f"индекс досье не обновлён ({e}) — требуется обновление индексов")
+                    command = shlex.join([
+                        sys.executable,
+                        str(charoite_paths.code_root(__file__) / "scripts" / "nightly_dossier.py"),
+                        "--graph", str(p.lock_dirs[d]), "--limit", "0"])
+                    print(f"обновить индексы: CHAROITE_ROOT={shlex.quote(str(p.data_root or _root()))} {command}")
+                    p.refused = True
+                    p.check.append(f"{folder}: индекс не обновлён — выполните команду «обновить индексы» выше")
     if done is None:
         p.refused = True
         return False
     _report_and_forget_brain(p, *done, brain_enabled=brain_enabled, brain_explicit=brain_explicit)
     return True
+
+
+def _refuse_graph_plan(p: Plan, reason: str) -> None:
+    print(reason)
+    p.refused = True
+
+
+def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> None:
+    """Весь старый план подтверждаем прежде, чем принять новые следы под замками."""
+    if p.rescan is None:
+        return
+    try:
+        fresh = p.rescan()
+        accepted = _compatible_plan(p, fresh, needed)
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError) as e:
+        _refuse_graph_plan(p, f"ничего не сделано: план не подтверждён ({e}) — запустите снова")
+        return
+    for name in ("delete", "edit", "copy_first", "snaps", "notes", "check", "beyond_reach"):
+        setattr(p, name, getattr(accepted, name))
+
+
+def _addition_is_locked(path: pathlib.Path, roots: tuple[pathlib.Path, ...], *, unlink: bool = False) -> bool:
+    """Фактическое место новой мутации; unlink конечной ссылки не меняет её цель."""
+    return any(path.parent.resolve().is_relative_to(root) for root in roots) and (
+        (unlink and path.is_symlink()) or any(path.resolve().is_relative_to(root) for root in roots))
+
+
+def _compatible_plan(p: Plan, fresh: Plan, needed: list[pathlib.Path]) -> Plan:
+    """Сверить все прежние эффекты и собрать допустимый результат без изменения p."""
+    if not isinstance(fresh, Plan) or fresh.refused:
+        raise ValueError("уточнение не вернуло допустимый план")
+    kinds = {"delete": list, "edit": dict, "copy_first": list, "snaps": dict, "lock_dirs": dict,
+             "brain_keys": list, "brain_sent": set, "notes": list, "check": list, "beyond_reach": list}
+    if (any(not isinstance(getattr(fresh, name), kind) for name, kind in kinds.items())
+            or (fresh.graph_scope is not None and not isinstance(fresh.graph_scope, tuple))):
+        raise ValueError("неверная структура уточнённого плана")
+    paths = [*fresh.delete, *fresh.edit, *fresh.copy_first, *fresh.snaps,
+             *fresh.lock_dirs, *fresh.lock_dirs.values(), *(fresh.graph_scope or ())]
+    if (any(not isinstance(path, pathlib.Path) for path in paths)
+            or any(not isinstance(text, str) for text in fresh.edit.values())
+            or any(not isinstance(item, str) for name in ("brain_keys", "brain_sent", "notes", "check", "beyond_reach")
+                   for item in getattr(fresh, name))
+            or not set(fresh.copy_first) <= set(fresh.delete)):
+        raise ValueError("неверные операции уточнённого плана")
+    if (p.stamp != fresh.stamp or p.data_root != fresh.data_root
+            or (p.graph_scope is None) != (fresh.graph_scope is None)
+            or set(p.graph_scope or ()) != set(fresh.graph_scope or ())
+            or needed != _plan_locks(fresh)
+            or any(p.lock_dirs[d] != fresh.lock_dirs[d] for d in needed)):
+        raise ValueError("цель, корень данных или набор замков сменился")
+    if (not set(p.delete) <= set(fresh.delete) or not set(p.copy_first) <= set(fresh.copy_first)
+            or any(path not in fresh.edit or fresh.edit[path] != text for path, text in p.edit.items())
+            or set(p.brain_keys) != set(fresh.brain_keys) or p.brain_sent != fresh.brain_sent):
+        raise ValueError("прежние операции или ключи памяти сменились")
+
+    roots = tuple(root.resolve() for d in needed for root in (d, p.lock_dirs[d]))
+    added_delete = [path for path in fresh.delete if path not in p.delete]
+    added_edit = {path: text for path, text in fresh.edit.items() if path not in p.edit}
+    added_copy = [path for path in fresh.copy_first if path not in p.copy_first]
+    for path in added_delete:
+        if not _addition_is_locked(path, roots, unlink=True):
+            raise ValueError("новое удаление вне взятых замков")
+    for path in added_edit:
+        if (not _addition_is_locked(path, roots)
+                or not _addition_is_locked(path.with_suffix(path.suffix + ".tmp"), roots)):
+            raise ValueError("новая запись вне взятых замков")
+    copies = set(added_copy) | {path for path in added_edit if not _in_cloud_snapshot(path)}
+    for path in copies:
+        dest = _backup_destination(path, p.stamp)
+        if (not _addition_is_locked(path, roots) or dest is None
+                or not _addition_is_locked(dest, roots)):
+            raise ValueError("новая копия вне взятых замков")
+
+    accepted = dataclasses.replace(p, delete=[*p.delete, *added_delete], edit={**p.edit, **added_edit},
+                                   copy_first=[*p.copy_first, *added_copy], snaps=dict(p.snaps),
+                                   notes=list(fresh.notes), check=list(fresh.check),
+                                   beyond_reach=list(fresh.beyond_reach))
+    additions = set(added_delete) | set(added_edit) | set(added_copy)
+    for path, seen in fresh.snaps.items():
+        if path not in accepted.snaps:
+            if path not in additions:
+                raise ValueError("новый снимок не относится к допустимому дополнению")
+            accepted.snaps[path] = seen
+    if any(safe_write.stat_snapshot(path) != seen for path, seen in accepted.snaps.items()):
+        raise ValueError("файл сменился во время уточнения плана")
+    if any(e == d or d in e.parents for e in accepted.edit for d in accepted.delete):
+        raise ValueError("правка внутри удаляемого")
+    return accepted
 
 
 def _under(path: pathlib.Path, *roots: pathlib.Path) -> bool:

@@ -10,7 +10,7 @@ from datetime import date
 
 import pytest
 
-from charoite_graph import dossier
+from charoite_graph import dossier, safe_write
 from charoite_schema import CHAROITE
 
 THEMES = ("Альфа", "Бета", "Гамма")
@@ -60,6 +60,7 @@ def night(tmp_path, monkeypatch):
 def _watch(monkeypatch, paths, unreadable=None):
     """Path.open — нижняя дверь и для read_text, и для read_bytes; copy2 не подменяется."""
     counts = Counter()
+    counts.initial_versions = {p: safe_write.stat_snapshot(p) for p in paths.values()}
     original = pathlib.Path.open
 
     def open_path(self, mode="r", *a, **kw):
@@ -92,7 +93,12 @@ def _account(result, counts, paths, capsys, damaged=1, verified=()):
     до записи, читается ещё раз на сверку под замком — оттого два открытия."""
     assert result["битые"] == damaged
     verified = set(verified)
-    assert counts == Counter({p: 1 + (p in verified) for p in paths.values()}), counts
+    # Публикация индекса перечитывает изменённые досье под замком; неизменные
+    # сохраняют одно чтение, а dry-run индекс не публикует.
+    indexed = all((p.parent / dossier.INDEX_JSON).exists() for p in paths.values())
+    assert counts == Counter({p: 1 + (p in verified) + (
+        indexed and safe_write.stat_snapshot(p) != counts.initial_versions[p])
+        for p in paths.values()}), counts
     log = capsys.readouterr().out
     damaged_path = str(paths["Бета"])
     assert sum(damaged_path in line for line in log.splitlines()) == damaged
@@ -278,18 +284,23 @@ def test_damaged_graph_source_stays_in_cluster(night, capsys):
     assert "Бета_0" in beta[1] and "\ufffd" in beta[2]["Бета_0"]["text"]
     assert beta[2]["Бета_0"]["mtime"] == source.stat().st_mtime
     _all_index(folder)
-    assert sum(str(source) in line for line in capsys.readouterr().out.splitlines()) == 1
+    # Источник читается в начальном снимке и ещё раз в актуальном обходе индекса.
+    assert sum(str(source) in line for line in capsys.readouterr().out.splitlines()) == 2
 
 
 def test_unreadable_refuses_before_model_and_keeps_index(night, monkeypatch, capsys):
     nd, graph, folder, paths, calls = night
+    dossier.refresh_index(folder, THEMES)
+    before = {name: (folder / name).read_bytes() for name in (dossier.INDEX_JSON, dossier.INDEX_MD)}
     counts = _watch(monkeypatch, paths, unreadable=paths["Бета"])
     result = nd.run(graph, {}, full=False, dry=False, limit=12)
-    _all_index(folder)  # main теряет тему именно здесь
+    _all_index(folder)
+    assert {name: (folder / name).read_bytes() for name in before} == before
+    assert result["индекс_не_обновлён"]
     assert [c[0] for c in calls] == ["Альфа", "Гамма"]
     assert result["собрано"] == 2 and result["отказы"] == 1
     assert result["битые"] == 0 and counts == Counter(
-        {paths["Альфа"]: 2, paths["Гамма"]: 2, paths["Бета"]: 1})
+        {paths["Альфа"]: 3, paths["Гамма"]: 2, paths["Бета"]: 1})
     assert "не прочитано" in capsys.readouterr().out
 
 
@@ -352,12 +363,14 @@ def test_every_exit_reuses_loaded_dossier(night, monkeypatch, capsys, branch):
     result = nd.run(graph, {}, full=False, dry=branch == "dry", limit=0 if branch == "limit" else 12)
     assert result["собрано"] == (3 if branch == "dry" else 0)
     assert result["отказы"] == (3 if branch in ("model", "backup") else 0)
-    if branch != "dry":
+    if branch not in ("dry", "locked"):
         entries = _all_index(folder)
         assert entries["Бета"]["отпечаток"] == "старый", "нужен отпечаток прежнего досье"
         assert entries["Бета"]["собрано"] == "2026-07-20"
-    else:
+    elif branch == "dry":
         assert not (folder / dossier.INDEX_JSON).exists() and calls == []
+    else:
+        assert not (folder / dossier.INDEX_JSON).exists(), "занятый замок запрещает и публикацию индекса"
     _account(result, counts, paths, capsys,
              verified=paths.values() if branch == "backup" else ())
     assert paths["Бета"].read_bytes() == before
@@ -399,7 +412,7 @@ def test_missing_dossier_is_only_indexed_after_build(night, monkeypatch, capsys,
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=False, limit=0 if branch == "limit" else 12)
     assert {e["тема"] for e in dossier.load_index(folder)} == (
-        set(THEMES) if branch == "build" else {"Альфа", "Гамма"})
+        set(THEMES) if branch == "build" else set() if branch == "locked" else {"Альфа", "Гамма"})
     assert paths["Бета"].exists() == (branch == "build")
     _account(result, counts, paths, capsys, damaged=0,
              verified=paths.values() if branch == "build" else ())

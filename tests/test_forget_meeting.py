@@ -1248,6 +1248,7 @@ def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
     os.chmod(locked, 0o500)
     try:
         p = forget.plan(STAMP, root, graph)
+        p.rescan = None  # явный ручной набор: новая операция не претендует на ordinary ownership
         p.delete.insert(0, victim)
         forget.apply(p, yes=True)
     finally:
