@@ -1443,18 +1443,27 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
             return False
         done = _apply_locked(p)
         if done is not None:
+            indexed: set[pathlib.Path] = set()
             for d in needed:
-                folder = p.lock_dirs[d] / CHAROITE.dossier_dir
+                original_graph = p.lock_dirs[d]
+                captured = p.graph_groups.get(original_graph)
+                # Old manually built Plans have no captured identity. Keep their
+                # existing target; only captured plans guarantee alias stability.
+                graph = captured.graph if captured is not None else original_graph
+                if graph in indexed:
+                    continue
+                indexed.add(graph)
+                folder = graph / CHAROITE.dossier_dir
                 if not folder.is_dir():
                     continue
                 try:
-                    dossier.rebuild_index(p.lock_dirs[d], schema=CHAROITE)
+                    dossier.rebuild_index(graph, schema=CHAROITE)
                 except OSError as e:
                     print(f"индекс досье не обновлён ({e}) — требуется обновление индексов")
                     command = shlex.join([
                         sys.executable,
                         str(charoite_paths.code_root(__file__) / "scripts" / "nightly_dossier.py"),
-                        "--graph", str(p.lock_dirs[d]), "--limit", "0"])
+                        "--graph", str(graph), "--limit", "0"])
                     print(f"обновить индексы: CHAROITE_ROOT={shlex.quote(str(p.data_root or _root()))} {command}")
                     p.refused = True
                     p.check.append(f"{folder}: индекс не обновлён — выполните команду «обновить индексы» выше")
