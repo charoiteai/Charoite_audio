@@ -122,7 +122,7 @@
 - `scripts/night_gate.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyAgent.swift, app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/nightly_claude_cores.py` ← scripts/nightly.sh; проба help
-- `scripts/nightly_dossier.py` ← scripts/nightly.sh; проба help
+- `scripts/nightly_dossier.py` ← scripts/forget_meeting.py, scripts/nightly.sh; проба help
 - `scripts/nightly_dossier_review.py` ← scripts/nightly.sh; проба help
 - `scripts/notarize.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
