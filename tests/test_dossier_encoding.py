@@ -168,6 +168,38 @@ def test_rebuild_keeps_body_after_an_inline_heading_mention(night, monkeypatch, 
         assert text.endswith("## Правки автора\n\nоставить решение автора\n")
 
 
+@pytest.mark.parametrize("retry_succeeds", [True, False])
+def test_rebuild_validates_after_removing_protected_sections(night, monkeypatch, retry_succeeds):
+    """№856 Terra I2: сырые пять разделов не оправдывают запись одного после очистки."""
+    nd, graph, folder, paths, calls = night
+    raw = GOOD.replace("## Как пришли", "## Источники\nмодельные источники\n## Как пришли")
+    assert dossier.looks_valid(raw)
+    assert not dossier.looks_valid(dossier.strip_protected(raw))
+    before = {path: path.read_bytes() for path in paths.values()}
+    attempts = Counter()
+    temperatures = []
+
+    def generate(theme, members, files, c, *, temperature, **kwargs):
+        attempts[theme] += 1
+        temperatures.append(temperature)
+        return GOOD if retry_succeeds and attempts[theme] == 2 else raw
+
+    monkeypatch.setattr(nd, "generate", generate)
+    result = nd.run(graph, {}, full=False, dry=False, limit=12)
+    assert attempts == Counter({theme: 2 for theme in THEMES})
+    assert temperatures == [0.2, 0.05] * len(THEMES)
+    if retry_succeeds:
+        assert result["собрано"] == 3 and result["отказы"] == 0
+        for path in paths.values():
+            text = path.read_text(encoding="utf-8")
+            assert dossier.split_dossier(text)[1] == GOOD
+            assert text.endswith("## Правки автора\n\nоставить решение автора\n")
+    else:
+        assert result["собрано"] == 0 and result["отказы"] == 3
+        assert {path: path.read_bytes() for path in paths.values()} == before
+        assert not (folder / ".backup").exists()
+
+
 def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     """Отказ из-за битых «Правок автора» — пропуск темы, а не отказ модели."""
     nd, graph, folder, paths, calls = night

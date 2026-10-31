@@ -381,6 +381,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
             body = ""
             break          # отказ считается ниже, в ветке `if not body`
+        body = dossier.strip_protected(body)
         if dossier.looks_valid(body):
             break
         print(f"  … {theme}: ответ не по формату (температура {temperature})")
