@@ -20,6 +20,7 @@ import pathlib
 import subprocess
 import sys
 import textwrap
+import unicodedata
 
 import pytest
 
@@ -130,6 +131,158 @@ def test_resolve_tilde_and_absolute():
 @pytest.mark.parametrize("raw", ["", "   ", None])
 def test_resolve_empty_is_none_not_dot(raw):
     assert graphs.resolve(raw) is None
+
+
+@pytest.fixture
+def graph_config(tmp_path):
+    charoite_paths.use_data_root(tmp_path)
+    graphs.config_path().parent.mkdir()
+
+    def write(raw):
+        graphs.config_path().write_text(f'sufler:\n  graph_dir: "{raw}"\n', encoding="utf-8")
+
+    return write
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.parametrize("configured_name, explicit_name, reason", [
+    ("Работа", "работа", "ФС различает регистр: Работа/работа — разные пути"),
+    ("Работа-й", unicodedata.normalize("NFD", "Работа-й"), "ФС различает NFC/NFD"),
+    (unicodedata.normalize("NFD", "Работа-й"), "Работа-й", "ФС различает NFC/NFD"),
+], ids=["case", "nfc-config", "nfd-config"])
+def test_resolve_samefile_uses_config_spelling(tmp_path, graph_config,
+                                             configured_name, explicit_name, reason):
+    configured = tmp_path / configured_name
+    configured.mkdir()
+    graph_config(configured)
+    explicit = tmp_path / explicit_name
+    if not explicit.exists():
+        pytest.skip(reason)
+    assert explicit.samefile(configured)
+
+    resolved = graphs.resolve(explicit)
+    assert resolved == configured
+    assert charoite_paths.graph_lock_dir(resolved) == charoite_paths.graph_lock_dir(configured)
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.parametrize("relative_config", [False, True], ids=["absolute", "relative"])
+def test_resolve_samefile_alias_uses_config_root(tmp_path, graph_config, relative_config):
+    configured = tmp_path / "Работа"
+    configured.mkdir()
+    explicit_root = tmp_path / "аргументы"
+    explicit_root.mkdir()
+    alias = explicit_root / "ссылка"
+    alias.symlink_to(configured, target_is_directory=True)
+    graph_config(configured.name if relative_config else configured)
+
+    # root относится к аргументу; относительный путь конфига — к корню данных.
+    assert graphs.resolve(alias.name, root=explicit_root) == configured
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.parametrize("scenario", ["other", "missing", "missing-config"])
+def test_resolve_unmatched_graph_keeps_argument(tmp_path, graph_config, scenario):
+    configured = tmp_path / "Работа"
+    explicit = tmp_path / "Личное"
+    if scenario != "missing-config":
+        configured.mkdir()
+    if scenario != "missing":
+        explicit.mkdir()
+    graph_config(configured)
+
+    assert graphs.resolve(explicit) == explicit
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.parametrize("env_name", graphs.ENV_GRAPH_NAMES)
+def test_env_symlink_keeps_vault_isolated(tmp_path, graph_config, monkeypatch, env_name):
+    configured = tmp_path / "configured-vault" / "graph"
+    unrelated = configured.parent / "unrelated"
+    (configured / "marker").mkdir(parents=True)
+    (unrelated / "marker").mkdir(parents=True)
+    graph_config(configured)
+    isolated = tmp_path / "env-vault"
+    isolated.mkdir()
+    alias = isolated / "graph"
+    alias.symlink_to(configured, target_is_directory=True)
+    for name in graphs.ENV_GRAPH_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, str(alias))
+
+    # Сам граф доступен через env-ссылку; его соседи в другом vault — нет.
+    found = graphs.all_graphs("marker")
+    assert (graphs.roots(), found) == ([isolated], [alias])
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.parametrize("env_name", graphs.ENV_GRAPH_NAMES)
+def test_env_does_not_load_config(tmp_path, graph_config, monkeypatch, env_name):
+    for name in graphs.ENV_GRAPH_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    explicit = tmp_path / "env-vault" / "graph"
+    monkeypatch.setenv(env_name, str(explicit))
+
+    def forbidden():
+        pytest.fail("env override must not read ambient config")
+
+    monkeypatch.setattr(graphs, "load_config", forbidden)
+    assert graphs.graph_dir() == explicit
+
+
+@pytest.mark.корень_называет_тест
+@pytest.mark.parametrize("env_name", graphs.ENV_GRAPH_NAMES)
+def test_env_does_not_stat_configured_graph(tmp_path, graph_config, monkeypatch, env_name):
+    configured = tmp_path / "configured-vault" / "graph"
+    configured.mkdir(parents=True)
+    explicit = tmp_path / "env-vault" / "graph"
+    explicit.mkdir(parents=True)
+    graph_config(configured)
+    for name in graphs.ENV_GRAPH_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, str(explicit))
+    stat = pathlib.Path.stat
+
+    def guarded(path, *args, **kwargs):
+        if path == configured:
+            pytest.fail("env override must not stat configured graph")
+        return stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "stat", guarded)
+    assert graphs.graph_dir() == explicit
+
+
+def test_supplied_config_does_not_load_ambient(tmp_path, monkeypatch):
+    explicit = tmp_path / "graph"
+
+    def forbidden():
+        pytest.fail("supplied config must not read ambient config")
+
+    monkeypatch.setattr(graphs, "load_config", forbidden)
+    assert graphs.graph_dir({"sufler": {"graph_dir": str(explicit)}}, env=False) == explicit
+
+
+@pytest.mark.parametrize("configured", ["~charoite_missing_user_857/graph", "bad\x00graph"],
+                         ids=["unknown-user", "nul"])
+def test_resolve_invalid_config_keeps_argument(tmp_path, monkeypatch, configured):
+    explicit = tmp_path / "graph"
+    explicit.mkdir()
+    monkeypatch.setattr(graphs, "load_config", lambda: {"sufler": {"graph_dir": configured}})
+    assert graphs.resolve(explicit) == explicit
+
+
+@pytest.mark.parametrize("error", [PermissionError("denied"), OSError("unavailable")],
+                         ids=["permission", "os-error"])
+def test_resolve_samefile_error_keeps_argument(tmp_path, monkeypatch, error):
+    explicit = tmp_path / "graph"
+    configured = tmp_path / "configured"
+    monkeypatch.setattr(graphs, "load_config", lambda: {"sufler": {"graph_dir": str(configured)}})
+
+    def inaccessible(path, other):
+        raise error
+
+    monkeypatch.setattr(pathlib.Path, "samefile", inaccessible)
+    assert graphs.resolve(explicit) == explicit
 
 
 def test_env_overrides_config(tmp_path, monkeypatch):

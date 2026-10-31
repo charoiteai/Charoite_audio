@@ -14,6 +14,10 @@ The app's first-run wizard does the copying for you: it creates `config/config.y
 
 Every key is documented inline. `config.yaml` itself is git-ignored — your settings never leave the machine.
 
+For `fix_action_items.py`, `dedup_graph.py` and `graph_search_index.py`, an explicit `--graph` that identifies the configured graph uses the spelling from `sufler.graph_dir`. This keeps case and NFC/NFD aliases on one graph lock when the filesystem treats them as the same directory. Relative paths use the data folder; another or unavailable graph keeps the supplied path. This also applies to the fallback path in `nightly_dossier_review.py`, whose bare-name lookup still takes precedence. Other utilities with their own path handling are outside this normalization; existing backup folders are not migrated.
+
+`CHAROITE_GRAPH_DIR` (then `SUFLER_GRAPH_DIR`) keeps its priority over config and its own path spelling. An environment override does not read config or inspect its graph path, so a symlink in a separate vault keeps discovery within that vault. A config supplied directly to the graph API also keeps its own value.
+
 Memory benchmark cases (`scripts/memory_bench.py`) live here too:
 
 - `memory_bench.example.yaml` — the format: a question and the facts (`must`) the answer has to contain. Copy it to `config/memory_bench.yaml` and fill it with questions about your own graph; the nightly cycle runs it.
