@@ -1883,6 +1883,14 @@ out of the graph into `backups/<graph>-<hash>/dedup_copies/<run>/` with a manife
 `dedup_files`); differing copies are only reported. `graph_doctor` counts them,
 so a regression shows up in the morning brief.
 
+When forgetting a meeting, backup-run manifests are filtered by their path
+field: the first TSV field or JSONL `file`. Only the exact path and its `/`
+descendants are removed; a neighbouring title with the same prefix stays.
+The known dedup race comment is matched by the same rule. Unrecognised
+comments and malformed rows stay with a file-and-line diagnostic, without
+quoting their content. Retained rows keep their original line endings, and
+a manifest changed after planning makes `apply` refuse before any deletion.
+
 ## How search actually works
 
 Two independent signals fused by RRF: lexical (stemming, IDF, query coverage,
