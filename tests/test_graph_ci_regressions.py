@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pathlib
+import os
 import socket
 import sys
 
@@ -149,3 +150,117 @@ def test_all_graphs_continues_past_missing_graph_even_with_explicit_graph_option
                                      "--all-graphs", "--limit", "0"])
     assert night.main() == 0
     assert {entry["тема"] for entry in dossier.load_index(graph / CHAROITE.dossier_dir)} == {THEME}
+
+
+@pytest.mark.parametrize("intermediate", [False, True])
+def test_rebuild_refuses_dossier_folder_outside_graph_before_reading_or_publishing(tmp_path, intermediate):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    _seed_indexes(graph)
+    folder = graph / CHAROITE.dossier_dir
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    relocated = outside / "dossiers"
+    folder.rename(relocated)
+    if intermediate:
+        bridge = graph / "bridge"
+        bridge.symlink_to(outside, target_is_directory=True)
+        folder.symlink_to(bridge / "dossiers", target_is_directory=True)
+    else:
+        folder.symlink_to(relocated, target_is_directory=True)
+    before = {path.name: path.read_bytes() for path in relocated.iterdir()}
+    reads = []
+
+    def read(path):
+        reads.append(path)
+        return dossier.load_dossier(path)
+
+    refused = False
+    try:
+        dossier.rebuild_index(graph, schema=CHAROITE, read=read)
+    except OSError:
+        refused = True
+    assert {path.name: path.read_bytes() for path in relocated.iterdir()} == before
+    assert refused and reads == []
+
+
+@pytest.mark.parametrize("index_name", [dossier.INDEX_JSON, dossier.INDEX_MD])
+def test_rebuild_refuses_occupied_temporary_index_without_overwriting_external_target(tmp_path, index_name):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    _seed_indexes(graph)
+    outside = tmp_path / "outside-index"
+    original = b"Keep synthetic external bytes\n"
+    outside.write_bytes(original)
+    temp = graph / CHAROITE.dossier_dir / f"{index_name}.{os.getpid()}.tmp"
+    temp.symlink_to(outside)
+    refused = False
+    try:
+        dossier.rebuild_index(graph, schema=CHAROITE)
+    except OSError:
+        refused = True
+    assert outside.read_bytes() == original
+    assert refused and temp.is_symlink()
+
+
+@pytest.mark.parametrize("index_name", [dossier.INDEX_JSON, dossier.INDEX_MD])
+@pytest.mark.parametrize("current_pid", [False, True])
+def test_index_publication_preserves_existing_fresh_temporary_file(tmp_path, index_name, current_pid):
+    folder = tmp_path / "standalone-dossiers"
+    folder.mkdir()
+    pid = os.getpid() if current_pid else os.getpid() + 1
+    temp = folder / f"{index_name}.{pid}.tmp"
+    original = b"Keep synthetic temporary bytes\n"
+    temp.write_bytes(original)
+    refused = False
+    try:
+        dossier.write_index(folder, [])
+    except FileExistsError:
+        refused = True
+    assert temp.read_bytes() == original
+    assert refused == current_pid
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_rebuild_publishes_healthy_graph_through_its_own_root_or_alias(tmp_path, alias):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    _seed_indexes(graph)
+    dossier.write_index(graph / CHAROITE.dossier_dir, [])
+    entrypoint = graph
+    if alias:
+        entrypoint = tmp_path / "graph-alias"
+        entrypoint.symlink_to(graph, target_is_directory=True)
+    dossier.rebuild_index(entrypoint, schema=CHAROITE)
+    folder = graph / CHAROITE.dossier_dir
+    assert {entry["тема"] for entry in dossier.load_index(folder)} == {THEME}
+    assert THEME in (folder / dossier.INDEX_MD).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("index_name", [dossier.INDEX_JSON, dossier.INDEX_MD])
+def test_rebuild_replaces_final_index_link_and_preserves_its_external_target(tmp_path, index_name):
+    root, graphs = _world(tmp_path)
+    graph = graphs[0]
+    _seed_indexes(graph)
+    outside = tmp_path / "outside-index"
+    original = b"Keep synthetic external bytes\n"
+    outside.write_bytes(original)
+    index = graph / CHAROITE.dossier_dir / index_name
+    index.unlink()
+    index.symlink_to(outside)
+    dossier.rebuild_index(graph, schema=CHAROITE)
+    assert outside.read_bytes() == original and not index.is_symlink()
+    assert {entry["тема"] for entry in dossier.load_index(index.parent)} == {THEME}
+    assert THEME in (index.parent / dossier.INDEX_MD).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_standalone_index_api_keeps_the_supplied_folder_as_its_boundary(tmp_path, refresh):
+    folder = tmp_path / "standalone-dossiers"
+    folder.mkdir()
+    if refresh:
+        dossier.refresh_index(folder, [], strict=True)
+    else:
+        dossier.write_index(folder, [])
+    assert dossier.load_index(folder) == []
+    assert "досье: 0" in (folder / dossier.INDEX_MD).read_text(encoding="utf-8")

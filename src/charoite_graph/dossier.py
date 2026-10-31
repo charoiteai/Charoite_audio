@@ -932,13 +932,16 @@ def rebuild_index(graph: pathlib.Path, *, schema: GraphSchema,
     """
     if schema.dossier_dir is None:
         return
+    folder = graph / schema.dossier_dir
+    if not folder.resolve().is_relative_to(graph.resolve()):
+        raise OSError(f"папка досье вне графа: {folder}")
     files, backlinks = scan(graph, schema=schema, strict=True)
     current = clusters(files, backlinks, schema=schema)
     fallback = {theme: {"источников": len(members),
                         "отпечаток": fingerprint(members, files),
                         "источники": " ".join(members)}
                 for theme, members in current.items()}
-    refresh_index(graph / schema.dossier_dir, current, read=read, fallback=fallback, strict=True)
+    refresh_index(folder, current, read=read, fallback=fallback, strict=True)
 
 
 def refresh_index(folder: pathlib.Path, themes: Iterable[str], *,
@@ -1017,11 +1020,13 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     # JSONDecodeError, и поиск сутки не видит ни одного досье
     # (круг-3 по PR #438, GLM Important 4).
     tmp = folder / f"{INDEX_JSON}.{os.getpid()}.tmp"
+    # Эксклюзивное создание не идёт по подложенной ссылке. При занятом имени
+    # не удаляем чужой tmp: в finally попадает только созданный нами файл.
+    stream = tmp.open("x", encoding="utf-8")
     try:
-        tmp.write_text(
-            json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
-                        "досье": entries}, ensure_ascii=False, indent=" "),
-            encoding="utf-8")
+        with stream:
+            stream.write(json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
+                                     "досье": entries}, ensure_ascii=False, indent=" "))
         tmp.replace(folder / INDEX_JSON)
     finally:
         with contextlib.suppress(OSError):
@@ -1046,8 +1051,10 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
               "2. Открываем досье — там состояние, хроника, решения, открытые вопросы.",
               "3. За подробностями идём по ссылкам из раздела «Источники».", ""]
     tmp_md = folder / f"{INDEX_MD}.{os.getpid()}.tmp"
+    stream = tmp_md.open("x", encoding="utf-8")
     try:
-        tmp_md.write_text("\n".join(lines), encoding="utf-8")
+        with stream:
+            stream.write("\n".join(lines))
         tmp_md.replace(folder / INDEX_MD)
     finally:
         with contextlib.suppress(OSError):
