@@ -200,6 +200,8 @@ class Plan:
     # у графа без прежних действий мог появиться след до apply.
     lock_dirs: dict[pathlib.Path, pathlib.Path] = dataclasses.field(default_factory=dict)
     graph_scope: tuple[pathlib.Path, ...] | None = None
+    graph_groups: dict[pathlib.Path, charoite_paths.GraphAddresses] = dataclasses.field(default_factory=dict)
+    graph_errors: dict[pathlib.Path, str] = dataclasses.field(default_factory=dict)
     # Снимок `safe_write.stat_snapshot` файла правки, взятый до чтения: под замком
     # сверяем — сменился после плана (ревизия записала) — не затираем, ничего не делаем.
     # Байты, а не текст: `read_text` переводит CRLF, и сверка отказывала всегда
@@ -997,6 +999,20 @@ def plan(stamp: str, root: pathlib.Path,
 
     node_seen = False                # узел цели нашёлся: минута либо наша, либо доказанно чужая
     for g in roots:
+        try:
+            group = graphs.mutation_addresses(g, root=root)
+        except (OSError, ValueError) as e:
+            # Planning stays read-only, including missing graphs. Applying such
+            # a graph scope cannot silently fall back to a lexical lock.
+            p.graph_errors[g] = str(e)
+            backup_bases = (charoite_paths.legacy_graph_backups(g, root=root).parent,)
+        else:
+            p.graph_groups[g] = group
+            backup_bases = group.lock_dirs
+        for base in backup_bases:
+            p.lock_dirs[base] = g
+        if g in p.graph_groups:
+            g = p.graph_groups[g].graph
         # Узел — по ключу графа: у второй встречи той же минуты он посекундный,
         # у первой минутный; минутную заметку берём только если она наша
         # (meeting_stamp.find_note, карточка №39).
@@ -1034,7 +1050,8 @@ def plan(stamp: str, root: pathlib.Path,
         # задач. Пока виды здесь перечислялись руками, три последних «забыть» не видело
         # (Opus I1 круга 2 по коду №366).
         mirrors = [(g / CLOUD_BACKUP_DIR, "")] + [
-            (charoite_paths.graph_backups(g, kind, root=root), inner)
+            (base / kind, inner)
+            for base in backup_bases
             for kind, inner in charoite_paths.GRAPH_BACKUP_KINDS.items() if inner is not None]
         for base, inner in mirrors:
             if not base.is_dir():
@@ -1063,32 +1080,33 @@ def plan(stamp: str, root: pathlib.Path,
         # забывание минутной встречи уносило бы посекундную сестру (круг-3 и
         # круг-4 по PR #381). Для чужих запусков — точечно, по файлам со
         # штампом.
-        quarantine = charoite_paths.graph_backups(g, CLOUD_QUARANTINE, root=root)
-        if quarantine.is_dir():
-            for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
-                # каталог запуска назван стемом стенограммы на момент разбора —
-                # после наката темы это минута, поэтому по каждому ключу
-                if any(_quarantine_of(run_dir.name, key) for key in keys):
-                    p.delete.append(run_dir)
-                    continue
-                for key in keys:
-                    node_copy = run_dir / MEETINGS_DIR / f"{key}.md"
-                    if node_copy.exists():
-                        p.delete.append(node_copy)
-                for key in keys:
-                    p.delete += [f for f in _with_stamp(run_dir / DOCS_DIR, key, suffix=".md")
-                                 if f not in p.delete]
-                for key in keys:
-                    p.delete += [d for d in _archive_folders(run_dir, key, manifests)
-                                 if d not in p.delete]
-            # Тела узлов, вытесненные заглушками по ревизии ЭТОЙ встречи, лежат
-            # мимо ротации прогонов — `вытеснено/<прогон>/`; каталог её
-            # прогона уходит целиком, чужие прогоны не трогаем (#550).
-            displaced = quarantine / DISPLACED_DIR
-            if displaced.is_dir():
-                for run_dir in sorted(d for d in displaced.iterdir() if d.is_dir()):
+        for backup_base in backup_bases:
+            quarantine = backup_base / CLOUD_QUARANTINE
+            if quarantine.is_dir():
+                for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
+                    # каталог запуска назван стемом стенограммы на момент разбора —
+                    # после наката темы это минута, поэтому по каждому ключу
                     if any(_quarantine_of(run_dir.name, key) for key in keys):
                         p.delete.append(run_dir)
+                        continue
+                    for key in keys:
+                        node_copy = run_dir / MEETINGS_DIR / f"{key}.md"
+                        if node_copy.exists():
+                            p.delete.append(node_copy)
+                    for key in keys:
+                        p.delete += [f for f in _with_stamp(run_dir / DOCS_DIR, key, suffix=".md")
+                                     if f not in p.delete]
+                    for key in keys:
+                        p.delete += [d for d in _archive_folders(run_dir, key, manifests)
+                                     if d not in p.delete]
+                # Тела узлов, вытесненные заглушками по ревизии ЭТОЙ встречи, лежат
+                # мимо ротации прогонов — `вытеснено/<прогон>/`; каталог её
+                # прогона уходит целиком, чужие прогоны не трогаем (#550).
+                displaced = quarantine / DISPLACED_DIR
+                if displaced.is_dir():
+                    for run_dir in sorted(d for d in displaced.iterdir() if d.is_dir()):
+                        if any(_quarantine_of(run_dir.name, key) for key in keys):
+                            p.delete.append(run_dir)
 
         # Файлы внутри удаляемой папки править не нужно и нельзя: папка уйдёт
         # целиком, а запись в неё после удаления — FileNotFoundError.
@@ -1098,11 +1116,8 @@ def plan(stamp: str, root: pathlib.Path,
         # не видит (снимки уехали из графа), а строка «[[Встречи/…]] — …»
         # в копии ядра — такой же след встречи, как в самом ядре (круг по
         # PR #363, GLM+DeepSeek: старое место правилось, новое — нет).
-        snap = charoite_paths.graph_backups(
-            g, CLOUD_BACKUP_DIR.lstrip("."), root=root)
-        p.lock_dirs[charoite_paths.graph_lock_dir(g, root=root)] = g
-        editable = sorted(g.rglob("*.md")) + (
-            sorted(snap.rglob("*.md")) if snap.is_dir() else [])
+        snapshot_roots = tuple(base / CLOUD_BACKUP_DIR.lstrip(".") for base in backup_bases)
+        editable = sorted({*g.rglob("*.md"), *(f for snap in snapshot_roots for f in snap.rglob("*.md"))})
         for f in editable:
             real = f.resolve()
             if real in doomed or BACKUP_DIR in f.parts:
@@ -1116,7 +1131,8 @@ def plan(stamp: str, root: pathlib.Path,
             # это — решает схема по пути внутри графа, как у `scan` (out5 DS C2);
             # у копии путь берётся от графа внутри снимка — без штампа прогона
             # и без `.cloud_backup/<штамп>` старого места (out6 DS C1)
-            in_snap = f.is_relative_to(snap)
+            snap = next((base for base in snapshot_roots if f.is_relative_to(base)), None)
+            in_snap = snap is not None
             parts = f.relative_to(snap if in_snap else g).parts
             if in_snap:
                 parts = parts[1:]
@@ -1125,7 +1141,7 @@ def plan(stamp: str, root: pathlib.Path,
             rel = "/".join(parts)
             in_dossier = CHAROITE.is_dossier(rel)
             # владельцу — путь со штампом прогона: копий в снимках до десяти (out8 DS M2)
-            where = (f.relative_to(snap) if f.is_relative_to(snap) else f.relative_to(g)).as_posix() \
+            where = (f.relative_to(snap) if snap is not None else f.relative_to(g)).as_posix() \
                 + (" (снимок)" if in_snap else "")
             seen = safe_write.stat_snapshot(f)     # до чтения — гейт apply
             try:
@@ -1373,9 +1389,10 @@ def _backup(path: pathlib.Path, stamp: str) -> pathlib.Path | None:
 
 def _plan_locks(p: Plan) -> list[pathlib.Path]:
     acts = [*p.delete, *p.edit]
-    return sorted(d for d, g in p.lock_dirs.items()
-                  if (g in p.graph_scope if p.graph_scope is not None
-                      else any(_under(q, g, d) for q in acts)))
+    active = {g for d, g in p.lock_dirs.items()
+              if (g in p.graph_scope if p.graph_scope is not None
+                  else any(_under(q, g, d) for q in acts))}
+    return sorted(d for d, g in p.lock_dirs.items() if g in active)
 
 
 def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_explicit: bool = False) -> bool:
@@ -1400,18 +1417,22 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
     # (n841-opus-fix3 Sonnet I1 = Haiku I1)
     needed = _plan_locks(p)
     with contextlib.ExitStack() as stack:
-        for d in needed:
-            try:
-                taken = stack.enter_context(
-                    file_locks.graph_lock(charoite_paths.secure_dir(d), LOCK_WAIT))
-            except OSError as e:
-                taken = False
-                print(f"замок графа не взять ({e})")
-            if not taken:
-                print("\nничего не сделано: граф занят разбором встречи или ревизией досье "
-                      "(или замок недоступен) — повторите позже")
-                p.refused = True    # отказ дня не прячется за успехом соседки
-                return False
+        try:
+            for d in needed:
+                charoite_paths.secure_dir(d)
+            taken = stack.enter_context(file_locks.graph_locks(needed, LOCK_WAIT))
+            if p.graph_errors:
+                raise OSError("graph identity unavailable: " + "; ".join(p.graph_errors.values()))
+            for group in p.graph_groups.values():
+                group.revalidate()
+        except OSError as e:
+            taken = False
+            print(f"замок графа не взять ({e})")
+        if not taken:
+            print("\nничего не сделано: граф занят разбором встречи или ревизией досье "
+                  "(или замок недоступен) — повторите позже")
+            p.refused = True
+            return False
         for path, seen in p.snaps.items():
             if safe_write.stat_snapshot(path) != seen:
                 print(f"\nничего не сделано: {path} сменился после плана — запустите снова")
@@ -1422,18 +1443,27 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
             return False
         done = _apply_locked(p)
         if done is not None:
+            indexed: set[pathlib.Path] = set()
             for d in needed:
-                folder = p.lock_dirs[d] / CHAROITE.dossier_dir
+                original_graph = p.lock_dirs[d]
+                captured = p.graph_groups.get(original_graph)
+                # Old manually built Plans have no captured identity. Keep their
+                # existing target; only captured plans guarantee alias stability.
+                graph = captured.graph if captured is not None else original_graph
+                if graph in indexed:
+                    continue
+                indexed.add(graph)
+                folder = graph / CHAROITE.dossier_dir
                 if not folder.is_dir():
                     continue
                 try:
-                    dossier.rebuild_index(p.lock_dirs[d], schema=CHAROITE)
+                    dossier.rebuild_index(graph, schema=CHAROITE)
                 except OSError as e:
                     print(f"индекс досье не обновлён ({e}) — требуется обновление индексов")
                     command = shlex.join([
                         sys.executable,
                         str(charoite_paths.code_root(__file__) / "scripts" / "nightly_dossier.py"),
-                        "--graph", str(p.lock_dirs[d]), "--limit", "0"])
+                        "--graph", str(graph), "--limit", "0"])
                     print(f"обновить индексы: CHAROITE_ROOT={shlex.quote(str(p.data_root or _root()))} {command}")
                     p.refused = True
                     p.check.append(f"{folder}: индекс не обновлён — выполните команду «обновить индексы» выше")
@@ -1474,7 +1504,8 @@ def _compatible_plan(p: Plan, fresh: Plan, needed: list[pathlib.Path]) -> Plan:
     if not isinstance(fresh, Plan) or fresh.refused:
         raise ValueError("уточнение не вернуло допустимый план")
     kinds = {"delete": list, "edit": dict, "copy_first": list, "snaps": dict, "lock_dirs": dict,
-             "brain_keys": list, "brain_sent": set, "notes": list, "check": list, "beyond_reach": list}
+             "brain_keys": list, "brain_sent": set, "notes": list, "check": list, "beyond_reach": list,
+             "graph_groups": dict, "graph_errors": dict}
     if (any(not isinstance(getattr(fresh, name), kind) for name, kind in kinds.items())
             or (fresh.graph_scope is not None and not isinstance(fresh.graph_scope, tuple))):
         raise ValueError("неверная структура уточнённого плана")
@@ -1489,6 +1520,7 @@ def _compatible_plan(p: Plan, fresh: Plan, needed: list[pathlib.Path]) -> Plan:
     if (p.stamp != fresh.stamp or p.data_root != fresh.data_root
             or (p.graph_scope is None) != (fresh.graph_scope is None)
             or set(p.graph_scope or ()) != set(fresh.graph_scope or ())
+            or p.graph_groups != fresh.graph_groups or p.graph_errors != fresh.graph_errors
             or needed != _plan_locks(fresh)
             or any(p.lock_dirs[d] != fresh.lock_dirs[d] for d in needed)):
         raise ValueError("цель, корень данных или набор замков сменился")

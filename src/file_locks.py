@@ -147,6 +147,19 @@ GRAPH_LOCK_POLL = 5.0
 
 
 @contextlib.contextmanager
+def graph_locks(lock_dirs, wait: float, *, now=time.monotonic, **kwargs):
+    """One ordered group, one total deadline, reverse release on partial failure."""
+    deadline = now() + max(0, wait)
+    with contextlib.ExitStack() as stack:
+        for directory in sorted(set(lock_dirs)):
+            if not stack.enter_context(graph_lock(directory, max(0, deadline - now()),
+                                                   now=now, **kwargs)):
+                yield False
+                return
+        yield True
+
+
+@contextlib.contextmanager
 def graph_lock(lock_dir: pathlib.Path, wait: float, *,
                poll: float = GRAPH_LOCK_POLL,
                log=print, sleep=time.sleep, now=time.monotonic):

@@ -66,10 +66,11 @@ def _root() -> pathlib.Path:
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
 import charoite_paths  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
+import graphs  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import cloud_door  # noqa: E402
-import file_locks  # noqa: E402
 import graph_updater
 import install_profile  # noqa: E402
 import graph_links  # noqa: E402
@@ -337,14 +338,16 @@ def snapshot_rel(root: pathlib.Path) -> dict[str, str]:
     return out
 
 
-def backup_root(graph: pathlib.Path) -> pathlib.Path:
+def backup_root(graph: pathlib.Path, *, captured: charoite_paths.GraphAddresses | None = None) -> pathlib.Path:
     """Каталог со снимками этого графа — в данных Чароита, не в графе."""
     # root — корень ДАННЫХ этой установки (CHAROITE_ROOT), а не папка кода:
     # у вложенной установки они разные, и снимки обязаны лечь к данным.
+    if captured is not None:
+        return captured.backup_root(BACKUP_DIR.lstrip("."))
     return charoite_paths.graph_backups(graph, BACKUP_DIR.lstrip("."), root=_root())
 
 
-def _own_dir(graph: pathlib.Path, stamp: str) -> pathlib.Path:
+def _own_dir(graph: pathlib.Path, stamp: str, *, captured: charoite_paths.GraphAddresses | None = None) -> pathlib.Path:
     """Каталог своего снимка или песочницы по штампу — строго внутри backup_root.
 
     Штамп приходит аргументом воркера и ложится в путь: `/tmp/x` или `../x`
@@ -355,7 +358,7 @@ def _own_dir(graph: pathlib.Path, stamp: str) -> pathlib.Path:
     if (not stamp or stamp in (".", "..") or stamp.startswith(".")
             or any(ch in stamp for ch in "/\\\0")):
         raise ValueError(f"штамп встречи не имя каталога: {stamp!r}")
-    return backup_root(graph) / stamp
+    return backup_root(graph, captured=captured) / stamp
 
 
 def _clone(src: pathlib.Path, dst: pathlib.Path) -> bool:
@@ -386,7 +389,8 @@ def _libsystem():
 
 
 def backup_graph(graph: pathlib.Path, stamp: str,
-                 source: pathlib.Path | None = None) -> pathlib.Path:
+                 source: pathlib.Path | None = None, *,
+                 captured: charoite_paths.GraphAddresses | None = None) -> pathlib.Path:
     """Копия файлов графа перед правкой. Обещание PRIVACY — кодом.
 
     Снимок лежит ВНЕ графа: граф живёт в iCloud, и полная копия на каждую
@@ -400,8 +404,14 @@ def backup_graph(graph: pathlib.Path, stamp: str,
     землёй, где облако могло «воскресить» удалённое конвейером (DS/GLM,
     круг по #447). Песочница по построению = снимок плюс правки облака.
     """
+    if captured is None:
+        with graphs.mutation_snapshot(graph, _root(), 0) as selected:
+            if selected is None:
+                raise OSError("graph snapshot unavailable for backup")
+            return backup_graph(selected.graph, stamp, source, captured=selected)
+    graph = captured.graph
     src = source or graph
-    dest = _own_dir(graph, stamp)
+    dest = _own_dir(graph, stamp, captured=captured)
     charoite_paths.secure_dir(dest.parent)
     if dest.is_symlink():
         # На месте снимка — ссылка (подмена прошлого запуска, см. pre-check):
@@ -442,7 +452,7 @@ def rotate_snapshots(root: pathlib.Path, *keep: pathlib.Path) -> None:
         shutil.rmtree(stale, ignore_errors=True)
 
 
-def _drop_own_snapshots(graph: pathlib.Path, stamp: str) -> None:
+def _drop_own_snapshots(graph: pathlib.Path, stamp: str, *, captured: charoite_paths.GraphAddresses | None = None) -> None:
     """Убрать СВОИ снимок и песочницу этого штампа — и только их.
 
     Понижение до чтения отпускает замок раньше ротации, поэтому чужие снимки
@@ -452,8 +462,13 @@ def _drop_own_snapshots(graph: pathlib.Path, stamp: str) -> None:
     с тем же штампом упирался бы в «старый снимок не удаляется» (luna,
     круг-5); подменённая цель не трогается.
     """
+    if captured is None:
+        with graphs.mutation_snapshot(graph, _root(), 0) as selected:
+            if selected is not None:
+                _drop_own_snapshots(selected.graph, stamp, captured=selected)
+        return
     for stale in (stamp, f"{stamp}-облако"):
-        p = _own_dir(graph, stale)
+        p = _own_dir(captured.graph, stale, captured=captured)
         try:
             if p.is_symlink():
                 p.unlink()
@@ -463,8 +478,10 @@ def _drop_own_snapshots(graph: pathlib.Path, stamp: str) -> None:
             pass                     # понижение важнее уборки
 
 
-def quarantine_root(graph: pathlib.Path) -> pathlib.Path:
+def quarantine_root(graph: pathlib.Path, *, captured: charoite_paths.GraphAddresses | None = None) -> pathlib.Path:
     """Карантин — рядом со снимками, вне графа, те же права 0700."""
+    if captured is not None:
+        return captured.backup_root(QUARANTINE_KIND)
     return charoite_paths.graph_backups(graph, QUARANTINE_KIND, root=_root())
 
 
@@ -510,22 +527,9 @@ def displaced_dir(qdir: pathlib.Path) -> pathlib.Path:
     return qdir.parent / DISPLACED_DIR / qdir.name
 
 
-def graph_lock(graph: pathlib.Path, wait: float | None = None):
-    """Замок графа для этого разбора — общий с ночной ревизией досье.
-
-    Реализация переехала в src/file_locks.py: тот же `cloud.lock` берёт
-    и nightly_dossier_review, иначе два пишущих контура сверяют правки
-    друг друга (аудит облака 26.08, GLM I3). Здесь остаётся адрес
-    каталога снимков этого графа и наш дефолт ожидания.
-    """
-    wait = LOCK_WAIT if wait is None else wait   # константу можно подменить в тестах
-    try:
-        base = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=_root()))
-    except OSError as e:
-        # нет права на каталог данных — как и без бэкапа: только чтение
-        print(f"замок графа не взять ({e}) — работаю на чтение")
-        return contextlib.nullcontext(False)
-    return file_locks.graph_lock(base, wait, poll=LOCK_POLL)
+def graph_lock(graph: pathlib.Path, wait: float | None = None, *, cfg: dict | None = None):
+    wait = LOCK_WAIT if wait is None else wait
+    return graphs.mutation_lock(graph, _root(), wait, cfg=cfg, poll=LOCK_POLL)
 
 
 @dataclasses.dataclass
@@ -548,6 +552,11 @@ class Verdict:
     @property
     def violations(self) -> int:
         return len(self.reverted) + len(self.removed) + len(self.deleted)
+
+
+def graph_snapshot(graph: pathlib.Path, wait: float | None = None, *, cfg: dict | None = None):
+    wait = LOCK_WAIT if wait is None else wait
+    return graphs.mutation_snapshot(graph, _root(), wait, cfg=cfg, poll=LOCK_POLL)
 
 
 def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
@@ -1371,8 +1380,10 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # в защищённые папки и при may_edit=False (cloud_edit_graph
         # выключен) — без замка сосед-воркер видел эти файлы как правку
         # облака и убирал в карантин (аудит облака, DS M4).
+        captured = None
         if may_edit or deliver:
-            if not stack.enter_context(graph_lock(graph)):
+            captured = stack.enter_context(graph_snapshot(graph, cfg=cfg))
+            if captured is None:
                 # Не дождавшийся замка тоже мог пережидать соседа, который
                 # всё довёз: read-only прогон переписал бы его ревизию
                 # (publish замком не гейтится) — DS I2 по #550.
@@ -1392,7 +1403,8 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 return RC_OK
         rc = _run_locked(stamp, transcript, graph, rev, log, cfg,
                          may_edit=may_edit, graph_available=graph_available,
-                         deliver=deliver, unlock=stack.close, after_unlock=after_unlock)
+                         deliver=deliver, unlock=stack.close, after_unlock=after_unlock,
+                         captured=captured)
     # Переотправка своей встречи в память — после замка, как и чужие долги: brain
     # с медленным эмбеддингом держал граф на каждый факт встречи, а с №615 п. 8 их
     # уходит не шесть, а все — сосед ждал бы дольше запаса LOCK_WAIT над TIMEOUT
@@ -1466,9 +1478,13 @@ def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path, cfg: di
 def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 rev: pathlib.Path, log: pathlib.Path, cfg: dict, *,
                 may_edit: bool, graph_available: bool, deliver: bool = True,
-                unlock=lambda: None, after_unlock: list) -> int:
+                unlock=lambda: None, after_unlock: list, captured: charoite_paths.GraphAddresses | None = None) -> int:
     # Выход в сеть — здесь, и рубильник спрашивается на самом выходе
     # (контракт tests/test_cloud_call_sites.py), а не только в run() выше.
+    if captured is not None:
+        graph = captured.graph
+    if (may_edit or deliver) and captured is None:
+        raise ValueError("graph mutation requires a captured snapshot")
     if not privacy.cloud_enrich_enabled(cfg):
         return 1
     # Граф могли отмонтировать, пока ждали замок: с graph_available=True
@@ -1503,7 +1519,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     cloud_pen = None
     if may_edit:
         try:
-            backup = backup_graph(graph, stamp)
+            backup = backup_graph(graph, stamp, captured=captured)
             # Базелин хешей — С самого снимка, не с живого графа: иначе за
             # ~2 с между ними конвейер дописал бы главный файл встречи, и
             # правка облака ушла бы в ложный конфликт (GLM, круг по #447).
@@ -1515,7 +1531,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # было»: по нему сверяется текст и ловится правка конвейера,
             # успевшая в граф, пока облако думало. Две копии на APFS
             # стоят почти нуля: clonefile делит блоки до первой записи.
-            cloud_pen = backup_graph(graph, f"{stamp}-облако", source=backup)
+            cloud_pen = backup_graph(graph, f"{stamp}-облако", source=backup, captured=captured)
             denied = deny_paths(cloud_pen)
         except OSError as e:
             print(f"бэкап графа не удался ({e}) — работаю на чтение")
@@ -1524,7 +1540,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # выполнится ПОСЛЕ unlock, и за время read-only прогона сосед
             # успел бы взять замок и завести свои снимки — наша ротация их
             # снесла бы (DS/luna, круг-1; регрессия M2 без теста).
-            _drop_own_snapshots(graph, stamp)
+            _drop_own_snapshots(graph, stamp, captured=captured)
             may_edit = deliver = False
             backup = cloud_pen = None
             unlock()                   # замок нужен только правящему
@@ -1565,7 +1581,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # замок и заводит свои снимки, а rotate_snapshots в finally
             # выполнилась бы ПОСЛЕ unlock и снесла бы их (DS, круг-4;
             # зеркало OSError-ветки выше).
-            _drop_own_snapshots(graph, stamp)
+            _drop_own_snapshots(graph, stamp, captured=captured)
             backup = cloud_pen = None
             unlock()
     # Песочница есть только у правящего прогона: каждое понижение выше гасит её вместе
@@ -1744,7 +1760,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # есть) и времени до микросекунд: две встречи одной минуты и два
             # запуска одной встречи не делят каталог, а forget_meeting
             # находит свой без префиксных догадок (круг-3 по #381).
-            qdir = quarantine_root(graph) / f"{transcript.stem}-{dt.datetime.now():%H%M%S%f}"
+            qdir = quarantine_root(graph, captured=captured) / f"{transcript.stem}-{dt.datetime.now():%H%M%S%f}"
             try:
                 # №120: облако писало в копию, и перенос — единственный
                 # момент, когда его правки касаются настоящего графа.
@@ -1798,7 +1814,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                              f"остались в снимке, граф цел\n")
             try:
                 if qdir.is_dir():
-                    rotate_quarantine(quarantine_root(graph), current=qdir)
+                    rotate_quarantine(quarantine_root(graph, captured=captured), current=qdir)
                 ddir = displaced_dir(qdir)
                 if ddir.is_dir():
                     rotate_quarantine(ddir.parent, keep=DISPLACED_KEEP, current=ddir)
@@ -2024,7 +2040,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             print(f"лог недоступен ({e}): " + "".join(lines))
         if backup is not None:
             # ротация — самым последним: свой снимок жил до конца сверки
-            rotate_snapshots(backup_root(graph),
+            rotate_snapshots(backup_root(graph, captured=captured),
                              *(p for p in (backup, cloud_pen) if p))
     if may_edit and backup is not None and not checked:
         # причина — таймаут, если он был: карточка не должна винить сверку

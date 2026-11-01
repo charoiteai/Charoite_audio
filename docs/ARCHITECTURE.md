@@ -2439,3 +2439,32 @@ still its own (#327).
 The reason is simple: the bundle is signed and read-only. Meeting recordings
 cannot be written into it, and keeping the code in a user folder would mean
 cloning it by hand — the install would start with a terminal again.
+
+### Graph identity and compatible backup locks
+
+Graph writes identify an existing directory through an open descriptor: macOS
+uses the native physical path, Linux uses the descriptor path. No case or Unicode
+folding is applied. Explicit CLI paths retain their spelling; the common paths
+owner selects the same physical primary backup and lock address for true aliases.
+Missing-graph path calculation and text-only operations remain available, while
+mutation identity failures refuse writes instead of selecting another address.
+
+Shared-lock CLI writers acquire the entire ordered group of primary and proven legacy addresses
+with one total deadline. A partial acquisition releases the group. Forget retains
+the old in-graph mirrors and reads every registered backup kind, snapshot and
+quarantine at the primary and proven legacy addresses; plan refresh checks the
+whole identity/group before effects. The same captured `GraphAddresses` supplies the physical graph view and every
+backup, sandbox, quarantine and cleanup root. Mutations do not recalculate these
+addresses from a path. `mutation_snapshot` exposes that capture; `mutation_lock`
+retains its boolean interface. Standalone backup helpers acquire a scope; callers
+already in a mutation pass the captured group explicitly. Legacy resolved
+spellings are separately proved before their pure address calculation.
+Config/environment evidence is supplied by callers. Unknown historical spellings are never inferred from directory names.
+
+This bridge covers cooperating upgraded processes and known legacy locks. Stop
+old graph writers before enabling new writes: an old process using an unknown
+alias is outside this guarantee. The pre-existing no-root migration library API remains outside this shared-lock
+guarantee; its normal CLI supplies the required data root. No data migration is
+automatic. After writing
+to a new primary, rollback must retain the compatible reader and lock bridge;
+a bare old binary is not a safe write/forget rollback.

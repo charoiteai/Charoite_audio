@@ -53,7 +53,7 @@ def night(tmp_path, monkeypatch):
 
     monkeypatch.setattr(nd, "generate", generate)
     monkeypatch.setattr(nd.live_gate, "night_window_open", lambda *a, **k: True)
-    monkeypatch.setattr(nd, "_graph_lock", lambda *a: contextlib.nullcontext(True))
+    monkeypatch.setattr(nd, "_graph_snapshot", lambda graph, *a: nd.graphs.mutation_snapshot(graph, nd._root(), 0))
     return nd, graph, folder, paths, calls
 
 
@@ -354,7 +354,7 @@ def test_every_exit_reuses_loaded_dossier(night, monkeypatch, capsys, branch):
     if branch == "model":
         monkeypatch.setattr(nd, "generate", lambda *a, **k: "ответ не по формату")
     elif branch == "locked":
-        monkeypatch.setattr(nd, "_graph_lock", lambda *a: contextlib.nullcontext(False))
+        monkeypatch.setattr(nd, "_graph_snapshot", lambda *a: contextlib.nullcontext(None))
     elif branch == "backup":
         def no_copy(*a, **kw):
             raise PermissionError(13, "Permission denied")
@@ -406,7 +406,7 @@ def test_missing_dossier_is_only_indexed_after_build(night, monkeypatch, capsys,
     if branch == "model":
         monkeypatch.setattr(nd, "generate", lambda *a, **k: "ответ не по формату")
     elif branch == "locked":
-        monkeypatch.setattr(nd, "_graph_lock", lambda *a: contextlib.nullcontext(False))
+        monkeypatch.setattr(nd, "_graph_snapshot", lambda *a: contextlib.nullcontext(None))
     elif branch == "late":
         monkeypatch.setattr(nd.live_gate, "night_window_open", lambda *a, **k: False)
     counts = _watch(monkeypatch, paths)

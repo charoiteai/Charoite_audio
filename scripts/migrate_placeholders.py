@@ -35,7 +35,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
-import file_locks  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
+import graphs  # noqa: E402
 import graph_updater  # noqa: E402
 import live_gate  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
@@ -248,29 +249,39 @@ def manual_hints(graph: pathlib.Path, manual: list[str]) -> dict[str, list[str]]
 
 
 def _graph_lock(graph: pathlib.Path, data_root: pathlib.Path | None):
-    """Общий замок пишущих в граф (правило file_locks: делят ВСЕ контуры —
-    разбор встречи, облачная ревизия, ночь; GLM по #454). Без корня данных
-    (тесты) — замка нет, работаем как есть."""
     if data_root is None:
         return contextlib.nullcontext(True)
-    try:
-        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=data_root))
-    except OSError as e:
-        raise SystemExit(f"замок графа не взять ({e}) — не пишу")
-    print(f"замок графа: {lock_dir / 'cloud.lock'}")   # расхождение корней видно сразу (GLM r2)
-    return file_locks.graph_lock(lock_dir, LOCK_WAIT)
+    captured_scope = graphs.mutation_snapshot(graph, data_root, LOCK_WAIT)
+
+    @contextlib.contextmanager
+    def held():
+        with captured_scope as captured:
+            if captured is not None:
+                _show_graph_locks(captured)
+            yield captured is not None
+
+    return held()
+
+
+def _show_graph_locks(captured: charoite_paths.GraphAddresses) -> None:
+    for directory in captured.lock_dirs:
+        print(f"замок графа: {directory / 'cloud.lock'}")
 
 
 def apply(graph: pathlib.Path, backup: pathlib.Path, log=print,
           data_root: pathlib.Path | None = None, live=None) -> dict:
     """`live` — проверка «идёт встреча», повторяется ПОСЛЕ взятия замка: между
     гейтом в main() и замком встреча могла начаться (DS r2, I1)."""
-    with _graph_lock(graph, data_root) as taken:
-        if not taken:
+    scope = (graphs.mutation_snapshot(graph, data_root, LOCK_WAIT)
+             if data_root is not None else contextlib.nullcontext(None))
+    with scope as captured:
+        if data_root is not None and captured is None:
             raise SystemExit("граф занят соседом (cloud.lock) дольше 5 минут — не пишу")
+        if captured is not None:
+            _show_graph_locks(captured)
         if live is not None and live():
             raise SystemExit("встреча началась, пока брали замок — миграцию отложить")
-        return _apply_locked(graph, backup, log)
+        return _apply_locked(captured.graph if captured is not None else graph, backup, log)
 
 
 def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:

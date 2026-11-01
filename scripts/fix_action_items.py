@@ -36,7 +36,7 @@ import time
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
-import file_locks  # noqa: E402
+import file_locks  # noqa: E402,F401 — compatibility integration seam
 import graphs  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
 import task_line  # noqa: E402
@@ -65,15 +65,7 @@ def graph_dir(explicit: str | None) -> pathlib.Path | None:
 
 
 def _graph_lock(graph: pathlib.Path, root: pathlib.Path):
-    """Общий замок пишущих в граф (file_locks): разбор встречи, облачная ревизия,
-    ночь и контроль задач пишут те же файлы минуток. Без него запись шла
-    «tmp + replace» поверх чужой правки, сделанной между чтением и записью
-    (Opus C3 входного круга №366)."""
-    try:
-        lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=root))
-    except OSError as e:
-        raise SystemExit(f"замок графа не взять ({e}) — не пишу")
-    return file_locks.graph_lock(lock_dir, LOCK_WAIT)
+    return graphs.mutation_lock(graph, root, LOCK_WAIT)
 
 
 class StatusChanged(Exception):
@@ -153,7 +145,7 @@ def main() -> int:
         print("граф не найден — пропуск")
         return 0
 
-    lock = contextlib.nullcontext(True)
+    lock = contextlib.nullcontext(None)
     dest: pathlib.Path | None = None
     if args.apply:
         try:
@@ -161,17 +153,18 @@ def main() -> int:
         except (RootNotNamed, ValueError):
             print("для --apply нужен корень данных: CHAROITE_ROOT", file=sys.stderr)
             return 2
-        lock = _graph_lock(graph, root)
-        dest = charoite_paths.graph_backups(graph, COPIES_KIND, root=root) / time.strftime("%Y%m%d-%H%M%S")
-
-    files = [p for p in graph.rglob("*.md")
-             if "инутк" in p.name or "_minutes" in p.name]
+        lock = graphs.mutation_snapshot(graph, root, LOCK_WAIT)
     before = after = changed = written = 0
     refused: list[str] = []
-    with lock as taken:
-        if not taken:
+    with lock as captured:
+        if args.apply and captured is None:
             print(f"замок графа занят дольше {LOCK_WAIT // 60} мин — не пишу", file=sys.stderr)
             return 1
+        if captured is not None:
+            graph = captured.graph
+            dest = captured.backup_root(COPIES_KIND) / time.strftime("%Y%m%d-%H%M%S")
+        files = [p for p in graph.rglob("*.md")
+                 if "инутк" in p.name or "_minutes" in p.name]
         for p in files:
             rel = p.relative_to(graph)
             try:
