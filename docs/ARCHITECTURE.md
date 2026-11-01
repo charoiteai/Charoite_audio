@@ -1067,7 +1067,10 @@ A body the cloud review has edited carries `ревизия: <date>` in its front
 The night leaves such a dossier alone — `--full` and new sources included, checked
 before the classes and once more on the snapshot taken to the model
 (`dossier.revision`): a model retelling cut a reviewed body by 80 % on 25.10 and nobody
-would repeat the review. A topic whose sources changed is logged (`⏭ … источники
+would repeat the review. A damaged revision value containing the UTF-8 replacement
+character also keeps the hold: decoding damage must not authorize a new model
+retelling. Ordinary non-date values such as `false` still do not create a hold.
+A topic whose sources changed is logged (`⏭ … источники
 сменились`). The night itself never lifts the hold: reading the dossier's own sources
 back from markdown gave a false "source gone" three review rounds in a row. Forgetting
 a meeting lifts it instead — `forget_meeting.py` drops the field
