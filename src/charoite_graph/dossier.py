@@ -699,9 +699,11 @@ _REVISION_VALUE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 def revision(text: str | None) -> str:
     """Дата облачной ревизии тела из шапки (`ревизия:`); `""` — поля нет. Держит
-    только дата, как её пишет ревизия: `~`, `нет`, `false` не замораживают (Opus M2)."""
+    только дата, как её пишет ревизия: `~`, `нет`, `false` не замораживают (Opus M2).
+    Знак замены в значении тоже держит: повреждение даты не снимает защиту
+    проверенного тела от пересборки."""
     v = frontmatter.scalar_field(text or "", REVISION_FIELD)
-    return v if _REVISION_VALUE.fullmatch(v) else ""
+    return v if _REVISION_VALUE.fullmatch(v) or "\ufffd" in v else ""
 
 
 def with_revision(text: str, date: str) -> str:

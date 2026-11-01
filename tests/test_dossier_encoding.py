@@ -225,6 +225,25 @@ def test_damaged_manual_refusal_counts_as_skipped(night, monkeypatch, capsys):
     assert paths["Бета"].read_bytes() == before
 
 
+@pytest.mark.parametrize("full", [False, True])
+def test_damaged_revision_date_still_holds_the_body(night, full):
+    """Битая дата ревизии не разрешает ночи переписать проверенное тело."""
+    nd, graph, folder, paths, calls = night
+    path = paths["Бета"]
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "собрано:", "ревизия: 2026-10-30\nсобрано:"), encoding="utf-8")
+    before = _damage(path, "2026-10-30", b"2026-10-3\xff")
+
+    result = nd.run(graph, {}, full=full, dry=False, limit=12)
+
+    assert [call[0] for call in calls] == ["Альфа", "Гамма"]
+    assert path.read_bytes() == before
+    assert result["ревизия"] == 1 and result["пропущено"] == 1
+    assert result["собрано"] == 2 and result["отказы"] == 0
+    assert not list((folder / ".backup").glob("*/Бета.md"))
+    _all_index(folder)
+
+
 def test_damaged_manual_refusal_is_not_a_model_failure(night, monkeypatch, capsys):
     """Одна испорченная тема не выглядит как молчащая модель: код main не 2."""
     nd, graph, folder, paths, calls = night
