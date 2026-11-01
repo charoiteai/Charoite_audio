@@ -5,6 +5,22 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.102.0](https://github.com/charoiteai/Charoite_audio/compare/v0.101.0...v0.102.0) (2026-11-01)
+
+
+### Features
+
+* **dossier:** generator input label in the header, not a rebuild trigger (№842) ([#894](https://github.com/charoiteai/Charoite_audio/issues/894)) ([6303ace](https://github.com/charoiteai/Charoite_audio/commit/6303ace6f5ee6351f5c70f2ba6f33f2a6925091f))
+
+
+### Bug Fixes
+
+* bind graph mutations to physical graph identity ([826001b](https://github.com/charoiteai/Charoite_audio/commit/826001b200fa4f6cd63666df0c285d4553641145))
+* **dossier:** author edits survive an owner-typed heading ([#895](https://github.com/charoiteai/Charoite_audio/issues/895)) ([ebb52d3](https://github.com/charoiteai/Charoite_audio/commit/ebb52d3eec7839df3d304f1b3437abcf88bce6fb))
+* **dossier:** preserve revision hold when its date is damaged ([#900](https://github.com/charoiteai/Charoite_audio/issues/900)) ([fdaae01](https://github.com/charoiteai/Charoite_audio/commit/fdaae018c3db9dd713bd9f60a21c79a1081490d4))
+* **forget:** match manifest paths and preserve malformed records ([#897](https://github.com/charoiteai/Charoite_audio/issues/897)) ([58b60eb](https://github.com/charoiteai/Charoite_audio/commit/58b60ebd334acbfc3cf6d06c45fd76ce48c08935))
+* **graph:** refresh forget plans and indexes under the shared lock ([#899](https://github.com/charoiteai/Charoite_audio/issues/899)) ([bf947b8](https://github.com/charoiteai/Charoite_audio/commit/bf947b8fe5e3ae136025d3fccf0e4d1f3e2107d5))
+
 ## [0.101.0](https://github.com/charoiteai/Charoite_audio/compare/v0.100.0...v0.101.0) (2026-10-30)
 
 
