@@ -7,6 +7,17 @@ import Foundation
 /// подписи чисел — тестируются без UI и без репозитория, как
 /// `TasksScreenPolicy` у экрана задач.
 enum LibraryScreenPolicy {
+    /// Поиск не меняет сохранённый выбор, но старую карточку нельзя выдавать
+    /// за результат нового запроса. Незавершённая/недоступная выдача не доказывает
+    /// совпадение даже тогда, когда вызывающий код ещё держит старые IDs.
+    static func showsSelectedDetail(searchActive: Bool, isSearching: Bool,
+                                    searchBlocked: Bool, selectedID: String?,
+                                    matchingIDs: [String]) -> Bool {
+        guard searchActive else { return true }
+        guard !isSearching, !searchBlocked, let selectedID else { return false }
+        return matchingIDs.contains(selectedID)
+    }
+
     /// Keep the detail selection inside the active day feed.
     static func selectedID<T>(in records: [T], current: String?, day: Date?,
                               id: (T) -> String, date: (T) -> Date,

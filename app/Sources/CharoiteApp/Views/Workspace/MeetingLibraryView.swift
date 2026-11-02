@@ -575,9 +575,27 @@ struct MeetingLibraryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private var showsSelectedDetail: Bool {
+        LibraryScreenPolicy.showsSelectedDetail(
+            searchActive: searchActive, isSearching: isSearching,
+            searchBlocked: searchBlocked != nil, selectedID: navigation.selectedMeetingID,
+            matchingIDs: hits.compactMap { hit in
+                // Узел открывается файлом, а не карточкой встречи (см. open).
+                guard hit.kind != .node else { return nil }
+                return repository.record(matching: hit)?.id
+            })
+    }
+
     @ViewBuilder
     private var detail: some View {
-        if let record = repository.record(id: navigation.selectedMeetingID) {
+        if !showsSelectedDetail {
+            ContentUnavailableView(
+                L.t("Результаты поиска", "Search results", "搜索结果"),
+                systemImage: "magnifyingglass",
+                description: Text(L.t("Выберите встречу в результатах слева. При пустой выдаче измените или сбросьте запрос; состояние поиска показано рядом.",
+                                      "Select a meeting from the results on the left. If there are no results, change or clear the query; search status is shown alongside.",
+                                      "请从左侧结果中选择会议。若没有结果，请修改或清除查询；搜索状态显示在旁边。")))
+        } else if let record = repository.record(id: navigation.selectedMeetingID) {
             if record.state == .ready {
                 MeetingCardView(meeting: record.snapshot, embedded: true)
             } else {

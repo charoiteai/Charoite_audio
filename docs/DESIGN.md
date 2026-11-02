@@ -141,3 +141,15 @@ The words "please", "sorry" and "successfully" are not used.
    profile" screens.
 4. Dark mode is not an inversion but system materials with the same
    tokens.
+
+## Archive search and the selected meeting
+
+While a library search is active, the detail pane shows the selected meeting
+only when a completed, available result set contains a hit that opens that
+meeting. Empty, pending, unavailable and unrelated results show a selection
+prompt instead of an old meeting card. Graph-node hits open their file and do
+not qualify as meeting selections. Clearing the query restores the saved
+selection through the existing library/day selection rules.
+
+The decision is covered by `LibrarySelectionTests`. These unit tests do not
+replace a macOS build or a runtime SwiftUI interaction check.
