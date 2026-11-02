@@ -74,3 +74,41 @@ to develop the parser is not permission to rewrite stored owner data.
 с сохранением всего файла пока не активирован. После решения — независимый
 входной круг, реализация и проверка на полностью синтетическом окружении.
 Дописывание досье идёт следующим этапом; работающие данные не мигрируются.
+
+## Baseline observation (implementation unchanged)
+
+The three constructed cases were executed against the pinned source using the
+installed resource gates, isolated Python source path and no model calls.
+Repeated extraction/rendering grew the inline case from 502 to 602 to 702
+characters. The unspaced genuine author section retained both author lines.
+The bare source-heading case omitted the meaningful body tail from the body
+projection. These observations reproduce existing behavior; they are not a
+parser fix or approval of a legacy policy. Results are in
+`dossier-parser-baseline.json`.
+
+To repeat, use the repository Python environment with `PYTHONPATH=src` under
+the installed quiet/heavy resource gates. Run the following synthetic probe:
+
+```python
+import json
+from charoite_graph import dossier
+body = "## Сейчас\n- discussed ##Правки автора\nbody-tail\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—"
+text = dossier.render("Sample", body, [], {}, "synthetic-fingerprint", "2026-11-02")
+text = text.replace("## Правки автора\n\n—\n", "## Правки автора\n\nowner-note\n")
+lengths = [len(text)]
+for _ in range(2):
+    manual = dossier.preserve_manual(text)
+    text = dossier.render("Sample", body, [], {}, "synthetic-fingerprint", "2026-11-02")
+    text = text.replace("## Правки автора\n\n—\n", "## Правки автора\n\n"+manual+"\n")
+    lengths.append(len(text))
+legacy = "##Правки автора\nfirst-note\n- discussed ## Правки автора\nsecond-note\n"
+manual = dossier.preserve_manual(legacy)
+ambiguous = "# Dossier\n## Сейчас\nintro\n## Источники\nbody-tail\n## Как пришли\nmore-body\n## Правки автора\nowner-note\n"
+parsed = dossier.split_dossier(ambiguous)
+result = {"base_sha":"826001b200fa4f6cd63666df0c285d4553641145", "synthetic_only":True, "model_calls":0,
+ "inline_growth_lengths": lengths, "inline_growth_reproduced":lengths[0]<lengths[1]<lengths[2],
+ "unspaced_manual_kept_both": "first-note" in manual and "second-note" in manual,
+ "bare_heading_body_tail_present": "body-tail" in parsed[1], "implementation_changed":False}
+assert result["inline_growth_reproduced"] and result["unspaced_manual_kept_both"] and not result["bare_heading_body_tail_present"]
+print(json.dumps(result))
+```
