@@ -1,0 +1,1 @@
+{"name":"charoite-linux-ui-lab","private":true,"version":"0.1.0","scripts":{"test":"node check.cjs"},"devDependencies":{"playwright":"1.62.1"}}

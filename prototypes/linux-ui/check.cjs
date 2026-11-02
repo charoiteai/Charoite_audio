@@ -1,0 +1,29 @@
+// UI regression checks against the real local prototype, using system Chromium.
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+(async()=>{
+ const output=process.env.EVIDENCE_DIR||'/tmp/charoite-prototype-evidence';fs.mkdirSync(output,{recursive:true});
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ try {
+ const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];const external=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(!r.url().startsWith('http://127.0.0.1:8765/'))external.push(r.url())});
+ await page.goto('http://127.0.0.1:8765');await page.screenshot({path:output+'/01-archive-desktop.png',fullPage:true});
+ await page.locator('#search').fill('возврат');assert.equal(await page.locator('[data-meeting]').count(),1);
+ await page.locator('#search').fill('несуществующее');assert.equal(await page.getByText('Ничего не найдено').count(),1);
+ await page.getByRole('button',{name:'Показать все встречи',exact:true}).click();assert.equal(await page.locator('[data-meeting]').count(),3);
+ await page.locator('[data-meeting="3"]').click();await page.getByRole('button',{name:'Почему нельзя повторить?'}).click();assert(await page.locator('dialog').isVisible());await page.keyboard.press('Escape');assert(!await page.locator('dialog').isVisible());
+ await page.getByRole('button',{name:'Стенограмма',exact:true}).click();assert(await page.getByText('11:02 · Анна:',{exact:false}).isVisible());
+ await page.locator('[data-meeting="1"]').click();await page.getByRole('button',{name:'Переименовать',exact:true}).click();await page.locator('#new-title').fill('Не сохранять');await page.getByRole('button',{name:'Отмена',exact:true}).click();assert(await page.getByRole('heading',{name:'Запуск «Ромашки»: платёжный провайдер',exact:true}).isVisible());
+ await page.getByRole('button',{name:'Переименовать',exact:true}).click();await page.locator('#new-title').fill('   ');await page.getByRole('button',{name:'Сохранить',exact:true}).click();assert(await page.locator('dialog').isVisible());await page.locator('#new-title').fill('<Тест> новый заголовок');await page.getByRole('button',{name:'Сохранить',exact:true}).click();assert(await page.getByRole('heading',{name:'<Тест> новый заголовок',exact:true}).isVisible());await page.waitForTimeout(50);assert.equal(await page.locator(':focus').getAttribute('data-action'),'rename');
+ await page.locator('[data-task="1-0"]').check();await page.locator('[data-page="tasks"]').click();assert(await page.locator('[data-task="1-0"]').isChecked());await page.locator('[data-task="1-0"]').uncheck();
+ await page.locator('[data-page="memory"]').click();await page.screenshot({path:output+'/02-memory-desktop.png',fullPage:true});await page.locator('[data-action="source-2"]').click();assert(await page.getByRole('heading',{name:'Каталог: подготовка к пилоту',exact:true}).isVisible());
+ await page.locator('[data-page="settings"]').click();await page.locator('#density').selectOption('compact');await page.locator('[data-page="archive"]').click();assert.equal(await page.locator('.meeting').first().evaluate(e=>getComputedStyle(e).paddingTop),'10px');
+ await page.locator('#search').fill('Каталог');assert.equal(await page.locator('.meeting').first().evaluate(e=>getComputedStyle(e).paddingTop),'10px','density survives search');await page.locator('[data-action=clear]').click();
+ for(let i=0;i<2;i++){await page.locator('header button').click();assert(await page.getByRole('heading',{name:'Запись не подключена'}).isVisible());await page.keyboard.press('Escape')}
+ await page.setViewportSize({width:390,height:844});await page.locator('#search').fill('Каталог');await page.locator('[data-meeting="2"]').click();assert(await page.locator('.detail').isVisible());await page.waitForTimeout(4600);await page.screenshot({path:output+'/03-meeting-mobile.png',fullPage:true});await page.getByRole('button',{name:'← К результатам поиска',exact:true}).click();assert.equal(await page.locator('#search').inputValue(),'Каталог');assert(await page.locator('#search').isVisible());
+ for(const name of ['today','archive','tasks','memory','settings']){await page.locator(`[data-page="${name}"]`).click();assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),name+' horizontal overflow')}
+ await page.screenshot({path:output+'/04-settings-mobile.png',fullPage:true});await page.reload();await page.keyboard.press('Tab');assert.equal(await page.locator(':focus').textContent(),'К содержимому');await page.keyboard.press('Enter');assert.equal(await page.locator(':focus').getAttribute('id'),'main');
+ await page.setViewportSize({width:320,height:740});for(const name of ['today','archive','tasks','memory','settings']){await page.locator(`[data-page="${name}"]`).click();assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),name+' 320px overflow')}
+ assert.deepEqual(errors,[]);assert.deepEqual(external,[]);console.log('PASS: navigation, search, empty state, error, depths, rename/cancel/validation/escaping, shared tasks, source links, density, repeated dialogs/Escape, mobile back/filter, 5 screens without overflow, keyboard skip, no JS errors or external requests.');
+ } finally {await browser.close()}
+})().catch(e=>{console.error(e);process.exitCode=1});
