@@ -1,0 +1,147 @@
+{
+  "base_sha": "826001b200fa4f6cd63666df0c285d4553641145",
+  "base_tree": "78e024db5318afbb7685d45771262d699143d2ad",
+  "preparation_start": "efd89490bd218cf58d371341fca02eac308dcf69",
+  "kind": "static_public_preparation_only",
+  "policy_answer_received": false,
+  "formal_input_submitted": false,
+  "implementation_changes": false,
+  "new_test_runs": 0,
+  "new_model_calls": 0,
+  "baseline_repeated": false,
+  "finite_oracle_ids": [
+    "G01",
+    "G02",
+    "G03",
+    "G04",
+    "G05",
+    "G06",
+    "G07",
+    "G08",
+    "G09",
+    "G10",
+    "S01",
+    "S02",
+    "S03",
+    "S04",
+    "D01",
+    "D02",
+    "D03",
+    "D04",
+    "B01",
+    "B02",
+    "B03",
+    "B04",
+    "R01",
+    "R02",
+    "R03",
+    "R04",
+    "W01",
+    "W02",
+    "W03",
+    "W04",
+    "W05",
+    "W06",
+    "P01",
+    "P02",
+    "F01",
+    "F02",
+    "F03",
+    "E01",
+    "E02",
+    "V01",
+    "V02"
+  ],
+  "source_blobs": [
+    {
+      "path": "src/charoite_graph/dossier.py",
+      "git_blob": "980945cfc8771a4637e157313ad2c8ac76f963bb",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "src/charoite_graph/frontmatter.py",
+      "git_blob": "45e4c0cc1ccfcb329d1b9efa4fae898616b49f30",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "src/charoite_graph/graph_names.py",
+      "git_blob": "82e4debe59dc7de42478f9828047c105f0505993",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "src/charoite_graph/safe_write.py",
+      "git_blob": "2edc980c9526a594be660ddcd4892421eedc46cb",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "src/graphs.py",
+      "git_blob": "81b1e09e0af334b0e1e12b66b5be2eb668066cf5",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "src/charoite_schema.py",
+      "git_blob": "44abcf570fc662dfac33daca20694a0902dcdd49",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "git_blob": "251c9cae4b421c2cb55623459cc3e157ad79b26d",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "scripts/nightly_dossier_review.py",
+      "git_blob": "6c132efa19259512762c40ae4eec95709f533500",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "scripts/forget_meeting.py",
+      "git_blob": "977fcf3f503fc9a7db5045ab665443d500c4e4e4",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "scripts/graph_doctor.py",
+      "git_blob": "f418db2e85bb3f7da8a6fc0dfb7a5b5950ffb9dc",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_dossier.py",
+      "git_blob": "92e84bb669f7f8fb781b2e9fabe0a1e6370d12d9",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_dossier_encoding.py",
+      "git_blob": "723bb1facb14c2ae32156562d84762c97e1f3028",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_dossier_plan.py",
+      "git_blob": "0cfa04470516b3c30c40acc725365ebf1982abcb",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_dossier_queue.py",
+      "git_blob": "94d7f03fdad6554abc649944c1e1dce08c51f7dc",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_nightly_cloud_reports.py",
+      "git_blob": "892f69b3b0d4296553fcce6e62225d536f126461",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_forget_meeting.py",
+      "git_blob": "1a2b1afffa3317a66c6ae00bee440b2d6aa51a88",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_forget_mutation_behaviors.py",
+      "git_blob": "edad3623b2964a7d82c2062f9578ffbdfcad253f",
+      "unchanged_from_base": true
+    },
+    {
+      "path": "tests/test_graph_ci_regressions.py",
+      "git_blob": "a89c56f15a15af5eedd87cb0d051d2d6c2156278",
+      "unchanged_from_base": true
+    }
+  ]
+}
