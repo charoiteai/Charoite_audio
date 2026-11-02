@@ -4,3 +4,23 @@
 .skip{top:0;left:0;transform:translateY(-150%)}.skip:focus{transform:translateY(0)}
 @media(max-width:640px){nav{flex-wrap:wrap;overflow:visible}}
 .skip{clip-path:inset(100%)}.skip:focus{clip-path:none}
+
+/* Actions keep 44 px targets while secondary controls carry less visual weight. */
+:root{--primary:#5558d9}
+button.primary{background:var(--primary);border-color:var(--primary)}
+button.quiet{background:transparent;border-color:transparent;color:#4244ac;font-size:13px;padding:7px 10px}
+button.quiet:hover{background:var(--memory);border-color:var(--border)}
+[hidden]{display:none!important}
+.demo-status{line-height:1.5}.demo-status .badge{margin:0 8px 0 0}
+.meeting-title{margin:16px 0 4px;overflow-wrap:anywhere}
+.detail-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.source-link{text-align:left;overflow-wrap:anywhere;width:100%}.source-link .meta{display:block;margin-top:5px}
+@media(max-width:640px){
+ aside{padding:10px 16px 6px}.brand{font-size:18px}.gem{padding:1px 10px;border-radius:8px}
+ nav{margin-top:6px;gap:0}nav button{padding:5px 6px;font-size:12px}
+ header{padding:6px 16px;gap:6px;align-items:center}header>span{max-width:none;flex:1;font-size:11px}
+ header button{flex-shrink:0}main{padding:14px 16px}.heading{margin-bottom:14px}
+ .heading p{display:none}.heading h1{margin-bottom:0}
+ .search{margin-top:4px;margin-bottom:8px}.back{margin-bottom:8px}
+ .meeting-title{margin-top:10px}.detail-actions{gap:0;margin-bottom:8px}
+}
