@@ -62,9 +62,11 @@ original_stream = LLM.stream
 
 def measured_stream(self, prompt, *args, **kwargs):
     number = len(calls) + 1
-    call = {"number": number, "engine": self.engine, "model": self.model,
+    call = {"number": number, "engine": self.engine, "model": kwargs.get("model"), "base_model": self.model,
             "system": kwargs.get("system"), "num_ctx": self.num_ctx,
-            "temperature": kwargs.get("temperature")}
+            "temperature": kwargs.get("temperature"), "think": kwargs.get("think"),
+            "num_predict": kwargs.get("num_predict"), "transport": self.base,
+            "truncate": kwargs.get("truncate"), "shift": kwargs.get("shift")}
     calls.append(call)
     (output / f"call-{number:02}-prompt.txt").write_text(prompt)
     answer, started = [], time.monotonic()
@@ -126,10 +128,14 @@ for theme, info in themes.items():
 
 
 def metadata():
-    with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=10) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(CONFIG["llm"]["base_url"] + "/api/tags", timeout=10) as response:
         tags = json.load(response)
-    return next({"name": m["name"], "digest": m["digest"], "details": m["details"]}
-                for m in tags["models"] if m["name"] == CONFIG["llm"]["model"])
+    model = next(m for m in tags["models"] if m["name"] == CONFIG["llm"]["model"].removesuffix(":local"))
+    with opener.open(CONFIG["llm"]["base_url"] + "/api/version", timeout=10) as response:
+        version = json.load(response)
+    return {"name": model["name"], "digest": model["digest"], "details": model["details"],
+            "server_version": version.get("version")}
 
 
 def run_phase(label):
@@ -223,13 +229,16 @@ for theme, other_theme in (("Glasshouse", "WaterTank"), ("WaterTank", "Glasshous
         print("JUDGE " + json.dumps(judge_cases[-1]), flush=True)
 postflight = metadata()
 backup_bytes_match = all(path.read_bytes() == before[path.stem] for path in backups)
+request_profiles_ok = all(call["engine"] == "ollama" and call["transport"] == CONFIG["llm"]["base_url"]
+                          and call["model"] == CONFIG["llm"]["model"] + ":local"
+                          and call["truncate"] is False and call["shift"] is False for call in calls)
 passed = (baseline["model_calls"] == 0 and baseline["result"][BUILT] == 0
           and baseline["result"]["\u0442\u0435\u043c"] == 2
           and updated["result"][BUILT] == 2 and updated["model_calls"] >= 6
           and repeat["model_calls"] == 0 and repeat["result"][BUILT] == 0
           and repeat["bytes_unchanged"] and repeat["no_new_backup"]
           and len(backups) == 2 and backup_bytes_match and preflight["digest"] == postflight["digest"]
-          and not tripwire and all(not c["fell_back"] for c in calls)
+          and not tripwire and all(not c["fell_back"] for c in calls) and request_profiles_ok
           and index_themes == set(themes) and all(case["passed"] for case in judge_cases))
 for theme, checked in checks.items():
     passed = passed and all(checked[k] for k in (
@@ -242,10 +251,11 @@ receipt = {"source": str(source), "runtime": str(runtime), "mode": "real-local-m
            "repeat": repeat, "dossiers": checks, "backup_count": len(backups),
            "real_model_calls": len(calls), "calls": calls, "tripwire_events": tripwire,
            "preflight": preflight, "postflight": postflight,
+           "request_profiles_ok": request_profiles_ok,
            "index_themes": sorted(index_themes), "judge_cases": judge_cases,
            "backup_bytes_match": backup_bytes_match,
            "source_hashes": {p: hashlib.sha256((source / p).read_bytes()).hexdigest() for p in (
-               "scripts/nightly_dossier.py", "src/dossier_incremental.py", "src/charoite_graph/dossier.py")},
+               "scripts/nightly_dossier.py", "src/dossier_incremental.py", "src/charoite_graph/dossier.py", "src/llm.py")},
            "passed": bool(passed)}
 (output / "byte_exact_artifacts.json").write_text(json.dumps({
     "encoding": "UTF-8 strings; encode to recover byte-exact files",

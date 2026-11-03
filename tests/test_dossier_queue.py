@@ -975,6 +975,9 @@ def test_generate_calls_the_model_with_what_the_label_hashes(monkeypatch):
         def __init__(self, c):
             pass
 
+        def require_local_ollama_model(self, model=None):
+            return "q:local"
+
         def stream(self, prompt, **kw):
             seen.append(kw)
             yield GOOD
@@ -988,7 +991,8 @@ def test_generate_calls_the_model_with_what_the_label_hashes(monkeypatch):
     monkeypatch.setattr(nd.dossier, "GEN_THINK", True)
     monkeypatch.setattr(nd.dossier, "GEN_TEMPERATURES", (0.4, 0.1))
     assert nd.generate("т", [], {}, {"llm": {"model": "q"}}) == GOOD.strip()
-    assert seen == [{"model": "q", "temperature": 0.4, "system": "S", "num_predict": 77, "think": True}]
+    assert seen == [{"model": "q:local", "truncate": False, "shift": False, "temperature": 0.4,
+                     "system": "S", "num_predict": 77, "think": True}]
 
 
 @pytest.mark.parametrize("fell", [True, False])
@@ -1001,6 +1005,9 @@ def test_generate_reports_whether_the_fallback_answered(monkeypatch, fell):
         engine, base, cloud_ready, _fell_back_local = "ollama", "http://127.0.0.1:11434", False, False
         def __init__(self, c):
             self._fell_back_local = False
+
+        def require_local_ollama_model(self, model=None):
+            return "q:local"
 
         def stream(self, prompt, **kw):
             self._fell_back_local = fell

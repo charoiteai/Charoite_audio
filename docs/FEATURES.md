@@ -336,8 +336,11 @@ declared correction moves the old current claim to attributed history and keeps
 its replacement in the current section. Separate checks assess each new
 assertion's source support and topic relevance, using the complete source so a
 selected quotation cannot hide conditions on other lines.
-This generation path requires local Ollama with an explicit request context
-window; direct MLX server requests are refused until their actual window can be
+New visible wiki-link labels require evidence just like ordinary prose.
+This generation path requires trusted local Ollama 0.34.4 or later, with an
+explicit local model selector and context window. A context overflow refuses
+the addition rather than silently trimming its input; an unsupported server
+version also leaves the dossier intact. Direct MLX requests are refused until their actual window can be
 verified. A failed index publication is reported and retried from disk on the next run,
 including a run without new meetings. Existing recovery backups retain their
 original bytes. To check what a query would

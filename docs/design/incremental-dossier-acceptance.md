@@ -130,7 +130,22 @@ Transport contracts exercise the real gateway with a bounded offline provider,
 including full input, local-only construction, finite output, Russian input
 capacity and agreement between the admission and provider context windows.
 These are deterministic transport checks, not real-model quality evidence.
-This path requires Ollama, whose request explicitly carries `num_ctx`. A direct
+This path requires a trusted local Ollama server, stable version 0.34.4 or later.
+Before sending dossier text, a metadata-only version check establishes support
+for an explicit `:local` model selector and top-level `truncate=false` and
+`shift=false` controls. Unknown/older versions refuse the addition. Every chat
+uses the selector, so a remote manifest is refused at the server rather than
+forwarded, including after a retag. The request explicitly carries `num_ctx`;
+the early byte estimate is only admission screening, while the server must
+refuse actual template/tokenizer overflow instead of trimming or shifting.
+This assumes a trusted compatible server; version metadata cannot authenticate
+a malicious loopback proxy. Fake HTTP contract tests do not constitute an
+installed-server overflow or retag experiment.
+
+New visible wiki aliases, page labels and fragments are significant content
+requiring exact claims and independent evidence. Only retained old link text
+and known plain provenance identifiers are exempt from new-content coverage.
+A citation without a new factual contribution cannot accept a source. A direct
 `mlx-server` configuration is refused before constructing a provider until its
 actual server window can be reliably verified; a configured number alone is
 insufficient evidence of that window.

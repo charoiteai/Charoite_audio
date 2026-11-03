@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import time
+import urllib.request
 
 source = Path(sys.argv[1]).resolve()
 label, output, mode = sys.argv[2], Path(sys.argv[3]).resolve(), sys.argv[4]
@@ -75,6 +76,26 @@ CONFIG = {"llm": {"engine": "ollama", "base_url": "http://127.0.0.1:11434",
                   "model": "qwen3.6:35b-mlx", "num_ctx": 8192,
                   "cloud_fallback_local": False},
           "sufler": {"role": "You maintain invented factual topic dossiers."}}
+
+
+def metadata():
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(CONFIG["llm"]["base_url"] + "/api/tags", timeout=15) as response:
+        tags = json.load(response)
+    model = next(item for item in tags["models"]
+                 if item["name"] == CONFIG["llm"]["model"].removesuffix(":local"))
+    with opener.open(CONFIG["llm"]["base_url"] + "/api/version", timeout=15) as response:
+        version = json.load(response)
+    return {"name": model["name"], "digest": model["digest"], "details": model.get("details"),
+            "server_version": version.get("version")}
+
+
+def request_profile_ok(call):
+    return (call["engine"] == "ollama" and call["transport"] == CONFIG["llm"]["base_url"]
+            and call["model"] == CONFIG["llm"]["model"] + ":local"
+            and call["truncate"] is False and call["shift"] is False and not call["fell_back"])
+
+
 results, calls = [], []
 if mode == "model":
     from llm import LLM
@@ -83,8 +104,10 @@ if mode == "model":
     def measured_stream(self, prompt, *args, **kwargs):
         number = len(calls) + 1
         call = {"number": number, "engine": self.engine,
-                "model": kwargs.get("model") or self.model,
+                "model": kwargs.get("model"), "base_model": self.model,
                 "role": kwargs.get("system"), "temperature": kwargs.get("temperature"),
+                "num_predict": kwargs.get("num_predict"), "think": kwargs.get("think"),
+                "truncate": kwargs.get("truncate"), "shift": kwargs.get("shift"), "transport": self.base,
                 "num_ctx": self.num_ctx, "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
         calls.append(call)
         (output / f"call-{number:02}-prompt.txt").write_text(prompt)
@@ -100,6 +123,7 @@ if mode == "model":
             print("CALL " + json.dumps(call), file=sys.__stdout__, flush=True)
 
     LLM.stream = measured_stream
+    preflight = metadata()
 
 for scenario, revised, new_fact in [
     ("S01-plain", False, "A rain cover was fitted."),
@@ -194,9 +218,10 @@ for scenario, revised, new_fact in [
               "composition": dossier.composition(after.decode(), schema=CHAROITE), "repeat": repeat,
               "behavior": behavior}
     if mode == "model":
+        result["request_profiles_ok"] = all(request_profile_ok(call) for call in calls[first_call:])
         result["passed"] = (error is None and result["result"].get("собрано") == 1
                             and all(result[k] for k in ("warning_retained", "manual_retained", "old_link_retained"))
-                            and all(behavior.values())
+                            and all(behavior.values()) and result["request_profiles_ok"]
                             and repeat == {"model_calls": 0, "unchanged": True, "no_new_backup": True, "built": 0}
                             and result["composition"] == ([A] if scenario == "S04-irrelevant" else [A, B])
                             and result["rejected"] == ([B] if scenario == "S04-irrelevant" else []))
@@ -236,7 +261,11 @@ receipt = {"source_label": label, "source": str(source), "mode": mode, "runtime"
            "real_model_calls": len(calls), "calls": calls, "cases": results,
            "judge_cases": judge_cases, "tripwire_events": tripwire, "production_data_used": False}
 if mode == "model":
-    receipt["passed"] = not tripwire and all(r["passed"] for r in results + judge_cases)
+    receipt["preflight"], receipt["postflight"] = preflight, metadata()
+    receipt["request_profiles_ok"] = all(request_profile_ok(call) for call in calls)
+    receipt["passed"] = (not tripwire and all(r["passed"] for r in results + judge_cases)
+                         and receipt["request_profiles_ok"]
+                         and receipt["preflight"]["digest"] == receipt["postflight"]["digest"])
 (output / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n")
 print("RECEIPT " + json.dumps(receipt, ensure_ascii=False), flush=True)
 if mode == "model" and not receipt["passed"]:

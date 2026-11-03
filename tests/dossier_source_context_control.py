@@ -98,9 +98,10 @@ def main():
     def measured(self, prompt, *args, **kwargs):
         number, started = len(calls) + 1, time.monotonic()
         row = {"number": number, "engine": self.engine,
-               "model": self.effective_model(kwargs.get("model") or self.model),
+               "model": kwargs.get("model"), "base_model": self.model,
                "num_ctx": self.num_ctx, "system": kwargs.get("system"),
                "num_predict": kwargs.get("num_predict"), "transport": self.base,
+               "truncate": kwargs.get("truncate"), "shift": kwargs.get("shift"),
                "think": kwargs.get("think"), "temperature": kwargs.get("temperature"),
                "fell_back": False, "error": None}
         calls.append(row)
@@ -122,7 +123,7 @@ def main():
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(BASE + "/api/tags", timeout=15) as response:
             tags = json.load(response)
-        model = next((item for item in tags["models"] if item["name"] == MODEL), None)
+        model = next((item for item in tags["models"] if item["name"] == MODEL.removesuffix(":local")), None)
         if model is None:
             raise RuntimeError("required local model is unavailable")
         if not isinstance(model.get("digest"), str) or not model["digest"]:
@@ -143,6 +144,7 @@ def main():
                "fixture_sha256": fixture_hash,
                "expected_calls": {"support": expected_support_calls, "topic": expected_topic_calls,
                                   "total": expected_total_calls},
+               "expected_request": {"model": MODEL + ":local", "truncate": False, "shift": False},
                "real_model_calls": 0, "complete": False, "passed": False}
     def checkpoint():
         receipt["real_model_calls"] = len(calls)
@@ -169,7 +171,8 @@ def main():
         flag_ok = shape_ok and verdict[flag_name] is expected_flag
         decision_ok = shape_ok and (verdict["verdict"] == "accept" if expected_flag
                                     else verdict["verdict"] in {"reject", "uncertain"})
-        profile_ok = (row["engine"] == "ollama" and row["model"] == MODEL and row["transport"] == BASE
+        profile_ok = (row["engine"] == "ollama" and row["model"] == MODEL + ":local" and row["transport"] == BASE
+                      and row["truncate"] is False and row["shift"] is False
                       and row["num_ctx"] == config["llm"]["num_ctx"] and row["num_predict"] == 350
                       and row["think"] is False and type(row["temperature"]) in (int, float) and row["temperature"] == 0)
         order_ok = row["system"] == expected_system

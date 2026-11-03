@@ -62,7 +62,8 @@ def _config(*, context=16384, engine="ollama"):
 
 @pytest.fixture
 def provider(monkeypatch):
-    state = SimpleNamespace(scenario=_scenario(), constructors=[], calls=[], actual_overrides={}, responses={})
+    state = SimpleNamespace(scenario=_scenario(), constructors=[], calls=[], actual_overrides={}, responses={},
+                            local_contract_calls=[], local_reference="invented-local-json-model:local")
 
     class BoundedLocalProvider:
         def __init__(self, config):
@@ -76,6 +77,12 @@ def provider(monkeypatch):
             self.num_ctx = int(config["llm"].get("num_ctx", 8192))
             for name, value in state.actual_overrides.items():
                 setattr(self, name, value)
+
+        def require_local_ollama_model(self, model=None):
+            # The concrete adapter verifies server support. This double only
+            # declares a controlled local reference; it does not fake a version.
+            state.local_contract_calls.append(model)
+            return state.local_reference
 
         def stream(self, prompt, **kwargs):
             payload, end = json.JSONDecoder().raw_decode(prompt)
@@ -123,14 +130,15 @@ def _validate(scenario, config):
 def _assert_finite_json_profiles(calls, config):
     for call in calls:
         options = call["options"]
-        assert options["model"] == config["llm"]["model"]
+        assert options["model"] == config["llm"]["model"] + ":local"
+        assert options["truncate"] is False and options["shift"] is False
         assert options["system"] in {SOURCE, GENERATE, MAIN, inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM}
         assert type(options["num_predict"]) is int and 0 < options["num_predict"] <= call["context"]
         assert options["think"] is False
         assert isinstance(options["temperature"], (int, float)) and math.isfinite(options["temperature"])
         if options["system"] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
             assert type(options["temperature"]) in (int, float)
-        assert set(options) == {"model", "system", "temperature", "num_predict", "think"}
+        assert set(options) == {"model", "system", "temperature", "num_predict", "think", "truncate", "shift"}
 
 
 def test_source_and_candidate_reach_bounded_local_provider_with_complete_new_input(provider):
@@ -155,6 +163,8 @@ def test_source_and_candidate_reach_bounded_local_provider_with_complete_new_inp
     assert all(OLD_SOURCE_ONLY not in call["prompt"] for call in provider.calls)
     assert all("COMPLETE_NEW_SOURCE_TAIL" in call["payload"]["source_context"] for call in (support, topic))
     _assert_finite_json_profiles(provider.calls, config)
+    assert len(provider.local_contract_calls) == len(provider.calls)
+    assert all(model in (None, config["llm"]["model"]) for model in provider.local_contract_calls)
     assert config == original_config
     assert all(c["llm"]["cloud_fallback_local"] is False and c["llm"]["allow_remote"] is False
                for c in provider.constructors)
@@ -169,7 +179,8 @@ def test_explicit_caller_profile_and_optional_fallback_record_are_preserved(prov
     assert json.loads(answer) == {"text": "local profile answer"} and fallback == [False]
     assert inc.local_complete(prompt, config, **requested) == answer
     assert len(provider.calls) == 2
-    assert all(call["options"] == {"model": config["llm"]["model"], **requested} for call in provider.calls)
+    assert all(call["options"] == {"model": config["llm"]["model"] + ":local", "truncate": False,
+                                   "shift": False, **requested} for call in provider.calls)
 
 
 @pytest.mark.parametrize("engine", ["ollama"])
@@ -198,6 +209,40 @@ def test_nonlocal_caller_configuration_never_reaches_the_provider_factory(provid
     with pytest.raises((inc.Refused, privacy.PrivacyRefused)):
         inc.local_complete(json.dumps({"request": "must not leave this machine"}), config, system=PROFILE)
     assert provider.constructors == [] and provider.calls == []
+
+
+@pytest.mark.parametrize("case", ["missing", "non-callable", "none", "non-string", "empty", "base-name",
+                                 "cloud", "hyphen-cloud", "nested-cloud", "nested-local", "error"])
+def test_local_gateway_refuses_an_unverified_declared_contract_before_streaming(monkeypatch, case):
+    constructors, contracts, streams = [], [], []
+    references = {"none": None, "non-string": 1, "empty": "", "base-name": "invented-local-json-model",
+                  "cloud": "invented-local-json-model:cloud", "hyphen-cloud": "invented-cloud:local",
+                  "nested-cloud": "invented:tag:cloud:local", "nested-local": "invented:local:local"}
+
+    class ContractAdapter:
+        engine, base, cloud_ready, _fell_back_local = "ollama", "http://127.0.0.1:13701", False, False
+
+        def __init__(self, config):
+            constructors.append(copy.deepcopy(config))
+
+        def stream(self, prompt, **kwargs):
+            streams.append(kwargs)
+            yield "{}"
+
+    def declared_contract(self, model=None):
+        contracts.append(model)
+        if case == "error":
+            raise RuntimeError("Synthetic declared local-provider contract failure.")
+        return references[case]
+
+    if case != "missing":
+        ContractAdapter.require_local_ollama_model = None if case == "non-callable" else declared_contract
+    monkeypatch.setattr(llm, "LLM", ContractAdapter)
+    with pytest.raises(inc.Refused):
+        inc.local_complete(json.dumps({"request": "verified local inference required"}), _config(), system=PROFILE)
+    assert len(constructors) == 1 and streams == []
+    assert len(contracts) == (0 if case in ("missing", "non-callable") else 1)
+    assert all(model in (None, _config()["llm"]["model"]) for model in contracts)
 
 
 def test_complete_russian_source_fits_utf8_window_and_generation_and_judges_succeed(provider):
