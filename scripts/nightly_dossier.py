@@ -210,7 +210,6 @@ class _GraphRun:
         self.gen = gen            # `вход:` генератора этой ночи (№842)
         self.snapshot = dossier.GraphSnapshot(files, {}, {})
         self.addresses = None
-        self.full = False
         self.files, self.cl, self.today, self.stamp = files, cl, today, stamp
         self.reads = _DossierReads()
         self.entries: dict[str, dict] = {}
@@ -406,9 +405,9 @@ def _input_refusal(g: _GraphRun, theme: str, members: list[str], loaded: dossier
     if (fresh.redirects, fresh.stubs) != (g.snapshot.redirects, g.snapshot.stubs):
         return "изменились перенаправления графа"
     for name in members:
-        before, after = g.files.get(name), fresh.files.get(name)
-        if before is None or after is None:
-            return "источник исчез из снимка"
+        # Cluster members belong to each captured files map; the fresh
+        # membership was checked above before accessing either snapshot.
+        before, after = g.files[name], fresh.files[name]
         for key in ("rel", "kind", "text", "mtime", "sha256", "identity", "physical"):
             if before.get(key) != after.get(key):
                 return "источник изменён или заменён"

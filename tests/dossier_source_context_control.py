@@ -1,6 +1,6 @@
 """Manual full-source audit control using the production local model path.
 
-Usage: python -I -B this_file.py PUBLIC_SOURCE OUTPUT_DIR [boundary]
+Usage: python -I -B this_file.py PUBLIC_SOURCE OUTPUT_DIR [boundary|role]
 Invented inputs only. This file neither loads a production graph nor installs
 anything. Run it only under the project's external resource gates.
 """
@@ -23,6 +23,8 @@ FIXTURE = "tests/fixtures/dossier_claim_audit_cases.json"
 FIXTURE_SHA256 = "ff0382ed38c828715ac29b078ae557e15d204fb00d302b7645c95fb90016c491"
 BOUNDARY_FIXTURE = "tests/fixtures/dossier_claim_audit_boundary_cases.json"
 BOUNDARY_SHA256 = "289ee11b9322039ec15b100c6639c790dbba608612f98ec682d9aec43b060744"
+ROLE_FIXTURE = "tests/fixtures/dossier_claim_audit_role_cases.json"
+ROLE_SHA256 = "67e7bea798ebac8bf2a5040106fe039349388956371a40d0a6dca833a6940b6a"
 PRIOR = (f"## Сейчас\n- Vent A is open. [[Встречи/{A}]]\n"
          f"## Как пришли\n- The opening decision is historical. [[Встречи/{A}]]\n"
          "## Решено\n- Use purple labels. [[SensorGuide]]\n"
@@ -31,11 +33,12 @@ PRIOR = (f"## Сейчас\n- Vent A is open. [[Встречи/{A}]]\n"
 
 
 def main():
-    if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "boundary"):
-        raise SystemExit("Usage: python -I -B control.py PUBLIC_SOURCE OUTPUT_DIR [boundary]")
+    if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] not in {"boundary", "role"}):
+        raise SystemExit("Usage: python -I -B control.py PUBLIC_SOURCE OUTPUT_DIR [boundary|role]")
     source, output = (Path(arg).resolve() for arg in sys.argv[1:3])
-    fixture_path, expected_hash = ((BOUNDARY_FIXTURE, BOUNDARY_SHA256) if len(sys.argv) == 4
-                                   else (FIXTURE, FIXTURE_SHA256))
+    fixture_path, expected_hash = {"boundary": (BOUNDARY_FIXTURE, BOUNDARY_SHA256),
+                                   "role": (ROLE_FIXTURE, ROLE_SHA256),
+                                   "original": (FIXTURE, FIXTURE_SHA256)}[sys.argv[3] if len(sys.argv) == 4 else "original"]
     output.mkdir(parents=True, exist_ok=True)
     runtime = Path(tempfile.mkdtemp(prefix="charoite843-source-context-"))
     root = runtime / "data"
@@ -71,6 +74,7 @@ def main():
     import dossier_incremental as inc
     from charoite_graph import dossier
     from llm import LLM
+    import requests
 
     charoite_paths.use_data_root(root)
     config = {"llm": {"engine": "ollama", "base_url": BASE, "model": MODEL,
@@ -99,8 +103,19 @@ def main():
         return {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in source_paths}
 
     original_stream = LLM.stream
+    original_send, wire = requests.sessions.Session.send, []
+
+    def measured_send(session, request, **kwargs):
+        if request.method == "POST" and request.url == BASE + "/api/chat":
+            body = request.body.decode() if isinstance(request.body, bytes) else request.body
+            wire.append(json.loads(body))
+            with (output / "http-requests.jsonl").open("a") as journal:
+                journal.write(json.dumps(wire[-1], ensure_ascii=False) + "\n")
+        return original_send(session, request, **kwargs)
+
     def measured(self, prompt, *args, **kwargs):
         number, started = len(calls) + 1, time.monotonic()
+        wire_start = len(wire)
         row = {"number": number, "engine": self.engine,
                "model": kwargs.get("model"), "base_model": self.model,
                "num_ctx": self.num_ctx, "system": kwargs.get("system"),
@@ -119,6 +134,7 @@ def main():
             row["error"] = f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            row["wire_requests"] = wire[wire_start:]
             row["wall_s"] = round(time.monotonic() - started, 3)
             row["fell_back"] = bool(self._fell_back_local)
             (output / f"call-{number:02d}-answer.txt").write_text("".join(pieces))
@@ -168,7 +184,7 @@ def main():
             shape_ok = (verdict["verdict"] in {"accept", "reject", "uncertain"}
                         and type(verdict[flag_name]) is bool
                         and isinstance(verdict["reason"], str) and bool(verdict["reason"].strip()))
-            payload, _ = json.JSONDecoder().raw_decode(prompt)
+            payload = json.loads(prompt)
             payload_ok = payload == expected_payload
         except (ValueError, TypeError, KeyError) as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -177,20 +193,30 @@ def main():
                                     else verdict["verdict"] in {"reject", "uncertain"})
         profile_ok = (row["engine"] == "ollama" and row["model"] == MODEL + ":local" and row["transport"] == BASE
                       and row["truncate"] is False and row["shift"] is False
-                      and row["num_ctx"] == config["llm"]["num_ctx"] and row["num_predict"] == 350
-                      and row["think"] is False and type(row["temperature"]) in (int, float) and row["temperature"] == 0)
+                      and row["num_ctx"] == config["llm"]["num_ctx"] and row["num_predict"] == 2000
+                      and row["think"] is True and type(row["temperature"]) in (int, float) and row["temperature"] == 0)
         order_ok = row["system"] == expected_system
-        passed = bool(shape_ok and payload_ok and flag_ok and decision_ok and order_ok and profile_ok
+        expected_messages = [{"role": "system", "content": expected_system},
+                             {"role": "user", "content": prompt}]
+        wire_requests = row["wire_requests"]
+        wire_ok = (len(wire_requests) == 1 and wire_requests[0].get("messages") == expected_messages
+                   and wire_requests[0].get("model") == MODEL + ":local"
+                   and wire_requests[0].get("truncate") is False and wire_requests[0].get("shift") is False
+                   and wire_requests[0].get("think") is True
+                   and wire_requests[0].get("options") == {"num_ctx": 8192, "num_predict": 2000, "temperature": 0})
+        passed = bool(shape_ok and payload_ok and flag_ok and decision_ok and order_ok and profile_ok and wire_ok
                       and row["error"] is None and not row["fell_back"])
         return {"call": row["number"], "expected_system": expected_system, "actual_system": row["system"],
                 "flag": flag_name, "expected_flag": expected_flag,
                 "observed_flag": verdict[flag_name] if shape_ok else None, "verdict": verdict,
                 "strict_verdict": shape_ok, "payload_ok": payload_ok, "component_matches": bool(flag_ok),
                 "decision_matches": bool(decision_ok), "order_ok": order_ok, "profile_ok": profile_ok,
+                "wire_ok": wire_ok,
                 "parse_error": error, "passed": passed}
 
     checkpoint()
     LLM.stream = measured
+    requests.sessions.Session.send = measured_send
     try:
         receipt["preflight"] = metadata()
         for probe in probes:
@@ -241,13 +267,14 @@ def main():
                       "full_context_selected": selected == probe["source"], "passed": passed}
             results.append(result)
             checkpoint()
-            print(json.dumps(result, ensure_ascii=False), flush=True)
+            print(json.dumps({key: result[key] for key in ("case", "passed", "real_calls")}), flush=True)
         receipt["postflight"] = metadata()
         receipt["complete"] = True
     except Exception as exc:  # noqa: BLE001 - preserve an explicitly failed partial receipt
         receipt["fatal_error"] = f"{type(exc).__name__}: {exc}"
     finally:
         LLM.stream = original_stream
+        requests.sessions.Session.send = original_send
     receipt["source_hashes_after"] = hashes()
     receipt["passed"] = bool(receipt["complete"] and len(results) == len(probes)
                              and all(result["passed"] for result in results) and not events
@@ -255,7 +282,7 @@ def main():
                              and before_hashes == receipt["source_hashes_after"]
                              and receipt["preflight"]["digest"] == receipt["postflight"]["digest"])
     checkpoint()
-    print("RECEIPT " + json.dumps(receipt, ensure_ascii=False), flush=True)
+    print("RECEIPT " + json.dumps({key: receipt[key] for key in ("complete", "passed", "actual_calls", "audit_event_count")}), flush=True)
     return 0 if receipt["passed"] else 1
 
 

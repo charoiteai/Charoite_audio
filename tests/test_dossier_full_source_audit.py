@@ -20,8 +20,8 @@ from test_dossier_incremental import world as world, _new, LOCAL
 from test_dossier_model_contract import _old, _claim, _verdict, ADDED, A, B
 
 FACT = "A rain cover was fitted."
-SUPPORT = "You verify one claim against its complete source."
-TOPIC = "You judge one claim's topic relevance."
+SUPPORT = inc.SUPPORT_AUDIT_SYSTEM
+TOPIC = inc.TOPIC_AUDIT_SYSTEM
 NEIGHBOR_CONTEXTS = [
     "The next statement is tentative and has not been verified.\n" + FACT + "\n",
     FACT + "\nThe preceding statement is tentative and has not been verified.\n",

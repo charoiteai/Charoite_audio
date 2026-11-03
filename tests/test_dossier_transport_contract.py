@@ -134,9 +134,11 @@ def _assert_finite_json_profiles(calls, config):
         assert options["truncate"] is False and options["shift"] is False
         assert options["system"] in {SOURCE, GENERATE, MAIN, inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM}
         assert type(options["num_predict"]) is int and 0 < options["num_predict"] <= call["context"]
-        assert options["think"] is False
+        audit_role = options["system"] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM)
+        assert options["think"] is audit_role
         assert isinstance(options["temperature"], (int, float)) and math.isfinite(options["temperature"])
         if options["system"] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
+            assert options["num_predict"] == 2000
             assert type(options["temperature"]) in (int, float)
         assert set(options) == {"model", "system", "temperature", "num_predict", "think", "truncate", "shift"}
 
@@ -158,8 +160,9 @@ def test_source_and_candidate_reach_bounded_local_provider_with_complete_new_inp
                       "source_quotation": scenario.fact, "source_context": scenario.source}
     assert support["payload"] == topic["payload"] == expected_audit
     assert support["options"]["system"] != topic["options"]["system"]
-    assert support["suffix"].strip() and topic["suffix"].strip()
-    assert support["suffix"] != topic["suffix"]
+    assert not support["suffix"] and not topic["suffix"]
+    assert inc.SUPPORT_AUDIT_INSTRUCTION in support["options"]["system"]
+    assert inc.TOPIC_AUDIT_INSTRUCTION in topic["options"]["system"]
     assert all(OLD_SOURCE_ONLY not in call["prompt"] for call in provider.calls)
     assert all("COMPLETE_NEW_SOURCE_TAIL" in call["payload"]["source_context"] for call in (support, topic))
     _assert_finite_json_profiles(provider.calls, config)
@@ -349,7 +352,7 @@ def test_real_transport_and_strict_stage_parser_stop_on_either_failure(provider,
     elif failure == "malformed":
         answer = "not JSON"
     elif failure == "truncated-output":
-        answer["reason"] = "x" * 1000
+        answer["reason"] = "x" * 10000
     else:
         answer = TimeoutError("Synthetic bounded provider timeout.")
     provider.responses[role] = answer

@@ -220,6 +220,7 @@ with native sandbox restrictions and a TCP routing tripwire. It checks real
 local generation, remote-retag refusal and same-input overflow/truncation
 controls. Preparing the driver is not execution evidence. Generation-time
 context-shift refusal needs a separate successful boundary experiment.
+
 Cleanup cannot be confirmed from a stale child inventory after the server
 leader disappears; known identities are stopped, and unknown descendants
 leave the control unsuccessful with its temporary model copy retained.
@@ -227,3 +228,22 @@ The control freezes its own verified process tree before the final inventory,
 recaptures children created during that freeze, kills only verified identities
 and requires the private process group to become empty. No production process
 is included in this disposable tree.
+
+### Audit request and output boundaries
+
+Support and topic audits use separate system instructions. Each user message
+contains only the five-field JSON input, including the complete source context,
+the selected quotation and the candidate assertion. Only these two audits use
+`think=true` with a 2,000-token response budget. The complete-input guard reserves
+that budget before sending; insufficient context remains a retryable refusal.
+The generator, source-relevance check and aggregate judge keep their profiles.
+Real controls must inspect the transmitted messages and options, a nonempty
+strict final verdict, the unchanged claim matrix, and the writer/graph scenarios.
+
+The installed-server generation control distinguishes an HTTP error from
+`done_reason=length` with an incomplete JSON response. Its paired requests differ
+only in `shift`; actual context size, token counts and server shift events must
+prove that one output stopped at the boundary while the other crossed it and
+completed. The real adapter and strict dossier parser must reject the incomplete
+output. A captured-output writer replay checks unchanged dossier, membership,
+index and backups separately; that replay makes zero real model calls.

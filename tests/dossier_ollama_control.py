@@ -388,14 +388,25 @@ def main():
         sys.path.insert(0, str(source / "src"))
         import requests
         from llm import LLM, LLMHTTPError
+        import dossier_incremental as incremental
 
         original_send = requests.sessions.Session.send
         wire = []
+        format_override = None
 
         def measured_send(session, request, **kwargs):
             parsed = urlsplit(request.url)
             check(parsed.hostname == "127.0.0.1" and parsed.port == port,
                   "transport must target only the isolated server")
+            if format_override is not None and request.method == "POST" and parsed.path == "/api/chat":
+                # Add the bounded-output grammar and fixed sampling seed to
+                # a real adapter request, identically for both shift values.
+                # No response is substituted; the installed server generates it.
+                body = json.loads(request.body)
+                body["format"] = format_override
+                body["options"]["seed"] = 1
+                request.body = json_bytes(body)
+                request.headers["Content-Length"] = str(len(request.body))
             started = time.monotonic()
             response = original_send(session, request, **kwargs)
             # Materializing a real response records the wire bytes. It does not
@@ -488,6 +499,73 @@ def main():
             check(response.status_code == 200 and body.get("done") is True and not body.get("error"),
                   "same-input truncate=true control did not complete")
         report["checks"]["same_input_truncation_control"] = True
+
+        # Force a bounded output, then measure token counts rather than infer
+        # a context crossing from characters or the number of array elements.
+        format_override = {"type": "array", "minItems": 128, "maxItems": 128,
+                           "items": {"type": "integer", "enum": [1]}}
+        generation_results = []
+        try:
+            for shift in (False, True):
+                log_offset = (runtime / "ollama.log").stat().st_size
+                gate("production-adapter-generation-boundary")
+                text = "".join(client.stream("Return the required array of ones.", model=selected, system=SYSTEM,
+                                             num_predict=512, temperature=0, busy_wait=0,
+                                             timeout=(3, 180), truncate=False, shift=shift))
+                row = wire[-1]
+                frames = [json.loads(line) for line in row["response"].splitlines() if line]
+                terminal = next(frame for frame in reversed(frames) if frame.get("done"))
+                check(text == "".join(frame.get("message", {}).get("content", "") for frame in frames),
+                      "adapter output differs from the real generation stream")
+                with request("/api/ps") as response:
+                    running = response.json().get("models", [])
+                log = (runtime / "ollama.log").read_bytes()[log_offset:].decode("utf-8", "replace")
+                generation_results.append({"shift": shift, "status": row["status"], "request": row["request"],
+                                           "body": terminal, "adapter_text": text, "runtime_models": running,
+                                           "shift_events": log.count("slot context shift")})
+                save(output / "generation-shift.json", {"results": generation_results})
+        finally:
+            format_override = None
+        blocked, shifted = generation_results
+        body = shifted["body"]
+        check(shifted["status"] == 200 and body.get("done") is True and body.get("done_reason") == "stop",
+              "shift=true generation did not complete normally")
+        generated = json.loads(shifted["adapter_text"])
+        check(isinstance(generated, list) and len(generated) == 128
+              and all(type(item) is int and item == 1 for item in generated),
+              "generation control did not produce the complete bounded array")
+        check(all(len(row["runtime_models"]) == 1 and row["runtime_models"][0].get("context_length") == CONTEXT
+                  for row in generation_results),
+              "generation control has no confirmed effective context")
+        prompt_tokens, output_tokens = body.get("prompt_eval_count"), body.get("eval_count")
+        check(type(prompt_tokens) is int and type(output_tokens) is int
+              and 0 < prompt_tokens < CONTEXT < prompt_tokens + output_tokens,
+              "generation control did not demonstrably cross the context boundary")
+        negative = blocked["body"]
+        check(blocked["status"] == 200 and negative.get("done") is True and negative.get("done_reason") == "length"
+              and type(negative.get("prompt_eval_count")) is int and type(negative.get("eval_count")) is int
+              and 0 < negative["prompt_eval_count"] < CONTEXT
+              and negative["prompt_eval_count"] + negative["eval_count"] == CONTEXT,
+              "shift=false did not stop exactly at the confirmed context boundary")
+        check(blocked["shift_events"] == 0 and shifted["shift_events"] > 0,
+              "server logs do not distinguish capped generation from real context shifting")
+        left, right = (dict(row["request"]) for row in generation_results)
+        check(left.pop("shift") is False and right.pop("shift") is True and left == right,
+              "generation requests differ by more than the shift flag")
+        try:
+            incremental._json(blocked["adapter_text"], {"reason", "supported", "verdict"})
+        except incremental.Refused as exc:
+            check(str(exc) == "malformed model JSON", "negative response was not refused as incomplete JSON")
+        else:
+            raise RuntimeError("strict dossier parser accepted the context-capped output")
+        save(output / "generation-shift.json", {"results": generation_results,
+                                                "effective_context": CONTEXT,
+                                                "crossing_observed": True,
+                                                "negative_classification": "no-shift capped/incomplete",
+                                                "production_adapter_and_parser": True})
+        report["checks"]["generation_no_shift_capped"] = True
+        report["checks"]["generation_incomplete_json_refused"] = True
+        report["limitations"].remove("Generation-time context shifting is not exercised.")
 
         # Replace only our temporary tag, after a real local request passed.
         remote_config = {**config, "remote_host": f"http://127.0.0.1:{tripwire.port}",
