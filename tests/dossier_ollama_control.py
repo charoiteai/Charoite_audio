@@ -19,7 +19,8 @@ Manifest format and routing/control semantics were checked against official
 Ollama v0.34.4 sources: manifest/{manifest,layer}.go, types/model/config.go,
 server/{images,routes,prompt}.go, and envconfig/config.go at
 https://github.com/ollama/ollama/tree/v0.34.4 . This control tests prompt
-overflow and request flags; it does not prove generation-time shift refusal.
+overflow, request flags and paired generation-time context boundaries through
+the real adapter, with strict rejection of incomplete JSON before publication.
 Preparing this file is not an executed installed-server experiment.
 """
 from __future__ import annotations
