@@ -1,0 +1,42 @@
+держит мерж: выжили мутанты в критичных зонах — 33
+  шард 1 из 4: M=55, судилось 55 — fail
+  шард 2 из 4: M=55, судилось 55 — fail
+  шард 3 из 4: M=55, судилось 55 — fail
+  шард 4 из 4: M=54, судилось 54 — fail
+итог: шардов 4, M=219, P=219
+выборка 219 из 219, судилось 219; критичных в плане 211, в выборке 211; зоны 369795e53b71
+  ВЫЖИЛ scripts/nightly_dossier.py:446: And → Or @11-103 — критичная зона — держит мерж
+  ВЫЖИЛ scripts/nightly_dossier_review.py:220: return X → return None @8-85 — критичная зона — держит мерж
+  ВЫЖИЛ scripts/nightly_dossier_review.py:505: 10 → 0 @71-73 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:743: Lt → LtE @30-45 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:753: NotEq → Eq @28-48 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:753: 1 → 0 @36-37 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:765: Gt → GtE @68-83 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:782: And → Or @23-91 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:786: In → NotIn @32-55 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:787: Lt → LtE @35-84 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:787: 1 → 0 @76-77 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:793: NotEq → Eq @11-42 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:795: NotEq → Eq @13-79 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:797: NotEq → Eq @13-74 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:799: NotEq → Eq @24-51 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:799: Add → Sub @33-51 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:801: not X → X @13-33 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:803: Eq → NotEq @13-94 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:803: Lt → LtE @43-71 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:823: False → True @49-54 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:864: return X → return None @16-95 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:865: return X → return None @8-17 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:871: Or → And @29-89 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:882: Or → And @11-71 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:883: Or → And @29-114 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:940: return X → return None @8-18 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:942: return X → return None @8-67 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:947: LtE → Lt @19-35 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: And → Or @21-66 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: 1 → 0 @51-52 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: Eq → NotEq @21-33 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: Eq → NotEq @38-66 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: Sub → Add @43-52 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:707: True → False @18-22 — вне критичных зон
+  ВЫЖИЛ src/charoite_graph/dossier.py:715: True → False @18-22 — вне критичных зон
