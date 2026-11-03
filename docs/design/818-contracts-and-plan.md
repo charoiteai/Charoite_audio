@@ -92,7 +92,11 @@ dossier bytes unchanged, no backup for that file, no generation for its theme,
 other themes processed, revision/skipped=1, built=2 and model-failures=0. These
 are inspected existing assertions, not tests executed by this preparation.
 Source lineage: `fdaae018c3db9dd713bd9f60a21c79a1081490d4` (PR900). This
-hold stays ahead of parser admission and must survive W06/D04 and forget.
+hold stays ahead of rebuild parser admission and must survive W06/D04. It must
+not create new forget deletion eligibility. Explicitly forgetting a cited source
+retains its established distinct contract: clear the revision, including a
+damaged-date sentinel, so its retelling cannot outlive that source. This does
+not override policy A's whole-file hold for an ambiguous dossier structure.
 
 The existing date predicate is shape-only (`YYYY-MM-DD`), not calendar
 validation; preserve its conservative hold for `2026-99-99` as well. INPUT Luna's

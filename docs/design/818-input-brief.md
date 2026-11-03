@@ -90,7 +90,10 @@ Literal valid U+FFFD in intact author text is not decode damage. Independently,
 `revision()` at the current base holds a `YYYY-MM-DD`-shaped scalar (calendar
 validity is not checked) **or any U+FFFD in the closed
 revision scalar**. The damaged-date hold from PR900 takes priority even under
-`--full`: no generation, overwrite, backup or forget-eligibility expansion.
+`--full` rebuild: no generation, overwrite or backup. Forget deletion eligibility
+must not expand. Explicit forget of a cited source retains its existing revision
+clearing contract, including a damaged-date scalar; it is a separate operation
+from rebuild. Ambiguous structures still refuse both forget edit and deletion.
 
 ## Finite acceptance cases
 
