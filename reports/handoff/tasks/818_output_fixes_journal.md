@@ -147,3 +147,50 @@ for text in ("", body, body + "\n## Источники\nuntrusted"):
                 count += 1
 print(f"default renderer backward comparison: {count} byte-equal cases; real model calls: 0")
 ```
+
+## Full-run fixture and layout integration
+
+- 2026-11-03 08:46 MSK: coordinating root reported the full run on exact
+  `0aea3806c58a512dd3b1161fd8522436c49fefed`: **6 failed / 10361 passed /
+  8 skipped / 7 xfailed, 170.63 s** (`-n 6 --dist loadgroup`). This is root's
+  executed evidence, not an executor full run. Four CLI-review fixtures and one
+  privacy-review fixture were incomplete protected legacy documents; policy A
+  correctly refused them before their intended scenarios. The sixth failure
+  identified two unclassified reproduction artifacts and the stale file map.
+- Rebuilt the shared CLI dossier and the single privacy dossier fixture through
+  the real renderer, preserving the same synthetic body/names/source links.
+  Complete envelopes now reach the existing mocked CLI retry/CLI_DOWN/sleep
+  and real masking assertions. No production parser, runtime, privacy checks or
+  assertions were weakened; the malformed legacy admission policy is unchanged.
+- Classified exactly the two task818 probe paths as `history`, with pinned-SHA
+  historical reproduction reasons. They are outside the declared entry-point
+  candidate shapes and are not product modules or entry points. An exact `out`
+  rule would fail the existing rule-liveness invariant: its kind was already
+  the suffix fallback `out`, so removing that rule would change nothing.
+  `history` distinguishes these versioned snapshots from unknown future Python
+  files and keeps all existing invariants. Updated the independent approved
+  table copy; no broad report-prefix rule, new entry, layout-schema change,
+  ignore or extension change was introduced.
+- Ran the existing layout-map generator without `--regen`: exit 0,
+  "раскладка совпадает с кодом". The JSON architecture artifact is unchanged;
+  the generated Markdown includes the two exact classifications and the
+  previously missing references from the task818 public documents.
+- Addressed AFTER run: **273 passed, 71.54 s**, exit 0, covering the full CLI
+  probe, privacy-mask and import/layout-boundary modules. All original retry,
+  CLI_DOWN, sleep, masking, data and log assertions remain. The layout module's
+  positive/negative table, scope and rule-liveness checks also pass.
+- Regenerated the Markdown map again after this journal acquired its new named
+  executable reference; generator/check exit 0. No product runtime was changed
+  in this follow-up. No real CLI request, real model, owner data, CI, mutation
+  run, push or installed delivery was performed. The corrected-source full run
+  and the remaining acceptance gates are still the coordinating root's work;
+  the earlier full run remains failed until that rerun succeeds.
+
+Repeat commands use fresh resource roots and installed wrappers as above:
+
+```sh
+task_resource_root=$(mktemp -d /tmp/charoite-818-fixtures.XXXXXX)
+~/.config/charoite/quiet_guard.sh && HEAVY_WAIT_MAX_S=5 CHAROITE_ROOT="$task_resource_root" ~/.config/charoite/heavy_run.sh ../charoite/.venv/bin/python scripts/layout_map.py
+task_resource_root=$(mktemp -d /tmp/charoite-818-fixtures.XXXXXX)
+~/.config/charoite/quiet_guard.sh && HEAVY_WAIT_MAX_S=5 CHAROITE_ROOT="$task_resource_root" ~/.config/charoite/heavy_run.sh ../charoite/.venv/bin/python -m pytest tests/test_cloud_cli_probe.py tests/test_pii_mask.py tests/test_import_boundaries.py -q --tb=short
+```
