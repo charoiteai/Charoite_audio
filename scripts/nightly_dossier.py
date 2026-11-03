@@ -124,13 +124,12 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
     if why := loaded.refusal("rebuild"):
         print(f"  ✗ {theme}: {why} — не трогаю")
         return False, None, int(loaded.state == "unreadable")
-    manual = loaded.parsed.manual
-    if not manual or manual == "—":
+    section = next((s for s in loaded.parsed.sections if s.title == "Правки автора"), None)
+    if section is None:
         return True, None, 0
-    section = next(s for s in loaded.parsed.sections if s.title == "Правки автора")
     # The admitted complete shape makes the author section terminal. Keep its
-    # indentation/trailing spaces; compatibility projections may trim them.
-    return True, (loaded.text or "")[section.content:].strip("\n"), 0
+    # exact normalized payload; compatibility projections may trim or collapse it.
+    return True, (loaded.text or "")[section.content:], 0
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
@@ -414,7 +413,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         g.keep(theme, members, loaded, fp)
         _skip_held(g, theme, rev, cand.cls == SAME)
         return None
-    allowed, manual, failures = _manual_for_rebuild(theme, loaded)
+    allowed, author_payload, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
         g.отказы += failures
         if failures == 0:
@@ -441,9 +440,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # Validate the fully rendered candidate, including preserved author text,
         # within the existing two-attempt malformed-output budget.
         gen = "" if fell_back and fell_back[-1] else g.gen
-        text = dossier.render(theme, body, members, g.files, fp, g.today, gen)
-        if manual:
-            text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
+        text = dossier.render(theme, body, members, g.files, fp, g.today, gen,
+                              author_payload=author_payload)
         candidate = dossier.DossierLoad("ok", text)
         if dossier.looks_valid(body) and candidate.parsed.complete and not candidate.refusal("rebuild"):
             break

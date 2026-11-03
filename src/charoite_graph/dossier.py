@@ -553,8 +553,12 @@ def read_input(loaded: DossierLoad) -> str:
 
 
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
-           fp: str, today: str, gen: str = "") -> str:
-    """Готовый файл досье: frontmatter для машины, текст для человека."""
+           fp: str, today: str, gen: str = "", *, author_payload: str | None = None) -> str:
+    """Готовый файл досье: frontmatter для машины, текст для человека.
+
+    `author_payload` — точное содержимое после строки авторского заголовка,
+    включая пустые строки. None создаёт прежний маркер; "" сохраняет пустоту.
+    """
     kinds: dict[str, list[str]] = defaultdict(list)
     for m in members:
         if m in files:
@@ -585,8 +589,8 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
     for kind in sorted(kinds):
         links = " · ".join(f"[[{m}]]" for m in sorted(kinds[kind]))
         fm.append(f"- **{kind}:** {links}")
-    fm += ["", "## Правки автора", "", "—", ""]
-    return "\n".join(fm)
+    fm += ["", "## Правки автора", ""]
+    return "\n".join(fm) + ("\n—\n" if author_payload is None else author_payload)
 
 
 BACKUP_DIR = ".backup"       # копии досье до пересборки и ревизии: `Досье/.backup/<штамп>/`

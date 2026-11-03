@@ -71,8 +71,13 @@ def test_P01_actual_rebuild_is_stable(world):
 
 
 @pytest.mark.parametrize("bad", [BODY.rsplit("## Кто в теме", 1)[0], BODY.replace("## Решено", "## Открыто"), BODY + "\n```\n", BODY + "\u2028tail"])
-def test_P03_actual_producer_closure(world, monkeypatch, bad):
+@pytest.mark.parametrize("author_payload", [None, "", "  —  \n", "\n\nowner-note\n\n"])
+def test_P03_actual_producer_closure(world, monkeypatch, bad, author_payload):
     nd, graph, path, calls = world
+    if author_payload is not None:
+        loaded = dossier.load_dossier(path)
+        section = next(s for s in loaded.parsed.sections if s.title == "Правки автора")
+        path.write_text(loaded.text[:section.content] + author_payload)
     before = path.read_bytes()
     attempts = []
     monkeypatch.setattr(nd, "generate", lambda *a, **k: attempts.append(k["temperature"]) or bad)
@@ -523,3 +528,60 @@ def test_W05_actual_forget_keeps_legacy_fenced_file_and_continues(tmp_path):
     assert not dossier.cites(path.read_text(), [STAMP])
     assert not automatic.exists()
     assert (graph / forget.BACKUP_DIR / STAMP / "Досье/Automatic.md").exists()
+
+
+@pytest.mark.parametrize("full", [False, True])
+@pytest.mark.parametrize("nl", ["\n", "\r\n"])
+@pytest.mark.parametrize("author_payload", ["  —  \n", "", "\n\nowner-note\n\n", " \t\n\n", "—"])
+def test_P01_actual_rebuild_retains_exact_author_payload_twice(world, full, nl, author_payload):
+    import os
+
+    nd, graph, path, calls = world
+    loaded = dossier.load_dossier(path)
+    section = next(s for s in loaded.parsed.sections if s.title == "Правки автора")
+    path.write_bytes((loaded.text[:section.content] + author_payload).replace("\n", nl).encode())
+    for iteration in range(2):
+        # Each normal run sees a real changed synthetic source, not a SAME skip.
+        source = graph / "Ядра/Sample.md"
+        source.write_text(f"# Sample\nsynthetic source version {iteration}\n")
+        os.utime(source, (1_700_000_000 + iteration, 1_700_000_000 + iteration))
+        before = path.read_bytes()
+        result = nd.run(graph, {}, full=full, dry=False, limit=12)
+        assert result["собрано"] == 1 and result["отказы"] == 0
+        rebuilt = dossier.load_dossier(path)
+        assert rebuilt.parsed.complete
+        author = next(s for s in rebuilt.parsed.sections if s.title == "Правки автора")
+        assert rebuilt.text[author.content:] == author_payload
+        assert any(copy.read_bytes() == before for copy in (path.parent / ".backup").glob("*/Sample.md"))
+    assert calls == ["Sample", "Sample"]
+
+
+@pytest.mark.parametrize("full", [False, True])
+@pytest.mark.parametrize("old", [None, "", "# Plain previous dossier\n"])
+def test_P01_actual_rebuild_without_author_section_keeps_default(world, full, old):
+    import os
+
+    nd, graph, path, calls = world
+    if old is None:
+        path.unlink()
+    else:
+        path.write_text(old)
+    for iteration in range(2):
+        source = graph / "Ядра/Sample.md"
+        source.write_text(f"# Sample\nsynthetic source version {iteration}\n")
+        os.utime(source, (1_700_000_000 + iteration, 1_700_000_000 + iteration))
+        assert nd.run(graph, {}, full=full, dry=False, limit=12)["собрано"] == 1
+        rebuilt = dossier.load_dossier(path)
+        author = next(s for s in rebuilt.parsed.sections if s.title == "Правки автора")
+        assert rebuilt.parsed.complete and rebuilt.text[author.content:] == "\n—\n"
+    assert calls == ["Sample", "Sample"]
+
+
+@pytest.mark.parametrize("author_payload", [None, "", "  —  \n", "\n\nowner-note\n\n"])
+def test_G01_render_embeds_exact_author_payload(author_payload):
+    default = dossier.render("Sample", BODY, [], {}, "synthetic-fingerprint", "2026-11-02")
+    rendered = dossier.render("Sample", BODY, [], {}, "synthetic-fingerprint", "2026-11-02",
+                              author_payload=author_payload)
+    assert default.endswith("## Правки автора\n\n—\n")
+    assert rendered == (default if author_payload is None else default.removesuffix("\n—\n") + author_payload)
+    assert dossier.DossierLoad("ok", rendered).parsed.complete
