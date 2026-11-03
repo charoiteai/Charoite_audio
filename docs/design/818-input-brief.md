@@ -30,8 +30,11 @@ files, repository history or peer verdict may enter that exported packet.
 ## Requested result
 
 One parser in the existing dossier load/result abstraction makes readers agree
-while preserving author edits, source links and warning blocks. Repeated
-rebuilds stop accumulating body tails in author edits. Keep model-output
+while retaining admitted author content, new-response warnings/links and
+current-member source links. Full-file revision holds preserve older generated
+annotations; changed full rebuilds have the explicit boundary below and
+unresolved follow-up891. Repeated rebuilds stop accumulating body tails in
+author edits. Keep model-output
 sanitization separate: an untrusted generated body cannot supply protected
 sections. Reuse existing lock, backup and CAS doors.
 
@@ -159,8 +162,11 @@ a model failure. All former POLICY placeholders are resolved below.
 
 Body edit means splice through existing gated writer with exact raw mapping;
 unsupported mapping refuses. Full rebuild regenerates the outer `render` text,
-retains admitted author content/source references/warnings and backs up all old
-bytes. It does not promise byte identity for the regenerated outer document.
+retains admitted author content, new-response warnings/links and current-member
+source links, and backs up all old bytes. Older generated annotations absent
+from the new response/current inventory are replaced; the whole-file revision
+hold is a separate operation boundary. Stronger retention remains unresolved
+in follow-up891. The regenerated outer document is not byte-identical.
 
 ## INPUT closure before implementation
 
