@@ -215,7 +215,12 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         return None, f"сбой: провайдер ночи не принят: {e}"
     if provider != "anthropic":
         return None, f"сбой: провайдер ночи {provider} — досье этим путём не отправляются"
-    current = path.read_text(encoding="utf-8") if current is None else current
+    loaded = dossier.load_dossier(path) if current is None else dossier.DossierLoad("ok", current)
+    if loaded.state != "ok":
+        return None, f"сбой: досье не прочитано ({loaded.state})"
+    current = loaded.text
+    if why := loaded.refusal("edit"):
+        return None, f"{why} — не трогаем"
     head, old_body, sources, _manual = split_dossier(current)
     if sources is None:
         # собрано руками или старым форматом — облаку не сверять и не трогать
@@ -473,12 +478,15 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         if CLI_DOWN[0] and not cli_back():
             print("  ⏹ CLI облака не запускается — остальные досье завтра")
             break
-        try:
-            old = path.read_text(encoding="utf-8")     # одно чтение на проверку и запись
-        except (OSError, UnicodeDecodeError) as e:
+        loaded_old = dossier.load_dossier(path)
+        if loaded_old.state != "ok":
             # файл исчез между glob и чтением (владелец удалил, iCloud выгрузил)
             # или не в UTF-8 — не ронять ночь целиком (аудит 13.09, GLM M4)
-            failed.append(f"- **{theme}** — сбой: досье не прочитано ({e})")
+            failed.append(f"- **{theme}** — сбой: досье не прочитано ({loaded_old.state})")
+            continue
+        old = loaded_old.text
+        if why := loaded_old.refusal("edit"):
+            rejected.append(f"- **{theme}** — {why} — не трогаем")
             continue
         # Пригодность досье к записи зависит только от `old` — до платного вызова (out5 Sonnet I2);
         # без записи поле не нужно, предложение в отчёт идёт как раньше (out6 DS I1, Haiku I1).
@@ -487,17 +495,18 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # прогона иначе не видно, и текст забытой встречи из снимка ушёл бы в облако
         # (круг n841-opus-fix: Sonnet C1, DS C1). Гейт и без записи: отставшее тело само
         # может нести пересказ забытого (Sonnet M1 отклонён)
-        loaded_old = dossier.DossierLoad("ok", old)
         if not dossier.in_sync(loaded_old, dossier.fingerprint_on_disk(members, files)):
             # тело отстаёт от состава (ночь не дошла, «забыть встречу» прошло днём) —
             # поле заморозило бы пересказ ушедшего источника (финальный Opus C1)
             rejected.append(f"- **{theme}** — {_lag_reason(loaded_old)}")
             continue
-        head0 = split_dossier(old)[0]
-        if may_edit and dossier.revision(dossier.with_revision(head0, stamp[:10])) != stamp[:10]:
+        try:
+            if may_edit:
+                loaded_old.replace_body(loaded_old.parsed.body, stamp[:10])
+        except ValueError as e:
             # незакрытая шапка поля не примет; правка без поля — пересказ следующей ночью (out4 DS I1);
             # по одной шапке: черта `---` в теле не сойдёт за её конец (out5 Haiku I2)
-            failed.append(f"- **{theme}** — сбой: поле `ревизия:` не ставится (шапка не закрыта) — "
+            failed.append(f"- **{theme}** — сбой: поле `ревизия:` не ставится ({e}) — "
                           "правка не применена")
             continue
         fixed, why = review(theme, path, graph, files, members, model, cfg, current=old)
@@ -516,18 +525,18 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             done += 1
             continue
 
-        head, old_body, sources, manual = split_dossier(old)   # шапка как была
+        _head, old_body, sources, _manual = split_dossier(old)
         if sources is None:     # недостижимо: `review` бракует такое досье до облака; страховка типа
             rejected.append(f"- **{theme}** — в досье нет раздела «## Источники» — не трогаем")
             continue
-        manual = manual if manual and manual != "—" else None
-        text = (head + fixed + "\n\n## Источники\n" + (sources + "\n\n" if sources else "\n")
-                + "## Правки автора\n\n" + (manual or "—") + "\n")
         # Тело теперь ревизии: ночная пересборка его не трогает, снимает поле
         # «забыть встречу» (№841); поле — в той же записи, что строка
         # «Применено» отчёта, и не разойдётся с ним (вход n841-in1 S-C2)
-        if not labels_only:
-            text = dossier.with_revision(text, stamp[:10])     # шапка та же, что проверена до вызова
+        try:
+            text = loaded_old.replace_body(fixed, None if labels_only else stamp[:10])
+        except ValueError as e:
+            rejected.append(f"- **{theme}** — {e} — не трогаем")
+            continue
 
         # замок на одну запись; за время облачного вызова файл мог смениться —
         # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2).
@@ -548,7 +557,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                         # без снимка `expect=None` — запись без гейта: не пишем (n853-out2 Sonnet M1)
                         failed.append(f"- **{theme}** — сбой: снимок досье не взят перед записью")
                         continue
-                    if write_path.read_text(encoding="utf-8") != old:
+                    if write_path.read_bytes() != loaded_old.raw:
                         rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
                         raced.append(_proposed(theme, fixed))
                         continue

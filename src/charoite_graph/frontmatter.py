@@ -245,6 +245,33 @@ def with_field(text: str, key: str, value: str) -> str:
     return _put_line(text, key, f"{key}: {yaml_str(value)}")
 
 
+def with_scalar_preserving(text: str, key: str, value: str) -> str:
+    """Replace only a scalar (or insert one field), preserving every other byte."""
+    bom = _BOM if text.startswith(_BOM) else ""
+    fm, _ = split(text[len(bom):])
+    if fm is None:
+        raise ValueError("шапка не закрыта")
+    try:
+        node = yaml.compose(fm)
+    except yaml.YAMLError as e:
+        raise ValueError("шапка не поддерживает точную замену поля") from e
+    if not isinstance(node, yaml.MappingNode):
+        raise ValueError("шапка не является отображением")
+    matches = [v for k, v in node.value if getattr(k, "value", None) == key]
+    if len(matches) > 1 or (matches and (not isinstance(matches[0], yaml.ScalarNode)
+                                       or matches[0].style in ("|", ">"))):
+        raise ValueError("поле не является единственным скаляром")
+    base = len(bom) + 3
+    if matches:
+        scalar = matches[0]
+        start, end = base + scalar.start_mark.index, base + scalar.end_mark.index
+        gap = " " if start == end and text[start - 1:start] == ":" else ""
+        return text[:start] + gap + yaml_str(value) + text[end:]
+    nl = "\r\n" if "\r\n" in fm else "\n"
+    at = base + len(fm)
+    return text[:at] + nl + f"{key}: {yaml_str(value)}" + text[at:]
+
+
 def without_field(text: str, key: str) -> str:
     """Убрать поле `key:` из шапки вместе со значением (границы — `_field_span`);
     поля или шапки нет — текст как был. BOM остаётся на месте."""

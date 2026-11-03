@@ -207,7 +207,9 @@ def test_one_slot_is_reserved_for_the_longest_waiting_unchanged_core(tmp_path):
 
 
 _DOSSIER = (
-    "---\nтип: досье\n---\n# Платёжный провайдер\n\n"
+    "---\nтип: досье\nотпечаток: synthetic\n---\n\n# Досье: Платёжный провайдер\n\n"
+    "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
+    "> при пересборке раздел «Правки автора» не трогается.\n\n"
     "## Сейчас\n- Идёт пилот [[2026-07-15_1400]]\n\n"
     "## Как пришли\n- Начали в июне [[2026-06-01_1000]]\n\n"
     "## Решено\n- Провайдер выбран [[2026-07-15_1400]]\n\n"
@@ -220,7 +222,7 @@ def test_check_revision_requires_five_sections_length_and_links():
     «## Сейчас» где-то в тексте. Проходили ответ без «Кто в теме», с лишним
     разделом и растерявший ссылки на источники (карточка №87)."""
     ndr = _load("nightly_dossier_review")
-    old = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    old = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])
     assert ndr.check_revision(old, old) == "правок нет — поле `ревизия:` не ставим"   # Opus I2
     fixed = old.replace("Идёт пилот", "Пилот ⚠️ идёт, срок прошёл 1.08")
     assert ndr.check_revision(old, fixed) is None
@@ -272,7 +274,7 @@ def test_review_rejects_nonzero_exit_with_a_reason(tmp_path, monkeypatch):
     """Код ≠ 0 с текстом в stdout раньше шёл в парсер как ответ."""
     ndr = _load("nightly_dossier_review")
     path = tmp_path / "Платёжный провайдер.md"
-    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
+    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n", encoding="utf-8")
 
     class R:
         returncode = 1
@@ -291,7 +293,7 @@ def test_review_under_mask_runs_in_the_empty_dir_and_names_the_refusal(tmp_path,
     мутанты `== "off"` → `!=`, `return X` → `None`, `or` → `and` выживали)."""
     ndr = _load("nightly_dossier_review")
     path = tmp_path / "Платёжный провайдер.md"
-    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
+    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n", encoding="utf-8")
     seen = []
 
     class R:
@@ -334,7 +336,7 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
     monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Платёжный провайдер": ["a"], "Другое": ["b"]})
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
-    fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
+    fixed = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1]).replace(
         "Идёт пилот", "Пилот ⚠️ идёт, срок 1.08 прошёл")
 
     def fake_review(theme, *a, **k):
@@ -367,13 +369,13 @@ def test_review_refuses_to_apply_when_the_revision_field_cannot_be_set(tmp_path,
     folder = graph / ndr.CHAROITE.dossier_dir
     folder.mkdir(parents=True)
     path = folder / "Платёжный провайдер.md"
-    before = (_DOSSIER.replace("---\nтип: досье\n---\n", "---\nтип: досье\n")
+    before = (_DOSSIER.replace("отпечаток: synthetic\n---\n", "отпечаток: synthetic\n")
               + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n")
     path.write_text(before, encoding="utf-8")
     monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Платёжный провайдер": ["a"]})
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
-    fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
+    fixed = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1]).replace(
         "Идёт пилот", "Пилот ⚠️ идёт")
     called = []
     monkeypatch.setattr(ndr, "review", lambda *a, **k: called.append(1) or (fixed, ""))
@@ -381,11 +383,8 @@ def test_review_refuses_to_apply_when_the_revision_field_cannot_be_set(tmp_path,
     ndr.run(graph, cfg, dry=False, limit=6)
     assert path.read_text(encoding="utf-8") == before
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
-    if may_edit:
-        assert not called, "облачный вызов до проверки, что правку можно записать (out5 Sonnet I2, Haiku I4)"
-        assert "**Платёжный провайдер** — сбой: поле `ревизия:` не ставится" in report, report
-    else:
-        assert called and "## Предложено, но не применено" in report and "Сбои шага" not in report, report
+    assert not called, "ambiguous input must not reach the cloud in either mode"
+    assert "**Платёжный провайдер** — неоднозначная структура" in report, report
 
 def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
     """Досье с пятью разделами, но без «## Источники» раньше роняло весь
@@ -396,7 +395,7 @@ def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: called.append(1))
     fixed, why = ndr.review("Ручное", path, tmp_path, {}, [], "m", {"sufler": {"cloud_enrich": True, "cloud_mask": False}})
-    assert fixed is None and "Источники" in why and not called, "облако вызвано зря"
+    assert fixed is None and "защищённых разделов" in why and not called, "облако вызвано зря"
 
 
 def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch):
@@ -410,7 +409,7 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
     monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Одно": ["a"], "Два": ["b"]})
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
-    body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    body = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
                         (body, "") if theme == "Одно" else (None, "сбой: claude вернул код 1:\nrate\nlimit"))
     cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": False}}
@@ -440,7 +439,7 @@ def _edit_graph(tmp_path, ndr, monkeypatch, names=("Одно",)):
 
 
 def _body(ndr) -> str:
-    return ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    return ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])
 
 
 def test_edit_mode_takes_the_graph_lock_per_write_not_for_the_whole_run(tmp_path, monkeypatch):
@@ -651,14 +650,14 @@ def test_vanished_dossier_is_a_failed_step_not_a_crash(tmp_path, monkeypatch):
     ndr = _load("nightly_dossier_review")
     graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
     body = _body(ndr)
-    real_read = pathlib.Path.read_text
+    real_read = pathlib.Path.read_bytes
 
-    def read_text(self, *a, **k):
+    def read_bytes(self, *a, **k):
         if self.name == "Одно.md":
             raise FileNotFoundError(2, "No such file", str(self))
         return real_read(self, *a, **k)
 
-    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", read_bytes)
     monkeypatch.setattr(ndr, "review", lambda *a, **k: (body, ""))
     monkeypatch.setattr(ndr.file_locks, "graph_lock", lambda *a, **k: contextlib.nullcontext(True))
     assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
@@ -797,7 +796,7 @@ def test_review_sees_and_writes_no_speaker_label(tmp_path, monkeypatch):
     path = tmp_path / "Платёжный провайдер.md"
     labeled = _DOSSIER.replace("- [[Иванов]]", "- [[Иванов]]\n- Собеседник 3 [[Люди/Собеседник 3]]\n"
                                "- план [[Встречи/2026-07-15_Собеседник 2 и план]]")
-    path.write_text(labeled + "\n## Источники\n- [[2026-07-15_1400]]\n- **Люди:** [[Люди/Собеседник 3]]\n",
+    path.write_text(labeled + "\n## Источники\n- [[2026-07-15_1400]]\n- **Люди:** [[Люди/Собеседник 3]]\n\n## Правки автора\n\n—\n",
                     encoding="utf-8")
     files = {"2026-07-15_1400": {"kind": "встреча", "text":
              "---\nучастники: [Собеседник 2]\n---\n# Встреча\nСобеседник 2 обещал срок\n"}}
@@ -810,7 +809,7 @@ def test_review_sees_and_writes_no_speaker_label(tmp_path, monkeypatch):
     def run(cmd, **k):
         seen.append(cmd[2])
         r = R()
-        r.stdout = ndr.strip_protected(labeled.split("# Платёжный провайдер\n\n")[1]).replace(
+        r.stdout = ndr.strip_protected(labeled.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1]).replace(
             "Идёт пилот", "Собеседнику 2 поручили пилот")
         return r
 
@@ -845,7 +844,7 @@ def test_edit_mode_stats_do_not_count_the_label_cleanup_as_an_edit(tmp_path, mon
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Платёжный провайдер": ["a"]})
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     fixed = ndr.graph_names.unlabel_speakers(ndr.strip_protected(
-        labeled.split("# Платёжный провайдер\n\n")[1])).replace("Идёт пилот", "Пилот ⚠️ идёт")
+        labeled.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])).replace("Идёт пилот", "Пилот ⚠️ идёт")
     monkeypatch.setattr(ndr, "review", lambda *a, **k: (fixed, ""))
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     assert ndr.run(graph, cfg, dry=False, limit=6) == 1
@@ -858,7 +857,7 @@ def _stale_world(tmp_path, monkeypatch, ndr, body_answer=None):
     folder = graph / ndr.CHAROITE.dossier_dir
     folder.mkdir(parents=True)
     path = folder / "Платёжный провайдер.md"
-    before = (_DOSSIER.replace("тип: досье\n", "тип: досье\nотпечаток: старый\n")
+    before = (_DOSSIER.replace("отпечаток: synthetic", "отпечаток: старый")
               + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n")
     path.write_text(before, encoding="utf-8")
     monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
@@ -887,7 +886,7 @@ def test_review_without_edits_sets_no_field():
     """Ответ «всё верно» — то же тело: правки нет, поле не ставится, тема не
     замерзает (финальный n841 Opus I2)."""
     ndr = _load("nightly_dossier_review")
-    body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    body = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])
     assert ndr.check_revision(body, body + "\n") == "правок нет — поле `ревизия:` не ставим"
 
 
@@ -904,7 +903,7 @@ def _synced_world(tmp_path, monkeypatch, ndr, on_scan=None):
                                  "mtime": src.stat().st_mtime, "kind": "встреча"}}
     fp = ndr.dossier.fingerprint(["2026-07-15_1400"], files)
     path = folder / "Платёжный провайдер.md"
-    before = (_DOSSIER.replace("тип: досье\n", f"тип: досье\nотпечаток: {fp}\n")
+    before = (_DOSSIER.replace("отпечаток: synthetic", f"отпечаток: {fp}")
               + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n")
     path.write_text(before, encoding="utf-8")
 
@@ -946,7 +945,7 @@ def test_review_rechecks_the_sources_under_the_lock(tmp_path, monkeypatch):
     поле на пересказ не ставится (круг n841-opus-fix Sonnet C2)."""
     ndr = _load("nightly_dossier_review")
     graph, path, before, src = _synced_world(tmp_path, monkeypatch, ndr)
-    body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    body = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])
 
     def review(*a, **k):
         st = src.stat()
@@ -964,7 +963,7 @@ def test_review_in_sync_applies_and_sets_the_field(tmp_path, monkeypatch):
     """Контроль к двум тестам выше: тот же мир без смены источника — правка с полем."""
     ndr = _load("nightly_dossier_review")
     graph, path, _before, _src = _synced_world(tmp_path, monkeypatch, ndr)
-    body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    body = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda *a, **k: (body.replace("Идёт пилот", "Пилот идёт"), ""))
     assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
     text = path.read_text(encoding="utf-8")
@@ -977,10 +976,10 @@ def test_lag_reason_names_the_held_field_and_a_missing_fingerprint():
     досье (круг n841-opus-fix Sonnet M2, DS M6)."""
     ndr = _load("nightly_dossier_review")
     load = ndr.dossier.DossierLoad
-    assert "нет отпечатка" in ndr._lag_reason(load("ok", _DOSSIER))
-    held = _DOSSIER.replace("тип: досье\n", "тип: досье\nотпечаток: x\nревизия: 2026-10-30\n")
+    assert "нет отпечатка" in ndr._lag_reason(load("ok", _DOSSIER.replace("отпечаток: synthetic\n", "")))
+    held = _DOSSIER.replace("отпечаток: synthetic", "отпечаток: x\nревизия: 2026-10-30")
     assert "убрать строку `ревизия:`" in ndr._lag_reason(load("ok", held))
-    lag = _DOSSIER.replace("тип: досье\n", "тип: досье\nотпечаток: x\n")
+    lag = _DOSSIER.replace("отпечаток: synthetic", "отпечаток: x")
     assert ndr._lag_reason(load("ok", lag)) == "досье отстаёт от источников — ревизия после пересборки"
 
 
@@ -988,7 +987,7 @@ def test_whitespace_only_answer_is_no_edit():
     """Пробелы, переносы и пустые строки — не правка: поле не ставится (Sonnet I1, DS M5);
     склеенные строки — другая разметка, правка."""
     ndr = _load("nightly_dossier_review")
-    body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    body = ndr.strip_protected(_DOSSIER.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1])
     assert ndr.check_revision(body, body.replace("\n", "\n\n")) == ndr.NO_EDITS
     assert ndr.check_revision(body, body.replace("Идёт пилот", "Идёт   пилот  ")) == ndr.NO_EDITS
     glued = body.replace("\n- Идёт пилот", " - Идёт пилот")
@@ -1012,7 +1011,7 @@ def test_label_cleanup_alone_is_written_without_the_field(tmp_path, monkeypatch)
     ndr = _load("nightly_dossier_review")
     path = tmp_path / "Платёжный провайдер.md"
     labeled = _DOSSIER.replace("- [[Иванов]]", "- [[Иванов]]\n- Собеседник 3 обещал письмо")
-    path.write_text(labeled + "\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
+    path.write_text(labeled + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\n—\n", encoding="utf-8")
     files = {"2026-07-15_1400": {"kind": "встреча", "text": "# Встреча\nсрок\n"}}
 
     class R:
@@ -1022,7 +1021,7 @@ def test_label_cleanup_alone_is_written_without_the_field(tmp_path, monkeypatch)
     def run(cmd, **k):
         r = R()
         r.stdout = ndr.graph_names.unlabel_speakers(
-            ndr.strip_protected(labeled.split("# Платёжный провайдер\n\n")[1]))
+            ndr.strip_protected(labeled.split("> при пересборке раздел «Правки автора» не трогается.\n\n")[1]))
         return r
 
     monkeypatch.setattr(ndr.subprocess, "run", run)

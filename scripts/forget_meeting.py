@@ -1160,6 +1160,13 @@ def plan(stamp: str, root: pathlib.Path,
             cited = dossier.cites(text, keys)
             revised = in_dossier and cited and bool(dossier.revision(text))
             linked = bool(link.search(text))
+            if in_dossier and (cited or linked):
+                # A deletion hold alone is insufficient: the later edit path also
+                # strips meeting lines and revision fields, including snapshots.
+                loaded_dossier = dossier.DossierLoad("ok", text, raw)
+                if why := loaded_dossier.refusal("forget"):
+                    p.check.append(f"{where}: {why} — убери след встречи руками; досье не тронуто")
+                    continue
             # Досье ночи без руки человека — `Досье/<тема>.md` и его копия ночи
             # `Досье/.backup/<прогон>/<тема>.md` — уходит целиком: тема пересоберётся
             # без встречи, а выпавшая из кластеров (< MIN_CLUSTER) не оставит

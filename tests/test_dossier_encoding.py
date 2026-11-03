@@ -41,10 +41,9 @@ def night(tmp_path, monkeypatch):
             (graph / "Встречи" / f"{theme}_{i}.md").write_text(
                 f"# Встреча\n[[Ядра/{theme}]] источник\n", encoding="utf-8")
         paths[theme] = folder / f"{theme}.md"
-        paths[theme].write_text(
-            f"---\nтема: {theme}\nотпечаток: старый\nсобрано: 2026-07-20\n---\n"
-            f"# {theme}\n## Сейчас\nстарое тело\n## Правки автора\n\nоставить решение автора\n",
-            encoding="utf-8")
+        paths[theme].write_text(dossier.render(theme, GOOD.replace("новое тело", "старое тело"),
+            [], {}, "старый", "2026-07-20").replace("## Правки автора\n\n—\n",
+            "## Правки автора\n\nоставить решение автора\n"), encoding="utf-8")
     calls = []
 
     def generate(theme, members, files, c, **kw):
@@ -404,7 +403,8 @@ def test_strict_utf8_never_refuses_author_text(night, monkeypatch, capsys, kind)
     elif kind == "no_heading":
         path.write_bytes(b"# old dossier without a manual section\n")
     elif kind == "literal_replacement":
-        path.write_text("## Правки автора\n\nавтор написал \ufffd\n", encoding="utf-8")
+        path.write_text(dossier.render("Бета", GOOD, [], {}, "старый", "2026-07-20").replace(
+            "## Правки автора\n\n—\n", "## Правки автора\n\nавтор написал \ufffd\n"), encoding="utf-8")
     else:
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
     counts = _watch(monkeypatch, paths)

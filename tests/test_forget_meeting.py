@@ -2971,7 +2971,8 @@ def test_forget_names_other_meetings_that_leave_with_the_block(tmp_path):
 
 def _night_dossier(path: pathlib.Path, *, manual: str = "—", nl: str = "\n", extra: str = "") -> pathlib.Path:
     """Досье, как его пишет ночь (`dossier.render`)."""
-    text = dossier_mod.render("Платёж", f"## Сейчас\n- выбрали ЮPay [[Встречи/{STAMP}]]",
+    text = dossier_mod.render("Платёж", f"## Сейчас\n- выбрали ЮPay [[Встречи/{STAMP}]]\n"
+                              "## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—",
                               [f"Встречи/{STAMP}", f"Встречи/{OTHER}"],
                               {f"Встречи/{STAMP}": {"kind": "Встречи"}, f"Встречи/{OTHER}": {"kind": "Встречи"}},
                               "abc123", "2026-10-30")
