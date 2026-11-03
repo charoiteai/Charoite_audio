@@ -155,3 +155,31 @@ def test_current_to_history_retention_still_requires_the_correction_ledger(monke
 def test_new_markup_before_the_first_section_cannot_change_all_old_context(monkeypatch):
     with pytest.raises(inc.Refused, match="opaque markup"):
         _check(monkeypatch, BODY, "<!--\n" + _addition(BODY))
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_a_correction_cannot_target_multiple_current_line_occurrences(monkeypatch, duplicate):
+    other = OPEN if duplicate else f"- Valve B is open. [[{A}]]"
+    prior = BODY.replace(OPEN, OPEN + "\n" + other)
+    quote = "Vent A is closed now."
+    replacement = f"- {quote} [[{B}]]"
+    candidate = prior.replace(OPEN + "\n" + other, replacement).replace(
+        "## Как пришли\n—", "## Как пришли\n" + OPEN + "\n" + other)
+    changes = [{"before": OPEN if duplicate else "open", "after": replacement, "source": B, "quote": quote}]
+    monkeypatch.setattr(inc, "semantic_check", lambda *args: pytest.fail("ambiguous correction reached a judge"))
+    with pytest.raises(inc.Refused, match="ambiguous correction"):
+        inc.validate_candidate("Glasshouse", _old(prior), [B], {B: {"text": quote}}, {}, candidate, changes)
+
+
+@pytest.mark.parametrize("before", [OPEN, OPEN[2:], "Vent A is open."])
+@pytest.mark.parametrize("history_copy", [False, True])
+def test_unique_current_corrections_accept_full_or_sentence_references(monkeypatch, before, history_copy):
+    prior = BODY.replace("## Как пришли\n—", "## Как пришли\n" + OPEN) if history_copy else BODY
+    quote = "Vent A is closed now."
+    replacement = f"- {quote} [[{B}]]"
+    candidate = prior.replace(OPEN, replacement, 1).replace(
+        "## Как пришли\n", "## Как пришли\n" + OPEN + "\n", 1)
+    changes = [{"before": before, "after": replacement, "source": B, "quote": quote}]
+    assert _check(monkeypatch, prior, candidate, changes=changes,
+                  claims=[_claim(quote, quote=quote)], source=quote) == ["aggregate", "audit"]
+    assert candidate.count(OPEN) == (2 if history_copy else 1)

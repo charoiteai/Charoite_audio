@@ -85,6 +85,34 @@ def same_process(first, second):
     return second is not None and all(first[key] == second[key] for key in ("pid", "pgid", "started"))
 
 
+def _stop_owned_processes(server, owned, capture, signal_process, read_process=process_receipt):
+    """Stop known identities, but require a complete final descendant capture.
+
+    If the leader has disappeared, old observations cannot establish that an
+    unobserved runner is gone. Known children are still stopped; cleanup stays
+    unconfirmed rather than making a successful claim about unknown children.
+    """
+    complete_capture = capture()
+    for pid in reversed(owned):
+        signal_process(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        live = [pid for pid, identity in owned.items()
+                if same_process(identity, current := read_process(pid)) and "Z" not in current["state"]]
+        if not live:
+            break
+        time.sleep(0.1)
+    for pid in reversed(owned):
+        signal_process(pid, signal.SIGKILL)
+    server.wait(timeout=10)
+    for pid, identity in owned.items():
+        current = read_process(pid)
+        check(current is None or (same_process(identity, current) and "Z" in current["state"]),
+              "experiment descendant cleanup was not confirmed")
+    check(complete_capture is True,
+          "server leader disappeared before final capture; unobserved descendants may remain")
+
+
 class Tripwire:
     """Accept and close TCP connections without implementing an HTTP fake."""
 
@@ -158,10 +186,10 @@ def main():
 
     def remember_children():
         if server is None:
-            return
+            return False
         root = process_receipt(server.pid)
         if root is None:
-            return
+            return False
         if server.pid not in owned:
             check(root["ppid"] == os.getpid() and root["pgid"] == server.pid,
                   "server PID does not belong to this experiment")
@@ -196,6 +224,7 @@ def main():
                 child = process_receipt(int(child_pid))
                 if child is not None and child["ppid"] == current["pid"]:
                     pending.append(child)
+        return True
 
     def signal_owned(pid, signum):
         current = process_receipt(pid)  # Full command is read immediately before every signal.
@@ -485,25 +514,9 @@ def main():
         cleanup_ok = True
         if server is not None:
             try:
-                remember_children()
                 # Descendants were observed through this server's ancestry.
                 # Signal individual verified identities; never signal a PGID.
-                for pid in reversed(owned):
-                    signal_owned(pid, signal.SIGTERM)
-                deadline = time.monotonic() + 10
-                while time.monotonic() < deadline:
-                    live = [pid for pid, identity in owned.items()
-                            if same_process(identity, current := process_receipt(pid)) and "Z" not in current["state"]]
-                    if not live:
-                        break
-                    time.sleep(0.1)
-                for pid in reversed(owned):
-                    signal_owned(pid, signal.SIGKILL)
-                server.wait(timeout=10)
-                for pid, identity in owned.items():
-                    current = process_receipt(pid)
-                    check(current is None or (same_process(identity, current) and "Z" in current["state"]),
-                          "experiment descendant cleanup was not confirmed")
+                _stop_owned_processes(server, owned, remember_children, signal_owned)
             except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
                 cleanup_ok = False
                 report["cleanup_error"] = type(exc).__name__ + ": " + str(exc)

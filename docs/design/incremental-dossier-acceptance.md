@@ -195,6 +195,8 @@ all S01–S15 gates; it does not replace the full writer or manual artifact revi
 
 Retention matches old physical-line prefixes in their section, order and
 occurrence count; an explicit correction may move current text to history.
+Its `before` reference must identify exactly one old current physical line;
+an ambiguous shared fragment cannot authorize moving several claims.
 Plain additions to an old line still need their own evidence. New opaque
 markup is a retryable refusal: preserving a warning's bytes inside a new
 comment, strikeout or code wrapper does not preserve the visible warning.
@@ -210,3 +212,6 @@ with native sandbox restrictions and a TCP routing tripwire. It checks real
 local generation, remote-retag refusal and same-input overflow/truncation
 controls. Preparing the driver is not execution evidence. Generation-time
 context-shift refusal needs a separate successful boundary experiment.
+Cleanup cannot be confirmed from a stale child inventory after the server
+leader disappears; known identities are stopped, and unknown descendants
+leave the control unsuccessful with its temporary model copy retained.

@@ -141,6 +141,27 @@ def _links(text: str) -> set[str]:
     return {graph_names.link_target_stem(m[1]) for m in dossier.LINK_RE.finditer(text)}
 
 
+def _current_line_before(document: dossier.DossierLoad, before: str) -> tuple[int, str] | None:
+    """Resolve a correction to one current occurrence; history copies do not count.
+
+    A sentence without its bullet is valid when it identifies exactly one
+    physical line. A shared keyword cannot authorize moving several lines.
+    """
+    section = next((section for section in document.parsed.sections if section.title == "Сейчас"), None)
+    if section is None:
+        return None
+    text = document.text[section.content:section.end]
+    matches, offset = [], section.content
+    for physical in re.findall(r"[^\n]*\n|[^\n]+$", text):
+        line = physical.rstrip("\n")
+        if before in line:
+            matches.append((offset, line))
+        offset += len(physical)
+    if len(matches) > 1 or (not matches and before in text):
+        raise Refused("ambiguous correction: before must identify one current physical-line occurrence")
+    return matches[0] if matches else None
+
+
 def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str],
                         files: dict, changes: list) -> None:
     """Conservation uses artifact elements, not a length or link-count proxy."""
@@ -170,11 +191,11 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
             raise Refused("unsupported correction: after must be an exact substring of the candidate body")
         if name not in names or quote not in source_text(files[name]) or name not in _links(after):
             raise Refused("unsupported or unattributed correction ledger")
-        old_sections = {s.title: loaded.text[s.content:s.end] for s in loaded.parsed.sections}
         new_sections = {s.title: candidate.text[s.content:s.end] for s in parsed.sections}
-        if before in old_sections.get("Сейчас", "") and (
-                before in new_sections.get("Сейчас", "")
-                or before not in new_sections.get("Как пришли", "")
+        current = _current_line_before(loaded, before)
+        if current is not None and (
+                current[1] in new_sections.get("Сейчас", "")
+                or current[1] not in new_sections.get("Как пришли", "")
                 or after not in new_sections.get("Сейчас", "")):
             raise Refused("superseded current claim must move to history with its replacement current")
     # Conservation and claim coverage share the same physical-line mapping.
@@ -202,6 +223,11 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
     required = {i for i, character in enumerate(body) if character.isalnum()}
     old = dossier.DossierLoad("ok", loaded.parsed.body)
     candidate = dossier.DossierLoad("ok", body)
+    corrected_current = set()
+    for change in changes:
+        current = _current_line_before(old, change["before"])
+        if current is not None:
+            corrected_current.add(current[0])
 
     def section_lines(document, section):
         offset = section.content
@@ -222,7 +248,7 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
             if not prior.strip() or prior.strip() == "—":
                 continue
             destinations = [section.title]
-            if section.title == "Сейчас" and any(change["before"] in prior for change in changes):
+            if section.title == "Сейчас" and start in corrected_current:
                 destinations.append("Как пришли")
             selected = None
             for destination in destinations:
