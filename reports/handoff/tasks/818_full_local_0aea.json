@@ -1,0 +1,20 @@
+{
+  "command": "quiet_guard.sh && HEAVY_WAIT_MAX_S=5 CHAROITE_ROOT=<own-resource-root> heavy_run.sh <repository-venv-python> -m pytest -n 6 --dist loadgroup -q --tb=short",
+  "executor": "root",
+  "exit_code": 1,
+  "failed": 6,
+  "failed_tests": [
+    "test_cloud_cli_probe.py::test_review_reports_cli_down_when_it_dies_mid_run",
+    "test_cloud_cli_probe.py::test_review_retries_exec_failure_once",
+    "test_cloud_cli_probe.py::test_review_gives_up_after_the_second_exec_failure",
+    "test_cloud_cli_probe.py::test_second_exec_failure_after_a_live_probe_is_cli_down",
+    "test_import_boundaries.py::test_layout_matches_the_code",
+    "test_pii_mask.py::test_night_dossier_sends_theme_body_and_sources_only_masked"
+  ],
+  "passed": 10361,
+  "root_resolution": "Five incomplete legacy fixtures refused before intended CLI/privacy path; adapt to canonical admitted input while retaining assertions. Explicitly classify two dated probe artifacts and regenerate layout. Full corrected-source rerun remains required. No safety gate relaxed.",
+  "seconds": 170.63,
+  "skipped": 8,
+  "source": "0aea3806c58a512dd3b1161fd8522436c49fefed",
+  "xfailed": 7
+}
