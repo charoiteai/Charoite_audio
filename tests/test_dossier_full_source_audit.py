@@ -20,8 +20,8 @@ from test_dossier_incremental import world as world, _new, LOCAL
 from test_dossier_model_contract import _old, _claim, _verdict, ADDED, A, B
 
 FACT = "A rain cover was fitted."
-AUDIT = "You audit one proposed factual addition."
-ACCEPT = {"verdict": "accept", "supported": True, "relevant": True, "reason": "Synthetic qualified support."}
+SUPPORT = "You verify one claim against its complete source."
+TOPIC = "You judge one claim's topic relevance."
 NEIGHBOR_CONTEXTS = [
     "The next statement is tentative and has not been verified.\n" + FACT + "\n",
     FACT + "\nThe preceding statement is tentative and has not been verified.\n",
@@ -30,14 +30,17 @@ NEIGHBOR_CONTEXTS = [
 ]
 
 
-def _transport(monkeypatch, claim, *, narrow_accept):
+def _transport(monkeypatch, claim, *, supported, relevant):
     calls = []
     def complete(prompt, config, *, system, **kwargs):
         payload, _ = json.JSONDecoder().raw_decode(prompt)
         calls.append((system, payload))
-        if system == AUDIT:
-            return json.dumps(ACCEPT if narrow_accept else ACCEPT | {
-                "verdict": "reject", "supported": False, "reason": "Synthetic complete-source qualification refusal."})
+        if system == SUPPORT:
+            return json.dumps({"verdict": "accept" if supported else "reject", "supported": supported,
+                               "reason": "Synthetic complete-source factual judgment."})
+        if system == TOPIC:
+            return json.dumps({"verdict": "accept" if relevant else "reject", "relevant": relevant,
+                               "reason": "Synthetic independent subject judgment."})
         return json.dumps(_verdict([claim]))
     monkeypatch.setattr(inc, "local_complete", complete)
     return calls
@@ -46,10 +49,11 @@ def _transport(monkeypatch, claim, *, narrow_accept):
 @pytest.mark.parametrize("source", NEIGHBOR_CONTEXTS)
 def test_neighboring_qualification_or_denial_reaches_independent_audit_and_refuses(monkeypatch, source):
     old = _old()
-    calls = _transport(monkeypatch, _claim(), narrow_accept=False)
+    calls = _transport(monkeypatch, _claim(), supported=False, relevant=True)
     with pytest.raises(inc.Refused, match="independent claim audit"):
         inc.validate_candidate("Glasshouse", old, [B], {B: {"text": source}}, {}, ADDED, [])
-    assert len(calls) == 2 and calls[1][0] == AUDIT
+    assert len(calls) == 2 and calls[1][0] == SUPPORT
+    assert all(system != TOPIC for system, _ in calls)
     assert calls[0][1]["new_sources"] == {B: source}
     assert calls[1][1] == {"topic": "Glasshouse", "prior_dossier": old.parsed.body,
                            "candidate_text": FACT, "source_quotation": FACT, "source_context": source}
@@ -59,11 +63,12 @@ def test_a_supported_qualified_addition_keeps_qualification_and_complete_source(
     qualified = "A rain cover may have been fitted to the Glasshouse; this is unverified."
     source = "Preliminary observation.\n" + qualified + "\nDo not treat it as confirmed installation.\n"
     candidate = ADDED.replace(FACT, qualified)
-    calls = _transport(monkeypatch, _claim(qualified, quote=qualified), narrow_accept=True)
+    calls = _transport(monkeypatch, _claim(qualified, quote=qualified), supported=True, relevant=True)
     inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, candidate, [])
-    assert len(calls) == 2 and calls[1][0] == AUDIT
+    assert [system for system, _ in calls[1:]] == [SUPPORT, TOPIC]
     assert calls[1][1]["candidate_text"] == qualified
     assert calls[1][1]["source_quotation"] == qualified and calls[1][1]["source_context"] == source
+    assert calls[2][1] == calls[1][1]
 
 
 @pytest.mark.parametrize("foreign", [False, True])
@@ -71,25 +76,43 @@ def test_shared_source_context_does_not_replace_independent_subject_judgment(mon
     other_fact = "A level sensor was fitted to the WaterTank."
     source = f"[[Ядра/Glasshouse]] {FACT}\n[[Ядра/WaterTank]] {other_fact}\n"
     fact = other_fact if foreign else FACT
-    calls = _transport(monkeypatch, _claim(fact, quote=fact), narrow_accept=not foreign)
+    calls = _transport(monkeypatch, _claim(fact, quote=fact), supported=True, relevant=not foreign)
     candidate = ADDED.replace(FACT, fact)
     if foreign:
         with pytest.raises(inc.Refused, match="independent claim audit"):
             inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, candidate, [])
     else:
         inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, candidate, [])
-    assert len(calls) == 2
+    assert [system for system, _ in calls[1:]] == [SUPPORT, TOPIC]
     assert calls[1][1]["candidate_text"] == fact and calls[1][1]["source_quotation"] == fact
     assert calls[1][1]["source_context"] == source
     assert set(calls[1][1]) == {"topic", "prior_dossier", "candidate_text", "source_quotation", "source_context"}
+    assert calls[2][1] == calls[1][1]
 
 
 def test_whole_source_does_not_remove_exact_unique_anchor_requirement(monkeypatch):
     source = FACT + "\n" + FACT + "\nThe draft has conflicting observations.\n"
-    calls = _transport(monkeypatch, _claim(), narrow_accept=True)
+    calls = _transport(monkeypatch, _claim(), supported=True, relevant=True)
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, ADDED, [])
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("case", ["prior-event-only", "different-source-event"])
+def test_factual_anchor_cannot_borrow_an_event_from_prior_or_another_source_statement(monkeypatch, case):
+    if case == "prior-event-only":
+        fact, anchor = "Vent A is open today.", "We discussed the schedule."
+        source = anchor + "\n"
+    else:
+        fact, anchor = FACT, "A level sensor was fitted to the WaterTank."
+        source = FACT + "\n" + anchor + "\n"
+    old = _old()
+    calls = _transport(monkeypatch, _claim(fact, quote=anchor), supported=False, relevant=True)
+    with pytest.raises(inc.Refused, match="independent claim audit"):
+        inc.validate_candidate("Glasshouse", old, [B], {B: {"text": source}}, {}, ADDED.replace(FACT, fact), [])
+    assert [system for system, _ in calls[1:]] == [SUPPORT]
+    assert calls[1][1] == {"topic": "Glasshouse", "prior_dossier": old.parsed.body,
+                           "candidate_text": fact, "source_quotation": anchor, "source_context": source}
 
 
 @pytest.mark.parametrize("source", [NEIGHBOR_CONTEXTS[0], NEIGHBOR_CONTEXTS[-1]])
@@ -111,10 +134,12 @@ def test_refused_contextual_addition_never_advances_writer_state(world, tmp_path
         if system == "You extend factual dossiers conservatively.":
             body = dossier.load_dossier(path).parsed.body.replace("## Как пришли", f"- {FACT} [[{B}]]\n## Как пришли")
             return json.dumps({"body": body, "changes": []})
-        if system == AUDIT:
+        if system == SUPPORT:
             audited.append(payload)
-            return json.dumps(ACCEPT | {"verdict": "reject", "supported": False,
-                                       "reason": "Synthetic full-source denial is decisive."})
+            return json.dumps({"verdict": "reject", "supported": False,
+                               "reason": "Synthetic full-source denial is decisive."})
+        if system == TOPIC:
+            pytest.fail("An unsupported candidate reached topic judgment.")
         return json.dumps(_verdict())
     monkeypatch.setattr(inc, "local_complete", complete)
     result = night.run(graph, LOCAL, full=False, dry=False, limit=None)

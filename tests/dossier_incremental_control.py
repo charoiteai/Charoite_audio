@@ -206,8 +206,9 @@ for scenario, revised, new_fact in [
 judge_cases = []
 if mode == "model":
     import dossier_incremental as incremental
-    for case_name in ("S04-fixed-unrelated", "S05-fixed-warning-loss"):
-        selected = "S04-irrelevant" if case_name.startswith("S04") else "S01-plain"
+    for case_name in ("S04-fixed-unrelated", "S05-fixed-warning-loss", "S02-fixed-contradictory-current"):
+        selected = ("S04-irrelevant" if case_name.startswith("S04") else
+                    "S02-correction" if case_name.startswith("S02") else "S01-plain")
         original = (output / selected / "before.md").read_bytes()
         old = dossier.DossierLoad("ok", original.decode(), original)
         files, _ = dossier.scan(runtime / selected, schema=CHAROITE)
@@ -217,13 +218,16 @@ if mode == "model":
             body = BODY.replace("- ⚠ Sensor is unverified.\n", "").replace(
                 "## Как пришли", f"- A rain cover was fitted. [[{B}]]\n## Как пришли")
             function = incremental.semantic_check
+        if case_name.startswith("S02"):
+            body = BODY.replace("## Как пришли", f"- Vent A is now closed. [[{B}]]\n## Как пришли")
+            function = incremental.semantic_check
         count, rejected, error = len(calls), False, None
         try:
             function("Glasshouse", old, [B], files, CONFIG, body, [])
         except incremental.Refused as exc:
             rejected, error = True, str(exc)
         measured = {"scenario": case_name, "calls": len(calls) - count, "rejected": rejected,
-                    "reason": error, "scope": "semantic-only" if case_name.startswith("S05") else "candidate-validation",
+                    "reason": error, "scope": "semantic-only" if case_name.startswith(("S05", "S02")) else "candidate-validation",
                     "passed": rejected and len(calls) - count >= 1}
         judge_cases.append(measured)
         print("JUDGE " + json.dumps(measured), flush=True)

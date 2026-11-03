@@ -331,14 +331,14 @@ carries a label is left alone by the night, `--full` included, and counted
 while retaining its revision. It remains held when a destructive rebuild would
 be needed (removed sources, damaged or oversized bodies). Forgetting a meeting
 cleans both `состав` and `не_принято`, including header-only identities, and
-clears the revision when needed. The committed dossier is authoritative; a
+clears the revision when needed. The committed dossier is authoritative. A
 declared correction moves the old current claim to attributed history and keeps
-its replacement in the current section. Each new assertion is audited with its
-complete source, so a selected quotation cannot hide conditions on other lines.
+its replacement in the current section. Separate checks assess each new
+assertion's source support and topic relevance, using the complete source so a
+selected quotation cannot hide conditions on other lines.
 This generation path requires local Ollama with an explicit request context
 window; direct MLX server requests are refused until their actual window can be
-verified. A
-failed index publication is reported and retried from disk on the next run,
+verified. A failed index publication is reported and retried from disk on the next run,
 including a run without new meetings. Existing recovery backups retain their
 original bytes. To check what a query would
 find: `scripts/nightly_dossier.py --find "your question"`.

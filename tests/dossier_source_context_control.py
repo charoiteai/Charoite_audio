@@ -19,46 +19,13 @@ import urllib.request
 A, B = "2099-01-01_100000", "2099-01-02_100000"
 MODEL = "qwen3.6:35b-mlx"
 BASE = "http://127.0.0.1:11434"
-SYSTEM = "You audit one proposed factual addition."
-OWN = "A rain cover was fitted to the Glasshouse."
-FOREIGN = "A level sensor was fitted to the WaterTank."
-RELATION = "The WaterTank pump supplies irrigation water to the Glasshouse."
-QUALIFIED = "A rain cover may have been fitted to the Glasshouse; this is unverified."
-MIXED = f"[[Ядра/Glasshouse]] {OWN}\n[[Ядра/WaterTank]] {FOREIGN}\n"
+FIXTURE = "tests/fixtures/dossier_claim_audit_cases.json"
+FIXTURE_SHA256 = "ff0382ed38c828715ac29b078ae557e15d204fb00d302b7645c95fb90016c491"
 PRIOR = (f"## Сейчас\n- Vent A is open. [[Встречи/{A}]]\n"
          f"## Как пришли\n- The opening decision is historical. [[Встречи/{A}]]\n"
          "## Решено\n- Use purple labels. [[SensorGuide]]\n"
          "## Открыто\n- ⚠ Sensor is unverified.\n"
          "## Кто в теме\n- Maintainer.")
-
-
-def _probes():
-    return [
-        {"case": "qualifier-before-anchor", "candidate": OWN, "quote": OWN,
-         "source": "The following statement is tentative and has not been verified.\n" + OWN + "\n", "accept": False},
-        {"case": "qualifier-after-anchor", "candidate": OWN, "quote": OWN,
-         "source": OWN + "\nThe preceding statement is only a hypothesis and has not been verified.\n", "accept": False},
-        {"case": "negation-before-anchor", "candidate": OWN, "quote": OWN,
-         "source": "The following line is a false draft, not an accepted fact.\n" + OWN + "\n", "accept": False},
-        {"case": "negation-after-anchor", "candidate": OWN, "quote": OWN,
-         "source": OWN + "\nCorrection: the preceding line is false. No rain cover was fitted to the Glasshouse.\n", "accept": False},
-        {"case": "fully-qualified-positive", "candidate": QUALIFIED, "quote": QUALIFIED,
-         "source": "Preliminary observation:\n" + QUALIFIED + "\nDo not treat it as confirmed installation.\n", "accept": True},
-        {"case": "own-only-positive", "candidate": OWN, "quote": OWN,
-         "source": f"[[Ядра/Glasshouse]] {OWN}\n", "accept": True},
-        {"case": "mixed-context-own", "candidate": OWN, "quote": OWN, "source": MIXED, "accept": True},
-        {"case": "mixed-context-foreign", "candidate": FOREIGN, "quote": FOREIGN, "source": MIXED, "accept": False},
-        {"case": "explicit-new-relationship", "candidate": RELATION, "quote": RELATION,
-         "source": OWN + "\n" + RELATION + "\n" + FOREIGN + "\n", "accept": True},
-        {"case": "suspected-relationship", "candidate": RELATION,
-         "quote": "A relationship between the WaterTank pump and Glasshouse irrigation is suspected but unverified.",
-         "source": "A relationship between the WaterTank pump and Glasshouse irrigation is suspected but unverified.\n",
-         "accept": False},
-        {"case": "compound-full-proof", "candidate": OWN + " " + FOREIGN,
-         "quote": OWN + "\n" + FOREIGN, "source": OWN + "\n" + FOREIGN + "\n", "accept": False},
-        {"case": "compound-partial-proof", "candidate": OWN + " " + FOREIGN,
-         "quote": OWN, "source": OWN + "\n", "accept": False},
-    ]
 
 
 def main():
@@ -105,10 +72,24 @@ def main():
     config = {"llm": {"engine": "ollama", "base_url": BASE, "model": MODEL,
                        "num_ctx": 8192, "cloud_fallback_local": False, "allow_remote": False},
               "sufler": {"role": "Audit invented factual additions conservatively."}}
-    old_text = dossier.render("Glasshouse", PRIOR, [], {}, "synthetic", "2099-01-01", author_payload="\nKeep purple labels.\n")
-    loaded = dossier.DossierLoad("ok", old_text, old_text.encode())
-    (output / "prior-dossier.md").write_text(old_text)
-    source_paths = ("src/dossier_incremental.py", "src/charoite_graph/dossier.py", "src/llm.py")
+    fixture_bytes = (source / FIXTURE).read_bytes()
+    fixture_hash = hashlib.sha256(fixture_bytes).hexdigest()
+    if fixture_hash != FIXTURE_SHA256:
+        raise RuntimeError("the predeclared claim-audit fixture changed")
+    matrix = json.loads(fixture_bytes)
+    probes, topic = matrix["cases"], matrix["topic"]
+    for probe in probes:
+        if type(probe["expected_support"]) is not bool:
+            raise RuntimeError("invalid predeclared stage expectations")
+        topic_is_valid = (type(probe["expected_topic"]) is bool if probe["expected_support"]
+                          else probe["expected_topic"] is None)
+        if not topic_is_valid:
+            raise RuntimeError("invalid predeclared stage expectations")
+    expected_support_calls = len(probes)
+    expected_topic_calls = sum(probe["expected_support"] for probe in probes)
+    expected_total_calls = expected_support_calls + expected_topic_calls
+    (output / "cases.json").write_bytes(fixture_bytes)
+    source_paths = ("src/dossier_incremental.py", "src/charoite_graph/dossier.py", "src/llm.py", FIXTURE)
 
     def hashes():
         return {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in source_paths}
@@ -120,6 +101,7 @@ def main():
                "model": self.effective_model(kwargs.get("model") or self.model),
                "num_ctx": self.num_ctx, "system": kwargs.get("system"),
                "num_predict": kwargs.get("num_predict"), "transport": self.base,
+               "think": kwargs.get("think"), "temperature": kwargs.get("temperature"),
                "fell_back": False, "error": None}
         calls.append(row)
         (output / f"call-{number:02d}-prompt.txt").write_text(prompt)
@@ -155,52 +137,100 @@ def main():
                "runtime": str(runtime), "results": results, "calls": calls, "tripwire_events": events,
                "source_hashes_before": before_hashes,
                "control_sha256": hashlib.sha256(control.read_bytes()).hexdigest(),
-               "instruction_sha256": hashlib.sha256(inc.CLAIM_AUDIT_INSTRUCTION.encode()).hexdigest(),
+               "instruction_sha256": {
+                   "support": hashlib.sha256(inc.SUPPORT_AUDIT_INSTRUCTION.encode()).hexdigest(),
+                   "topic": hashlib.sha256(inc.TOPIC_AUDIT_INSTRUCTION.encode()).hexdigest()},
+               "fixture_sha256": fixture_hash,
+               "expected_calls": {"support": expected_support_calls, "topic": expected_topic_calls,
+                                  "total": expected_total_calls},
                "real_model_calls": 0, "complete": False, "passed": False}
     def checkpoint():
         receipt["real_model_calls"] = len(calls)
         receipt["audit_event_count"] = len(events)
+        receipt["actual_calls"] = {"support": sum(row["system"] == inc.SUPPORT_AUDIT_SYSTEM for row in calls),
+                                   "topic": sum(row["system"] == inc.TOPIC_AUDIT_SYSTEM for row in calls),
+                                   "total": len(calls)}
         (output / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n")
+
+    def inspect_stage(row, specification, expected_payload):
+        expected_system, flag_name, expected_flag = specification
+        raw = (output / f"call-{row['number']:02d}-answer.txt").read_text()
+        prompt = (output / f"call-{row['number']:02d}-prompt.txt").read_text()
+        verdict, shape_ok, payload_ok, error = None, False, False, None
+        try:
+            verdict = inc._json(raw.strip(), {"verdict", flag_name, "reason"})
+            shape_ok = (verdict["verdict"] in {"accept", "reject", "uncertain"}
+                        and type(verdict[flag_name]) is bool
+                        and isinstance(verdict["reason"], str) and bool(verdict["reason"].strip()))
+            payload, _ = json.JSONDecoder().raw_decode(prompt)
+            payload_ok = payload == expected_payload
+        except (ValueError, TypeError, KeyError) as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        flag_ok = shape_ok and verdict[flag_name] is expected_flag
+        decision_ok = shape_ok and (verdict["verdict"] == "accept" if expected_flag
+                                    else verdict["verdict"] in {"reject", "uncertain"})
+        profile_ok = (row["engine"] == "ollama" and row["model"] == MODEL and row["transport"] == BASE
+                      and row["num_ctx"] == config["llm"]["num_ctx"] and row["num_predict"] == 350
+                      and row["think"] is False and type(row["temperature"]) in (int, float) and row["temperature"] == 0)
+        order_ok = row["system"] == expected_system
+        passed = bool(shape_ok and payload_ok and flag_ok and decision_ok and order_ok and profile_ok
+                      and row["error"] is None and not row["fell_back"])
+        return {"call": row["number"], "expected_system": expected_system, "actual_system": row["system"],
+                "flag": flag_name, "expected_flag": expected_flag,
+                "observed_flag": verdict[flag_name] if shape_ok else None, "verdict": verdict,
+                "strict_verdict": shape_ok, "payload_ok": payload_ok, "component_matches": bool(flag_ok),
+                "decision_matches": bool(decision_ok), "order_ok": order_ok, "profile_ok": profile_ok,
+                "parse_error": error, "passed": passed}
 
     checkpoint()
     LLM.stream = measured
     try:
         receipt["preflight"] = metadata()
-        for probe in _probes():
+        for probe in probes:
             label, start = probe["case"], len(calls)
             (output / f"{label}-source.md").write_text(probe["source"])
+            prior = PRIOR
+            if note := probe.get("prior_history_note"):
+                prior = prior.replace("## Решено\n", f"- {note}\n## Решено\n", 1)
+            old_text = dossier.render(topic, prior, [], {}, "synthetic", "2099-01-01", author_payload="\nKeep purple labels.\n")
+            loaded = dossier.DossierLoad("ok", old_text, old_text.encode())
+            (output / f"{label}-prior-dossier.md").write_text(old_text)
             claim = {"text": probe["candidate"], "source": B, "quote": probe["quote"],
                      "relevant": True, "supported": True, "reason": "Control evidence; independent audit decides."}
             reason, accepted, selected = None, False, None
             try:
                 selected = inc._quote_context(probe["source"], probe["quote"])
-                inc.audit_claim("Glasshouse", loaded, claim, config, quote_context=selected)
+                inc.audit_claim(topic, loaded, claim, config, quote_context=selected)
                 accepted = True
             except Exception as exc:  # noqa: BLE001 - record operational failures; strict verdict still required
                 reason = f"{type(exc).__name__}: {exc}"
             real_calls = len(calls) - start
-            verdict, shape_ok, payload_ok = None, False, False
-            if real_calls == 1:
-                number = calls[-1]["number"]
-                raw = (output / f"call-{number:02d}-answer.txt").read_text()
-                prompt = (output / f"call-{number:02d}-prompt.txt").read_text()
-                try:
-                    verdict = inc._json(raw.strip(), {"verdict", "supported", "relevant", "reason"})
-                    shape_ok = (verdict["verdict"] in {"accept", "reject", "uncertain"}
-                                and type(verdict["supported"]) is bool and type(verdict["relevant"]) is bool
-                                and isinstance(verdict["reason"], str) and bool(verdict["reason"].strip()))
-                    payload, _ = json.JSONDecoder().raw_decode(prompt)
-                    payload_ok = payload == {"topic": "Glasshouse", "prior_dossier": loaded.parsed.body,
-                                             "candidate_text": probe["candidate"], "source_quotation": probe["quote"],
-                                             "source_context": probe["source"]}
-                except (ValueError, TypeError, KeyError):
-                    shape_ok = False
-            passed = (real_calls == 1 and shape_ok and payload_ok and selected == probe["source"]
-                      and calls[-1]["error"] is None and not calls[-1]["fell_back"] and accepted == probe["accept"])
-            result = {"case": label, "expected_accept": probe["accept"], "accepted": accepted,
-                      "reason": reason, "real_calls": real_calls, "verdict": verdict,
+            expected_stages = [(inc.SUPPORT_AUDIT_SYSTEM, "supported", probe["expected_support"])]
+            if probe["expected_support"]:
+                expected_stages.append((inc.TOPIC_AUDIT_SYSTEM, "relevant", probe["expected_topic"]))
+            expected_payload = {"topic": topic, "prior_dossier": loaded.parsed.body,
+                                "candidate_text": probe["candidate"], "source_quotation": probe["quote"],
+                                "source_context": probe["source"]}
+            stage_results = []
+            for offset, row in enumerate(calls[start:]):
+                if offset < len(expected_stages):
+                    stage_results.append(inspect_stage(row, expected_stages[offset], expected_payload))
+                else:
+                    stage_results.append({"call": row["number"], "actual_system": row["system"],
+                                          "passed": False, "error": "unexpected extra stage"})
+            order_ok = [row["system"] for row in calls[start:]] == [spec[0] for spec in expected_stages]
+            expected_accept = bool(probe["expected_support"] and probe["expected_topic"])
+            passed = bool(real_calls == len(expected_stages) and order_ok and stage_results
+                          and all(stage["passed"] for stage in stage_results)
+                          and selected == probe["source"] and accepted == expected_accept)
+            observed_support = stage_results[0].get("observed_flag") if stage_results else None
+            observed_topic = stage_results[1].get("observed_flag") if len(stage_results) > 1 else None
+            result = {"case": label, "expected_accept": expected_accept, "accepted": accepted,
+                      "expected_support": probe["expected_support"], "expected_topic": probe["expected_topic"],
+                      "observed_support": observed_support, "observed_topic": observed_topic,
+                      "reason": reason, "real_calls": real_calls, "expected_real_calls": len(expected_stages),
+                      "stages": stage_results, "order_ok": order_ok,
                       "fell_back": any(call["fell_back"] for call in calls[start:]),
-                      "strict_verdict": shape_ok, "full_context_payload": payload_ok,
                       "full_context_selected": selected == probe["source"], "passed": passed}
             results.append(result)
             checkpoint()
@@ -212,9 +242,9 @@ def main():
     finally:
         LLM.stream = original_stream
     receipt["source_hashes_after"] = hashes()
-    receipt["passed"] = bool(receipt["complete"] and len(results) == len(_probes())
+    receipt["passed"] = bool(receipt["complete"] and len(results) == len(probes)
                              and all(result["passed"] for result in results) and not events
-                             and len(calls) == len(_probes()) and all(not call["fell_back"] for call in calls)
+                             and len(calls) == expected_total_calls and all(not call["fell_back"] for call in calls)
                              and before_hashes == receipt["source_hashes_after"]
                              and receipt["preflight"]["digest"] == receipt["postflight"]["digest"])
     checkpoint()

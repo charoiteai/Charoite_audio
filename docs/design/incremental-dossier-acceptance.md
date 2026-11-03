@@ -142,3 +142,32 @@ correction of a current claim now requires its exact prior text in `## Как
 пришли`, absent from `## Сейчас`, with the replacement in `## Сейчас`. The driver
 checks those section outcomes. The earlier driver PASS remains historical and
 does not constitute human acceptance of that S02 output.
+
+## S16: separate evidence support and topic relevance
+
+Combined narrow instructions traded qualification errors for topic errors.
+The twelve-case short-instruction control returned correct support flags but
+marked every case relevant, accepting a foreign fact and a mixed compound.
+It was rejected; no later writer phase in that chained run was executed.
+
+After aggregate conservation/coverage checks, each assertion now needs two
+separate local verdicts: factual support and then topic relevance. Each has its
+own strict three-field JSON schema. Unsupported/uncertain/malformed support
+stops before the topic call; a topic refusal also keeps the source retryable.
+Neither stage may advance body, membership, rejection versions or backups.
+Both stages receive the complete new source and the exact factual anchor.
+The prior dossier resolves identities/explicit relationships only; it cannot
+prove a new event. Subject, time and qualifications remain bound to the anchor:
+independent facts elsewhere in the source cannot repair a wrong anchor.
+
+The finite preimplementation matrix is
+[`dossier_claim_audit_cases.json`](../../tests/fixtures/dossier_claim_audit_cases.json):
+21 invented cases with exact source/candidate/anchor and expected support/topic
+outcomes. Its successful path requires 31 real calls, including short-circuits.
+It covers before/after qualifications and denials, faithful uncertainty, mixed
+subjects, explicit/suspected relationships, compound proof, unrelated qualifiers,
+prior coreference, foreign prior mentions, temporal scope and wrong anchors.
+The manual controller checks actual component verdicts, stage order, payloads,
+strict schema, model digest and source hashes. A transport error or wrong-stage
+rejection does not count as a successful model negative. This matrix supplements
+all S01–S15 gates; it does not replace the full writer or manual artifact review.

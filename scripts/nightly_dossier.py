@@ -508,6 +508,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             # generation: a bad candidate cannot reject any source.
             for name in decision.new:
                 relevant = dossier_incremental.source_relevance(theme, loaded, name, g.files[name], c)
+                if type(relevant) is not bool:
+                    raise dossier_incremental.Refused("source relevance did not return a literal boolean")
                 (accepted if relevant else rejected).append(name)
             body = dossier_incremental.append(theme, loaded, accepted, g.files, c) if accepted else ""
             text = _append_result(loaded, body if accepted else None, accepted, rejected, g, fp)

@@ -1,7 +1,8 @@
 """Manual real-local-model experiment: a narrow, independently framed claim audit.
 
 Usage: python -I -B this_file.py PUBLIC_SOURCE OUTPUT_DIR
-Fictional inputs only. This is not a pytest test or production acceptance.
+Fictional inputs only. This is a historical combined-role prototype, not current
+production acceptance; use dossier_source_context_control.py for that matrix.
 """
 from pathlib import Path
 import json

@@ -59,9 +59,12 @@ def _answer(payload, system, *, irrelevant=(), candidate=None):
                            "quote": "" if no else FACT})
     if "extend factual" in system:
         return json.dumps({"body": candidate or _addition(payload["existing_dossier"]), "changes": []})
-    if "audit one proposed factual addition" in system:
-        return json.dumps({"verdict": "accept", "relevant": True, "supported": True,
-                           "reason": "Synthetic single-assertion judgment."})
+    if system == inc.SUPPORT_AUDIT_SYSTEM:
+        return json.dumps({"verdict": "accept", "supported": True,
+                           "reason": "Synthetic source-support judgment."})
+    if system == inc.TOPIC_AUDIT_SYSTEM:
+        return json.dumps({"verdict": "accept", "relevant": True,
+                           "reason": "Synthetic topic judgment."})
     return json.dumps({"verdict": "accept", "conserved": True, "supported": True,
                        "corrections_valid": True, "reason": "Synthetic candidate judgment.",
                        "claims": [{"text": FACT, "source": B, "quote": FACT,
@@ -95,6 +98,23 @@ def isolated(tmp_path, monkeypatch):
 
 def _run(graph, **kwargs):
     return night.run(graph, LOCAL, full=False, dry=False, limit=None, **kwargs)
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "irrelevant", [], {}])
+def test_unknown_source_classification_cannot_stamp_a_semantic_rejection_or_acceptance(isolated, monkeypatch, invalid):
+    graph, path = _world(isolated)
+    _source(graph)
+    before = path.read_bytes()
+    dossier.rebuild_index(graph, schema=CHAROITE)
+    index_before = dossier.load_index(path.parent)
+    calls = _transport(monkeypatch)
+    monkeypatch.setattr(inc, "source_relevance", lambda *args: invalid)
+    result = _run(graph)
+    assert result["собрано"] == 0 and result["отказы"] == 1 and calls == []
+    assert path.read_bytes() == before and dossier.composition(path.read_text(), schema=CHAROITE) == [A]
+    assert frontmatter.list_field(path.read_text(), dossier.REJECTED_FIELD) == []
+    assert dossier.rejection_versions(path.read_text()) == {}
+    assert dossier.load_index(path.parent) == index_before and not (path.parent / ".backup").exists()
 
 
 def test_rejection_only_update_retains_prior_versions_and_repeat_is_a_noop(isolated, monkeypatch):
