@@ -85,23 +85,33 @@ def same_process(first, second):
     return second is not None and all(first[key] == second[key] for key in ("pid", "pgid", "started"))
 
 
-def _stop_owned_processes(server, owned, capture, signal_process, read_process=process_receipt):
-    """Stop known identities, but require a complete final descendant capture.
+def _stop_owned_processes(server, owned, capture, signal_process, group_empty, read_process=process_receipt):
+    """Freeze the private tree before its final inventory, then kill exact identities.
 
     If the leader has disappeared, old observations cannot establish that an
     unobserved runner is gone. Known children are still stopped; cleanup stays
     unconfirmed rather than making a successful claim about unknown children.
     """
     complete_capture = capture()
-    for pid in reversed(owned):
-        signal_process(pid, signal.SIGTERM)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        live = [pid for pid, identity in owned.items()
-                if same_process(identity, current := read_process(pid)) and "Z" not in current["state"]]
-        if not live:
+    frozen = False
+    for _ in range(16):
+        if not complete_capture:
             break
-        time.sleep(0.1)
+        for pid in list(owned):
+            current = read_process(pid)
+            if same_process(owned[pid], current) and not any(flag in current["state"] for flag in "TZ"):
+                signal_process(pid, signal.SIGSTOP)
+        # A child created while another identity was being stopped is captured
+        # here and stopped on the next pass. A stable stopped tree cannot fork.
+        complete_capture = capture()
+        if not complete_capture:
+            break
+        current = [read_process(pid) for pid in owned]
+        if all(item is None or any(flag in item["state"] for flag in "TZ") for item in current):
+            frozen = True
+            break
+    # Disposable isolated children receive no opportunity to resume and fork
+    # from a termination handler. Every signal still verifies full identity.
     for pid in reversed(owned):
         signal_process(pid, signal.SIGKILL)
     server.wait(timeout=10)
@@ -109,8 +119,12 @@ def _stop_owned_processes(server, owned, capture, signal_process, read_process=p
         current = read_process(pid)
         check(current is None or (same_process(identity, current) and "Z" in current["state"]),
               "experiment descendant cleanup was not confirmed")
-    check(complete_capture is True,
+    check(complete_capture is True and frozen,
           "server leader disappeared before final capture; unobserved descendants may remain")
+    deadline = time.monotonic() + 10
+    while not group_empty():
+        check(time.monotonic() < deadline, "private process group is not empty after cleanup")
+        time.sleep(0.1)
 
 
 class Tripwire:
@@ -238,6 +252,13 @@ def main():
                 os.kill(pid, signum)
             except ProcessLookupError:
                 pass
+
+    def private_group_empty():
+        result = subprocess.run(["/usr/bin/pgrep", "-g", str(server.pid)],
+                                env={"PATH": "/usr/bin:/bin"}, capture_output=True,
+                                timeout=10, check=False)
+        check(result.returncode in (0, 1), "cannot verify private process-group cleanup")
+        return result.returncode == 1 and not result.stdout.strip()
 
     def gate(step):
         result = subprocess.run([str(guard)], env=guard_env, cwd=source,
@@ -516,7 +537,7 @@ def main():
             try:
                 # Descendants were observed through this server's ancestry.
                 # Signal individual verified identities; never signal a PGID.
-                _stop_owned_processes(server, owned, remember_children, signal_owned)
+                _stop_owned_processes(server, owned, remember_children, signal_owned, private_group_empty)
             except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
                 cleanup_ok = False
                 report["cleanup_error"] = type(exc).__name__ + ": " + str(exc)
