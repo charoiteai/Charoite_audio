@@ -1000,16 +1000,15 @@ def member_name(value: str) -> str:
     """One meeting identity grammar for list scalars and full wiki links."""
     value = value.strip()
     match = LINK_RE.fullmatch(value)
-    if value.startswith("[[") and match is None:
-        return ""
-    return graph_names.link_target_stem(match[1] if match else value)
+    target = "" if value.startswith("[[") and match is None else (match[1] if match else value)
+    return graph_names.link_target_stem(target)
 
 
-def membership_refusal(text: str) -> str:
+def membership_refusal(text: str) -> str | None:
     """Duplicate writable keys are ambiguous even when YAML picks a winner."""
     fm, _ = frontmatter.split(text.removeprefix("\ufeff"))
     if fm is None:
-        return ""
+        return None
     for key in (COMPOSITION_FIELD, REJECTED_FIELD, REJECTION_VERSIONS_FIELD):
         first = frontmatter._field_span(fm, key)
         if first and frontmatter._field_span(fm[:first[0]] + fm[first[1]:], key):
@@ -1034,7 +1033,7 @@ def membership_refusal(text: str) -> str:
                         return f"unreadable membership version: {key}"
                 elif not member_name(item):
                     return f"empty membership identity: {key}"
-    return ""
+    return None
 
 
 def rejection_context(text: str) -> str:

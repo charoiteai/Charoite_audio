@@ -77,6 +77,15 @@ probes = [
 ]
 instruction = (
     "Audit ONLY this one proposed addition, separately from any whole-meeting verdict. "
+    "The prior_dossier is explicitly the body of the supplied topic's dossier: an already "
+    "identified object described there may be updated without repeating the topic name in "
+    "every line. Do not treat its section headings or provenance citations as unrelated notes. "
+    "A wiki topic tag at the start of the quotation explicitly annotates the following "
+    "statement's subject context when it has no other named subject. It does not connect "
+    "different named objects: a statement about a different named object keeps that subject. "
+    "A tag alone cannot make substantively unrelated content relevant; still assess the "
+    "topic's objects, activities and purpose. Bullet markers and provenance wiki citations "
+    "are formatting/attribution, not additional factual assertions requiring verbatim quotation. "
     "Use exclusively the exact source quotation and prior dossier supplied. Do not assume "
     "that entities in the same meeting are connected. A different named object is NOT a "
     "component, dependency or part of the dossier topic unless the quotation or prior "
@@ -102,14 +111,26 @@ instruction = (
     "For foreign-object-only facts with no explicit connection set relevant=false even "
     "if factually true. Return ONLY JSON with exactly verdict(accept/reject/uncertain), "
     "supported(boolean), relevant(boolean), reason(nonempty string). Accept only if both "
-    "booleans are true; uncertainty requires uncertain. Keep reason under 40 words."
+    "booleans are true; uncertainty requires uncertain. Keep reason under 40 words. "
+    "Calibration uses fictional labels, not special-case entity names: topic ProjectOne, prior "
+    "ValveX is open; new quotation ProjectTwo pump supplies ProjectOne. An identical candidate "
+    "MUST have supported=true and relevant=true: the NEW quotation explicitly establishes "
+    "the relationship, even though ProjectTwo was absent from the prior dossier. In contrast, "
+    "quotation and candidate ProjectTwo sensor was installed are supported but NOT relevant "
+    "to ProjectOne without an explicit connection. A compound claim ProjectOne cover was fitted; "
+    "ProjectTwo sensor was installed is NOT wholly relevant even when both facts are quoted. "
+    "Never veto an explicitly quoted NEW relationship merely because it was absent before."
 )
 results = []
 for label, candidate, quote, expected in probes:
-    payload = {"topic": "Glasshouse",
-               "prior_dossier": "Vent A is open. Use purple labels. Sensor is unverified.",
-               "candidate_text": candidate, "source_quotation": quote}
-    prompt = json.dumps(payload) + "\n" + instruction
+    prior = ("## \u0421\u0435\u0439\u0447\u0430\u0441\n- Vent A is open. [[\u0412\u0441\u0442\u0440\u0435\u0447\u0438/2099-01-01_100000]]\n"
+             "## \u041a\u0430\u043a \u043f\u0440\u0438\u0448\u043b\u0438\n- The opening decision is historical. [[\u0412\u0441\u0442\u0440\u0435\u0447\u0438/2099-01-01_100000]]\n"
+             "## \u0420\u0435\u0448\u0435\u043d\u043e\n- Use purple labels. [[SensorGuide]]\n"
+             "## \u041e\u0442\u043a\u0440\u044b\u0442\u043e\n- \u26a0 Sensor is unverified.\n"
+             "## \u041a\u0442\u043e \u0432 \u0442\u0435\u043c\u0435\n- Maintainer.")
+    payload = {"topic": "Glasshouse", "prior_dossier": prior,
+               "candidate_text": "- " + candidate + " [[2099-01-02_100000]]", "source_quotation": quote}
+    prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
     (output / f"{label}-prompt.txt").write_text(prompt)
     count, fallback = len(calls), []
     raw = inc.local_complete(prompt, config, system="You audit one proposed factual addition.",

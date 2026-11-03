@@ -40,6 +40,8 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     context = int((local.get("llm") or {}).get("num_ctx") or 8192)
     if len((system + prompt).encode("utf-8")) + num_predict + 256 > context:
         raise Refused("complete dossier input exceeds the configured context budget")
+    # The provider must use the same effective window as the complete-input guard.
+    local["llm"]["num_ctx"] = context
     from llm import LLM  # noqa: PLC0415
 
     llm = LLM(local)
@@ -237,9 +239,18 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
 
 
 # This instruction is copied exactly from the independently exercised local
-# nine-case prototype. Keep its wording stable when reusing that evidence.
+# full-context eleven-case control. Keep its wording stable when reusing that evidence.
 CLAIM_AUDIT_INSTRUCTION = (
     "Audit ONLY this one proposed addition, separately from any whole-meeting verdict. "
+    "The prior_dossier is explicitly the body of the supplied topic's dossier: an already "
+    "identified object described there may be updated without repeating the topic name in "
+    "every line. Do not treat its section headings or provenance citations as unrelated notes. "
+    "A wiki topic tag at the start of the quotation explicitly annotates the following "
+    "statement's subject context when it has no other named subject. It does not connect "
+    "different named objects: a statement about a different named object keeps that subject. "
+    "A tag alone cannot make substantively unrelated content relevant; still assess the "
+    "topic's objects, activities and purpose. Bullet markers and provenance wiki citations "
+    "are formatting/attribution, not additional factual assertions requiring verbatim quotation. "
     "Use exclusively the exact source quotation and prior dossier supplied. Do not assume "
     "that entities in the same meeting are connected. A different named object is NOT a "
     "component, dependency or part of the dossier topic unless the quotation or prior "
@@ -265,7 +276,15 @@ CLAIM_AUDIT_INSTRUCTION = (
     "For foreign-object-only facts with no explicit connection set relevant=false even "
     "if factually true. Return ONLY JSON with exactly verdict(accept/reject/uncertain), "
     "supported(boolean), relevant(boolean), reason(nonempty string). Accept only if both "
-    "booleans are true; uncertainty requires uncertain. Keep reason under 40 words."
+    "booleans are true; uncertainty requires uncertain. Keep reason under 40 words. "
+    "Calibration uses fictional labels, not special-case entity names: topic ProjectOne, prior "
+    "ValveX is open; new quotation ProjectTwo pump supplies ProjectOne. An identical candidate "
+    "MUST have supported=true and relevant=true: the NEW quotation explicitly establishes "
+    "the relationship, even though ProjectTwo was absent from the prior dossier. In contrast, "
+    "quotation and candidate ProjectTwo sensor was installed are supported but NOT relevant "
+    "to ProjectOne without an explicit connection. A compound claim ProjectOne cover was fitted; "
+    "ProjectTwo sensor was installed is NOT wholly relevant even when both facts are quoted. "
+    "Never veto an explicitly quoted NEW relationship merely because it was absent before."
 )
 
 
@@ -289,7 +308,7 @@ def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *
     payload = {"topic": theme, "prior_dossier": loaded.parsed.body,
                "candidate_text": claim["text"],
                "source_quotation": claim["quote"] if quote_context is None else quote_context}
-    prompt = json.dumps(payload) + "\n" + CLAIM_AUDIT_INSTRUCTION
+    prompt = json.dumps(payload, ensure_ascii=False) + "\n" + CLAIM_AUDIT_INSTRUCTION
     verdict = _json(local_complete(prompt, c, system="You audit one proposed factual addition.",
                                    num_predict=350), {"verdict", "supported", "relevant", "reason"})
     if (verdict["verdict"] != "accept" or verdict["supported"] is not True or verdict["relevant"] is not True

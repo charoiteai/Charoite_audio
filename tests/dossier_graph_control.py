@@ -92,10 +92,14 @@ themes = {
     "Glasshouse": {"old": "Vent A is open.", "new": "A rain cover was fitted to the Glasshouse."},
     "WaterTank": {"old": "The water in the tank is clean.", "new": "A level sensor was fitted to the WaterTank."},
 }
-for folder in (MEETINGS, CORES, CHAROITE.dossier_dir):
+for folder in (MEETINGS, CORES, "Documents", CHAROITE.dossier_dir):
     (graph / folder).mkdir()
-for theme, other in (("Glasshouse", "WaterTank"), ("WaterTank", "Glasshouse")):
-    (graph / CORES / f"{theme}.md").write_text(f"# {theme}\nInvented maintenance system. Associated [[{CORES}/{other}]].\n")
+for theme in themes:
+    (graph / CORES / f"{theme}.md").write_text(f"# {theme}\nInvented maintenance system.\n")
+    # Each independent topic reaches the cluster threshold without inventing
+    # a relationship that would invalidate the cross-topic negative control.
+    (graph / "Documents" / f"{theme}Guide.md").write_text(
+        f"# {theme} guide\nMaintenance reference for [[{CORES}/{theme}]].\n")
 (graph / MEETINGS / f"{A}.md").write_text(
     f"# Synthetic old meeting\n[[{CORES}/Glasshouse]] Vent A is open.\n"
     f"[[{CORES}/WaterTank]] The water in the tank is clean.\n")
@@ -220,6 +224,7 @@ for theme, other_theme in (("Glasshouse", "WaterTank"), ("WaterTank", "Glasshous
 postflight = metadata()
 backup_bytes_match = all(path.read_bytes() == before[path.stem] for path in backups)
 passed = (baseline["model_calls"] == 0 and baseline["result"][BUILT] == 0
+          and baseline["result"]["\u0442\u0435\u043c"] == 2
           and updated["result"][BUILT] == 2 and updated["model_calls"] >= 6
           and repeat["model_calls"] == 0 and repeat["result"][BUILT] == 0
           and repeat["bytes_unchanged"] and repeat["no_new_backup"]
