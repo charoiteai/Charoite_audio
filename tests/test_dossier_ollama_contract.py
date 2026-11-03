@@ -1,9 +1,10 @@
 """Fake-backend contract checks, not experiments on an installed Ollama.
 
 LLM, local_complete, request serialization, stream decoding and response cleanup
-are real. Only requests.get/post are replaced; no sockets or model registry
-mutations occur. The fake's :local/overflow behavior models the trusted v0.34.4
-server contract and still needs separate installed-server integration evidence.
+are real. The network guard supplies exact metadata/chat routes; no sockets or
+model registry mutations occur. The fake's :local/overflow behavior models the
+trusted v0.34.4 server contract and still needs separate installed-server
+integration evidence.
 """
 from __future__ import annotations
 
@@ -101,11 +102,13 @@ class Backend:
 
 
 @pytest.fixture
-def backend(monkeypatch, tmp_path):
+def backend(monkeypatch, tmp_path, _сеть_закрыта):
     wire = Backend()
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
-    monkeypatch.setattr(llm.requests, "get", wire.get)
-    monkeypatch.setattr(llm.requests, "post", wire.post)
+    base = CONFIG["llm"]["base_url"]
+    for endpoint in ("tags", "version"):
+        _сеть_закрыта[("GET", f"{base}/api/{endpoint}")] = wire.get
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = wire.post
     return wire
 
 
@@ -137,7 +140,14 @@ def test_omitted_model_uses_existing_resolution_then_forces_local(backend):
     selected = llm.LLM(copy.deepcopy(CONFIG)).require_local_ollama_model()
     assert selected == MODEL + ":local"
     assert [call["url"].rsplit("/", 1)[-1] for call in backend.calls] == ["tags", "version"]
-    assert backend.responses[-1][1].closed
+    assert all(response.closed for _, response in backend.responses)
+
+
+@pytest.mark.parametrize("endpoint", ["chat", "generate", "show", "create", "pull", "version?path=chat"])
+def test_metadata_seam_refuses_nonmetadata_endpoints_before_http(backend, endpoint):
+    with pytest.raises(ValueError, match="metadata endpoint"):
+        llm.LLM(copy.deepcopy(CONFIG))._ollama_metadata(endpoint)
+    assert backend.calls == []
 
 
 @pytest.mark.parametrize("version", ["0.34.4", "0.34.5", "0.35.0", "1.0.0", "0.34.4+build.7"])

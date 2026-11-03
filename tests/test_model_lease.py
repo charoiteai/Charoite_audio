@@ -432,8 +432,8 @@ def test_leased_stream_counts_only_payload_lines_as_progress(tmp_path, monkeypat
 def test_transport_seams_are_the_only_way_to_the_model():
     """Структурный сторож: обращения к транспорту — только в объявленных швах.
 
-    В llm.py `requests.*` зовут два шва аренды (_open_stream, _post_busy), список
-    моделей (_models_available) и адаптер двери векторов (_requests_post): сам
+    В llm.py `requests.*` зовут два шва аренды (_open_stream, _post_busy), единый
+    шов метаданных (_ollama_metadata) и адаптер двери векторов (_requests_post): сам
     векторизатор уехал в `embed_door`, поэтому `embed` из allowlist снят. В двери
     `urllib.request.urlopen` зовётся только в `urllib_post`, а
     `http.client.HTTPException` в `TRANSPORT_ERRORS` — тип исключения, не сырой
@@ -444,8 +444,11 @@ def test_transport_seams_are_the_only_way_to_the_model():
     №423). Сторож сети conftest сегодня перехватывает только глаголы `requests` и
     `urllib.request.urlopen`; `urlretrieve`, `http.client` и `socket` он не видит —
     перехват на уровне сокета ещё не сделан, это №437."""
-    allowed = {"_open_stream", "_post_busy", "_models_available",
-               "_requests_post",          # GET списка моделей — метаданные, не генерация
+    # Читатели tags/version больше не вызывают транспорт сами: общий GET-шов
+    # допускает только эти два endpoint и закрывает ответ. Метаданным аренда
+    # модели не нужна; генерация и мутации реестра в этот шов не допускаются.
+    allowed = {"_open_stream", "_post_busy", "_ollama_metadata",
+               "_requests_post",          # адаптер двери векторов
                "_hold_tick"}              # срок резидентной модели встречи, без генерации (№725)
     assert "embed" not in allowed, "векторный транспорт уехал в дверь — llm.embed здесь не шов"
     tree = ast.parse((REPO / "src" / "llm.py").read_text(encoding="utf-8"))

@@ -322,7 +322,11 @@ def test_transport_respects_explicit_window_and_supplies_the_documented_default(
         engine, base, cloud_ready, _fell_back_local = "ollama", "http://127.0.0.1:11434", False, False
         def __init__(self, config):
             calls.append(config)
+        def require_local_ollama_model(self, model=None):
+            return model + ":local"
         def stream(self, prompt, **kwargs):
+            assert kwargs["model"] == calls[-1]["llm"]["model"] + ":local"
+            assert kwargs["truncate"] is False and kwargs["shift"] is False
             if kwargs["num_predict"] > 0:
                 yield "synthetic local answer"
     monkeypatch.setattr(llm, "LLM", Local)

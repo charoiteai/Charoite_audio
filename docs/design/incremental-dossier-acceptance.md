@@ -131,6 +131,10 @@ including full input, local-only construction, finite output, Russian input
 capacity and agreement between the admission and provider context windows.
 These are deterministic transport checks, not real-model quality evidence.
 This path requires a trusted local Ollama server, stable version 0.34.4 or later.
+Metadata readers share a closed `tags`/`version` transport seam, with direct
+loopback routing, a finite timeout and response cleanup. A failure to establish
+the local-provider contract is a retryable refusal before any dossier prompt;
+it must not advance source membership or count as semantic rejection.
 Before sending dossier text, a metadata-only version check establishes support
 for an explicit `:local` model selector and top-level `truncate=false` and
 `shift=false` controls. Unknown/older versions refuse the addition. Every chat

@@ -61,6 +61,8 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
         model_ref = llm.require_local_ollama_model(requested)
     except (AttributeError, TypeError) as exc:
         raise Refused("unsupported adapter: missing local Ollama contract") from exc
+    except RuntimeError as exc:
+        raise Refused("local Ollama contract could not be verified") from exc
     if (not isinstance(model_ref, str) or not model_ref.endswith(":local") or not model_ref[:-6]
             or model_ref[:-6].casefold().endswith((":local", ":cloud", "-cloud"))):
         raise Refused("adapter did not return a verified local model reference")
