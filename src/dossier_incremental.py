@@ -7,6 +7,7 @@ of the source. The caller owns graph locks, snapshots, backup and publication.
 """
 from __future__ import annotations
 
+from collections import Counter
 import json
 import re
 
@@ -188,29 +189,40 @@ def validate_candidate(theme: str, loaded: dossier.DossierLoad, names: list[str]
     semantic_check(theme, loaded, names, files, c, body, changes)
 
 
-def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[str]) -> set[int]:
+def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[str],
+                           changes: list) -> set[int]:
     """A lexical completeness gate, not a claim of semantic truth.
 
-    Retained whole old lines may move or remain inside an extended line. Only
-    their exact spans, known citation identifiers and five structural headings
-    are excluded. New visible aliases/page names are content requiring evidence.
+    Retained lines may remain inside an extended line, within their original
+    section and occurrence count. Only a declared correction permits a current
+    line to move to history. Visible aliases/page names require evidence too.
     """
     required = {i for i, character in enumerate(body) if character.isalnum()}
-    old_lines = set(loaded.parsed.body.splitlines())
-    prior_facts = [line for line in old_lines if any(c.isalnum() for c in line)
-                   and not line.lstrip().startswith("#")]
-    offset = 0
-    for physical in body.splitlines(keepends=True):
-        line = physical.rstrip("\r\n")
-        if line in old_lines:
-            required.difference_update(range(offset, offset + len(line)))
-        else:
-            for old in prior_facts:
-                start = line.find(old)
-                while start >= 0:
-                    required.difference_update(range(offset + start, offset + start + len(old)))
-                    start = line.find(old, start + len(old))
-        offset += len(physical)
+    old = dossier.DossierLoad("ok", loaded.parsed.body)
+    remaining = Counter((section.title, line)
+                        for section in old.parsed.sections
+                        for line in old.text[section.content:section.end].splitlines()
+                        if any(c.isalnum() for c in line) and not line.lstrip().startswith("#"))
+    candidate = dossier.DossierLoad("ok", body)
+    for section in candidate.parsed.sections:
+        offset = section.content
+        eligible = sorted((key for key in remaining if key[0] == section.title or (
+            key[0] == "Сейчас" and section.title == "Как пришли"
+            and any(change["before"] in key[1] for change in changes))), key=lambda key: -len(key[1]))
+        for physical in body[section.content:section.end].splitlines(keepends=True):
+            line = physical.rstrip("\r\n")
+            represented = set()
+            for key in eligible:
+                prior = key[1]
+                start = line.find(prior)
+                while start >= 0 and remaining[key]:
+                    span = set(range(start, start + len(prior)))
+                    if not represented.intersection(span):
+                        required.difference_update(i + offset for i in span)
+                        represented.update(span)
+                        remaining[key] -= 1
+                    start = line.find(prior, start + len(prior))
+            offset += len(physical)
     old_links = {m[0] for m in dossier.LINK_RE.finditer(loaded.parsed.body)}
     known_targets = set(names) | _links(loaded.parsed.body)
     for match in dossier.LINK_RE.finditer(body):
@@ -227,11 +239,11 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
 
 
 def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
-                  files: dict, claims) -> None:
+                  files: dict, claims, changes: list) -> None:
     """Validate every evidence item and cover all otherwise new significant text."""
     if not isinstance(claims, list):
         raise Refused("candidate claims must be an array")
-    required = _new_content_positions(loaded, body, names)
+    required = _new_content_positions(loaded, body, names, changes)
     uncovered = set(required)
     seen = set()
     contributors = set()
@@ -437,7 +449,7 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
             or not verdict["reason"].strip()
             or any(verdict[key] is not True for key in ("conserved", "supported", "corrections_valid"))):
         raise Refused("candidate semantic conservation was not accepted")
-    _check_claims(loaded, body, names, files, verdict["claims"])
+    _check_claims(loaded, body, names, files, verdict["claims"], changes)
     audits = [(claim, _quote_context(source_text(files[claim["source"]]), claim["quote"]))
               for claim in verdict["claims"]]
     for claim, context in audits:
