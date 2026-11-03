@@ -5,7 +5,7 @@ Status: implementation acceptance plan against `f0a3ce57568efb5e2246fd25e627fa76
 Request: when a new meeting joins a topic, supply the existing dossier and only the new meeting texts; add supported facts and correct explicitly superseded facts while retaining useful links, warnings and author edits.
 Minimal path: accept parser 818 first; use its shared projection in planning, append generation, judging and writing; integrate the existing membership plan; validate a candidate before backup and a guarded write; update membership and the index only for the version actually committed.
 Before enabling this path, forgetting a meeting must remove its identity from both `состав` and `не_принято`, including supported aliases and list encodings.
-Scope: public code and wholly invented fixtures; local model only. No owner data, migration, installation, publication, tests or model calls were performed for this document.
+Scope: public code and wholly invented fixtures; local model only. No owner data or production migration is used. Validation status is recorded below and in the linked synthetic receipt.
 
 ## Existing mechanisms and integration gaps
 
@@ -46,7 +46,7 @@ Every row is required; grouped variants are separate cases, not one passing exam
 
 No-model runs may prove selection, planning, parsing, membership, fault handling and conservation against fixed candidate text; they cannot prove generation quality or semantic relevance. Real-model acceptance requires actual local generation and judge calls for S01/S02/S04 and a local judge call for S05; distinguish generation calls, fixed-candidate judge calls, rejected candidates and transport failures. Stubs, cached answers and bypasses are not real-model results.
 
-Current evidence is source inspection only. Tests run: none. Model calls: none. Scenario results: all unexecuted. Blockers before implementation/rollout: accepted parser 818 and its legacy policy; append integration and a local relevance/conservation judge; cleanup of both membership fields in forget; isolated scenario evidence, independent review and applicable final-SHA checks. This preparation leaves the overall task open.
+Implementation evidence: 1,070 selected deterministic regressions passed with three pre-existing expected failures and zero audit events. Actual local generation/judging passed four writer cases (S01 plain/revised, S02 and S04) plus two fixed-candidate judge probes (S04 and S05), using 13 model calls; all four unchanged repeats made zero calls and no new backup. See [the sanitized receipt](../../reports/handoff/tasks/843_acceptance/synthetic-model-receipt.json) for the exact source hashes, model digest and case evidence. Source transport failures are checked separately from semantic rejection. Full-suite CI and mutation acceptance remain required before delivery; no production-graph or installed-runtime claim is made here.
 
 ## Implementation decisions for input review
 
@@ -70,3 +70,9 @@ cleaning it preserves the body and its revision. Removing composed membership
 or a real body/source citation uses the existing revision/deletion policy.
 New recovery copies in `.forget_backup` deliberately retain original bytes;
 this task does not change the existing recovery/retention policy.
+
+## Output review resolutions
+
+Independent Terra and Luna reviews reported no Critical findings. Addressed findings: rebuild selection now admits complete sanitized source blocks without per-meeting clipping; forgetting captures aliases strictly and reports an unreadable snapshot; mixed accepted/rejected updates retain each rejection's actual pre-generation context, so it is reassessed after the body changes. The alleged empty-string composition rebuild was disproved on the reviewed tree: raw empty/whitespace entries already hold. Additional malformed canonical identities remain covered by the conservative header gate. The helper lives in the supported meeting layer, with no graph/runtime import exception.
+
+The original full local run reached 10,582 passes, eight skips and seven expected failures; four legacy index tests still expected the earlier scan/rebuild routing and were then corrected to exercise valid forced rebuilds and strict scan failures. Final CI and the targeted rerun must validate those changes. This record does not turn the initial red run into a clean full run.

@@ -333,6 +333,34 @@ def test_rebuild_never_stamps_a_source_tail_that_was_not_supplied(world, monkeyp
     assert B not in dossier.composition(path.read_text(), schema=CHAROITE)
 
 
+@pytest.mark.parametrize("stage", ["generation", "judge"])
+@pytest.mark.parametrize("fault", ["timeout", "malformed"])
+def test_late_transport_failure_keeps_the_new_source_retryable(world, monkeypatch, stage, fault):
+    nd, graph, path = world
+    _new(graph)
+    before = path.read_bytes()
+    _responses(monkeypatch)
+    complete = inc.local_complete
+    failures = []
+
+    def failing(prompt, config, *, system, **kwargs):
+        selected = "extend factual" in system if stage == "generation" else "independent conservative" in system
+        if selected:
+            failures.append(system)
+            if fault == "timeout":
+                raise TimeoutError("synthetic late model timeout")
+            return "not JSON"
+        return complete(prompt, config, system=system, **kwargs)
+
+    monkeypatch.setattr(inc, "local_complete", failing)
+    result = nd.run(graph, LOCAL, full=False, dry=False, limit=None)
+    assert failures and result["отказы"] == 1 and result["собрано"] == 0
+    assert path.read_bytes() == before
+    assert dossier.composition(path.read_text(), schema=CHAROITE) == [A]
+    assert frontmatter.list_field(path.read_text(), dossier.REJECTED_FIELD) == []
+    assert not (path.parent / ".backup").exists()
+
+
 def test_graph_alias_retarget_during_append_preserves_both_dossiers(world, monkeypatch, tmp_path):
     import shutil
 
