@@ -68,8 +68,17 @@ complete shape. The terminal author payload includes all later ordinary text
 and non-protected Markdown subheadings; a second protected candidate is never
 silently swallowed into that payload. Unclassified outer remainder means an
 extra prefix outside the render envelope or extra protected boundary, not an
-arbitrary author subheading. Body/author/source content is otherwise preserved. This is a
+arbitrary author subheading. The parse projection retains body/author/source content. This is a
 syntax class, not proof of historical intent; policy A admits this class.
+
+Full rebuild retains the admitted author payload and regenerates the body and
+source section from the new response and current members/files. It preserves
+new response warnings/links and current member links, not every older generated
+warning or arbitrary extra source link. An existing revision holds the whole
+file before generation, including its old warnings/links; body-only review has
+the separate protected-byte contract below. Stronger retention of old generated
+annotations across changed responses/composition is unresolved follow-up891,
+not a guarantee of this parser stage or permission for real-file migration.
 
 An unknown/incomplete/reversed/repeated structure with a protected candidate is
 **ambiguous legacy**: its read projection may expose all sections/remainder,
@@ -136,7 +145,7 @@ a model failure. All former POLICY placeholders are resolved below.
 | W04 | LABELS_ONLY with/without revision | Admitted body edit only; keep revision exactly, never add one; ambiguous structure REFUSE A |
 | W05 | Forget canonical automatic vs manual/ambiguous/revised/labeled | Never add eligible paths; all prior keep reasons remain; ambiguity preserves file; existing backup/report doors retained |
 | W06 | Plan force/unchanged/labeled/revised/gone-source/damaged-source | Existing hold/skip/add/rebuild semantics; U+FFFD revision stays held; no incremental implementation |
-| P01 | Full-shape G02/G03 rebuilt twice with identical generation/source input | Complete author text once; stable size/content after first rebuild; source links/warnings retained under full-rebuild contract |
+| P01 | Full-shape G02/G03 rebuilt twice with identical generation/source input | Complete author text once; stable after first rebuild; new-output warnings/links and current-member sources retained. Changed-output and revision-hold controls expose the full-rebuild boundary above |
 | P02 | Admitted review twice with identical fixed body | Stable protected bytes; no duplicate sections |
 | P03 | Generator returns only four headings, reordered/duplicated headings or an unclosed fence; also a complete valid output | Check the fully rendered, sanitized candidate with the same parser before backup/write. Reject invalid candidates via existing malformed-output handling without replacing the old file; accepted output is admitted on the next load/rebuild |
 | F01 | Dossier/source changes during generation/review | No overwrite; snapshot/fingerprint checks and visible reason retained |

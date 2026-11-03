@@ -1,6 +1,7 @@
 # Unified dossier parsing: implementation acceptance draft
 
-Status: preparation only. Current source base:
+Historical INPUT draft; implementation evidence is recorded in the coordinating
+acceptance reports. Pinned preparation base:
 `bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81`.
 Policy A is selected by coordinating Codex under delegated technical judgment,
 not a claim that the owner literally chose A. Unknown legacy protected-heading
@@ -8,12 +9,17 @@ ambiguity preserves the entire file and refuses only the affected automatic
 write before a model call, with visible reason; unrelated dossiers continue.
 The exact grammar and caller admissions are frozen in [the INPUT packet](818-input-brief.md).
 Formal independent INPUT review is required before implementation.
-No parser implementation or stored-data migration has started.
+The original preparation contained no implementation or migration. The current
+code stage has been implemented; real stored-data migration remains unverified.
 
 ## User outcome
 
-A rebuild must preserve author edits and source links without repeatedly
-moving body text into the author section. All consumers must agree on one
+A rebuild must preserve author edits and current-member source links without
+repeatedly moving body text into the author section. The generated body and
+source inventory are refreshed by full rebuild; old generated warnings or extra
+links absent from the new response/current inventory are not retained by that
+operation. Revision-held files remain wholly unchanged before generation.
+Stronger retention across changed responses is unresolved follow-up891. All consumers must agree on one
 parse result. A text-only compatibility projection must never silently become
 permission to replace or delete stored bytes.
 
@@ -48,7 +54,7 @@ The refreshed bcf baseline and its repeat command are recorded in the
 | Direct construction | `DossierLoad("ok", text)` uses the same parse rules; absence of raw bytes cannot be disguised as an original disk snapshot |
 | Reader consistency | `split_dossier`, author preservation, label detection, composition, kept-from-night, planning and doctor consume the same interpretation |
 | Writer consistency | Ordinary rebuild, review, LABELS_ONLY and forget retain distinct admission contracts; a new parser must not expand deletion permission |
-| Repetition | Two rebuilds retain complete author text, source links and warning blocks; no growth caused by repeated extraction |
+| Repetition | Two identical rebuilds retain complete author text, current-member source links and new-response warning blocks without extraction growth; changed-response and revision-hold controls distinguish the operation boundaries |
 | Failed write | Existing graph lock, backup and compare-and-swap prevent overwrite on a stale snapshot, backup failure or parse refusal |
 | Working synthetic flow | Exercise real public pipeline functions against isolated temporary files/configuration; inspect resulting files before and after with identical inputs |
 | Verification and delivery | Independent input/output and final risk review, focused regression tests, applicable CI and critical mutations on the same source SHA; verify installed files separately |
