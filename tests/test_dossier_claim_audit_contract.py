@@ -72,7 +72,7 @@ def test_aggregate_true_and_full_text_coverage_cannot_override_independent_rejec
     assert calls[1][1]["source_quotation"] == quote
 
 
-def test_valid_addition_runs_independent_quote_only_audit_with_full_prior_dossier(monkeypatch):
+def test_valid_addition_runs_independent_audit_with_complete_source_and_prior_dossier(monkeypatch):
     source = "Unrelated preceding source line.\n[[Ядра/Glasshouse]] " + FACT + "\nUnrelated following source line.\n"
     old = _old()
     calls = _transport(monkeypatch, _verdict())
@@ -80,10 +80,10 @@ def test_valid_addition_runs_independent_quote_only_audit_with_full_prior_dossie
     assert len(calls) == 2
     _, payload, options, prompt = calls[1]
     assert payload == {"topic": "Glasshouse", "prior_dossier": old.parsed.body,
-                       "candidate_text": FACT, "source_quotation": f"[[Ядра/Glasshouse]] {FACT}\n"}
+                       "candidate_text": FACT, "source_quotation": FACT, "source_context": source}
     assert options["num_predict"] == 350
     assert prompt.split("\n", 1)[1] == inc.CLAIM_AUDIT_INSTRUCTION
-    assert "Unrelated preceding" not in prompt and "Unrelated following" not in prompt
+    assert "Unrelated preceding" in payload["source_context"] and "Unrelated following" in payload["source_context"]
     assert "author_notes" not in payload and "new_sources" not in payload
 
 
@@ -98,15 +98,17 @@ def test_narrow_audit_sees_negation_or_qualifiers_outside_the_selected_quote(mon
         "verdict": "uncertain", "supported": False, "reason": "Synthetic quotation qualification refusal."})
     with pytest.raises(inc.Refused, match="independent claim audit"):
         inc.validate_candidate("Glasshouse", _old(), [B], files, {}, candidate, [])
-    assert calls[1][1]["source_quotation"] == expected
+    assert calls[1][1]["source_quotation"] == quote
+    assert calls[1][1]["source_context"] == files[B]["text"]
 
 
-def test_multiline_quote_expansion_keeps_only_its_complete_source_lines(monkeypatch):
+def test_multiline_evidence_anchor_keeps_the_complete_source_context(monkeypatch):
     quote = "A rain cover\nwas fitted."
     source = "Unrelated first line.\n[[Ядра/Glasshouse]] " + quote + " Done today.\nUnrelated last line.\n"
     calls = _transport(monkeypatch, _verdict([_claim(quote=quote)]))
     inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, ADDED, [])
-    assert calls[1][1]["source_quotation"] == "[[Ядра/Glasshouse]] " + quote + " Done today.\n"
+    assert calls[1][1]["source_quotation"] == quote
+    assert calls[1][1]["source_context"] == source
 
 
 def test_repeated_literal_quote_is_refused_before_any_narrow_audit(monkeypatch):

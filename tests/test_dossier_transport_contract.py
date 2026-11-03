@@ -139,9 +139,9 @@ def test_source_and_candidate_reach_bounded_local_provider_with_complete_new_inp
     assert main["payload"]["existing_dossier"] == scenario.old.parsed.body
     assert narrow["payload"] == {"topic": scenario.topic, "prior_dossier": scenario.old.parsed.body,
                                  "candidate_text": scenario.fact,
-                                 "source_quotation": f"[[Ядра/{scenario.topic}]] {scenario.fact}\n"}
+                                 "source_quotation": scenario.fact, "source_context": scenario.source}
     assert all(OLD_SOURCE_ONLY not in call["prompt"] for call in provider.calls)
-    assert "COMPLETE_NEW_SOURCE_TAIL" not in narrow["prompt"]
+    assert "COMPLETE_NEW_SOURCE_TAIL" in narrow["payload"]["source_context"]
     _assert_finite_json_profiles(provider.calls, config)
     assert config == original_config
     assert all(c["llm"]["cloud_fallback_local"] is False and c["llm"]["allow_remote"] is False
@@ -160,19 +160,18 @@ def test_explicit_caller_profile_and_optional_fallback_record_are_preserved(prov
     assert all(call["options"] == {"model": config["llm"]["model"], **requested} for call in provider.calls)
 
 
-@pytest.mark.parametrize("engine", ["ollama", "mlx-server"])
-def test_each_supported_local_adapter_uses_its_selected_loopback_endpoint(provider, engine):
+@pytest.mark.parametrize("engine", ["ollama"])
+def test_supported_local_adapter_uses_its_selected_loopback_endpoint(provider, engine):
     config, scenario = _config(engine=engine), provider.scenario
     assert inc.source_relevance(scenario.topic, scenario.old, B, scenario.files[B], config) is True
     assert len(provider.calls) == 1
     call = provider.calls[0]
-    key = "base_url" if engine == "ollama" else "mlx_base_url"
-    assert call["engine"] == engine and call["base"] == config["llm"][key]
+    assert call["engine"] == engine and call["base"] == config["llm"]["base_url"]
     assert privacy.is_loopback_url(call["base"])
     _assert_finite_json_profiles(provider.calls, config)
 
 
-@pytest.mark.parametrize("changed", [{"cloud_ready": True}, {"engine": "cloud"}, {"base": "https://example.invalid"}])
+@pytest.mark.parametrize("changed", [{"cloud_ready": True}, {"engine": "cloud"}, {"engine": "mlx-server"}, {"base": "https://example.invalid"}])
 def test_an_actual_adapter_that_changes_transport_is_refused_before_streaming(provider, changed):
     provider.actual_overrides = changed
     with pytest.raises(inc.Refused):
@@ -180,7 +179,7 @@ def test_an_actual_adapter_that_changes_transport_is_refused_before_streaming(pr
     assert len(provider.constructors) == 1 and provider.calls == []
 
 
-@pytest.mark.parametrize("changed", [{"engine": "cloud"}, {"base_url": "https://example.invalid"}])
+@pytest.mark.parametrize("changed", [{"engine": "cloud"}, {"engine": "mlx-server"}, {"base_url": "https://example.invalid"}])
 def test_nonlocal_caller_configuration_never_reaches_the_provider_factory(provider, changed):
     config = _config()
     config["llm"].update(changed)
@@ -230,7 +229,7 @@ def test_no_room_for_message_envelope_refuses_before_the_factory(provider, role)
             _validate(scenario, config)
         else:
             inc.audit_claim(scenario.topic, scenario.old, scenario.claim, config,
-                            quote_context=reference["payload"]["source_quotation"])
+                            quote_context=reference["payload"]["source_context"])
     assert provider.constructors == [] and provider.calls == []
 
 

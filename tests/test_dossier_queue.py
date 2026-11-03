@@ -1110,12 +1110,14 @@ def test_no_label_means_no_field_and_no_count(nd, tmp_path, capsys):
 
 
 def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
-    """Метка — по модели, что ответит на деле (`effective_model`: mlx-server
-    гонит свою `mlx_model`); сломанный конфиг — без метки и строкой, не падением."""
+    """Метка — по действительной модели; неподтверждённый транспорт или
+    сломанный конфиг — без метки и с диагностикой, не падением."""
     import llm as llm_mod
+    constructed = []
 
     class Fake:
         def __init__(self, c):
+            constructed.append(c)
             if c["llm"]["model"] == "сломан":
                 raise KeyError("base_url")
             self.engine = c["llm"].get("engine", "ollama")
@@ -1128,9 +1130,12 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
     assert nd.generator_label({}) == ""
     assert nd.generator_label({"llm": {}}) == ""
     assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q", 8192)
-    # MLX does not pass num_ctx to its server. Cloud is prohibited for this path.
-    assert nd.generator_label({"llm": {"model": "q", "engine": "mlx-server"}}) == dossier.generator_input("mlx/q")
+    # Direct MLX has no verified request window; cloud is prohibited. Neither
+    # can generate for this path, so neither may construct a provider or stamp it.
+    assert len(constructed) == 1
+    assert nd.generator_label({"llm": {"model": "q", "engine": "mlx-server"}}) == ""
     assert nd.generator_label({"llm": {"model": "q", "engine": "cloud"}}) == ""
+    assert len(constructed) == 1
     assert nd.generator_label({"llm": {"model": "сломан"}}) == ""
     assert "вход генератора не посчитан (KeyError" in capsys.readouterr().out
     # неимпортируемый `llm` — тоже без метки, а не трейсбек прогона (out1 M2)

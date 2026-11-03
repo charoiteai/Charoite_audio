@@ -20,8 +20,8 @@ class Refused(ValueError):
 
 def local_config(c: dict) -> dict:
     """Refuse cloud before constructing LLM (which could read cloud keys)."""
-    if privacy.llm_engine(c) not in ("ollama", "mlx-server"):
-        raise Refused("dossier requires a local engine")
+    if privacy.llm_engine(c) != "ollama":
+        raise Refused("dossier requires Ollama with an explicit request context window")
     local = {**c, "llm": {**(c.get("llm") or {}), "cloud_fallback_local": False, "allow_remote": False}}
     if not privacy.is_loopback_url(privacy.chat_model_url(local)):
         raise Refused("dossier requires a loopback model transport")
@@ -35,8 +35,8 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     local = local_config(c)
     # Refuse the complete input rather than silently letting the backend trim it.
     # UTF-8 bytes are a conservative token bound for supported byte tokenizers;
-    # reserve output and message-envelope space. MLX has no configured window:
-    # use the same explicit upper bound rather than infer server state.
+    # reserve output and message-envelope space. The Ollama request explicitly
+    # carries this window; an unverified server-side MLX window is refused.
     context = int((local.get("llm") or {}).get("num_ctx") or 8192)
     if len((system + prompt).encode("utf-8")) + num_predict + 256 > context:
         raise Refused("complete dossier input exceeds the configured context budget")
@@ -49,8 +49,8 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
         cloud_ready, engine, base, _ = llm.cloud_ready, llm.engine, llm.base, llm._fell_back_local
     except AttributeError as exc:
         raise Refused("unsupported local model adapter: missing transport attributes") from exc
-    if cloud_ready or engine not in ("ollama", "mlx-server"):
-        raise Refused("model transport changed to a nonlocal engine")
+    if cloud_ready or engine != "ollama":
+        raise Refused("model transport changed to an unsupported engine")
     if not privacy.is_loopback_url(base):
         raise Refused("model transport changed to a nonloopback address")
     out = "".join(llm.stream(prompt, model=local["llm"].get("model"), system=system,
@@ -131,7 +131,8 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
     """Conservation uses artifact elements, not a length or link-count proxy."""
     if not isinstance(body, str) or not body.strip() or "\ufffd" in body:
         raise Refused("empty or damaged candidate")
-    parsed = dossier.DossierLoad("ok", body).parsed
+    candidate = dossier.DossierLoad("ok", body)
+    parsed = candidate.parsed
     if parsed.protected or parsed.reason or [s.title for s in parsed.sections] != list(dossier._BODY_TITLES):
         raise Refused("candidate has protected, ambiguous or incomplete sections")
     if graph_names.has_speaker_actor(body):
@@ -159,6 +160,13 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
             raise Refused("unsupported correction: after must be an exact substring of the candidate body")
         if name not in names or quote not in source_text(files[name]) or name not in _links(after):
             raise Refused("unsupported or unattributed correction ledger")
+        old_sections = {s.title: loaded.text[s.content:s.end] for s in loaded.parsed.sections}
+        new_sections = {s.title: candidate.text[s.content:s.end] for s in parsed.sections}
+        if before in old_sections.get("Сейчас", "") and (
+                before in new_sections.get("Сейчас", "")
+                or before not in new_sections.get("Как пришли", "")
+                or after not in new_sections.get("Сейчас", "")):
+            raise Refused("superseded current claim must move to history with its replacement current")
 
 
 def validate_candidate(theme: str, loaded: dossier.DossierLoad, names: list[str],
@@ -238,10 +246,15 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
         raise Refused("candidate lacks a new claim contribution from every accepted source")
 
 
-# This instruction is copied exactly from the independently exercised local
-# full-context eleven-case control. Keep its wording stable when reusing that evidence.
+# Full-source controls must accompany changes to this independent audit contract.
 CLAIM_AUDIT_INSTRUCTION = (
     "Audit ONLY this one proposed addition, separately from any whole-meeting verdict. "
+    "source_quotation is the selected exact evidence anchor, not a standalone source. "
+    "source_context is the COMPLETE new source. Read all of it for qualifications, "
+    "negation, conditions or retractions before AND after the anchor, even on other "
+    "lines or sections. An isolated affirmative anchor does not support an unconditional "
+    "claim when the complete source restricts or denies it. Unrelated adjacent facts "
+    "do not establish a relationship merely by co-occurring. "
     "The prior_dossier is explicitly the body of the supplied topic's dossier: an already "
     "identified object described there may be updated without repeating the topic name in "
     "every line. Do not treat its section headings or provenance citations as unrelated notes. "
@@ -251,7 +264,7 @@ CLAIM_AUDIT_INSTRUCTION = (
     "A tag alone cannot make substantively unrelated content relevant; still assess the "
     "topic's objects, activities and purpose. Bullet markers and provenance wiki citations "
     "are formatting/attribution, not additional factual assertions requiring verbatim quotation. "
-    "Use exclusively the exact source quotation and prior dossier supplied. Do not assume "
+    "Use exclusively the complete source context, exact quotation and prior dossier supplied. Do not assume "
     "that entities in the same meeting are connected. A different named object is NOT a "
     "component, dependency or part of the dossier topic unless the quotation or prior "
     "dossier explicitly states that relationship. Do not supply such a relationship from "
@@ -289,25 +302,22 @@ CLAIM_AUDIT_INSTRUCTION = (
 
 
 def _quote_context(text: str, quote: str) -> str:
-    """Whole source lines preserve labels/qualifiers, without adjacent topics."""
+    """Validate the evidence anchor; retain every qualifier in the full source."""
     start = text.find(quote)
     if start < 0:
         raise Refused("candidate claim lacks exact new-source evidence")
     if text.find(quote, start + 1) >= 0:
         raise Refused("ambiguous claim evidence: quote must identify one source occurrence")
-    content_start = start + len(quote) - len(quote.lstrip())
-    content_end = start + len(quote.rstrip()) - 1
-    first = text.rfind("\n", 0, content_start) + 1
-    last = text.find("\n", content_end)
-    return text[first:len(text) if last < 0 else last + 1]
+    return text
 
 
 def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *,
                 quote_context: str | None = None) -> None:
-    """Independent quote-only audit after exact evidence/coverage validation."""
+    """Independent single-claim audit with complete source qualifications."""
     payload = {"topic": theme, "prior_dossier": loaded.parsed.body,
                "candidate_text": claim["text"],
-               "source_quotation": claim["quote"] if quote_context is None else quote_context}
+               "source_quotation": claim["quote"],
+               "source_context": claim["quote"] if quote_context is None else quote_context}
     prompt = json.dumps(payload, ensure_ascii=False) + "\n" + CLAIM_AUDIT_INSTRUCTION
     verdict = _json(local_complete(prompt, c, system="You audit one proposed factual addition.",
                                    num_predict=350), {"verdict", "supported", "relevant", "reason"})
@@ -363,7 +373,10 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "if its relevance is ambiguous, use verdict=uncertain. "
         "Every factual correction must appear in changes with an exact new-source quotation "
         "that explicitly supersedes the prior claim, a source-attributed replacement, and retained "
-        "old attributed history. An inference, ambiguous contradiction or absent correction ledger "
+        "old attributed history. A superseded old current-state claim must leave ## Сейчас and "
+        "be retained verbatim in ## Как пришли; its replacement belongs in ## Сейчас. Two "
+        "contradictory unqualified current states are NOT a valid correction or ordinary addition. "
+        "An inference, ambiguous contradiction or absent correction ledger "
         "is insufficient. Preserve every unrelated claim and unresolved warning, including its "
         "meaning; do not silently close warnings. Exact warning presence is a measured fact: "
         "warning_conservation_passed=true means ALL original warning lines ARE present. Do not "
@@ -440,8 +453,10 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
             if attempt:
                 raise
             feedback = {"failure": str(exc), "previous_response": raw,
-                        "instruction": "Ordinary additions require changes: []. Remove invented correction entries. "
-                                       "Use every exact required_new_citation for the new facts.",
+                        "instruction": "Ordinary additions require changes: []; remove invented correction entries. "
+                                       "For explicit supersession keep the genuine source-backed correction ledger, "
+                                       "move the old current bullet verbatim to ## Как пришли and put only its "
+                                       "replacement in ## Сейчас. Use every exact required_new_citation.",
                         "required_verbatim_lines": [line for line in loaded.parsed.body.splitlines()
                                                     if line.strip() and not line.lstrip().startswith("#")
                                                     and line.strip() != "—"]}

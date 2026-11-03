@@ -171,6 +171,18 @@ for scenario, revised, new_fact in [
         repeat = {"model_calls": len(calls) - count, "unchanged": path.read_bytes() == after,
                   "no_new_backup": sorted((graph / CHAROITE.dossier_dir / ".backup").rglob("*.md")) == backups,
                   "built": repeated["собрано"]}
+    parsed_after = dossier.DossierLoad("ok", after.decode(), after)
+    sections = {s.title: parsed_after.text[s.content:s.end] for s in parsed_after.parsed.sections}
+    old_body = dossier.DossierLoad("ok", before.decode(), before).parsed.body
+    behavior = {
+        "current_state_consistent": scenario != "S02-correction" or (
+            "Vent A is open." not in sections.get("Сейчас", "")
+            and "closed" in sections.get("Сейчас", "")
+            and f"- Vent A is open. [[Встречи/{A}]]" in sections.get("Как пришли", "")),
+        "relevant_fact_added": scenario not in {"S01-plain", "S01-revised"}
+                                or "rain cover" in sections.get("Сейчас", "").lower(),
+        "irrelevant_body_unchanged": scenario != "S04-irrelevant" or parsed_after.parsed.body == old_body,
+    }
     result = {"scenario": scenario, "revision": revised, "wall_s": round(time.monotonic() - started, 3),
               "result": result, "error": error, "calls": len(calls) - first_call,
               "generation_double_inputs": seen, "before_sha256": hashlib.sha256(before).hexdigest(),
@@ -179,10 +191,12 @@ for scenario, revised, new_fact in [
               "manual_retained": AUTHOR in after.decode(),
               "old_link_retained": f"[[Встречи/{A}]]" in after.decode(),
               "rejected": frontmatter.list_field(after.decode(), dossier.REJECTED_FIELD),
-              "composition": dossier.composition(after.decode(), schema=CHAROITE), "repeat": repeat}
+              "composition": dossier.composition(after.decode(), schema=CHAROITE), "repeat": repeat,
+              "behavior": behavior}
     if mode == "model":
         result["passed"] = (error is None and result["result"].get("собрано") == 1
                             and all(result[k] for k in ("warning_retained", "manual_retained", "old_link_retained"))
+                            and all(behavior.values())
                             and repeat == {"model_calls": 0, "unchanged": True, "no_new_backup": True, "built": 0}
                             and result["composition"] == ([A] if scenario == "S04-irrelevant" else [A, B])
                             and result["rejected"] == ([B] if scenario == "S04-irrelevant" else []))

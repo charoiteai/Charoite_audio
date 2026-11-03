@@ -108,18 +108,21 @@ later judge-contract implementation.
 Each accepted source must contribute a supported new assertion. The aggregate
 judge returns exact candidate spans and source quotations; deterministic
 coverage rejects omitted new clauses. Each assertion then receives a separate
-local audit with the complete prior dossier and only its verified source line
-context, including any subject tag or qualifier. A positive whole-meeting or
+local audit with the complete prior dossier, its selected exact quotation and
+the complete new source. Conditions, negations and retractions may occur on
+different source lines; selecting an affirmative line cannot hide them.
+A positive whole-meeting or
 aggregate verdict cannot override a failed assertion audit. No old meeting text
 is supplied to either judge.
 
-The full-context eleven-case audit control includes old-object updates, an
+The earlier eleven-case audit control includes old-object updates, an
 explicit new relationship, anonymous subject tags, foreign paraphrases and
 compound or qualified statements. This control passed independently, but does
 not replace the full writer matrix: an earlier integrated audit passed S15 while
 falsely refusing valid S01/S02 additions. Its overall result remains a failure.
-The corrected context instruction and natural UTF-8 payload must pass both full
-matrices on their final source. The two initial topic cores are independent;
+The corrected full-source instruction and natural UTF-8 payload must pass both
+full matrices and the independent qualification/negation control on their final
+source. The two initial topic cores are independent;
 separate maintenance references satisfy clustering without adding a relationship
 between them.
 
@@ -127,3 +130,15 @@ Transport contracts exercise the real gateway with a bounded offline provider,
 including full input, local-only construction, finite output, Russian input
 capacity and agreement between the admission and provider context windows.
 These are deterministic transport checks, not real-model quality evidence.
+This path requires Ollama, whose request explicitly carries `num_ctx`. A direct
+`mlx-server` configuration is refused before constructing a provider until its
+actual server window can be reliably verified; a configured number alone is
+insufficient evidence of that window.
+
+Manual S02 inspection found another false-positive receipt: both the old open
+state and its new closed replacement remained in `## Сейчас`. The correction
+ledger existed, but the aggregate judge accepted the placement. A declared
+correction of a current claim now requires its exact prior text in `## Как
+пришли`, absent from `## Сейчас`, with the replacement in `## Сейчас`. The driver
+checks those section outcomes. The earlier driver PASS remains historical and
+does not constitute human acceptance of that S02 output.
