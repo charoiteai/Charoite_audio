@@ -284,10 +284,18 @@ into the graph for details, so "where does this topic stand" is answered from
 one written summary instead of a dozen fragments. For a large topic the dossier
 is built from its core and its newest meetings: novelty is the date in the
 meeting's path, and meetings without a date in the path follow the dated ones.
-The model reads what it selected from oldest to newest. Rebuilds are incremental: a
-dossier carries a fingerprint of its sources (microsecond precision — an edit
-landing in the same second as the scan used to go unnoticed), and an unchanged
-fingerprint means the model is not called. The `вход:` header field is a hash
+The model reads what it selected from oldest to newest. Existing dossiers are
+updated by meeting membership: a new meeting is assessed for topic relevance,
+then the local model receives the previous body and only the new relevant
+meeting texts. Old claims, canonical links, unresolved warnings and exact
+author edits are retained; an explicit correction preserves attributed history.
+A separate local judge must accept the addition before the guarded write.
+Unchanged membership makes no model calls, even when an old source or core was
+edited. Irrelevant sources are skipped only for the same content and dossier
+context; changed or legacy unversioned rejections are assessed again.
+Malformed answers, uncertainty and transport failures remain retryable.
+Oversized complete inputs are refused rather than silently truncated. Both
+judging and generation require a local engine at a loopback address. The `вход:` header field is a hash
 of the generator (prompt, limits, model, Ollama window): when it changes, the
 night does not rebuild the topic but counts such topics (except reviewed and
 labeled ones); a rebuild is a manual `--full`. All graphs share one night queue:
@@ -319,9 +327,14 @@ labels of one meeting merge into one participant — a deliberate price: labels 
 nothing across meetings. A dossier whose fingerprint matches but whose body still
 carries a label is left alone by the night, `--full` included, and counted
 (`метка в теле N` in the skip line). A dossier edited by the cloud review
-(`ревизия:` in its front matter) is not retold by the night either, even with new
-sources (`ревизия N` in the skip line); forgetting a meeting the dossier links lifts
-the hold and the topic is rebuilt without it, anything else — delete the `ревизия:` line. To check what a query would
+(`ревизия:` in its front matter) can receive a validated incremental addition
+while retaining its revision. It remains held when a destructive rebuild would
+be needed (removed sources, damaged or oversized bodies). Forgetting a meeting
+cleans both `состав` and `не_принято`, including header-only identities, and
+clears the revision when needed. The committed dossier is authoritative; a
+failed index publication is reported and retried from disk on the next run,
+including a run without new meetings. Existing recovery backups retain their
+original bytes. To check what a query would
 find: `scripts/nightly_dossier.py --find "your question"`.
 
 **Cloud dossier review — optional** (`scripts/nightly_dossier_review.py`). The

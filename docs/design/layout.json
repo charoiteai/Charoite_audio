@@ -86,7 +86,8 @@
       "question_filter",
       "hint_guard",
       "autostop",
-      "busy_signals"
+      "busy_signals",
+      "dossier_incremental"
     ],
     "app": [
       "daemon",
@@ -609,7 +610,8 @@
     "voice_memos_bridge": "отметка «скопировано» без копии теряет запись, когда владелец чистит Диктофон",
     "charoite_graph.frontmatter::scalar_field": "чтение ревизии удерживает проверенное тело: ошибка обработки комментария снимает защиту от пересборки",
     "charoite_graph.frontmatter::with_scalar_preserving": "точечная замена ревизии обязана сохранять остальные байты шапки перед CAS-записью тела",
-    "scripts/nightly_dossier_review.py::_review_loop": "ревизия и LABELS_ONLY пишут досье с исходным снимком, сохранением правок автора, backup и CAS"
+    "scripts/nightly_dossier_review.py::_review_loop": "ревизия и LABELS_ONLY пишут досье с исходным снимком, сохранением правок автора, backup и CAS",
+    "dossier_incremental": "локальные source/candidate gates разрешают дописывание досье: ошибка может принять чужой факт или потерять прежнее утверждение"
   },
   "mutation_not_critical": {
     "busy_signals": "сторож занятости: в сеть — только GET переписи моделей Ollama на loopback (№595); пишет лишь свой замок мутатора, не данные владельца",

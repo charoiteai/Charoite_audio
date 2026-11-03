@@ -40,9 +40,12 @@ def _graph(root: pathlib.Path, name: str, themes: dict[str, str | None]) -> path
             (graph / "Встречи" / f"{theme}_{i}.md").write_text(
                 f"# Встреча\n[[Ядра/{theme}]] источник\n", encoding="utf-8")
         if built:
-            (folder / f"{theme}.md").write_text(dossier.render(theme,
+            # This fixture exercises rebuilding a dossier whose former meeting
+            # has gone, rather than treating mtime changes as a rebuild trigger.
+            text = dossier.render(theme,
                 GOOD.replace("новое тело", "старое тело"), [], {}, "старый", built).replace(
-                "## Правки автора\n\n—\n", "## Правки автора\n\nрешение автора\n"), encoding="utf-8")
+                "## Правки автора\n\n—\n", "## Правки автора\n\nрешение автора\n")
+            (folder / f"{theme}.md").write_text(dossier.with_composition(text, [f"{theme}_retired"]), encoding="utf-8")
     return graph
 
 
@@ -366,14 +369,14 @@ def test_failed_scan_of_one_graph_does_not_cancel_the_others(nd, tmp_path, monke
     """Выход out1 №621: общий скан без границы графа отменял работу всех графов."""
     good = _graph(tmp_path, "Живой", {"ж1": None})
     bad = _graph(tmp_path, "Сломанный", {"с1": None})
-    real = dossier.scan
+    real = dossier.scan_snapshot
 
     def scan(graph, **kw):
         if graph == bad:
             raise UnicodeError("сломанный узел")
         return real(graph, **kw)
 
-    monkeypatch.setattr(nd.dossier, "scan", scan)
+    monkeypatch.setattr(nd.dossier, "scan_snapshot", scan)
     monkeypatch.setattr(nd.signal, "signal", lambda *a: None)
     monkeypatch.setattr(nd, "cfg", lambda: {})
     monkeypatch.setattr(nd, "all_graphs", lambda: [bad, good])
@@ -463,7 +466,7 @@ def test_silent_model_and_failed_scan_exit_4(nd, tmp_path, monkeypatch):
     """Выход out3 №621, Haiku I1: код 2 прятал упавший скан от статуса ночи."""
     good = _graph(tmp_path, "Живой", {f"ж{i}": None for i in range(3)})
     bad = _graph(tmp_path, "Сломанный", {"с1": None})
-    real = dossier.scan
+    real = dossier.scan_snapshot
 
     def scan(graph, **kw):
         if graph == bad:
@@ -473,7 +476,7 @@ def test_silent_model_and_failed_scan_exit_4(nd, tmp_path, monkeypatch):
     def boom(*a, **k):
         raise TimeoutError("стрим молчит")
 
-    monkeypatch.setattr(nd.dossier, "scan", scan)
+    monkeypatch.setattr(nd.dossier, "scan_snapshot", scan)
     monkeypatch.setattr(nd, "generate", boom)
     monkeypatch.setattr(nd.signal, "signal", lambda *a: None)
     monkeypatch.setattr(nd, "cfg", lambda: {})
@@ -817,18 +820,25 @@ def test_revised_theme_with_the_same_sources_is_left_alone(nd, tmp_path, capsys,
 
 
 @pytest.mark.parametrize("full", [False, True])
-def test_new_source_does_not_rebuild_a_revised_theme(nd, tmp_path, capsys, full):
-    """CHANGED и воскресный `--full` (вход n841-in1 DS M1): новый источник
-    тему с ревизией не пересобирает, отставание видно строкой лога, тема
-    остаётся в индексе."""
+def test_new_source_appends_a_revised_theme(nd, tmp_path, monkeypatch, full):
+    """The queue routes a revised appendable body to the incremental helper.
+
+    The dedicated incremental tests exercise generation and conservation.
+    """
     graph, path = _revised_graph(nd, tmp_path)
-    before = path.read_bytes()
+    before = dossier.load_dossier(path)
     _new_meeting(graph)
+    monkeypatch.setattr(nd.dossier_incremental, "source_relevance", lambda *a: True)
+    calls = []
+    def append(theme, loaded, names, files, c):
+        calls.append(names)
+        return loaded.parsed.body + "\n- Новый факт [[тема_новая]]"
+    monkeypatch.setattr(nd.dossier_incremental, "append", append)
     r = nd.run(graph, {}, full=full, dry=False, limit=None)
-    out = capsys.readouterr().out
-    assert nd.calls == [] and r["ревизия"] == 1, r
-    assert "· тема: ревизия 2026-10-18 — ночь не трогает; источники сменились" in out
-    assert path.read_bytes() == before
+    assert nd.calls == [] and calls == [["тема_новая"]] and r["собрано"] == 1, r
+    after = dossier.load_dossier(path)
+    assert before.parsed.body in after.parsed.body and before.parsed.manual == after.parsed.manual
+    assert dossier.revision(after.text) == "2026-10-18"
     [entry] = dossier.load_index(graph / CHAROITE.dossier_dir)
     assert entry["тема"] == "тема", entry
 
@@ -1116,9 +1126,9 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
     assert nd.generator_label({}) == ""
     assert nd.generator_label({"llm": {}}) == ""
     assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q", 8192)
-    # mlx-server и облако окно в вызов не берут — и в метку оно не идёт (out2 I1)
-    for engine in ("mlx-server", "cloud"):
-        assert nd.generator_label({"llm": {"model": "q", "engine": engine}}) == dossier.generator_input("mlx/q")
+    # MLX does not pass num_ctx to its server. Cloud is prohibited for this path.
+    assert nd.generator_label({"llm": {"model": "q", "engine": "mlx-server"}}) == dossier.generator_input("mlx/q")
+    assert nd.generator_label({"llm": {"model": "q", "engine": "cloud"}}) == ""
     assert nd.generator_label({"llm": {"model": "сломан"}}) == ""
     assert "вход генератора не посчитан (KeyError" in capsys.readouterr().out
     # неимпортируемый `llm` — тоже без метки, а не трейсбек прогона (out1 M2)

@@ -187,7 +187,8 @@ def _strict_source_paths(graph: pathlib.Path, schema: GraphSchema) -> Iterable[p
                 yield folder / name
 
 
-def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = False) -> GraphSnapshot:
+def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = False,
+                  warn_damaged: bool = True) -> GraphSnapshot:
     """Все .md графа → карта файлов и обратные ссылки.
 
     Возвращает (files, backlinks): files[title] = {path, text, mtime, kind},
@@ -211,7 +212,13 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = Fa
         if schema.is_dossier(rel.as_posix()) or schema.is_service_name(p.name):
             continue
         try:
+            before = p.stat()
+            physical = p.resolve(strict=True)
             raw = p.read_bytes()
+            after = p.stat()
+            identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+            if identity(before) != identity(after) or p.resolve(strict=True) != physical:
+                raise OSError(f"source changed during scan: {p}")
         except OSError:
             if strict:
                 raise
@@ -220,7 +227,8 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = Fa
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("utf-8", errors="replace")
-            print(f"  ⚠️ файл графа не в UTF-8: {p} — читаю с заменой")
+            if warn_damaged:
+                print(f"  ⚠️ файл графа не в UTF-8: {p} — читаю с заменой")
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         # Redirect-заглушка после tier3-слияния — не тема: она сохраняет
         # входящие ссылки заметок и ссылку на канон, кластер вокруг неё
@@ -253,16 +261,18 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = Fa
             # rglob вернул первым, и состав графа зависел от порядка обхода.
             rank = lambda meta: (schema.is_core_folder(meta["kind"]), len(meta["text"]),
                                  meta["rel"])
-            new_meta = {"path": p, "rel": str(rel), "text": text,
-                        "mtime": p.stat().st_mtime, "kind": kind}
+            new_meta = {"path": p, "rel": str(rel), "text": text, "sha256": hashlib.sha256(raw).hexdigest(),
+                        "mtime": after.st_mtime, "kind": kind,
+                        "identity": identity(after), "physical": physical}
             keep, drop = ((new_meta, old_meta) if rank(new_meta) > rank(old_meta)
                           else (old_meta, new_meta))
             print(f"досье: имя «{t}» занято дважды — беру {keep['rel']}, "
                   f"пропускаю {drop['rel']}")
             files[t] = keep
             continue
-        files[t] = {"path": p, "rel": str(rel), "text": text,
-                    "mtime": p.stat().st_mtime, "kind": kind}
+        files[t] = {"path": p, "rel": str(rel), "text": text, "sha256": hashlib.sha256(raw).hexdigest(),
+                    "mtime": after.st_mtime, "kind": kind,
+                    "identity": identity(after), "physical": physical}
     # Ссылки разбираем ВТОРЫМ проходом, когда состав files уже устоялся: при
     # дублирующемся имени первый проход успевал записать ссылки проигравшего
     # файла под общим титулом, и кластер тянул за собой связи, которых у
@@ -460,14 +470,30 @@ def trim_to_format(body: str) -> str:
     return body[m.start():].strip() if m else (body or "").strip()
 
 
-def source_text(meta: dict) -> str:
+def source_text(meta: dict, *, full: bool = False) -> str:
     """Текст узла для модели — один на сборку досье и ревизию: без шапки, без
     меток деятелем (`graph_names.unlabel_speakers`), не длиннее `SRC_CHARS`.
     Чистка — до среза, в памяти: файл графа не меняется (№815)."""
     # BOM и пустые строки до шапки: прежний срез их терпел (n815-out1 M6); сам
     # `frontmatter.split` строг — им же пишется шапка на запись
     _, body = frontmatter.split((meta.get("text") or "").lstrip("\ufeff\n\r "))
-    return graph_names.unlabel_speakers(body.strip())[:SRC_CHARS]
+    text = graph_names.unlabel_speakers(body.strip())
+    return text if full else text[:SRC_CHARS]
+
+
+def prompt_members(members: list[str], files: dict[str, dict]) -> list[str]:
+    """Exactly the members admitted to the bounded rebuild prompt."""
+    selected, total = [], 0
+    for name in members[:MAX_SOURCES]:
+        meta = files.get(name)
+        if meta is None:
+            continue
+        block = f"### [[{name}]] ({meta['kind']})\n{source_text(meta, full=True)}\n"
+        if total + len(block) > PROMPT_CHARS:
+            break
+        selected.append(name)
+        total += len(block)
+    return selected
 
 
 def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
@@ -480,16 +506,12 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
     дате от старой к новой, встречи без даты и прочие — в порядке отбора.
     """
     selected: list[tuple[str, dict, str]] = []
-    total = 0
-    for m in members[:MAX_SOURCES]:
+    for m in prompt_members(members, files):
         meta = files.get(m)
         if not meta:
             continue
-        block = f"### [[{m}]] ({meta['kind']})\n{source_text(meta)}\n"
-        if total + len(block) > PROMPT_CHARS:
-            break
+        block = f"### [[{m}]] ({meta['kind']})\n{source_text(meta, full=True)}\n"
         selected.append((m, meta, block))
-        total += len(block)
 
     core: list[str] = []
     dated: list[tuple[str, str, str]] = []
@@ -644,7 +666,11 @@ def strip_protected(body: str) -> str:
     Режем по СТРОКЕ-заголовку, а не по подстроке: упоминание «## Источники»
     внутри абзаца — не раздел (ревью 17.08).
     """
-    return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
+    # Use the same physical-line/fence/quote boundaries as every other reader.
+    # A literal heading inside code is content, and must survive rendering.
+    protected = next((s for s in _parse_dossier(body).sections
+                      if s.title in ("Источники", "Правки автора")), None)
+    return body[:protected.start].rstrip() if protected else body.rstrip()
 
 
 def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
@@ -967,6 +993,91 @@ def in_sync(loaded: DossierLoad, fp: str) -> bool:
 
 COMPOSITION_FIELD = "состав"       # встречи, по которым собрано тело
 REJECTED_FIELD = "не_принято"      # встречи, чью добавку отверг гейт: в «новые» не возвращаются
+REJECTION_VERSIONS_FIELD = "не_принято_версии"
+
+
+def member_name(value: str) -> str:
+    """One meeting identity grammar for list scalars and full wiki links."""
+    value = value.strip()
+    match = LINK_RE.fullmatch(value)
+    if value.startswith("[[") and match is None:
+        return ""
+    return graph_names.link_target_stem(match[1] if match else value)
+
+
+def membership_refusal(text: str) -> str:
+    """Duplicate writable keys are ambiguous even when YAML picks a winner."""
+    fm, _ = frontmatter.split(text.removeprefix("\ufeff"))
+    if fm is None:
+        return ""
+    for key in (COMPOSITION_FIELD, REJECTED_FIELD, REJECTION_VERSIONS_FIELD):
+        first = frontmatter._field_span(fm, key)
+        if first and frontmatter._field_span(fm[:first[0]] + fm[first[1]:], key):
+            return f"duplicate membership field: {key}"
+        if first:
+            if not frontmatter.list_field(text, key) and not re.fullmatch(
+                    r"\[\s*\](?:\s+#.*)?", frontmatter.scalar_field(text, key)):
+                return f"unreadable membership value: {key}"
+            raw = frontmatter.parse(text.removeprefix("\ufeff")).get(key)
+            if isinstance(raw, list) and any(not isinstance(item, str) and not frontmatter._is_literal(item)
+                                             for item in raw):
+                return f"unreadable membership item: {key}"
+            if isinstance(raw, list) and key != REJECTION_VERSIONS_FIELD and any(
+                    isinstance(item, str) and not member_name(item) for item in raw):
+                return f"empty membership identity: {key}"
+            for item in frontmatter.list_field(text, key):
+                if key == REJECTION_VERSIONS_FIELD:
+                    digest, separator, name = item.partition(":")
+                    # Unknown legacy values are opaque and preserved. A known
+                    # version envelope with an empty identity is ambiguous.
+                    if separator and re.fullmatch(r"[0-9a-f]{64}", digest) and not member_name(name):
+                        return f"unreadable membership version: {key}"
+                elif not member_name(item):
+                    return f"empty membership identity: {key}"
+    return ""
+
+
+def rejection_context(text: str) -> str:
+    """Membership/index bookkeeping cannot invalidate its own semantic verdict."""
+    parsed = DossierLoad("ok", text).parsed
+    payload = [frontmatter.scalar_field(text, "тема"), parsed.body, parsed.manual]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
+
+
+def rejection_version(text: str, name: str, meta: dict) -> str:
+    raw_hash = meta.get("sha256") or hashlib.sha256(meta["text"].encode()).hexdigest()
+    return hashlib.sha256(json.dumps([name, raw_hash, rejection_context(text)],
+                                     ensure_ascii=False).encode()).hexdigest()
+
+
+def rejection_versions(text: str) -> dict[str, str]:
+    out = {}
+    for item in frontmatter.list_field(text, REJECTION_VERSIONS_FIELD):
+        digest, separator, name = item.partition(":")
+        if separator and re.fullmatch(r"[0-9a-f]{64}", digest) and name:
+            out[member_name(name)] = digest
+    return out
+
+
+def without_rejections(text: str, identities: set[str]) -> str:
+    """Forget's identity set already includes canonical names and aliases."""
+    items = frontmatter.list_field(text, REJECTION_VERSIONS_FIELD)
+    kept = [item for item in items
+            if not (item.partition(":")[1] and
+                    member_name(item.partition(":")[2]) in identities)]
+    return frontmatter.set_list_field(text, REJECTION_VERSIONS_FIELD, kept) if kept != items else text
+
+
+def effective_rejections(text: str, snap: GraphSnapshot) -> list[str]:
+    versions = rejection_versions(text)
+    valid = []
+    for name in frontmatter.list_field(text, REJECTED_FIELD):
+        canonical = _canon(member_name(name), snap)
+        meta = snap.files.get(canonical)
+        # Legacy/unversioned or changed context/content is retryable.
+        if meta and versions.get(canonical) == rejection_version(text, canonical, meta):
+            valid.append(canonical)
+    return valid
 GROW_LIMIT = 12_000                # тело длиннее после добавки — пересобрать, а не дописывать
 ADD_CHARS = 1_300                  # замер пилота 30.10: столько добавляет одна встреча
 
@@ -1003,7 +1114,7 @@ def composition(text: str | None, *, schema: GraphSchema) -> list[str] | None:
         # не «встреч нет», а «не читается»: иначе все встречи темы стали бы новыми (out2 Haiku I2)
         if not names and not re.fullmatch(r"\[\s*\](?:\s+#.*)?", frontmatter.scalar_field(text, COMPOSITION_FIELD)):
             return None
-        return [graph_names.link_target_stem(n) for n in names]
+        return [member_name(n) for n in names]
     sources = split_dossier(text or "")[2]
     return None if sources is None else _source_meetings(sources, schema)
 
@@ -1079,7 +1190,9 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
     composed = composition(text, schema=schema)
     if composed is None:
         return Plan("hold", "no_composition")
-    rejected = [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, REJECTED_FIELD)]
+    if membership_refusal(text):
+        return Plan("hold", "ambiguous_membership")
+    rejected = effective_rejections(text, snap)
     new, gone = membership_delta(composed, rejected, members, snap, schema=schema, on_disk=on_disk)
     # ушедшее идёт в план и при hold: отчёт обязан назвать забытое (out2 Haiku C3)
     if not loaded.parsed.complete or loaded.newline is None:
