@@ -348,9 +348,9 @@ def main():
         quote = lambda path: json.dumps(str(path))
         profile = ("(version 1)\n(allow default)\n"
                    "(deny network*)\n"
-                   '(allow network-inbound (local ip "127.0.0.1:*"))\n'
-                   '(allow network-outbound (require-all (remote ip "127.0.0.1:*") '
-                   '(require-not (remote ip "127.0.0.1:11434"))))\n'
+                   '(allow network-inbound (local ip "localhost:*"))\n'
+                   '(allow network-outbound (require-all (remote ip "localhost:*") '
+                   '(require-not (remote ip "localhost:11434"))))\n'
                    f"(deny file-read* (subpath {quote(owner_home)}))\n"
                    f"(allow file-read* (subpath {quote(runtime)}))\n"
                    "(deny file-write*)\n"

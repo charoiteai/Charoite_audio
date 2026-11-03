@@ -1,0 +1,29 @@
+{
+  "topic": "Glasshouse",
+  "cases": [
+    {
+      "case": "compound-second-proof-outside-selected-anchor",
+      "candidate": "A rain cover was fitted to the Glasshouse. A level sensor was fitted to the WaterTank.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "A rain cover was fitted to the Glasshouse.\nA level sensor was fitted to the WaterTank.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "compound-does-not-prove-a-causal-relationship",
+      "candidate": "Fitting the rain cover to the Glasshouse caused the WaterTank level sensor installation.",
+      "quote": "A rain cover was fitted to the Glasshouse.\nA level sensor was fitted to the WaterTank.",
+      "source": "A rain cover was fitted to the Glasshouse.\nA level sensor was fitted to the WaterTank.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "compound-proof-cannot-transfer-state-between-subjects",
+      "candidate": "Vent A is open now.",
+      "quote": "Vent A is closed now.\nValve B is open now.",
+      "source": "Vent A is closed now.\nValve B is open now.\n",
+      "expected_support": false,
+      "expected_topic": null
+    }
+  ]
+}

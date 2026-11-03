@@ -186,6 +186,14 @@ outcomes. Its successful path requires 31 real calls, including short-circuits.
 It covers before/after qualifications and denials, faithful uncertainty, mixed
 subjects, explicit/suspected relationships, compound proof, unrelated qualifiers,
 prior coreference, foreign prior mentions, temporal scope and wrong anchors.
+One selected quotation may be a multiline anchor proving several independent
+claims. Support checks each against its own quoted evidence; a relationship
+between subjects is required only if the candidate asserts that relationship.
+The separate topic stage can reject an otherwise fully supported compound.
+Three additional frozen boundary controls run with the manual controller's
+`boundary` argument: evidence outside the selected quotation, an invented causal
+link and transfer of a state between subjects. They supplement the unchanged
+21-case fixture and never replace its component or writer outcomes.
 The manual controller checks actual component verdicts, stage order, payloads,
 strict schema, model digest and source hashes. A transport error or wrong-stage
 rejection does not count as a successful model negative. This matrix supplements

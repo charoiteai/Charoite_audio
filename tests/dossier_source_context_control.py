@@ -1,6 +1,6 @@
 """Manual full-source audit control using the production local model path.
 
-Usage: python -I -B this_file.py PUBLIC_SOURCE OUTPUT_DIR
+Usage: python -I -B this_file.py PUBLIC_SOURCE OUTPUT_DIR [boundary]
 Invented inputs only. This file neither loads a production graph nor installs
 anything. Run it only under the project's external resource gates.
 """
@@ -21,6 +21,8 @@ MODEL = "qwen3.6:35b-mlx"
 BASE = "http://127.0.0.1:11434"
 FIXTURE = "tests/fixtures/dossier_claim_audit_cases.json"
 FIXTURE_SHA256 = "ff0382ed38c828715ac29b078ae557e15d204fb00d302b7645c95fb90016c491"
+BOUNDARY_FIXTURE = "tests/fixtures/dossier_claim_audit_boundary_cases.json"
+BOUNDARY_SHA256 = "289ee11b9322039ec15b100c6639c790dbba608612f98ec682d9aec43b060744"
 PRIOR = (f"## Сейчас\n- Vent A is open. [[Встречи/{A}]]\n"
          f"## Как пришли\n- The opening decision is historical. [[Встречи/{A}]]\n"
          "## Решено\n- Use purple labels. [[SensorGuide]]\n"
@@ -29,9 +31,11 @@ PRIOR = (f"## Сейчас\n- Vent A is open. [[Встречи/{A}]]\n"
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("Usage: python -I -B control.py PUBLIC_SOURCE OUTPUT_DIR")
+    if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "boundary"):
+        raise SystemExit("Usage: python -I -B control.py PUBLIC_SOURCE OUTPUT_DIR [boundary]")
     source, output = (Path(arg).resolve() for arg in sys.argv[1:3])
+    fixture_path, expected_hash = ((BOUNDARY_FIXTURE, BOUNDARY_SHA256) if len(sys.argv) == 4
+                                   else (FIXTURE, FIXTURE_SHA256))
     output.mkdir(parents=True, exist_ok=True)
     runtime = Path(tempfile.mkdtemp(prefix="charoite843-source-context-"))
     root = runtime / "data"
@@ -72,9 +76,9 @@ def main():
     config = {"llm": {"engine": "ollama", "base_url": BASE, "model": MODEL,
                        "num_ctx": 8192, "cloud_fallback_local": False, "allow_remote": False},
               "sufler": {"role": "Audit invented factual additions conservatively."}}
-    fixture_bytes = (source / FIXTURE).read_bytes()
+    fixture_bytes = (source / fixture_path).read_bytes()
     fixture_hash = hashlib.sha256(fixture_bytes).hexdigest()
-    if fixture_hash != FIXTURE_SHA256:
+    if fixture_hash != expected_hash:
         raise RuntimeError("the predeclared claim-audit fixture changed")
     matrix = json.loads(fixture_bytes)
     probes, topic = matrix["cases"], matrix["topic"]
@@ -89,7 +93,7 @@ def main():
     expected_topic_calls = sum(probe["expected_support"] for probe in probes)
     expected_total_calls = expected_support_calls + expected_topic_calls
     (output / "cases.json").write_bytes(fixture_bytes)
-    source_paths = ("src/dossier_incremental.py", "src/charoite_graph/dossier.py", "src/llm.py", FIXTURE)
+    source_paths = ("src/dossier_incremental.py", "src/charoite_graph/dossier.py", "src/llm.py", fixture_path)
 
     def hashes():
         return {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in source_paths}

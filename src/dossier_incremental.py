@@ -348,10 +348,16 @@ SUPPORT_AUDIT_INSTRUCTION = (
     'source_quotation anchors the event or state. The COMPLETE source_context is authoritative about that'
     " anchor's meaning and strength. A qualification immediately before or after an affirmative line "
     'restricts that line; the literal affirmative substring alone is NOT unqualified proof. Resolve its '
-    'subject, time, conditions, negation and retractions. Do not splice independent events or subjects, '
-    "transfer another object's proof, or repair a wrong anchor using a different passage. Refuse "
+    'subject, time, conditions, negation and retractions. Do not invent a relationship, transfer another '
+    "object's proof, or repair a wrong anchor using an independent event outside the quotation. Refuse "
     'ambiguous identity or scope. Every candidate clause needs evidence in the anchor as correctly '
-    'resolved by its applicable context.\n\nCompare explicit certainty and time in the candidate. Source '
+    'resolved by its applicable context. A source_quotation may be one multiline block explicitly '
+    'proving several independent clauses about different subjects. Check each clause against its own '
+    'part of that quoted block; the subjects need not be related for all those facts to be supported. '
+    'A claimed relationship or causal connection needs its own explicit evidence. Full context can '
+    'resolve identity and qualifications, but cannot supply a missing independent event outside the '
+    'selected quotation. Supported facts may still be irrelevant to the topic; the next stage decides '
+    'that separately.\n\nCompare explicit certainty and time in the candidate. Source '
     "'The following statement is tentative: a cover was fitted to ProjectOne' does NOT support candidate "
     "'A cover was fitted to ProjectOne'. The same qualification AFTER that line has the same effect. "
     "Source 'A cover may have been fitted to ProjectOne; this is unverified. Do not treat it as "
