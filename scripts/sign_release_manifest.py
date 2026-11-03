@@ -31,13 +31,17 @@ import sys
 import tempfile
 from xml.parsers.expat import ExpatError
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+
+from charoite_paths import code_root
+
 KEY = pathlib.Path.home() / ".config" / "charoite" / "update_manifest_ed25519.pem"
 ZIP = "Charoite.app.zip"
 ASSET = ZIP + ".manifest"
 TEAM_REQUIREMENT = ('anchor apple generic and '
                     'certificate leaf[subject.OU] = "AR7PDJQNR4"')
 REPO = "charoiteai/Charoite_audio"
-UPDATE_AUTHENTICITY = (pathlib.Path(__file__).resolve().parent.parent / "app"
+UPDATE_AUTHENTICITY = (code_root(__file__) / "app"
                        / "Sources" / "CharoiteApp" / "Services"
                        / "UpdateAuthenticity.swift")
 
