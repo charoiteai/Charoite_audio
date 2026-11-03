@@ -41,3 +41,22 @@ final-risk Terra/Luna review on the same clean source snapshot. Findings must be
 reconciled, and delivery still requires all applicable gates. This report does
 not authorize merging, installing, or migrating real stored dossiers before
 those gates; the separate real-data migration limitation remains explicit.
+
+## Canonical CI follow-up (2026-11-03)
+
+Run41604449004 has completed its canonical four-shard verdict for source
+`90bced818c64663debb609db6bcbac322cd8049b`, compared with the same original baseline. All **213/213**
+selected mutations were judged, including **205/205** critical mutations;
+zero survivors, skips or unread results. CI merge `78fd9661cdcf9993f83b85d1b719f099d23dc5bc`
+and source have the identical whole-tree Git hash `b317086465a87158ce89b876a27afadf58d7564c`.
+The coordinator downloaded all four original machine reports and the aggregate
+verdict, verified their bindings/totals and retained them unchanged under
+`reports/handoff/tasks/818_mutation_ci_90b`. This is CI evidence, not a new
+local mutation run. Platform pytest still fails the stale generated layout map;
+this successful mutation result does not close full CI or the final-risk gate.
+
+The generated map was refreshed with the ordinary map-only mode under fresh
+quiet/shared heavy gates. Only six reference rows changed; layout policy and
+production code are unchanged. The focused boundary module passed **84 tests
+in63.09s**. The previous stale-map failure is locally resolved; the next
+commit still requires its own full CI and independent final-risk review.

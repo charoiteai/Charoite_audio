@@ -199,8 +199,8 @@
 - `scripts/nemotron_shadow_replay.py` ← docs/DIARIZATION.md, docs/FEATURES.md
 - `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SETUP.md
 - `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/design/TIER3_REVISION.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
-- `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
-- `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
+- `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
@@ -213,8 +213,8 @@
 - `src/audio.py` ← docs/INVARIANTS.md, docs/ru/INVARIANTS.md, docs/zh/INVARIANTS.md
 - `src/brain.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/research/diarization-log.md, docs/ru/ARCHITECTURE.md, docs/ru/DIARIZATION.md, docs/zh/ARCHITECTURE.md, docs/zh/DIARIZATION.md
-- `src/charoite_graph/dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_output_fixes_journal.md
-- `src/charoite_graph/frontmatter.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `src/charoite_graph/dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-3.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `src/charoite_graph/frontmatter.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-3.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `src/charoite_graph/graph_names.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/zh/CONTRIBUTING.md
 - `src/charoite_graph/graph_nodes.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/charoite_graph/graph_search.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/scripts/README.md, scripts/README.md
@@ -259,8 +259,8 @@
 
 ## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
-- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md
-- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md
+- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
 
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
