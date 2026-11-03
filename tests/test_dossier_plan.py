@@ -356,8 +356,6 @@ def test_deleted_node_of_any_kind_in_composition_is_gone(world):
     assert _plan(text, members, snap).gone == ("Пётр",)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="№607: scalar_field не срезает YAML-комментарий, база так же")
 def test_revision_with_comment_holds(world):
     snap, _, members = world
     text = dossier.with_revision(_dossier(snap, members), "2026-07-23")

@@ -720,6 +720,7 @@ class DossierParse:
     complete: bool
     reason: str
     protected: bool
+    remainder: str
 
 
 def _parse_dossier(text: str) -> DossierParse:
@@ -769,13 +770,35 @@ def _parse_dossier(text: str) -> DossierParse:
 
     sources, manual = payload("Источники"), payload("Правки автора")
     env = _ENVELOPE.match(envelope) if fm is not None else None
-    complete = bool(env and frontmatter.has_field(text, "отпечаток") and start == prefix + env.end()
+    have_fingerprint = fm is not None and frontmatter.has_field(text, "отпечаток")
+    complete = bool(env and have_fingerprint and start == prefix + env.end()
                     and [s.title for s in protected] == ["Источники", "Правки автора"]
                     and [s.title for s in sections if s.start < protected[0].start] == list(_BODY_TITLES)
                     and not any(s.title in _BODY_TITLES for s in sections
                                 if protected[0].start < s.start < protected[1].start))
-    reason = "незакрытый блок кода" if fence else ("неоднозначная структура защищённых разделов" if protected and not complete else "")
-    return DossierParse(head, body, sources, manual, sections, span, complete and not fence, reason, bool(protected))
+    reason = ""
+    if fence:
+        reason = "незакрытый блок кода"
+    elif protected and not complete:
+        titles = [s.title for s in protected]
+        if len(set(titles)) != len(titles):
+            detail = "повтор защищённого заголовка"
+        elif set(titles) != {"Источники", "Правки автора"}:
+            detail = "неполный набор защищённых разделов"
+        elif titles != ["Источники", "Правки автора"]:
+            detail = "обратный порядок защищённых разделов"
+        elif not env or start != prefix + env.end():
+            detail = "неизвестная внешняя оболочка или остаток перед телом"
+        elif not have_fingerprint:
+            detail = "нет поля отпечатка в закрытой шапке"
+        elif [s.title for s in sections if s.start < protected[0].start] == list(_BODY_TITLES):
+            detail = "заголовок тела внутри раздела Источники"
+        else:
+            detail = "неполный или нарушенный порядок пяти разделов тела"
+        reason = f"неоднозначная структура защищённых разделов: {detail}"
+    known = complete and not fence
+    # Unknown input remains available in full, independently of read projections.
+    return DossierParse(head, body, sources, manual, sections, span, known, reason, bool(protected), "" if known else text)
 
 
 @dataclass(frozen=True)
@@ -796,15 +819,17 @@ class DossierLoad:
         object.__setattr__(self, "text", normalized if self.text is not None or self.raw is not None else None)
         object.__setattr__(self, "parsed", _parse_dossier(normalized))
 
-    def refusal(self, operation: Literal["rebuild", "edit", "forget"]) -> str:
+    def refusal(self, operation: Literal["rebuild", "review", "edit", "forget"]) -> str:
         if self.state == "unreadable":
             return "прежнее досье не прочитано"
         if self.newline is None:
             return "неподдерживаемые переводы строк"
         if self.parsed.reason:
             return self.parsed.reason
-        if operation == "edit" and not self.parsed.complete:
+        if operation in ("review", "edit") and not self.parsed.complete:
             return "нет полного тела и защищённых разделов досье"
+        if operation == "edit" and self.raw is None:
+            return "нет исходного снимка байтов"
         if self.state == "damaged":
             if operation != "rebuild" or not self.parsed.complete or self.raw is None:
                 return "Правки автора повреждены или не найдены"
@@ -839,7 +864,7 @@ class DossierLoad:
         if revision_date is not None:
             text = frontmatter.with_scalar_preserving(text, REVISION_FIELD, revision_date)
         candidate = DossierLoad("ok", text)
-        if not candidate.parsed.complete or candidate.refusal("edit"):
+        if not candidate.parsed.complete or candidate.refusal("review"):
             raise ValueError(candidate.parsed.reason or "ответ не образует полное досье")
         return text
 
@@ -882,8 +907,11 @@ def kept_from_night(text: str | None) -> str:
     DS C1); заголовок раздела — любого уровня, как у `split_dossier`."""
     t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     loaded = DossierLoad("ok", text)
-    _, _, sources, manual = split_dossier(t)
-    if not read_fingerprint(DossierLoad("ok", t)):
+    sources, manual = loaded.parsed.sources, loaded.parsed.manual
+    # Keep the old 600-character visibility exclusion for deletion. The shared
+    # header reader is more precise; recognizing more metadata grants no new
+    # eligibility to forget a stored file.
+    if not read_fingerprint(loaded) or not re.search(r"^отпечаток:\s*\S+", t[:600], re.M):
         return "нет отпечатка ночи"
     if sources is None or manual is None:
         return "нет раздела «Источники» или «Правки автора»"
@@ -891,12 +919,18 @@ def kept_from_night(text: str | None) -> str:
         return "есть правки автора"
     if revision(t):
         return "тело правила облачная ревизия"
-    if labeled_body(t):
+    if loaded.parsed.complete and graph_names.has_speaker_actor(loaded.parsed.body):
         return "в теле метка диаризации"
     if why := loaded.refusal("forget"):
         return why
     if not loaded.parsed.complete:
         return "нет полного тела досье ночи"
+    for section in loaded.parsed.sections:
+        if section.title in ("Источники", "Правки автора"):
+            line = t[section.start:section.content]
+            hashes = len(line) - len(line.lstrip("#"))
+            if not 1 <= hashes <= 6:
+                return "защищённый заголовок вне прежнего допуска удаления"
     return ""
 
 

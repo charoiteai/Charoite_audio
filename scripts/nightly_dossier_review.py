@@ -219,7 +219,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     if loaded.state != "ok":
         return None, f"сбой: досье не прочитано ({loaded.state})"
     current = loaded.text
-    if why := loaded.refusal("edit"):
+    if why := loaded.refusal("review"):
         return None, f"{why} — не трогаем"
     head, old_body, sources, _manual = split_dossier(current)
     if sources is None:

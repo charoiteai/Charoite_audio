@@ -232,6 +232,18 @@ def scalar_field(text: str, key: str) -> str:
     if not span:
         return ""
     raw = fm[span[0]:span[1]].split(":", 1)[1].strip().split("\n", 1)[0].strip()
+    # A trailing comment is outside the scalar. Use the existing YAML marks,
+    # without constructing values (dates must retain their literal spelling).
+    try:
+        node = yaml.compose(fm)
+    except yaml.YAMLError:
+        node = None
+    if isinstance(node, yaml.MappingNode):
+        for k, v in node.value:
+            if getattr(k, "value", None) == key and isinstance(v, yaml.ScalarNode):
+                if v.style not in ("|", ">"):
+                    raw = fm[v.start_mark.index:v.end_mark.index].strip()
+                break
     if raw.startswith('"'):
         try:
             return str(json.loads(raw))

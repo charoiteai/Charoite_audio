@@ -6,7 +6,8 @@ Source: delegated policy-A task and frozen public INPUT packet at
 Executor: coordinating Codex's implementation fork, branch
 `fix/818-policy-a-parser`. No other agent or model was launched by this fork.
 The root owns review verdicts, tracker, CI and delivery. All inputs here are
-constructed public fixtures, with zero real generation/model calls.
+constructed public fixtures, with zero real model calls. Generation and CLI
+responses are deterministic doubles; real pipeline writes are checked separately.
 
 ## Entry and BEFORE (2026-11-03, local time UTC+03)
 
@@ -54,6 +55,14 @@ constructed public fixtures, with zero real generation/model calls.
   non-dossier behavior and automatic-dossier deletion exclusions remain.
 - Doctor reports unknown dossier bodies separately; absence of a known body
   label is not reported as clean evidence for an ambiguous document.
+- Read-only review eligibility and existing-file edit admission differ: a direct
+  text load can be structurally reviewable, but edit requires captured raw bytes.
+  Unknown input remains available as complete remainder with a specific reason
+  (duplicate/reversed/missing sections, unknown envelope, body order or fence).
+- Broader recognition must not expand forget deletion eligibility. The old
+  600-character fingerprint visibility and non-indented 1-6-hash protected
+  spelling exclusions remain explicit deletion guards over shared parser spans.
+  Dedicated tests admit the new read spelling but still refuse its deletion.
 - Tests of unrelated write behavior now use complete render fixtures. Legacy
   projections, inline mentions, reversed/missing sections retain explicit tests;
   the intentional inline-extraction behavior change is addressed individually.
@@ -92,7 +101,7 @@ until the AFTER section records an actual command/result.
 | V01 | root: exact-SHA CI/full/critical mutations, independent OUTPUT/final risk |
 | V02 | no installation authorized to this fork; root delivery decision and verification |
 
-## AFTER status / limits
+## AFTER verification / limits
 
 - 08:01 AFTER pytest blocked before execution by installed quiet hook: local
   models occupied 24.4 GB at an 11.5 GB threshold. 08:06 fresh `quiet_guard.sh`
@@ -100,8 +109,60 @@ until the AFTER section records an actual command/result.
   resource-gate bypass was used. Models and owner installation were untouched.
 - Static `ruff check` on the explicit changed Python files: passed (08:06).
   This is syntax/lint evidence, not executed user behavior.
-- AFTER behavior, focused regressions, CI/full/critical mutations and independent
-  OUTPUT/final risk remain unverified at this entry. Root will receive exact
-  source SHA. No push, merge, installation or stored-data migration by this fork.
+- 08:13:29 root fresh weekly quota: 2%, work authorized, window/waiver unchanged.
+- First AFTER focused command: **891 passed, 23 failed, 4 xfailed, 13.46 s**.
+  Same-input real rebuild lengths were already **502 -> 583 -> 583**. The
+  body-tail assertion mistakenly counted a metadata keyword too; it now checks
+  the parsed body. The G03 fixture accidentally replaced its inline mention as
+  well as the heading; replacement is now anchored. Forget's test transport
+  was missing: the network guard blocked the loopback attempt; no real request
+  was allowed. A synthetic transport is now explicit.
+- The first AFTER also found a substantive scalar case: exact revision editing
+  retained a YAML comment, but the old scalar reader included it in the value
+  and returned no revision hold. Existing YAML scalar marks now exclude the
+  comment without constructing date objects or changing any outside bytes.
+  Identical LF/CRLF/BOM comment fixtures now pass byte comparison plus date hold.
+- Old forget revision fixtures were incomplete protected legacy, unrelated to
+  their intended revision/source-link assertions. They now use a complete
+  envelope with no usable fingerprint to preserve their prior deletion exclusion.
+  The snapshot fixture is canonical too. The index race fixture remains legacy
+  without metadata, but uses the admitted no-protected plain class. Separate
+  old ambiguous fixtures still refuse. The old Unicode-separator dossier case
+  now intentionally holds under B02; its vertical-tab-only control still edits
+  only the revision field and retains body bytes.
+- Second focused command added the affected frontmatter suite:
+  **917 passed, 1 failed, 3 xfailed, 12.93 s**. The sole failure was a strict
+  XPASS for existing `test_revision_with_comment_holds` (old debt 607): the scalar
+  fix made its hold assertion pass. Only that xfail marker was removed; the
+  behavioral assertion remains.
+- Final focused command: **918 passed, 3 existing xfailed, 12.57 s**. This covers
+  actual rebuild, review, actual LABELS_ONLY response classification and writes,
+  forget dry-run/apply in live/old/external handled snapshots, helper skipping,
+  retained ambiguous bytes, continued eligible deletion and its backup.
+  Malformed producers stay within the old two attempts and do not back up/write.
+  All these synthetic paths used zero real model calls.
+
+Repeat the final command from the implementation worktree under fresh installed
+resource gates and the default shared heavy lock (no QG or lock override):
+
+```sh
+~/.config/charoite/quiet_guard.sh && HEAVY_WAIT_MAX_S=5 CHAROITE_ROOT=/tmp/charoite-818-impl-resources ~/.config/charoite/heavy_run.sh ../charoite/.venv/bin/python -m pytest tests/test_dossier_parser_contract.py tests/test_dossier.py tests/test_dossier_encoding.py tests/test_dossier_plan.py tests/test_dossier_queue.py tests/test_nightly_cloud_reports.py tests/test_forget_meeting.py tests/test_forget_index_recovery.py tests/test_forget_index_capture.py tests/test_forget_mutation_behaviors.py tests/test_forget_night_processes.py tests/test_graph_collective_nodes.py tests/test_frontmatter_bom.py -q --tb=short
+```
+
+- CI/full/critical mutations and independent OUTPUT/final risk remain root gates
+  on the exact final SHA. No push, merge, installation or stored-data migration
+  was performed by this fork. Passing focused tests is not full task acceptance.
 - Original task 818 includes forbidden real stored-data migration: this public
   synthetic change cannot claim completion of that migration or of all task 818.
+- Scope boundary found by static reading: existing whole-run quarantine/displaced
+  deletion at `forget_meeting.py:1088-1109` and descendant skip at `1113-1127`
+  precede this handled-file traversal. Those explicit whole-directory purges
+  remain unchanged and unverified here; this journal does not claim protection
+  of every possible snapshot/quarantine. Root received the constructed scenario
+  and saved separate pending debt **874**; acceptance of this boundary remains
+  a root/independent-review decision. A debt card does not waive a Critical.
+- Existing backup naming has second precision: the two BEFORE rebuilds printed
+  the same backup directory. Static `backup` uses copy2 to the same filename,
+  so same-second preimages may collide. This predates 818; root received the
+  evidence/scenario and saved separate pending debt **875**. No backup redesign
+  here; this observation is not a claim that every prior preimage was inspected.
