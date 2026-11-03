@@ -598,6 +598,8 @@ APPROVED_PYTHON_AREAS = ("src/", "scripts/")
 
 APPROVED_KINDS = (
     ("docs/design/layout.md", "out", "git"),
+    ("reports/handoff/tasks/818_baseline_probe.py", "history", "git"),
+    ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git"),
     ("tests/", "out", "git"),
     ("app/Tests/", "out", "git"),
     ("app-ios/", "out", "git"),

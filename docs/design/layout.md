@@ -179,14 +179,14 @@
 - `scripts/diar_bench.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md
 - `scripts/doctor.py` ← README.md, docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/DIARIZATION.md, docs/FEATURES.md, docs/MODELS.md, docs/SETUP.md, docs/USER_GUIDE.md, docs/research/diarization-log.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/README.md, docs/ru/SETUP.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/README.md, docs/zh/SETUP.md, docs/zh/USER_GUIDE.md, pyproject.toml
 - `scripts/fix_action_items.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
-- `scripts/forget_meeting.py` ← PRIVACY.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md
+- `scripts/forget_meeting.py` ← PRIVACY.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md
 - `scripts/gate_bench.py` ← ROADMAP.md, config/config.example.en.yaml, config/config.example.yaml, config/config.example.zh.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/MODELS.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/ROADMAP.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/ROADMAP.md
 - `scripts/get_models.py` ← PRIVACY.md, README.md, ROADMAP.md, SECURITY.md, config/README.md, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/FEATURES.md, docs/MODELS.md, docs/SETUP.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/ROADMAP.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/ru/config/README.md, docs/zh/DIARIZATION.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/ROADMAP.md, docs/zh/SECURITY.md, docs/zh/SETUP.md, docs/zh/config/README.md
-- `scripts/graph_doctor.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
+- `scripts/graph_doctor.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `scripts/graph_search_index.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/import_meeting.py` ← PRIVACY.md, README.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/USER_GUIDE.md, docs/ru/scripts/README.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/USER_GUIDE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/install_engine.py` ← PRIVACY.md, README.md, config/config.example.en.yaml, config/config.example.yaml, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/FEATURES.md, docs/MODELS.md, docs/SETUP.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md, docs/ru/MODELS.md, docs/ru/PRIVACY.md, docs/ru/SETUP.md, docs/zh/MODELS.md, docs/zh/PRIVACY.md, docs/zh/SETUP.md
-- `scripts/layout_map.py` ← CONTRIBUTING.md, ROADMAP.md, docs/ARCHITECTURE.md, docs/RELEASING.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/RELEASING.md, docs/ru/ROADMAP.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/RELEASING.md, docs/zh/ROADMAP.md, packages/README.md
+- `scripts/layout_map.py` ← CONTRIBUTING.md, ROADMAP.md, docs/ARCHITECTURE.md, docs/RELEASING.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/RELEASING.md, docs/ru/ROADMAP.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/RELEASING.md, docs/zh/ROADMAP.md, packages/README.md, reports/handoff/tasks/818_output_fixes_journal.md
 - `scripts/lock_runtime_deps.py` ← SECURITY.md, docs/DIARIZATION.md, docs/RELEASING.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md, docs/ru/RELEASING.md, docs/ru/SECURITY.md, docs/zh/RELEASING.md, docs/zh/SECURITY.md, requirements-nemotron.in, requirements-runtime.in
 - `scripts/make_dmg.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/memory_bench.py` ← CONTRIBUTING.md, MANIFESTO.md, README.md, config/README.md, config/memory_bench.example.yaml, demo/README.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/README.md, docs/ru/config/README.md, docs/ru/demo/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/README.md, docs/zh/config/README.md, docs/zh/demo/README.md
@@ -199,8 +199,8 @@
 - `scripts/nemotron_shadow_replay.py` ← docs/DIARIZATION.md, docs/FEATURES.md
 - `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SETUP.md
 - `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/design/TIER3_REVISION.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
-- `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
-- `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
+- `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
@@ -213,8 +213,8 @@
 - `src/audio.py` ← docs/INVARIANTS.md, docs/ru/INVARIANTS.md, docs/zh/INVARIANTS.md
 - `src/brain.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/research/diarization-log.md, docs/ru/ARCHITECTURE.md, docs/ru/DIARIZATION.md, docs/zh/ARCHITECTURE.md, docs/zh/DIARIZATION.md
-- `src/charoite_graph/dossier.py` ← docs/FEATURES.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
-- `src/charoite_graph/frontmatter.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `src/charoite_graph/dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-3.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `src/charoite_graph/frontmatter.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-3.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `src/charoite_graph/graph_names.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/zh/CONTRIBUTING.md
 - `src/charoite_graph/graph_nodes.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/charoite_graph/graph_search.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/scripts/README.md, scripts/README.md
@@ -259,11 +259,15 @@
 
 ## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
+- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
 
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
 
 - `docs/design/layout.md` — out (git): карта — производная замера, не источник
+- `reports/handoff/tasks/818_baseline_probe.py` — history (git): синтетический снимок базового разбора №818: привязан к SHA и blob manifest, не точка входа продукта
+- `reports/handoff/tasks/818_out1_admission_probe.py` — history (git): синтетическое воспроизведение OUTPUT №818 с закреплёнными base/source SHA, не точка входа продукта
 - `tests/` — out (git): тесты строят синтетические деревья: пути в них — не факты о репозитории
 - `app/Tests/` — out (git): Swift-тесты приложения: те же выдуманные пути
 - `app-ios/` — out (git): телефон python и shell не запускает — пути там только в тексте

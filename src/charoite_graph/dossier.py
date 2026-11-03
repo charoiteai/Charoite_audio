@@ -41,7 +41,7 @@ import re
 import shutil
 import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Iterable, Literal
 from charoite_graph import frontmatter, graph_names
@@ -553,8 +553,12 @@ def read_input(loaded: DossierLoad) -> str:
 
 
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
-           fp: str, today: str, gen: str = "") -> str:
-    """Готовый файл досье: frontmatter для машины, текст для человека."""
+           fp: str, today: str, gen: str = "", *, author_payload: str | None = None) -> str:
+    """Готовый файл досье: frontmatter для машины, текст для человека.
+
+    `author_payload` — точное содержимое после строки авторского заголовка,
+    включая пустые строки. None создаёт прежний маркер; "" сохраняет пустоту.
+    """
     kinds: dict[str, list[str]] = defaultdict(list)
     for m in members:
         if m in files:
@@ -585,15 +589,10 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
     for kind in sorted(kinds):
         links = " · ".join(f"[[{m}]]" for m in sorted(kinds[kind]))
         fm.append(f"- **{kind}:** {links}")
-    fm += ["", "## Правки автора", "", "—", ""]
-    return "\n".join(fm)
+    fm += ["", "## Правки автора", ""]
+    return "\n".join(fm) + ("\n—\n" if author_payload is None else author_payload)
 
 
-# Заголовок правок — без пробела и с хвостом пробелов: так его набирает владелец в
-# Obsidian, а литерал «## Правки автора\n» терял правки — пересборка писала «—» поверх
-# (№856). Шаблон — надмножество литерала: что находил он, находит и этот (отступ, любое
-# число «#», середина строки; min1 Haiku C1). Раздел — до конца файла, как прежде
-KEEP_RE = re.compile(r"#+[ \t]*Правки автора[ \t]*(?:\n|\Z)(.*)", re.S)
 BACKUP_DIR = ".backup"       # копии досье до пересборки и ревизии: `Досье/.backup/<штамп>/`
 
 
@@ -626,10 +625,7 @@ def backup(folder: pathlib.Path, stamp: str, path: pathlib.Path, keep: int = 40)
 
 def preserve_manual(old_text: str) -> str | None:
     """Ручные правки переживают пересборку — иначе досье никто не будет править."""
-    m = KEEP_RE.search(old_text or "")
-    if not m:
-        return None
-    kept = m.group(1).strip()
+    kept = DossierLoad("ok", old_text).parsed.manual
     return kept if kept and kept != "—" else None
 
 
@@ -640,8 +636,6 @@ PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
 # «##Правки автора» строка из стенограммы подсунет так же легко, как «## »,
 # а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
 _PROTECTED_RE = re.compile(r"(?m)^[ \t]*#+\s*(?:Правки автора|Источники)\s*$")
-_SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
-_MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
 
 
 def strip_protected(body: str) -> str:
@@ -661,34 +655,16 @@ def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
     только префикс (круг-1 по PR #382, Codex Critical). Источники — None,
     если раздела нет: такое досье собрано руками, и трогать его нельзя.
     """
-    m = VALID_RE.search(text or "")
-    if not m:
-        return text or "", "", None, None
-    # VALID_RE допускает пробелы и переводы строк перед «## Сейчас» — они
-    # остаются в шапке, тело начинается с самого заголовка
-    start = m.start() + (m.group(0).index("#"))
-    head, rest = text[:start], text[start:]
-    ms = _SOURCES_RE.search(rest)
-    mm = _MANUAL_RE.search(rest)
-    # раздел кончается на следующем найденном заголовке или в конце текста;
-    # «Правки автора» раньше «Источников» — правки кончаются на соседнем
-    # заголовке, иначе список источников уезжал внутрь авторского раздела
-    # и дублировался при записи (круг-2 по PR #382, DS + Codex)
-    cuts = sorted(x.start() for x in (ms, mm) if x) + [len(rest)]
-    body = rest[:cuts[0]].rstrip()
-    sources = manual = None
-    if ms:
-        sources = rest[ms.end():cuts[cuts.index(ms.start()) + 1]].strip("\n").rstrip()
-    if mm:
-        manual = rest[mm.end():cuts[cuts.index(mm.start()) + 1]].strip()
-    return head, body, sources, manual
+    parsed = DossierLoad("ok", text).parsed
+    return parsed.head, parsed.body, parsed.sources, parsed.manual
 
 
-def labeled_body(text: str) -> bool:
+def labeled_body(text: str) -> bool | None:
     """В теле досье (пять разделов, без «Источников» и «Правок автора») действует
     метка диаризации? Один предикат на доктора графа и ночную очередь — иначе
     лента считала бы одно, а ночь чинила другое (n815-in3 DS C2)."""
-    return graph_names.has_speaker_actor(split_dossier(text or "")[1])
+    parsed = DossierLoad("ok", text).parsed
+    return graph_names.has_speaker_actor(parsed.body) if parsed.complete else None
 
 
 REVISION_FIELD = "ревизия"
@@ -718,10 +694,199 @@ def without_revision(text: str) -> str:
     return frontmatter.without_field(text, REVISION_FIELD)
 
 
+_BODY_TITLES = ("Сейчас", "Как пришли", "Решено", "Открыто", "Кто в теме")
+_SECTION_LINE = re.compile(r"[ \t]*(?:(#+)[ \t]*(Источники|Правки автора)|(##)[ \t]*(Сейчас|Как пришли|Решено|Открыто|Кто в теме))[ \t]*")
+# Deletion compatibility only: the old expressions also saw fenced lines and
+# allowed whitespace across physical lines. Their false boundaries still veto
+# deletion; they never supply sections to readers or authorize a write.
+_LEGACY_DELETE_PROTECTED = re.compile(r"(?m)^#{1,6}\s*(Источники|Правки автора)\s*$")
+_FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+_ENVELOPE = re.compile(r"\n# Досье: [^\n]+\n\n> Собрано автоматически ночным проходом\. Правки руками сохранятся:\n> при пересборке раздел «Правки автора» не трогается\.\n\n")
+
+
+@dataclass(frozen=True)
+class DossierSection:
+    title: str
+    start: int
+    content: int
+    end: int
+
+
+@dataclass(frozen=True)
+class DossierParse:
+    """Normalized spans are read projections, never write permission by themselves.
+
+    Every byte-equivalent character belongs to head/body or a section/remainder;
+    all boundaries remain available even when a duplicate makes projection unsafe.
+    """
+    head: str
+    body: str
+    sources: str | None
+    manual: str | None
+    sections: tuple[DossierSection, ...]
+    body_span: tuple[int, int] | None
+    complete: bool
+    reason: str
+    protected: bool
+    remainder: str
+    legacy_delete_veto: bool
+
+
+def _parse_dossier(text: str) -> DossierParse:
+    fm, envelope = frontmatter.split(text.removeprefix("\ufeff"))
+    prefix = len(text) - len(envelope)
+    found: list[tuple[str, int, int]] = []
+    fence: tuple[str, int] | None = None
+    offset = 0
+    # Scan physical LF lines, not splitlines(): Unicode separators are text.
+    for line in re.findall(r"[^\n]*\n|[^\n]+$", text):
+        if fm is not None and offset < prefix:
+            offset += len(line)
+            continue
+        # Offsets must include LF even in unsupported-newline read projections.
+        physical = line.rstrip("\n")
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", physical):
+                fence = None
+        elif not re.match(r" {0,3}>", physical):
+            opening = _FENCE_OPEN.fullmatch(physical)
+            if opening and (opening[1][0] != "`" or "`" not in opening[2]):
+                fence = (opening[1][0], len(opening[1]))
+            else:
+                m = _SECTION_LINE.fullmatch(physical)
+                if m:
+                    found.append((m[2] or m[4], offset, offset + len(line)))
+        offset += len(line)
+    sections = tuple(DossierSection(title, start, content, found[i + 1][1] if i + 1 < len(found) else len(text))
+                     for i, (title, start, content) in enumerate(found))
+    protected = [s for s in sections if s.title in ("Источники", "Правки автора")]
+    bodies = [s for s in sections if s.title == "Сейчас"]
+    start = bodies[0].start if bodies else None
+    body_tail = sections[sections.index(bodies[0]):] if bodies else ()
+    end = next((s.start for s in body_tail if s.title in ("Источники", "Правки автора")), len(text))
+    body_end = len(text[:end].rstrip())
+    span = (start, body_end) if start is not None else None
+    head = text[:start] if start is not None else text
+    body = text[start:body_end] if start is not None else ""
+
+    def payload(title):
+        matches = [s for s in protected if s.title == title]
+        if len(matches) != 1:
+            return None
+        s = matches[0]
+        # Ordinary Markdown headings in author text belong to the author too.
+        stop = next((p.start for p in protected if p.start > s.start), len(text))
+        return text[s.content:stop].strip()
+
+    sources, manual = payload("Источники"), payload("Правки автора")
+    env = _ENVELOPE.match(envelope) if fm is not None else None
+    have_fingerprint = fm is not None and frontmatter.has_field(text, "отпечаток")
+    before_sources = [s.title for s in sections[:sections.index(protected[0])]] if protected else []
+    complete = bool(env and have_fingerprint and start == prefix + env.end()
+                    and [s.title for s in protected] == ["Источники", "Правки автора"]
+                    and before_sources == list(_BODY_TITLES)
+                    and not any(s.title in _BODY_TITLES for s in
+                                sections[sections.index(protected[0]):sections.index(protected[1])]))
+    reason = ""
+    if fence:
+        reason = "незакрытый блок кода"
+    elif protected and not complete:
+        titles = [s.title for s in protected]
+        if len(set(titles)) != len(titles):
+            detail = "повтор защищённого заголовка"
+        elif set(titles) != {"Источники", "Правки автора"}:
+            detail = "неполный набор защищённых разделов"
+        elif titles != ["Источники", "Правки автора"]:
+            detail = "обратный порядок защищённых разделов"
+        elif not env or start != prefix + env.end():
+            detail = "неизвестная внешняя оболочка или остаток перед телом"
+        elif not have_fingerprint:
+            detail = "нет поля отпечатка в закрытой шапке"
+        elif before_sources == list(_BODY_TITLES):
+            detail = "заголовок тела внутри раздела Источники"
+        else:
+            detail = "неполный или нарушенный порядок пяти разделов тела"
+        reason = f"неоднозначная структура защищённых разделов: {detail}"
+    known = complete and not fence
+    # Unknown input remains available in full, independently of read projections.
+    admitted = {(s.start, s.title) for s in protected}
+    legacy_body = VALID_RE.search(text)
+    legacy_start = legacy_body.start() + legacy_body[0].index("#") if legacy_body else None
+    legacy_delete_veto = (legacy_start != start or any(
+        (m.start(), m[1]) not in admitted for m in _LEGACY_DELETE_PROTECTED.finditer(text)))
+    return DossierParse(head, body, sources, manual, sections, span, known, reason,
+                        bool(protected), "" if known else text, legacy_delete_veto)
+
+
 @dataclass(frozen=True)
 class DossierLoad:
     state: Literal["ok", "damaged", "unreadable", "missing"]
     text: str | None = None
+    raw: bytes | None = field(default=None, repr=False)
+    parsed: DossierParse = field(init=False)
+    newline: str | None = field(init=False)
+
+    def __post_init__(self):
+        original = self.raw.decode("utf-8", errors="replace") if self.raw is not None else (self.text or "")
+        supported = not any(c in original for c in "\x85\u2028\u2029")
+        rest = original.replace("\r\n", "")
+        supported = supported and "\r" not in rest and not ("\r\n" in original and "\n" in rest)
+        object.__setattr__(self, "newline", ("\r\n" if "\r\n" in original else "\n") if supported else None)
+        normalized = original.replace("\r\n", "\n").replace("\r", "\n")
+        object.__setattr__(self, "text", normalized if self.text is not None or self.raw is not None else None)
+        object.__setattr__(self, "parsed", _parse_dossier(normalized))
+
+    def refusal(self, operation: Literal["rebuild", "review", "edit", "forget"]) -> str:
+        if self.state == "unreadable":
+            return "прежнее досье не прочитано"
+        if self.newline is None:
+            return "неподдерживаемые переводы строк"
+        if self.parsed.reason:
+            return self.parsed.reason
+        if operation in ("review", "edit") and not self.parsed.complete:
+            return "нет полного тела и защищённых разделов досье"
+        if operation == "edit" and self.raw is None:
+            return "нет исходного снимка байтов"
+        if self.state == "damaged":
+            if operation != "rebuild" or not self.parsed.complete or self.raw is None:
+                return "Правки автора повреждены или не найдены"
+            # Only the raw author suffix establishes damage versus literal U+FFFD.
+            author = next(s for s in self.parsed.sections if s.title == "Правки автора")
+            lines = self.raw.splitlines(keepends=True)
+            count = 0
+            author_reason = "граница Правок автора не подтверждена"
+            for i, line in enumerate(lines):
+                if count == author.start:
+                    try:
+                        b"".join(lines[i:]).decode("utf-8")
+                    except UnicodeDecodeError:
+                        author_reason = "Правки автора повреждены"
+                    else:
+                        author_reason = ""
+                    break
+                count += len(line.decode("utf-8", errors="replace").replace("\r\n", "\n"))
+            if author_reason:
+                return author_reason
+        return ""
+
+    def replace_body(self, body: str, revision_date: str | None = None) -> str:
+        """Exact outside-body bytes through the existing UTF-8 CAS writer only."""
+        why = self.refusal("edit")
+        if why or self.raw is None or self.state != "ok":
+            raise ValueError(why or "нет исходного снимка байтов")
+        raw_text = self.raw.decode("utf-8")
+        if raw_text.replace("\r\n", "\n") != self.text:
+            raise ValueError("снимок байтов не соответствует тексту")
+        start, end = self.parsed.body_span
+        prefix = self.text[:start].replace("\n", self.newline)
+        suffix = self.text[end:].replace("\n", self.newline)
+        text = prefix + body.strip().replace("\r\n", "\n").replace("\n", self.newline) + suffix
+        if revision_date is not None:
+            text = frontmatter.with_scalar_preserving(text, REVISION_FIELD, revision_date)
+        candidate = DossierLoad("ok", text)
+        if not candidate.parsed.complete or candidate.refusal("review"):
+            raise ValueError(candidate.parsed.reason or "ответ не образует полное досье")
+        return text
 
 
 def load_dossier(path: pathlib.Path) -> DossierLoad:
@@ -743,14 +908,12 @@ def load_dossier(path: pathlib.Path) -> DossierLoad:
         state = "damaged"
         text = raw.decode("utf-8", errors="replace")
     # Сохраняем перевод строк, который раньше делал Path.read_text.
-    return DossierLoad(state, text.replace("\r\n", "\n").replace("\r", "\n"))
+    return DossierLoad(state, text, raw)
 
 
 def read_fingerprint(source: pathlib.Path | DossierLoad) -> str:
     loaded = load_dossier(source) if isinstance(source, pathlib.Path) else source
-    head = (loaded.text or "")[:600]
-    m = re.search(r"^отпечаток:\s*(\S+)", head, re.M)
-    return m.group(1) if m else ""
+    return frontmatter.scalar_field(loaded.text or "", "отпечаток")
 
 
 def kept_from_night(text: str | None) -> str:
@@ -763,8 +926,12 @@ def kept_from_night(text: str | None) -> str:
     строк — как у `load_dossier`: CRLF не прячет правки автора (вход n845-in1
     DS C1); заголовок раздела — любого уровня, как у `split_dossier`."""
     t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    _, _, sources, manual = split_dossier(t)
-    if not read_fingerprint(DossierLoad("ok", t)):
+    loaded = DossierLoad("ok", text)
+    sources, manual = loaded.parsed.sources, loaded.parsed.manual
+    # Keep the old 600-character visibility exclusion for deletion. The shared
+    # header reader is more precise; recognizing more metadata grants no new
+    # eligibility to forget a stored file.
+    if not read_fingerprint(loaded) or not re.search(r"^отпечаток:\s*\S+", t[:600], re.M):
         return "нет отпечатка ночи"
     if sources is None or manual is None:
         return "нет раздела «Источники» или «Правки автора»"
@@ -772,8 +939,19 @@ def kept_from_night(text: str | None) -> str:
         return "есть правки автора"
     if revision(t):
         return "тело правила облачная ревизия"
-    if labeled_body(t):
+    if loaded.parsed.complete and graph_names.has_speaker_actor(loaded.parsed.body):
         return "в теле метка диаризации"
+    why = loaded.refusal("forget")
+    if why or not loaded.parsed.complete:
+        return why or "нет полного тела досье ночи"
+    for section in loaded.parsed.sections:
+        if section.title in ("Источники", "Правки автора"):
+            line = t[section.start:section.content]
+            hashes = len(line) - len(line.lstrip("#"))
+            if not 1 <= hashes <= 6:
+                return "защищённый заголовок вне прежнего допуска удаления"
+    if loaded.parsed.legacy_delete_veto:
+        return "прежние границы разделов удерживают досье от удаления"
     return ""
 
 
@@ -904,7 +1082,7 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
     rejected = [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, REJECTED_FIELD)]
     new, gone = membership_delta(composed, rejected, members, snap, schema=schema, on_disk=on_disk)
     # ушедшее идёт в план и при hold: отчёт обязан назвать забытое (out2 Haiku C3)
-    if not VALID_RE.search(text):
+    if not loaded.parsed.complete or loaded.newline is None:
         return Plan("hold", "unparsed", tuple(new), tuple(gone))
     if gone:
         return Plan("hold" if held else "rebuild", "gone", tuple(new), tuple(gone))

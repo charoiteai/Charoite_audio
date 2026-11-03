@@ -1,0 +1,709 @@
+{
+  "base": "e7849c6321192cb677605be8a2ce34857e97d72f",
+  "scope": "same-input synthetic old/new parser comparison, no model calls",
+  "cases": 78,
+  "results": [
+    {
+      "case": "",
+      "newline": "LF",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "plain",
+      "newline": "LF",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "plain",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "body-only",
+      "newline": "LF",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "body-only",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "canonical",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "canonical",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "outer-prefix",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "outer-prefix",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "author-body-headings",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "author-body-headings",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "no-fingerprint",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: нет поля отпечатка в закрытой шапке",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "no-fingerprint",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: нет поля отпечатка в закрытой шапке",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "protected-first-line",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "protected-first-line",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Правки автора-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Правки автора-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Сейчас-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Сейчас-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Источники-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Источники-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Сейчас-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Сейчас-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Источники-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Источники-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Правки автора-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Правки автора-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Сейчас",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Как пришли",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Как пришли",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Как пришли",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Как пришли",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Как пришли",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Как пришли",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Решено",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Решено",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Решено",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Решено",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Решено",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Решено",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Открыто",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Открыто",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Открыто",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Открыто",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Открыто",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Открыто",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Кто в теме",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Кто в теме",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Кто в теме",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Кто в теме",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Кто в теме",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Кто в теме",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-``````",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-``````",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-~~~info`tick~~~",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-~~~info`tick~~~",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-   ```info`tick   ```",
+      "newline": "LF",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-   ```info`tick   ```",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-```",
+      "newline": "LF",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-```",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    }
+  ]
+}

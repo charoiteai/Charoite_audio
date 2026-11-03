@@ -1,0 +1,3279 @@
+{
+  "base": "e7849c6321192cb677605be8a2ce34857e97d72f",
+  "scope": "same-input synthetic old/new parser comparison, no model calls",
+  "cases": 336,
+  "results": [
+    {
+      "case": "",
+      "newline": "LF",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "plain",
+      "newline": "LF",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "plain",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "body-only",
+      "newline": "LF",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "body-only",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "canonical",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "canonical",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "outer-prefix",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "outer-prefix",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "author-body-headings",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "author-body-headings",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "no-fingerprint",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: нет поля отпечатка в закрытой шапке",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "no-fingerprint",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: нет поля отпечатка в закрытой шапке",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "protected-first-line",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "protected-first-line",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Правки автора-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Правки автора-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Сейчас-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Источники-Сейчас-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Источники-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Источники-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Сейчас-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Правки автора-Сейчас-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Источники-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Источники-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Правки автора-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "legacy-order-Сейчас-Правки автора-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: обратный порядок защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Источники",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Источники",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный набор защищённых разделов",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Правки автора",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Правки автора",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: повтор защищённого заголовка",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Сейчас",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неизвестная внешняя оболочка или остаток перед телом",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Сейчас",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Сейчас",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Как пришли",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Как пришли",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Как пришли",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Как пришли",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Как пришли",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Как пришли",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Решено",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Решено",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Решено",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Решено",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Решено",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Решено",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Открыто",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Открыто",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Открыто",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Открыто",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Открыто",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Открыто",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Кто в теме",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "duplicate-Кто в теме",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Кто в теме",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "missing-Кто в теме",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: неполный или нарушенный порядок пяти разделов тела",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Кто в теме",
+      "newline": "LF",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "inside-sources-Кто в теме",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "неоднозначная структура защищённых разделов: заголовок тела внутри раздела Источники",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-``````",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-``````",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-~~~info`tick~~~",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-~~~info`tick~~~",
+      "newline": "CRLF+BOM",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-   ```info`tick   ```",
+      "newline": "LF",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-   ```info`tick   ```",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-```",
+      "newline": "LF",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "fence-```",
+      "newline": "CRLF+BOM",
+      "complete": false,
+      "reason": "незакрытый блок кода",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x80",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x81",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x82",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x83",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x84",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x85",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x86",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x87",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x88",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x89",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8a",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8b",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8c",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8d",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8e",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8f",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x90",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x91",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x92",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x93",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x94",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x95",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x96",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x97",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x98",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x99",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9a",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9b",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9c",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9d",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9e",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9f",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa0",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa1",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa2",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa3",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa4",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa5",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa6",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa7",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa8",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa9",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xaa",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xab",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xac",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xad",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xae",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xaf",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb0",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb1",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb2",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb3",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb4",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb5",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb6",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb7",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb8",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb9",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xba",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbb",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbc",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbd",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbe",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbf",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc0",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc1",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc2",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc3",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc4",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc5",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc6",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc7",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc8",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc9",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xca",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcb",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcc",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcd",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xce",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcf",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd0",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd1",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd2",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd3",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd4",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd5",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd6",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd7",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd8",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd9",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xda",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdb",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdc",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdd",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xde",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdf",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe0",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe1",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe2",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe3",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe4",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe5",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe6",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe7",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe8",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe9",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xea",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xeb",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xec",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xed",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xee",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xef",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf0",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf1",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf2",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf3",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf4",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf5",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf6",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf7",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf8",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf9",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfa",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfb",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfc",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfd",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfe",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xff",
+      "newline": "LF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x80",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x81",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x82",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x83",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x84",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x85",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x86",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x87",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x88",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x89",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8a",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8b",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8c",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8d",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8e",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x8f",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x90",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x91",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x92",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x93",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x94",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x95",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x96",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x97",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x98",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x99",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9a",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9b",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9c",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9d",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9e",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0x9f",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa0",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa1",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa2",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa3",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa4",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa5",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa6",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa7",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa8",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xa9",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xaa",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xab",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xac",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xad",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xae",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xaf",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb0",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb1",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb2",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb3",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb4",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb5",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb6",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb7",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb8",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xb9",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xba",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbb",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbc",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbd",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbe",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xbf",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc0",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc1",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc2",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc3",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc4",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc5",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc6",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc7",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc8",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xc9",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xca",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcb",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcc",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcd",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xce",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xcf",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd0",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd1",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd2",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd3",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd4",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd5",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd6",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd7",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd8",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xd9",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xda",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdb",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdc",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdd",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xde",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xdf",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe0",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe1",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe2",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe3",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe4",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe5",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe6",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe7",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe8",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xe9",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xea",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xeb",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xec",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xed",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xee",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xef",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf0",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf1",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf2",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf3",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf4",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf5",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf6",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf7",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf8",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xf9",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfa",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfb",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfc",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfd",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xfe",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "invalid-body-byte-0xff",
+      "newline": "CRLF",
+      "complete": true,
+      "reason": "",
+      "projection_equal": true,
+      "all_fields_equal": true,
+      "admissions_equal": true,
+      "keep_equal": true
+    },
+    {
+      "case": "damaged-author",
+      "newline": "LF",
+      "admissions_equal": true
+    },
+    {
+      "case": "damaged-author",
+      "newline": "CRLF",
+      "admissions_equal": true
+    }
+  ]
+}

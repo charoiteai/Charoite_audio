@@ -1,0 +1,32 @@
+{
+  "actual_apply": false,
+  "base": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81",
+  "damaged_revision_forget": {
+    "new_delete": false,
+    "new_edit": false,
+    "new_proposed_revision": "2026-11-0�",
+    "new_revision": "2026-11-0�",
+    "old_delete": false,
+    "old_edit": false,
+    "old_proposed_revision": "2026-11-0�",
+    "old_revision": "2026-11-0�",
+    "proposed_text_equal": true
+  },
+  "fenced_forget": {
+    "complete": true,
+    "new_delete": false,
+    "new_edit": false,
+    "new_keep": "",
+    "old_delete": false,
+    "old_edit": false,
+    "old_keep": "есть правки автора"
+  },
+  "real_model_calls": 0,
+  "revision_comment_invalid_yaml": {
+    "complete": true,
+    "expected_revision": "2026-11-03",
+    "revision": "",
+    "scalar": "2026-11-03 # checked"
+  },
+  "source": "b9d37c8219de16d9c4376b963cfdd9b150709145"
+}

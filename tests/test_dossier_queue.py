@@ -40,10 +40,9 @@ def _graph(root: pathlib.Path, name: str, themes: dict[str, str | None]) -> path
             (graph / "Встречи" / f"{theme}_{i}.md").write_text(
                 f"# Встреча\n[[Ядра/{theme}]] источник\n", encoding="utf-8")
         if built:
-            (folder / f"{theme}.md").write_text(
-                f"---\nтема: {theme}\nотпечаток: старый\nсобрано: {built}\n---\n"
-                f"# {theme}\n## Сейчас\nстарое тело\n## Правки автора\n\nрешение автора\n",
-                encoding="utf-8")
+            (folder / f"{theme}.md").write_text(dossier.render(theme,
+                GOOD.replace("новое тело", "старое тело"), [], {}, "старый", built).replace(
+                "## Правки автора\n\n—\n", "## Правки автора\n\nрешение автора\n"), encoding="utf-8")
     return graph
 
 

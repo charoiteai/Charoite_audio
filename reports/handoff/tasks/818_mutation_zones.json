@@ -1,0 +1,131 @@
+{
+  "after": [
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "DossierLoad.__post_init__"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "DossierLoad.refusal"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "DossierLoad.replace_body"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "_parse_dossier"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "render"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "kept_from_night"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/frontmatter.py",
+      "qualname": "scalar_field"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/frontmatter.py",
+      "qualname": "with_scalar_preserving"
+    },
+    {
+      "critical": true,
+      "file": "scripts/nightly_dossier.py",
+      "qualname": "_build"
+    },
+    {
+      "critical": true,
+      "file": "scripts/nightly_dossier.py",
+      "qualname": "_manual_for_rebuild"
+    },
+    {
+      "critical": true,
+      "file": "scripts/nightly_dossier_review.py",
+      "qualname": "_review_loop"
+    }
+  ],
+  "base": "6e269d8fea65398717eadccc356e822088a678cb",
+  "before": [
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "DossierLoad.__post_init__"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "DossierLoad.refusal"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "DossierLoad.replace_body"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "_parse_dossier"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "render"
+    },
+    {
+      "critical": true,
+      "file": "src/charoite_graph/dossier.py",
+      "qualname": "kept_from_night"
+    },
+    {
+      "critical": false,
+      "file": "src/charoite_graph/frontmatter.py",
+      "qualname": "scalar_field"
+    },
+    {
+      "critical": false,
+      "file": "src/charoite_graph/frontmatter.py",
+      "qualname": "with_scalar_preserving"
+    },
+    {
+      "critical": true,
+      "file": "scripts/nightly_dossier.py",
+      "qualname": "_build"
+    },
+    {
+      "critical": true,
+      "file": "scripts/nightly_dossier.py",
+      "qualname": "_manual_for_rebuild"
+    },
+    {
+      "critical": false,
+      "file": "scripts/nightly_dossier_review.py",
+      "qualname": "_review_loop"
+    }
+  ],
+  "before_source": "root guarded query on unchanged base manifest; eight of eleven true",
+  "expanded_zones_after": 292,
+  "full_local_on_base": {
+    "passed": 10367,
+    "seconds": 164.47,
+    "skipped": 8,
+    "xfailed": 7
+  },
+  "functional_src_unchanged": true,
+  "manifest_worktree_sha256": "df04bd5428847fe87a8d0d568968d10c3440264ad9630620e4c4fbb08e4492c9",
+  "zone_tests": {
+    "passed": 44,
+    "seconds": 7.05
+  }
+}

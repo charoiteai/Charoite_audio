@@ -122,7 +122,9 @@ def test_nightly_legacy_fallback_drops_a_source_removed_after_scan(tmp_path, mon
     source = graph / "Встречи" / "Retired source.md"
     source.write_text(f"# Synthetic source\n[[Ядра/{THEME}]]\n", encoding="utf-8")
     (graph / CHAROITE.dossier_dir / f"{THEME}.md").write_text(
-        "## Сейчас\nLegacy dossier without metadata.\n## Правки автора\n\nAuthor note.\n", encoding="utf-8")
+        # Plain legacy without metadata still admits ordinary rebuild; an
+        # unknown protected author heading would correctly hold before generation.
+        "## Сейчас\nLegacy dossier without metadata.\nAuthor note.\n", encoding="utf-8")
 
     def generate(*args, **kwargs):
         with night._graph_lock(graph, 0) as taken:

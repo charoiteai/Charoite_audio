@@ -121,18 +121,15 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
 
     Третий элемент — отказ для сводки; повреждение не означает отказ модели.
     """
-    if loaded.state == "unreadable":
-        print(f"  ✗ {theme}: прежнее досье не прочитано — не трогаю")
-        return False, None, 1
-    text = loaded.text or ""
-    if loaded.state == "damaged":
-        section = dossier.KEEP_RE.search(text)
-        # в заголовке шаблона знака замены нет (`#`, пробелы, «Правки автора»), поэтому знак
-        # замены во всём совпадении означает знак замены в тексте раздела
-        if section is None or "\ufffd" in section.group():
-            print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
-            return False, None, 0
-    return True, dossier.preserve_manual(text), 0
+    if why := loaded.refusal("rebuild"):
+        print(f"  ✗ {theme}: {why} — не трогаю")
+        return False, None, int(loaded.state == "unreadable")
+    section = next((s for s in loaded.parsed.sections if s.title == "Правки автора"), None)
+    if section is None:
+        return True, None, 0
+    # The admitted complete shape makes the author section terminal. Keep its
+    # exact normalized payload; compatibility projections may trim or collapse it.
+    return True, (loaded.text or "")[section.content:], 0
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
@@ -416,7 +413,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         g.keep(theme, members, loaded, fp)
         _skip_held(g, theme, rev, cand.cls == SAME)
         return None
-    allowed, manual, failures = _manual_for_rebuild(theme, loaded)
+    allowed, author_payload, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
         g.отказы += failures
         if failures == 0:
@@ -440,7 +437,13 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             body = ""
             break          # отказ считается ниже, в ветке `if not body`
         body = dossier.strip_protected(body)
-        if dossier.looks_valid(body):
+        # Validate the fully rendered candidate, including preserved author text,
+        # within the existing two-attempt malformed-output budget.
+        gen = "" if fell_back and fell_back[-1] else g.gen
+        text = dossier.render(theme, body, members, g.files, fp, g.today, gen,
+                              author_payload=author_payload)
+        candidate = dossier.DossierLoad("ok", text)
+        if dossier.looks_valid(body) and candidate.parsed.complete and not candidate.refusal("rebuild"):
             break
         print(f"  … {theme}: ответ не по формату (температура {temperature})")
         body = ""
@@ -452,13 +455,6 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         g.отказы += 1
         return clock() - g0
     gen_s = clock() - g0
-
-    # ответил облачный запас — генератор не тот, что в метке: тело без `вход:`
-    # (чужая метка навсегда сошла бы за «тот же генератор», финальный Opus M1)
-    gen = "" if fell_back and fell_back[-1] else g.gen
-    text = dossier.render(theme, body, members, g.files, fp, g.today, gen)
-    if manual:
-        text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
 
     copy = None
     wait = lock_wait()
@@ -483,7 +479,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         snap = safe_write.stat_snapshot(path)
         # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
         fresh = dossier.load_dossier(path)
-        if fresh.state != loaded.state or fresh.text != loaded.text:
+        if fresh.state != loaded.state or fresh.raw != loaded.raw:
             print(f"  ⏸ {theme}: досье изменилось за время генерации — "
                   "тема уйдёт на следующую ночь")
             g.skipped += 1
