@@ -309,23 +309,37 @@ too. The key never enters CI.
 
 After a release is published (release-please + release-app), one command on
 the owner's machine (`gh` ≥ 2.28 — the `--latest` flag; the GitHub token is
-read from `~/.config/charoite/gh_token`):
+read from `~/.config/charoite/gh_token`). Set `EXPECTED_SHA256` to the
+SHA-256 recorded when reviewing the exact release archive:
 
-    .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z
+    .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z --expected-sha256 "$EXPECTED_SHA256"
 
 Without the private key the script refuses with exit code 2 and signs
 nothing. `--file <path>` signs a local file instead (the signature lands next
-to it as `.sig`, no `gh` involved).
+to it as `.sig`, no `gh` involved, and no archive pin or app-anchor check).
 
-It reads the release state, downloads `Charoite.app.zip`, unpacks it and
-VERIFIES the bundle signature (codesign --strict, team AR7PDJQNR4) — an
-archive swapped before signing is refused, not signed; so is an archive whose
+Before reading the release state or changing it, the script requires a
+64-hex archive pin and checks the signing key's public half against the unique,
+valid raw ed25519 constant `manifestKeyBase64` in the tracked
+`UpdateAuthenticity.swift`. Missing or invalid pins and mismatched keys cause
+no remote changes. It then reads the release state and downloads
+`Charoite.app.zip`. Its actual bytes must match the pin before unpacking,
+codesign or signing; a mismatch leaves the release pre-release. Use the digest
+from the reviewed archive, rather than trusting an unchecked checksum beside
+the current release asset.
+
+The script unpacks the archive and VERIFIES the bundle signature
+(codesign --strict, team AR7PDJQNR4) — an archive swapped before signing is
+refused, not signed; so is an archive whose
 `Charoite.app` is a symlink (codesign would follow it and vouch for the link's
-target, such as the installed app). It then builds the
+target, such as the installed app). `Info.plist` must contain a string
+`CFBundleShortVersionString` exactly equal to the tag without its leading `v`;
+a missing, malformed or different version is refused before signing. It then builds the
 manifest `<version>  <sha256>` ITSELF (the signed file carries the version —
 a bare hash allowed replaying an old honest triple under a new tag), signs
 its raw bytes (raw ed25519 → base64) with
-`~/.config/charoite/update_manifest_ed25519.pem`, attaches
+`~/.config/charoite/update_manifest_ed25519.pem`, verifies the actual signature
+with that same app anchor (including if the key changed after preflight), attaches
 `Charoite.app.zip.manifest` + `.manifest.sig` to the release and, as the last
 step, clears the pre-release flag (`gh release edit --prerelease=false`, plus
 `--latest` when the tag is not older than the current latest).
@@ -363,7 +377,7 @@ from two sides:
 
 Until the owner signs, users stay on the previous release; if the signature
 upload or the flag change fails, the release stays pre-release and the script
-prints the command to retry. A manual `gh release edit --latest` around the
+prints the command to retry with the same `--expected-sha256` pin. A manual `gh release edit --latest` around the
 script is exactly what the gate protects against: don't (CI restores
 pre-release on the next event, but the window until then is yours).
 
