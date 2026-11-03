@@ -37,7 +37,7 @@ sections. Reuse existing lock, backup and CAS doors.
 
 Read [contracts and plan](818-contracts-and-plan.md), [15 acceptance groups](dossier-parser-acceptance.md),
 [historical baseline](dossier-parser-baseline.json), [current refresh report](818-policy-a-refresh-report.md)
-and [source manifest](818-source-contract-manifest.json). The 41 oracles below
+and [source manifest](818-source-contract-manifest.json). The 43 oracles below
 are future requirements, not executed implementation results.
 
 ## Frozen grammar and admission

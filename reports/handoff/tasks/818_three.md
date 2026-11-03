@@ -13,6 +13,6 @@
 12. Base: bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81, already fetched public origin/main.
 13. Prior docs: 5309257d, efd89490, f12d0d4f; preserve old branch and evidence identity.
 14. Fresh delta: PR900 revision U+FFFD hold and its existing two-mode test.
-15. Inspect three constructed cases; deliver 41 oracles/15 groups and 18 blob pins.
+15. Inspect three constructed cases; deliver 43 oracles/15 groups and 18 blob pins.
 16. Root privacy-exports one packet to independent Terra/Luna before code.
 17. No implementation, real model, stored-data migration, owner config or graph.
