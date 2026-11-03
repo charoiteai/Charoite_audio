@@ -134,11 +134,11 @@ def _assert_finite_json_profiles(calls, config):
         assert options["truncate"] is False and options["shift"] is False
         assert options["system"] in {SOURCE, GENERATE, MAIN, inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM}
         assert type(options["num_predict"]) is int and 0 < options["num_predict"] <= call["context"]
-        audit_role = options["system"] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM)
-        assert options["think"] is audit_role
+        support_role = options["system"] == inc.SUPPORT_AUDIT_SYSTEM
+        assert options["think"] is support_role
         assert isinstance(options["temperature"], (int, float)) and math.isfinite(options["temperature"])
         if options["system"] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
-            assert options["num_predict"] == 2000
+            assert options["num_predict"] == (2000 if support_role else 350)
             assert type(options["temperature"]) in (int, float)
         assert set(options) == {"model", "system", "temperature", "num_predict", "think", "truncate", "shift"}
 

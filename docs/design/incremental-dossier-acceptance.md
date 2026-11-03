@@ -233,12 +233,18 @@ is included in this disposable tree.
 
 Support and topic audits use separate system instructions. Each user message
 contains only the five-field JSON input, including the complete source context,
-the selected quotation and the candidate assertion. Only these two audits use
-`think=true` with a 2,000-token response budget. The complete-input guard reserves
-that budget before sending; insufficient context remains a retryable refusal.
+the selected quotation and the candidate assertion. The support audit uses
+`think=true` with a 2,000-token response budget; the topic audit uses
+`think=false` with 350 tokens. The complete-input guard reserves each request's
+budget before sending; insufficient context remains a retryable refusal.
 The generator, source-relevance check and aggregate judge keep their profiles.
 Real controls must inspect the transmitted messages and options, a nonempty
 strict final verdict, the unchanged claim matrix, and the writer/graph scenarios.
+Only the two independent audit responses may use one complete outer
+`json` Markdown fence. After removing that fixed presentation envelope, the
+same duplicate-key, exact-field and literal-boolean checks still apply.
+Prose, multiple objects or fences, incomplete wrappers and invalid verdicts
+remain refusals. Source, generator and aggregate responses keep plain JSON.
 
 The installed-server generation control distinguishes an HTTP error from
 `done_reason=length` with an incomplete JSON response. Its paired requests differ

@@ -78,7 +78,12 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     return out
 
 
-def _json(raw: str, keys: set[str]) -> dict:
+def _json(raw: str, keys: set[str], *, fenced: bool = False) -> dict:
+    """Decode one exact object; only audit callers may admit a JSON fence."""
+    if fenced and isinstance(raw, str):
+        presentation = raw.strip()
+        if presentation.startswith("```json\n") and presentation.endswith("\n```"):
+            raw = presentation[len("```json\n"):-len("\n```")]
     try:
         def unique(pairs):
             obj = {}
@@ -430,10 +435,11 @@ def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *
                "source_context": quote_context,
                "source_quotation": claim["quote"],
                "candidate_text": claim["text"]}
-    for field, system in (("supported", SUPPORT_AUDIT_SYSTEM), ("relevant", TOPIC_AUDIT_SYSTEM)):
+    for field, system, think, num_predict in (("supported", SUPPORT_AUDIT_SYSTEM, True, 2000),
+                                            ("relevant", TOPIC_AUDIT_SYSTEM, False, 350)):
         prompt = json.dumps(payload, ensure_ascii=False)
-        verdict = _json(local_complete(prompt, c, system=system, num_predict=2000, think=True),
-                        {"verdict", field, "reason"})
+        verdict = _json(local_complete(prompt, c, system=system, num_predict=num_predict, think=think),
+                        {"verdict", field, "reason"}, fenced=True)
         if (verdict["verdict"] != "accept" or verdict[field] is not True
                 or not isinstance(verdict["reason"], str) or not verdict["reason"].strip()):
             raise Refused(f"independent claim audit was not accepted ({field})")

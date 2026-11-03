@@ -180,7 +180,7 @@ def main():
         prompt = (output / f"call-{row['number']:02d}-prompt.txt").read_text()
         verdict, shape_ok, payload_ok, error = None, False, False, None
         try:
-            verdict = inc._json(raw.strip(), {"verdict", flag_name, "reason"})
+            verdict = inc._json(raw.strip(), {"verdict", flag_name, "reason"}, fenced=True)
             shape_ok = (verdict["verdict"] in {"accept", "reject", "uncertain"}
                         and type(verdict[flag_name]) is bool
                         and isinstance(verdict["reason"], str) and bool(verdict["reason"].strip()))
@@ -189,12 +189,14 @@ def main():
         except (ValueError, TypeError, KeyError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         flag_ok = shape_ok and verdict[flag_name] is expected_flag
+        expected_think = flag_name == "supported"
+        expected_predict = 2000 if expected_think else 350
         decision_ok = shape_ok and (verdict["verdict"] == "accept" if expected_flag
                                     else verdict["verdict"] in {"reject", "uncertain"})
         profile_ok = (row["engine"] == "ollama" and row["model"] == MODEL + ":local" and row["transport"] == BASE
                       and row["truncate"] is False and row["shift"] is False
-                      and row["num_ctx"] == config["llm"]["num_ctx"] and row["num_predict"] == 2000
-                      and row["think"] is True and type(row["temperature"]) in (int, float) and row["temperature"] == 0)
+                      and row["num_ctx"] == config["llm"]["num_ctx"] and row["num_predict"] == expected_predict
+                      and row["think"] is expected_think and type(row["temperature"]) in (int, float) and row["temperature"] == 0)
         order_ok = row["system"] == expected_system
         expected_messages = [{"role": "system", "content": expected_system},
                              {"role": "user", "content": prompt}]
@@ -202,8 +204,8 @@ def main():
         wire_ok = (len(wire_requests) == 1 and wire_requests[0].get("messages") == expected_messages
                    and wire_requests[0].get("model") == MODEL + ":local"
                    and wire_requests[0].get("truncate") is False and wire_requests[0].get("shift") is False
-                   and wire_requests[0].get("think") is True
-                   and wire_requests[0].get("options") == {"num_ctx": 8192, "num_predict": 2000, "temperature": 0})
+                   and wire_requests[0].get("think") is expected_think
+                   and wire_requests[0].get("options") == {"num_ctx": 8192, "num_predict": expected_predict, "temperature": 0})
         passed = bool(shape_ok and payload_ok and flag_ok and decision_ok and order_ok and profile_ok and wire_ok
                       and row["error"] is None and not row["fell_back"])
         return {"call": row["number"], "expected_system": expected_system, "actual_system": row["system"],
@@ -212,6 +214,7 @@ def main():
                 "strict_verdict": shape_ok, "payload_ok": payload_ok, "component_matches": bool(flag_ok),
                 "decision_matches": bool(decision_ok), "order_ok": order_ok, "profile_ok": profile_ok,
                 "wire_ok": wire_ok,
+                "output_encoding": "fenced" if raw.strip().startswith("```json\n") else "plain",
                 "parse_error": error, "passed": passed}
 
     checkpoint()
