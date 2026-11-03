@@ -762,7 +762,8 @@ def _parse_dossier(text: str) -> DossierParse:
     protected = [s for s in sections if s.title in ("Источники", "Правки автора")]
     bodies = [s for s in sections if s.title == "Сейчас"]
     start = bodies[0].start if bodies else None
-    end = next((s.start for s in protected if start is not None and s.start > start), len(text))
+    body_tail = sections[sections.index(bodies[0]):] if bodies else ()
+    end = next((s.start for s in body_tail if s.title in ("Источники", "Правки автора")), len(text))
     body_end = len(text[:end].rstrip())
     span = (start, body_end) if start is not None else None
     head = text[:start] if start is not None else text
@@ -780,11 +781,12 @@ def _parse_dossier(text: str) -> DossierParse:
     sources, manual = payload("Источники"), payload("Правки автора")
     env = _ENVELOPE.match(envelope) if fm is not None else None
     have_fingerprint = fm is not None and frontmatter.has_field(text, "отпечаток")
+    before_sources = [s.title for s in sections[:sections.index(protected[0])]] if protected else []
     complete = bool(env and have_fingerprint and start == prefix + env.end()
                     and [s.title for s in protected] == ["Источники", "Правки автора"]
-                    and [s.title for s in sections if s.start < protected[0].start] == list(_BODY_TITLES)
-                    and not any(s.title in _BODY_TITLES for s in sections
-                                if protected[0].start < s.start < protected[1].start))
+                    and before_sources == list(_BODY_TITLES)
+                    and not any(s.title in _BODY_TITLES for s in
+                                sections[sections.index(protected[0]):sections.index(protected[1])]))
     reason = ""
     if fence:
         reason = "незакрытый блок кода"
@@ -800,7 +802,7 @@ def _parse_dossier(text: str) -> DossierParse:
             detail = "неизвестная внешняя оболочка или остаток перед телом"
         elif not have_fingerprint:
             detail = "нет поля отпечатка в закрытой шапке"
-        elif [s.title for s in sections if s.start < protected[0].start] == list(_BODY_TITLES):
+        elif before_sources == list(_BODY_TITLES):
             detail = "заголовок тела внутри раздела Источники"
         else:
             detail = "неполный или нарушенный порядок пяти разделов тела"
@@ -852,16 +854,19 @@ class DossierLoad:
             author = next(s for s in self.parsed.sections if s.title == "Правки автора")
             lines = self.raw.splitlines(keepends=True)
             count = 0
+            author_reason = "граница Правок автора не подтверждена"
             for i, line in enumerate(lines):
                 if count == author.start:
                     try:
                         b"".join(lines[i:]).decode("utf-8")
                     except UnicodeDecodeError:
-                        return "Правки автора повреждены"
+                        author_reason = "Правки автора повреждены"
+                    else:
+                        author_reason = ""
                     break
                 count += len(line.decode("utf-8", errors="replace").replace("\r\n", "\n"))
-            else:
-                return "граница Правок автора не подтверждена"
+            if author_reason:
+                return author_reason
         return ""
 
     def replace_body(self, body: str, revision_date: str | None = None) -> str:
@@ -936,10 +941,9 @@ def kept_from_night(text: str | None) -> str:
         return "тело правила облачная ревизия"
     if loaded.parsed.complete and graph_names.has_speaker_actor(loaded.parsed.body):
         return "в теле метка диаризации"
-    if why := loaded.refusal("forget"):
-        return why
-    if not loaded.parsed.complete:
-        return "нет полного тела досье ночи"
+    why = loaded.refusal("forget")
+    if why or not loaded.parsed.complete:
+        return why or "нет полного тела досье ночи"
     for section in loaded.parsed.sections:
         if section.title in ("Источники", "Правки автора"):
             line = t[section.start:section.content]

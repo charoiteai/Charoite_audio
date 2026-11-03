@@ -501,8 +501,9 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             rejected.append(f"- **{theme}** — {_lag_reason(loaded_old)}")
             continue
         try:
+            revision_date = stamp[:10] if may_edit else None
             if may_edit:
-                loaded_old.replace_body(loaded_old.parsed.body, stamp[:10])
+                loaded_old.replace_body(loaded_old.parsed.body, revision_date)
         except ValueError as e:
             # незакрытая шапка поля не примет; правка без поля — пересказ следующей ночью (out4 DS I1);
             # по одной шапке: черта `---` в теле не сойдёт за её конец (out5 Haiku I2)
@@ -533,7 +534,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # «забыть встречу» (№841); поле — в той же записи, что строка
         # «Применено» отчёта, и не разойдётся с ним (вход n841-in1 S-C2)
         try:
-            text = loaded_old.replace_body(fixed, None if labels_only else stamp[:10])
+            text = loaded_old.replace_body(fixed, None if labels_only else revision_date)
         except ValueError as e:
             rejected.append(f"- **{theme}** — {e} — не трогаем")
             continue
