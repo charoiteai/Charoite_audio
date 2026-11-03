@@ -343,13 +343,16 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
 
 # Full-source controls must accompany changes to this independent audit contract.
 SUPPORT_AUDIT_INSTRUCTION = (
-    'Decide ONLY whether candidate_text is supported by the selected new-source evidence. Do not decide '
+    'Decide ONLY whether candidate_text is supported by the selected source_quotation. Apply these '
+    'checks IN ORDER: first, every independent candidate event or state needs evidence in that '
+    'quotation. Reject if any such event is absent, EVEN IF source_context explicitly states it. '
+    'Only after this passes, use the complete context to resolve the quoted evidence. Do not decide '
     'topic relevance: a foreign-topic fact can be fully supported.\n\ncandidate_text is the factual '
     'assertion the DOSSIER will make as written. It is NOT a claim merely that these words appeared in a '
     'source. Copying a quotation or attaching a citation does NOT preserve an omitted uncertainty, '
     'condition or time. Evaluate the assertion, not whether the source uttered its words.\n\n'
-    'source_quotation anchors the event or state. The COMPLETE source_context is authoritative about that'
-    " anchor's meaning and strength. A qualification immediately before or after an affirmative line "
+    'source_quotation establishes the events. For those quoted events, COMPLETE source_context is '
+    'authoritative about their meaning and strength. A qualification immediately before or after an affirmative line '
     'restricts that line; the literal affirmative substring alone is NOT unqualified proof. Resolve its '
     'subject, time, conditions, negation and retractions. Do not invent a relationship, transfer another '
     "object's proof, or repair a wrong anchor using an independent event outside the quotation. Refuse "
@@ -363,7 +366,9 @@ SUPPORT_AUDIT_INSTRUCTION = (
     'that separately. For example, a quotation "Unit A was calibrated. Unit B was cleaned." '
     'supports the two-clause candidate "Unit A was calibrated and Unit B was cleaned" even '
     'without a relationship between the units. It does not support "Calibrating Unit A caused '
-    'Unit B to be cleaned", or any additional event absent from that quotation.\n\n'
+    'Unit B to be cleaned", or any additional event absent from that quotation. If the selected '
+    'quotation contains only Unit A, the two-clause candidate fails even when full context also '
+    'states that Unit B was cleaned.\n\n'
     'Compare explicit certainty and time in the candidate. Source '
     "'The following statement is tentative: a cover was fitted to ProjectOne' does NOT support candidate "
     "'A cover was fitted to ProjectOne'. The same qualification AFTER that line has the same effect. "
