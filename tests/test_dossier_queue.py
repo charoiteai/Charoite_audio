@@ -971,6 +971,7 @@ def test_generate_calls_the_model_with_what_the_label_hashes(monkeypatch):
     seen = []
 
     class Fake:
+        engine, base, cloud_ready, _fell_back_local = "ollama", "http://127.0.0.1:11434", False, False
         def __init__(self, c):
             pass
 
@@ -997,6 +998,7 @@ def test_generate_reports_whether_the_fallback_answered(monkeypatch, fell):
     nd = _script()
 
     class Fake:
+        engine, base, cloud_ready, _fell_back_local = "ollama", "http://127.0.0.1:11434", False, False
         def __init__(self, c):
             self._fell_back_local = False
 

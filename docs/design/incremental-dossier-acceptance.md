@@ -76,3 +76,31 @@ this task does not change the existing recovery/retention policy.
 Independent Terra and Luna reviews reported no Critical findings. Addressed findings: rebuild selection now admits complete sanitized source blocks without per-meeting clipping; forgetting captures aliases strictly and reports an unreadable snapshot; mixed accepted/rejected updates retain each rejection's actual pre-generation context, so it is reassessed after the body changes. The alleged empty-string composition rebuild was disproved on the reviewed tree: raw empty/whitespace entries already hold. Additional malformed canonical identities remain covered by the conservative header gate. The helper lives in the supported meeting layer, with no graph/runtime import exception.
 
 The original full local run reached 10,582 passes, eight skips and seven expected failures; four legacy index tests still expected the earlier scan/rebuild routing and were then corrected to exercise valid forced rebuilds and strict scan failures. Final CI and the targeted rerun must validate those changes. This record does not turn the initial red run into a clean full run.
+
+
+## S15: two dossiers in one graph, then one mixed-topic meeting
+
+Use the standalone invented graph control `tests/dossier_graph_control.py`.
+Create two topic dossiers in one graph, including one revised dossier, old
+citations, an unresolved warning and a byte-sensitive manual payload. Run
+without new inputs, then create a meeting containing one independent fact for
+each topic and run the real nightly writer with the local model. Both dossiers
+must add their own fact, preserve old contents/revision/manual bytes and remain
+in the index. Neither may gain a fact solely about the other topic. Repeat:
+zero calls, unchanged dossier bytes, no new backup; both backups match originals.
+
+Judge the same fixed candidates with real local calls: each topic's supported
+fact is accepted, mixed bullets and compound clauses are rejected, a new
+foreign clause appended to an old line is rejected, an explicit source-stated
+relationship is accepted and an ambiguous relationship is not accepted. Existing
+transport/CAS rejection tests must still prove no membership/body/index advance.
+A model verdict is semantic evidence; exact assertion-span coverage is only an
+omission guard. No claim of guaranteed semantic correctness follows from one
+finite matrix.
+
+Initial S15 observed cross-topic generation. A prompt-only trial corrected the
+two real writer outputs but falsely accepted three negative judge probes. It
+was rejected. The stronger structured assertion/source-quote protocol must pass
+S15 and the original S01/S02/S04/S05 local-model matrix before acceptance. Earlier
+13-call evidence is tied to its recorded source hashes and does not validate a
+later judge-contract implementation.

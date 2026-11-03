@@ -74,8 +74,14 @@ def _responses(monkeypatch, *, body=NEW_BODY, irrelevant=(), failure=None):
                                "quote": "" if no else data["source_text"].splitlines()[-1]})
         if system == "You extend factual dossiers conservatively.":
             return json.dumps({"body": body, "changes": []})
+        if system == "You audit one proposed factual addition.":
+            return json.dumps({"verdict": "accept", "supported": True, "relevant": True,
+                               "reason": "Invented independent claim judgment."})
         return json.dumps({"verdict": "accept", "conserved": True, "supported": True,
-                           "corrections_valid": True, "reason": "invented judgment"})
+                           "corrections_valid": True, "reason": "invented judgment",
+                           "claims": [{"text": "A rain cover was fitted.", "source": B,
+                                       "quote": "A rain cover was fitted.", "relevant": True,
+                                       "supported": True, "reason": "Invented source-backed addition."}]})
     monkeypatch.setattr(inc, "local_complete", complete)
     return calls
 
@@ -98,8 +104,10 @@ def test_append_keeps_history_warning_manual_revision_and_only_new_input(world, 
     assert dossier.revision(loaded.text) == ("2099-01-01" if revision else "")
     assert dossier.composition(loaded.text, schema=CHAROITE) == [A, B]
     assert all("OLD_SOURCE_ONLY_SENTINEL" not in prompt for _, prompt in calls)
-    assert all("FULL_NEW_TAIL" in prompt for _, prompt in calls)
-    assert len(calls) == 3
+    whole_source_calls = [(system, prompt) for system, prompt in calls
+                          if system != "You audit one proposed factual addition."]
+    assert all("FULL_NEW_TAIL" in prompt for _, prompt in whole_source_calls)
+    assert len(calls) == 4
     before = path.read_bytes()
     backups = sorted((graph / "Досье/.backup").rglob("*.md"))
     calls.clear()
@@ -117,7 +125,7 @@ def test_mixed_sources_reject_independently_and_changed_rejection_retries(world,
     text = path.read_text()
     assert dossier.composition(text, schema=CHAROITE) == [A, B]
     assert frontmatter.list_field(text, dossier.REJECTED_FIELD) == [X]
-    assert len(calls) == 4
+    assert len(calls) == 5
     calls.clear()
     # X was judged against the old body. B changed that context, so the next
     # run reassesses X once rather than stamping an unseen context accepted.

@@ -84,7 +84,7 @@ if mode == "model":
         number = len(calls) + 1
         call = {"number": number, "engine": self.engine,
                 "model": kwargs.get("model") or self.model,
-                "role": kwargs.get("system"),
+                "role": kwargs.get("system"), "temperature": kwargs.get("temperature"),
                 "num_ctx": self.num_ctx, "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
         calls.append(call)
         (output / f"call-{number:02}-prompt.txt").write_text(prompt)
@@ -210,7 +210,7 @@ if mode == "model":
             rejected, error = True, str(exc)
         measured = {"scenario": case_name, "calls": len(calls) - count, "rejected": rejected,
                     "reason": error, "scope": "semantic-only" if case_name.startswith("S05") else "candidate-validation",
-                    "passed": rejected and len(calls) - count == 1}
+                    "passed": rejected and len(calls) - count >= 1}
         judge_cases.append(measured)
         print("JUDGE " + json.dumps(measured), flush=True)
 

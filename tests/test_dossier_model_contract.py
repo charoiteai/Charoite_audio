@@ -13,6 +13,30 @@ BODY = (f"## Сейчас\n- Vent A is open. [[{A}]]\n## Как пришли\n�
 ADDED = BODY.replace("## Как пришли", f"- A rain cover was fitted. [[{B}]]\n## Как пришли")
 
 
+@pytest.fixture(autouse=True)
+def aggregate_component_boundary(monkeypatch):
+    """This module isolates aggregate/coverage checks; narrow audits have their
+    own whole-pipeline contract module with an independent transport callback.
+    """
+    monkeypatch.setattr(inc, "audit_claim", lambda *args, **kwargs: None)
+
+
+def _old(body=BODY):
+    text = dossier.render("Glasshouse", body, [], {}, "fixture", "2099-01-01")
+    return dossier.DossierLoad("ok", text, text.encode())
+
+
+def _claim(text="A rain cover was fitted.", quote="A rain cover was fitted.", **fields):
+    return {"text": text, "source": B, "quote": quote, "relevant": True,
+            "supported": True, "reason": "The new source explicitly supports this topic fact."} | fields
+
+
+def _verdict(claims=None, **fields):
+    return {"verdict": "accept", "conserved": True, "supported": True,
+            "corrections_valid": True, "reason": "Supported addition.",
+            "claims": [_claim()] if claims is None else claims} | fields
+
+
 @pytest.mark.parametrize("literal", ["inline ## Источники text", "> ## Правки автора",
                                     "```markdown\n## Источники\n```", "~~~\n##Правки автора\n~~~"])
 def test_render_retains_literal_protected_heading(literal):
@@ -78,12 +102,171 @@ def test_incomplete_source_verdict_is_operational_refusal(monkeypatch, raw):
 def test_nonaccepting_candidate_verdict_cannot_authorize_update(monkeypatch, changed):
     text = dossier.render("Glasshouse", BODY, [], {}, "fixture", "2099-01-01")
     old = dossier.DossierLoad("ok", text, text.encode())
-    verdict = {"verdict": "accept", "conserved": True, "supported": True,
-               "corrections_valid": True, "reason": "Supported addition."} | changed
+    verdict = _verdict(**changed)
     monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(verdict))
     with pytest.raises(inc.Refused):
         inc.validate_candidate("Glasshouse", old, [B], {B: {"text": "A rain cover was fitted."}}, {}, ADDED, [])
     assert old.raw == text.encode()
+
+
+@pytest.mark.parametrize("claims", [None, {}, "claims", [None], [{}],
+    [_claim(relevant=False)], [_claim(relevant=1)], [_claim(supported=False)],
+    [_claim(supported="true")], [_claim(source=A)], [_claim(quote="not in source")],
+    [_claim(quote="")], [_claim(reason="")], [_claim(text="")], [_claim(text="not in candidate")],
+    [_claim(extra=True)], [_claim(), _claim()], []])
+def test_aggregate_accept_does_not_override_invalid_or_missing_claims(monkeypatch, claims):
+    # All aggregate booleans remain true: only the per-assertion contract refuses.
+    verdict = _verdict() | {"claims": claims}
+    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(verdict))
+    with pytest.raises(inc.Refused, match="claim|uncovered"):
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": "A rain cover was fitted."}}, {}, ADDED, [])
+
+
+def test_legacy_aggregate_only_verdict_is_not_a_default_accept(monkeypatch):
+    verdict = _verdict()
+    del verdict["claims"]
+    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(verdict))
+    with pytest.raises(inc.Refused, match="JSON fields"):
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": "A rain cover was fitted."}}, {}, ADDED, [])
+
+
+@pytest.mark.parametrize("layout", ["separate-bullets", "compound-line", "appended-to-old-line", "factual-subheading"])
+def test_omitted_new_clause_or_subheading_is_uncovered(monkeypatch, layout):
+    unrelated = "A level sensor was fitted to the WaterTank."
+    if layout == "separate-bullets":
+        candidate = ADDED.replace("## Как пришли", f"- {unrelated} [[{B}]]\n## Как пришли")
+    elif layout == "compound-line":
+        candidate = ADDED.replace("A rain cover was fitted.", f"A rain cover was fitted.; {unrelated}")
+    elif layout == "appended-to-old-line":
+        candidate = ADDED.replace(f"- Vent A is open. [[{A}]]", f"- Vent A is open. [[{A}]]; {unrelated} [[{B}]]")
+    else:
+        candidate = ADDED.replace("## Как пришли", f"### {unrelated}\n## Как пришли")
+    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(_verdict()))
+    files = {B: {"text": "A rain cover was fitted. " + unrelated}}
+    with pytest.raises(inc.Refused, match="uncovered"):
+        inc.validate_candidate("Glasshouse", _old(), [B], files, {}, candidate, [])
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_two_atomic_spans_on_one_line_have_complete_evidence(monkeypatch, newline):
+    first, second = "A rain cover was fitted.", "The glasshouse drain is clear."
+    candidate = ADDED.replace(first, first + "; " + second).replace("\n", newline)
+    files = {B: {"text": first + " " + second}}
+    verdict = _verdict([_claim(first), _claim(second, quote=second)])
+    calls = []
+    def complete(prompt, config, **kwargs):
+        calls.append((prompt, kwargs))
+        return json.dumps(verdict)
+    monkeypatch.setattr(inc, "local_complete", complete)
+    inc.validate_candidate("Glasshouse", _old(), [B], files, {}, candidate, [])
+    assert len(calls) == 1 and calls[0][1]["num_predict"] == 1200
+    assert "splitting a compound bullet" in calls[0][0]
+
+
+def test_new_prose_appended_to_an_old_line_requires_its_own_claim(monkeypatch):
+    fact = "A rain cover was fitted."
+    candidate = BODY.replace(f"- Vent A is open. [[{A}]]", f"- Vent A is open. [[{A}]]; {fact} [[{B}]]")
+    judgments = []
+    def complete(prompt, config, **kwargs):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        judgments.append((payload, kwargs["system"]))
+        return json.dumps(_verdict())
+    monkeypatch.setattr(inc, "local_complete", complete)
+    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": fact}}, {}, candidate, [])
+    assert len(judgments) == 1
+    payload, system = judgments[0]
+    assert system == "You are an independent conservative dossier judge."
+    assert payload["candidate"] == candidate and payload["existing_dossier"] == BODY
+    assert payload["new_sources"] == {B: fact}
+    assert payload["new_statements"] == [f"- Vent A is open. [[{A}]]; {fact} [[{B}]]"]
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_relationship_requires_its_own_explicit_source_support(monkeypatch, explicit):
+    fact = "The WaterTank pump supplies irrigation water to the Glasshouse."
+    source = fact if explicit else "A connection between WaterTank and Glasshouse is suspected but unverified."
+    candidate = BODY.replace("## Как пришли", f"- {fact} [[{B}]]\n## Как пришли")
+    claim = _claim(fact, quote=source, supported=explicit)
+    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(_verdict([claim])))
+    if explicit:
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, candidate, [])
+    else:
+        # The exact quote alone is insufficient; the model's per-claim verdict
+        # must also attest that it supports the asserted relationship.
+        with pytest.raises(inc.Refused, match="relevant and supported"):
+            inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, candidate, [])
+
+
+def test_correction_retains_old_history_without_unsourced_explanation(monkeypatch):
+    before = f"Vent A is open. [[{A}]]"
+    after = f"Vent A is now closed. [[{B}]]"
+    quote = "Vent A is now closed; this supersedes the earlier open state."
+    candidate = BODY.replace(before, after).replace("## Как пришли\n—", f"## Как пришли\n- {before}")
+    changes = [{"before": before, "after": after, "source": B, "quote": quote}]
+    verdict = _verdict([_claim("Vent A is now closed.", quote=quote)])
+    judgments = []
+    def complete(prompt, config, **kwargs):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        judgments.append((payload, kwargs["system"]))
+        return json.dumps(verdict)
+    monkeypatch.setattr(inc, "local_complete", complete)
+    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": quote}}, {}, candidate, changes)
+    assert len(judgments) == 1
+    payload, system = judgments[0]
+    assert system == "You are an independent conservative dossier judge."
+    assert payload["candidate"] == candidate and payload["changes"] == changes
+    assert payload["new_sources"] == {B: quote} and payload["existing_dossier"] == BODY
+    assert payload["candidate"].split("## Как пришли\n", 1)[1].startswith(f"- {before}\n")
+    assert payload["new_statements"] == [f"- {after}"]
+
+
+def test_preserved_old_offtopic_claim_does_not_need_a_new_source(monkeypatch):
+    old_body = BODY.replace("## Как пришли\n—", "## Как пришли\n- A distant orchard has blue gates.")
+    candidate = old_body.replace("## Как пришли", f"- A rain cover was fitted. [[{B}]]\n## Как пришли")
+    judgments = []
+    def complete(prompt, config, **kwargs):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        judgments.append((payload, kwargs["system"]))
+        return json.dumps(_verdict())
+    monkeypatch.setattr(inc, "local_complete", complete)
+    inc.validate_candidate("Glasshouse", _old(old_body), [B], {B: {"text": "A rain cover was fitted."}}, {}, candidate, [])
+    assert len(judgments) == 1
+    payload, system = judgments[0]
+    assert system == "You are an independent conservative dossier judge."
+    assert payload["existing_dossier"] == old_body and payload["candidate"] == candidate
+    assert payload["new_sources"] == {B: "A rain cover was fitted."}
+    assert payload["new_statements"] == [f"- A rain cover was fitted. [[{B}]]"]
+
+
+@pytest.mark.parametrize("quote", ["A rain cover was fitted", "rain cover was fitted."])
+def test_claim_quote_is_an_exact_nonempty_source_substring(monkeypatch, quote):
+    judgments, audited = [], []
+    def complete(prompt, config, **kwargs):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        judgments.append((payload, kwargs["system"]))
+        return json.dumps(_verdict([_claim(quote=quote)]))
+    monkeypatch.setattr(inc, "local_complete", complete)
+    monkeypatch.setattr(inc, "audit_claim", lambda *args, **kwargs: audited.append((args[2], kwargs["quote_context"])))
+    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": "A rain cover was fitted."}}, {}, ADDED, [])
+    assert len(judgments) == 1 and len(audited) == 1
+    payload, system = judgments[0]
+    assert system == "You are an independent conservative dossier judge."
+    assert payload["candidate"] == ADDED and payload["new_sources"] == {B: "A rain cover was fitted."}
+    assert audited[0][0]["quote"] == quote and audited[0][1] == "A rain cover was fitted."
+
+
+def test_new_citation_without_a_claim_is_not_a_source_contribution(monkeypatch):
+    candidate = BODY + f"\n[[{B}]] — !"
+    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(_verdict([])))
+    with pytest.raises(inc.Refused, match="contribution"):
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": "A rain cover was fitted."}}, {}, candidate, [])
+
+
+def test_claim_for_only_an_old_fact_does_not_cover_new_text(monkeypatch):
+    verdict = _verdict([_claim("Vent A is open.", quote="Vent A is open.")])
+    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(verdict))
+    with pytest.raises(inc.Refused, match="new significant"):
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": "Vent A is open. A rain cover was fitted."}}, {}, ADDED, [])
 
 
 @pytest.mark.parametrize("field,bad", [("before", "unknown prior claim"), ("after", "not in candidate"),

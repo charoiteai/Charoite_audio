@@ -391,31 +391,33 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
-def _same_inputs(g: _GraphRun, theme: str, members: list[str], loaded: dossier.DossierLoad,
-                 decision: dossier.Plan, captured) -> bool:
-    """Full-content/source-set/address check, under the captured graph lock."""
+def _input_refusal(g: _GraphRun, theme: str, members: list[str], loaded: dossier.DossierLoad,
+                   decision: dossier.Plan, captured) -> str | None:
+    """A visible refusal reason, or None, under the captured graph lock."""
     if g.addresses is not None:
         g.addresses.revalidate()
         if captured != g.addresses:
-            return False
+            return "изменились адреса графа"
     captured.revalidate()
     fresh = dossier.scan_snapshot(captured.graph, schema=CHAROITE, strict=True, warn_damaged=False)
     current = dossier.clusters(fresh.files, fresh.backlinks, schema=CHAROITE)
     if set(current.get(theme, [])) != set(members):
-        return False
+        return "изменился набор источников темы"
     if (fresh.redirects, fresh.stubs) != (g.snapshot.redirects, g.snapshot.stubs):
-        return False
+        return "изменились перенаправления графа"
     for name in members:
         before, after = g.files.get(name), fresh.files.get(name)
         if before is None or after is None:
-            return False
+            return "источник исчез из снимка"
         for key in ("rel", "kind", "text", "mtime", "sha256", "identity", "physical"):
             if before.get(key) != after.get(key):
-                return False
+                return "источник изменён или заменён"
         if captured.bind(before["path"]).resolve() != after["path"].resolve():
-            return False
-    return dossier.plan(loaded, members, fresh, schema=CHAROITE, on_disk=True,
-                        force=g.full) == decision
+            return "изменился путь источника"
+    if dossier.plan(loaded, members, fresh, schema=CHAROITE, on_disk=True,
+                    force=g.full) != decision:
+        return "изменился план обновления"
+    return None
 
 
 def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list[str],
@@ -578,16 +580,16 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             g.keep(theme, members, fresh, fp)
             return gen_s
         try:
-            same_inputs = _same_inputs(g, theme, members, loaded, decision, captured)
+            input_refusal = _input_refusal(g, theme, members, loaded, decision, captured)
         except (OSError, ValueError):
-            same_inputs = False
-        if not same_inputs:
+            input_refusal = "не удалось повторно проверить источники"
+        if input_refusal is not None:
             # Источник удалён или поправлен после скана («забыть встречу» посреди ночи):
             # тело собрано по снимку с текстом ушедшей встречи и записалось бы с отпечатком
             # несуществующего состава. Сверка — под замком, который берёт и «забыть»
             # (круг n841-opus-fix DS I2)
             print(f"  ⏸ {theme}: источники изменились за время генерации — "
-                  "тема уйдёт на следующую ночь")
+                  f"тема уйдёт на следующую ночь ({input_refusal})")
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
@@ -611,11 +613,11 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             g.отказы += 1
             return gen_s
         try:
-            still_current = _same_inputs(g, theme, members, loaded, decision, captured)
+            input_refusal = _input_refusal(g, theme, members, loaded, decision, captured)
         except (OSError, ValueError):
-            still_current = False
-        if not still_current:
-            print(f"  ⏸ {theme}: источники или адрес графа изменились перед записью — повторю позже")
+            input_refusal = "не удалось повторно проверить источники"
+        if input_refusal is not None:
+            print(f"  ⏸ {theme}: источники или адрес графа изменились перед записью — повторю позже ({input_refusal})")
             g.skipped += 1
             g.changed += 1
             return gen_s
