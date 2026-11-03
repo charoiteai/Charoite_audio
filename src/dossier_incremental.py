@@ -190,6 +190,10 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "Return ONLY a JSON object with exactly these fields: verdict (string accept, reject "
         "or uncertain), conserved (boolean), supported (boolean), corrections_valid (boolean), "
         "reason (nonempty string). Set each boolean from the comparison, never from a default. "
+        "corrections_valid means there is NO invalid factual correction. If no factual correction "
+        "was made and changes is [], set corrections_valid=true: there is nothing invalid to "
+        "correct. Do not use false to mean not applicable. If a factual correction was made "
+        "without its required ledger entry, set corrections_valid=false. "
         "Use accept only when all three checks are true.")
     verdict = _json(local_complete(prompt, c, system="You are an independent conservative dossier judge.",
                                    num_predict=500),
