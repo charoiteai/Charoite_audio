@@ -1,12 +1,14 @@
 # Unified dossier parsing: implementation acceptance draft
 
-Status: preparation only. Base: `826001b200fa4f6cd63666df0c285d4553641145`.
-No parser implementation or stored-data migration has started. The owner still
-needs to choose the policy for an ambiguous standalone protected heading in an
-unversioned legacy file. Elapsed time or a UI default is not that decision.
-
-The proposed conservative policy preserves the whole file and refuses the
-ambiguous automatic write. It is a proposal, not an activated behavior.
+Status: preparation only. Current source base:
+`bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81`.
+Policy A is selected by coordinating Codex under delegated technical judgment,
+not a claim that the owner literally chose A. Unknown legacy protected-heading
+ambiguity preserves the entire file and refuses only the affected automatic
+write before a model call, with visible reason; unrelated dossiers continue.
+The exact grammar and caller admissions are frozen in [the INPUT packet](818-input-brief.md).
+Formal independent INPUT review is required before implementation.
+No parser implementation or stored-data migration has started.
 
 ## User outcome
 
@@ -25,9 +27,11 @@ permission to replace or delete stored bytes.
    author lines must remain; preferring the spaced substring is not a fix.
 3. A body contains a bare line `## Источники` and meaningful text afterwards.
    Its bytes alone cannot prove whether that is an outer section or a quotation.
-   The policy decision must be explicit; the parser must not invent intent.
+   Policy A refuses the affected write and retains all original bytes; the parser must not invent intent.
 
 These examples are constructed strings, not excerpts from stored documents.
+The refreshed bcf baseline and its repeat command are recorded in the
+[policy-A refresh report](818-policy-a-refresh-report.md).
 
 ## Finite acceptance matrix
 
@@ -35,7 +39,7 @@ These examples are constructed strings, not excerpts from stored documents.
 |---|---|
 | Inline mentions | Spaced/unspaced protected words in list items remain text; author extraction does not duplicate body tails |
 | Genuine legacy headings | Explicitly enumerate supported levels, spaces/tabs, trailing whitespace and section order; preserve every author line |
-| Semantic ambiguity | Apply the owner's selected policy consistently to a bare protected heading; never claim inferred author intent |
+| Semantic ambiguity | Apply selected policy A consistently to a bare protected heading; never claim inferred author intent |
 | Code and quotations | Fenced code and quoted protected headings do not silently become outer sections; unclear boundaries refuse the affected write |
 | Structural completeness | Separate canonical generated, incomplete/manual, reverse-order, repeated-section and unknown-remainder cases; a valid prefix or one source heading is insufficient proof |
 | Missing sources | Preserve currently supported ordinary rebuilds of minimal files; do not apply stricter review requirements to every caller |
@@ -69,15 +73,16 @@ to develop the parser is not permission to rewrite stored owner data.
 ## Русское резюме
 
 Цель — единый разбор досье без потери и повторного наращивания авторского текста.
-Матрица выше зафиксирована до реализации. Для неоднозначного старого заголовка
-ещё требуется явный выбор владельца; рекомендованный отказ от спорной записи
-с сохранением всего файла пока не активирован. После решения — независимый
+Матрица выше зафиксирована до реализации. Codex выбрал политику A: отказ от
+спорной записи с сохранением всего файла до обращения к модели. Самостоятельный
+технический выбор не выдаётся за буквальный ответ владельца. Далее — независимый
 входной круг, реализация и проверка на полностью синтетическом окружении.
 Дописывание досье идёт следующим этапом; работающие данные не мигрируются.
 
-## Baseline observation (implementation unchanged)
+## Historical baseline observation (old 826 base; implementation unchanged)
 
-The three constructed cases were executed against the pinned source using the
+On 2026-11-02 the three constructed cases were executed against old base
+`826001b200fa4f6cd63666df0c285d4553641145` using the
 installed resource gates, isolated Python source path and no model calls.
 Repeated extraction/rendering grew the inline case from 502 to 602 to 702
 characters. The unspaced genuine author section retained both author lines.

@@ -1,14 +1,13 @@
 {
-  "base_sha": "826001b200fa4f6cd63666df0c285d4553641145",
-  "base_tree": "78e024db5318afbb7685d45771262d699143d2ad",
+  "base_sha": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81",
+  "base_tree": "20a04d09b803db3efce9d193e5c8ec065562e9ba",
   "preparation_start": "efd89490bd218cf58d371341fca02eac308dcf69",
-  "kind": "static_public_preparation_only",
-  "policy_answer_received": false,
+  "kind": "public_input_preparation_no_implementation",
   "formal_input_submitted": false,
   "implementation_changes": false,
   "new_test_runs": 0,
   "new_model_calls": 0,
-  "baseline_repeated": false,
+  "baseline_repeated": true,
   "finite_oracle_ids": [
     "G01",
     "G02",
@@ -55,7 +54,7 @@
   "source_blobs": [
     {
       "path": "src/charoite_graph/dossier.py",
-      "git_blob": "980945cfc8771a4637e157313ad2c8ac76f963bb",
+      "git_blob": "4dd52ba1315e187cc3b7e647e499e1f18b139fb5",
       "unchanged_from_base": true
     },
     {
@@ -110,7 +109,7 @@
     },
     {
       "path": "tests/test_dossier_encoding.py",
-      "git_blob": "723bb1facb14c2ae32156562d84762c97e1f3028",
+      "git_blob": "d2f5e0bbf9f1b6b9c9039ea7e989e20e840ea702",
       "unchanged_from_base": true
     },
     {
@@ -143,5 +142,132 @@
       "git_blob": "a89c56f15a15af5eedd87cb0d051d2d6c2156278",
       "unchanged_from_base": true
     }
-  ]
+  ],
+  "policy": {
+    "selected": "A",
+    "selected_by": "coordinating Codex under delegated technical decision-making",
+    "selected_at": "2026-11-03",
+    "literal_owner_option_a_answer": false,
+    "owner_answer_wait_removed": true,
+    "ambiguous_legacy": "preserve entire original file bytes; refuse only affected destructive operation before model; visible reason; continue unrelated dossiers"
+  },
+  "preparation_provenance": {
+    "original_branch_preserved": "fix/818-unified-dossier-parser",
+    "original_head": "f12d0d4f44d41f11be06c1252c815c83ae0ca3c4",
+    "imported_public_doc_commits": [
+      "5309257df74bb568bcf07a51159a1523104afc6f",
+      "efd89490bd218cf58d371341fca02eac308dcf69",
+      "f12d0d4f44d41f11be06c1252c815c83ae0ca3c4"
+    ],
+    "fresh_branch": "docs/818-policy-a-input-bcf"
+  },
+  "fresh_base_delta": {
+    "previous_base": "826001b200fa4f6cd63666df0c285d4553641145",
+    "lineage_commit": "fdaae018c3db9dd713bd9f60a21c79a1081490d4",
+    "pull_request": 900,
+    "source_lines_added": 4,
+    "source_lines_removed": 2,
+    "existing_test_lines_added": 19,
+    "contract": "valid revision date or revision scalar containing U+FFFD holds normal and full rebuild"
+  },
+  "current_line_references": {
+    "src/charoite_graph/dossier.py": {
+      "render": {
+        "start": 555,
+        "end": 589
+      },
+      "preserve_manual": {
+        "start": 627,
+        "end": 633
+      },
+      "split_dossier": {
+        "start": 656,
+        "end": 684
+      },
+      "labeled_body": {
+        "start": 687,
+        "end": 691
+      },
+      "revision": {
+        "start": 700,
+        "end": 706
+      },
+      "with_revision": {
+        "start": 709,
+        "end": 711
+      },
+      "DossierLoad": {
+        "start": 722,
+        "end": 724
+      },
+      "load_dossier": {
+        "start": 727,
+        "end": 746
+      },
+      "read_fingerprint": {
+        "start": 749,
+        "end": 753
+      },
+      "kept_from_night": {
+        "start": 756,
+        "end": 777
+      },
+      "composition": {
+        "start": 818,
+        "end": 830
+      },
+      "plan": {
+        "start": 875,
+        "end": 922
+      }
+    },
+    "tests/test_dossier_encoding.py": {
+      "test_damaged_revision_date_still_holds_the_body": {
+        "start": 229,
+        "end": 244
+      },
+      "test_strict_utf8_never_refuses_author_text": {
+        "start": 399,
+        "end": 418
+      }
+    },
+    "scripts/nightly_dossier.py": {
+      "_DossierReads": {
+        "start": 86,
+        "end": 116
+      },
+      "_manual_for_rebuild": {
+        "start": 119,
+        "end": 135
+      },
+      "_scan": {
+        "start": 309,
+        "end": 348
+      },
+      "_build": {
+        "start": 398,
+        "end": 538
+      },
+      "_собрано": {
+        "start": 688,
+        "end": 695
+      }
+    },
+    "scripts/nightly_dossier_review.py": {
+      "review": {
+        "start": 194,
+        "end": 332
+      },
+      "_review_loop": {
+        "start": 446,
+        "end": 624
+      }
+    }
+  },
+  "source_blob_count": 18,
+  "new_probe_runs": 2,
+  "current_baseline": "docs/design/dossier-parser-baseline-bcf.json",
+  "historical_baseline_preserved": "docs/design/dossier-parser-baseline.json",
+  "baseline_probe": "reports/handoff/tasks/818_baseline_probe.py",
+  "new_test_suite_runs": 0
 }

@@ -1,5 +1,9 @@
 # Task 818: preparation handoff
 
+Historical report dated 2026-11-02: statements below describe that block, not
+current policy/base. Current superseding status and preserved provenance:
+[policy-A refresh report](818-policy-a-refresh-report.md).
+
 Date: 2026-11-02. Executor: Codex `task_818`, isolated preparation branch
 `fix/818-unified-dossier-parser`. Work started at documentation commit
 `efd89490bd218cf58d371341fca02eac308dcf69`; code comparison base is

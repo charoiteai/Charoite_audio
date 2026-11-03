@@ -1,121 +1,164 @@
-# Task 818: independent INPUT review draft
+# Task 818: independent INPUT review packet
 
-Status: **NOT SUBMITTED; OWNER POLICY ANSWER REQUIRED**. Preparation only.
-The source base is `826001b200fa4f6cd63666df0c285d4553641145`
-(tree `78e024db5318afbb7685d45771262d699143d2ad`). Preparation started from
-`efd89490bd218cf58d371341fca02eac308dcf69`; the intervening changes are documents.
-Do not implement or treat this draft as an approved INPUT round.
+Status: **POLICY A SELECTED; READY FOR ROOT TO FREEZE/SUBMIT INPUT**.
+Preparation only; no implementation and no formal review verdict are claimed.
+Source base: `bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81`, tree
+`20a04d09b803db3efce9d193e5c8ec065562e9ba`.
 
-## Activation record (must be completed before submission)
+## Activation record (2026-11-03)
 
-- Owner answer: **PENDING**. Time, a selected UI default and a general instruction
-  to continue work do not count as the answer.
-- Choice A: for an ambiguous protected heading in unknown legacy structure,
-  preserve the entire file and refuse the affected automatic write. This may
-  narrow old ordinary-rebuild admission; it must be visible in the report.
-- Choice B: reserve each supported standalone protected heading as an outer
-  section in the selected legacy grammar. This chooses a syntax convention; it
-  cannot establish whether an older author intended a quotation.
-- Root must record the actual answer and exact grammar/admission consequence,
-  replace this pending section, freeze the packet SHA, and give **the same clean
-  packet and base** separately to `gpt-6.1-terra` and `gpt-6-luna`.
-- No private documents, data-derived fixtures, graph, transcripts, local config,
-  untracked files, repository history, or other reviewer's verdict go in the
-  packet. Export tracked public files from the pinned base plus these design
-  documents; run the established privacy checker before sending.
+The coordinating Codex chose conservative policy A under the owner's delegated
+technical decision-making. The owner asked whether Codex can choose solutions;
+this record does **not** say the owner literally selected option A. Waiting for
+a separate legacy-policy answer is removed. Independent INPUT review is still
+required before code. The previous report dated 2026-11-02 remains historical.
+
+For unknown legacy structure with a standalone protected-heading candidate,
+preserve **the entire original file byte for byte** and refuse only the affected
+automatic destructive operation, before any model call. Report the concrete
+ambiguity reason; continue unrelated dossiers. Inline, closed-fence and quoted
+mentions are ordinary text. Never infer an older author's intent from bytes.
+Read projections are not write/delete permission. Missing/empty sources alone
+are not a blanket refusal. Full rebuild and body-span replacement have distinct
+preservation promises, and forget eligibility must never expand.
+
+Root must freeze a tracked public packet SHA and give **the same packet/base**
+separately to `gpt-6.1-terra` and `gpt-6-luna`, after the established privacy scan.
+No owner data, data-derived fixtures, graph, transcripts, config, untracked
+files, repository history or peer verdict may enter that exported packet.
 
 ## Requested result
 
-One section parser in the existing dossier load/result abstraction must make
-readers agree while preserving author edits, source links and warning blocks.
-Repeated rebuilds must stop accumulating body tails in author edits. Text-only
-compatibility projections must never grant permission to replace/delete bytes.
-Keep model-output sanitization as a separate boundary: an untrusted model body
-must not gain permission to supply sources or author sections.
+One parser in the existing dossier load/result abstraction makes readers agree
+while preserving author edits, source links and warning blocks. Repeated
+rebuilds stop accumulating body tails in author edits. Keep model-output
+sanitization separate: an untrusted generated body cannot supply protected
+sections. Reuse existing lock, backup and CAS doors.
 
-Read [contracts and implementation plan](818-contracts-and-plan.md), the
-[existing acceptance draft](dossier-parser-acceptance.md), and the recorded
-[baseline](dossier-parser-baseline.json). The finite case list below refines the
-15 acceptance groups. None of its new cases has been executed in this block.
-The existing baseline is prior evidence, not a newly repeated experiment.
+Read [contracts and plan](818-contracts-and-plan.md), [15 acceptance groups](dossier-parser-acceptance.md),
+[historical baseline](dossier-parser-baseline.json), [current refresh report](818-policy-a-refresh-report.md)
+and [source manifest](818-source-contract-manifest.json). The 41 oracles below
+are future requirements, not executed implementation results.
 
-## Proposed finite acceptance cases
+## Frozen grammar and admission
 
-Each ID is an independent oracle. Parameter sets are explicit representatives,
-not a claim that syntactically identical bytes reveal author intent. Cases marked
-POLICY get their exact outcome from the activation record before INPUT review.
+Physical-line candidates outside fences/quotes match exactly:
+
+- Protected: `[ \t]*#+[ \t]*(Источники|Правки автора)[ \t]*`; one or more hashes,
+  no upper bound, no suffix text, horizontal spaces/tabs only.
+- Body: `[ \t]*##[ \t]*TITLE[ \t]*`; TITLE is exactly `Сейчас`, `Как пришли`,
+  `Решено`, `Открыто`, `Кто в теме`. A matching prefix with suffix is text.
+- A fence opens on a physical line with zero to three leading ASCII spaces,
+  three or more equal backticks or tildes, and optional information text
+  (backtick info contains no backtick). It closes only with the same character,
+  at least the opening length, zero to three leading spaces and trailing
+  spaces/tabs only. Protected lines inside a closed fence are text. An unclosed
+  fence makes the existing-file destructive boundary uncertain: refuse it.
+- Lines with up to three leading spaces followed by `>` are quotation text,
+  including nested quote markers. A tab-indented protected line remains a
+  heading candidate as explicitly required by the legacy grammar.
+
+A **complete generated shape** has the closed frontmatter and title/automatic
+notice envelope emitted by `render` at the pinned base, all five unique ordered
+body headings, then one sources and one terminal author section, without an
+unclassified outer remainder. Existing metadata fields may vary or be added by
+existing frontmatter helpers; fingerprint must be present, not assumed valid.
+Supported protected-heading spelling variants above are accepted in that same
+complete shape. The terminal author payload includes all later ordinary text
+and non-protected Markdown subheadings; a second protected candidate is never
+silently swallowed into that payload. Unclassified outer remainder means an
+extra prefix outside the render envelope or extra protected boundary, not an
+arbitrary author subheading. Body/author/source content is otherwise preserved. This is a
+syntax class, not proof of historical intent; policy A admits this class.
+
+An unknown/incomplete/reversed/repeated structure with a protected candidate is
+**ambiguous legacy**: its read projection may expose all sections/remainder,
+but ordinary rebuild, review/body edit, LABELS_ONLY and dossier deletion refuse
+the affected operation without changing any original byte. Duplicate protected
+boundaries or unclassified outer remainder also refuse, never first/last-match
+truncation. A file with no protected candidate and no uncertain boundary is
+representable plain/incomplete text: ordinary rebuild remains supported if
+existing decode/manual/revision checks permit it. Thus empty/missing/no-body
+inputs and missing sources alone are not globally refused. Review still requires
+a complete admitted body and sources; forget retains every old exclusion and
+adds no eligibility. The known complete class and no-protected plain class are
+distinct, explicit admissions; an arbitrary author-only file is not the latter.
+
+For decode damage, raw byte provenance and the intact author boundary/content
+must be established before repair; damaged author data refuses before generation.
+Literal valid U+FFFD in intact author text is not decode damage. Independently,
+`revision()` at the current base holds a valid date **or any U+FFFD in the closed
+revision scalar**. The damaged-date hold from PR900 takes priority even under
+`--full`: no generation, overwrite, backup or forget-eligibility expansion.
+
+## Finite acceptance cases
+
+Each ID is one oracle with explicit representative parameters. `REFUSE A` means
+whole-original-file byte equality, zero generation calls for that operation,
+visible parse reason and continued processing of unrelated dossiers. It is not
+a model failure. All former POLICY placeholders are resolved below.
 
 | ID | Constructed input / action | Required oracle |
 |---|---|---|
-| G01 | Full `render` envelope, five ordered body sections, sources, author section | One complete structural interpretation; all spans cover the input or mark remainder |
-| G02 | Inline `- discussed ## Правки автора` and `##Правки автора`, genuine final author section | Inline text stays body; final author lines stay author text |
-| G03 | Genuine `##Правки автора`, later inline spaced mention in its text | Keep every preceding/following author line; no substring preference |
-| G04 | Protected heading levels 1, 2, 3, 6, 7; leading none/two spaces/tab; gap none/space/tab; trailing none/two spaces/tab | All are structural candidates under the proposed exact grammar below; legacy write admission is POLICY, no unsupported-to-empty conversion |
-| G05 | Bare `## Источники` followed by meaningful body-looking text in unknown legacy structure | POLICY; preserve all bytes when refusing, never claim inferred intent |
-| G06 | Bare `## Правки автора` in unknown legacy structure | POLICY, same ambiguity treatment as G05 |
-| G07 | Heading-like inline `см. ## Правки автора`, no final section | Text, not an outer heading; review the deliberate compatibility change |
-| G08 | Fenced backtick and tilde blocks with protected lines, including unclosed fence | Closed fences remain text; uncertain unclosed boundary refuses affected destructive action |
-| G09 | `> ## Источники` and `> ## Правки автора` | Quoted lines remain text |
-| G10 | Body start `## Сейчас`, `##Сейчас`, indented start, `## Сейчас extra` | First three are exact structural candidates; suffix `extra` is text; no prefix-based completeness |
-| S01 | Missing sources, missing author, both missing | Reader projection remains representable; ordinary rebuild/review/forget follow separate contracts |
-| S02 | Author before sources | Preserve both sections and all lines, or explicit refusal under selected grammar |
-| S03 | Repeated sources, repeated author, unexpected trailing section | Preserve complete file on non-unique boundaries; no first/last-match truncation |
-| S04 | No body heading, body prefix only, five sections out of order | Distinguish incomplete/manual structure from canonical; no deletion admission from a prefix |
-| D01 | Invalid UTF-8 only in replaceable body or fingerprint; intact genuine author section | Ordinary rebuild may repair current supported path; exact raw backup and author content survive |
-| D02 | Invalid UTF-8 in author heading or author payload | Refuse before generation/write; unchanged original bytes, no model-failure classification |
-| D03 | Valid UTF-8 with literal U+FFFD in author text | Keep literal text; do not infer decode damage from that code point |
-| D04 | Damaged input plus valid revision date | Existing revision hold remains effective |
-| B01 | LF and CRLF, with/without BOM | Raw provenance explicit; admitted body-only edit preserves every byte outside body span |
-| B02 | Bare CR, mixed LF/CRLF, Unicode line separator | Explicitly support with exact byte mapping or refuse affected write; normalization is not provenance |
-| B03 | `DossierLoad("ok", text)` and disk load of same normalized text | Same section interpretation; only disk load has captured original bytes |
-| B04 | Missing, empty, unreadable file | Preserve existing distinct load states and missing/empty rebuild path |
-| R01 | Same input through split, author preservation, label detection, composition, kept-from-night, plan and doctor | Shared interpretation; caller-specific admission stays separate |
-| R02 | Label only in body / sources / author text | Only admitted body label affects body-label predicate; ambiguous parse is not clean body evidence |
-| R03 | Valid frontmatter `состав: []`, malformed empty composition, absent composition | Existing composition priority and None/empty distinction survive |
-| R04 | Metadata-looking lines in body | Header readers do not take body text as metadata |
-| W01 | Ordinary rebuild: empty, no body heading, no sources, intact manual-only input | Do not add a blanket sources requirement; ambiguity can separately narrow admission only under selected policy |
-| W02 | Review of missing sources or ambiguous structure | No cloud request/write admission from a read-only projection |
-| W03 | Normal review with links, warnings and manual notes | Change admitted body and revision field only; preserve sources/manual; body generated through existing sanitizer |
-| W04 | LABELS_ONLY with existing revision/no revision | Remove labels through admitted body edit; never add a revision date merely for label removal |
-| W05 | Forget of canonical automatic dossier vs manual/ambiguous/revised/labeled dossier | Never expand current whole-file deletion eligibility; backup and report remain |
-| W06 | `plan` force, unchanged, labeled, revised, gone-source, damaged-source cases | Existing hold/skip/add/rebuild semantics survive; parser is no new incremental implementation |
-| P01 | G02 and G03 rebuilt twice with identical source/generation input | Complete author text once, no growth from extraction, source links/warnings retained |
-| P02 | Review applied twice with identical synthetic fixed body | Stable protected content; no duplicated sections |
-| F01 | Stale dossier or source changes during generation/review | No overwrite; existing snapshot/fingerprint checks and user-visible reason |
-| F02 | Backup failure and graph lock unavailable | No write; existing report/index behavior retained |
-| F03 | Parse refusal just before write; equal normalized text but different raw bytes | No write on refusal; normalized equality is not proof of original snapshot equality |
-| E01 | Isolated temporary graph/config with synthetic files, real rebuild and review/labels write doors | Before/after files inspected; generation is a deterministic test double and explicitly not a real model call |
-| E02 | Synthetic forget dry-run/apply through its public functions | Inspect plan, copies, final files; no new deletion permission |
-| V01 | Focused regression suites, applicable CI, critical mutations, output review/final risk gates | Record exact source SHA and actual commands/results; unrun checks remain incomplete |
-| V02 | Delivery to working installation if authorized by root | Verify installed files independently against accepted SHA; development success is not installation evidence |
+| G01 | Full `render` envelope, five ordered body sections, sources, author | Complete shape; spans cover all input/remainder; ordinary rebuild and body edit admit subject to existing gates |
+| G02 | Full shape with inline `- discussed ## Правки автора` / `##Правки автора`, final author | Inline stays body; final author lines preserved once |
+| G03 | Full shape with final `##Правки автора`, then an inline spaced mention in author | Preserve every author line; no substring preference; unknown author-only equivalent is REFUSE A |
+| G04 | Protected levels 1,2,3,6,7; leading none/two spaces/tab; gap none/space/tab; trailing none/two spaces/tab | Structural candidates exactly as frozen; same full shape admits spelling variants; unknown legacy variants REFUSE A |
+| G05 | Bare `## Источники` plus meaningful body-looking tail in unknown legacy | REFUSE A; entire tail/file retained, no inferred intent |
+| G06 | Bare `## Правки автора` in unknown legacy | REFUSE A, identical ambiguity rule to G05 |
+| G07 | Inline `см. ## Правки автора`, no standalone protected section | Ordinary text; no manual section extracted; plain-class rebuild may admit; no review/delete permission |
+| G08 | Backtick/tilde fences with protected lines; unclosed fence | Closed-fence lines stay text; an unclosed fence REFUSE A for affected existing-file write |
+| G09 | `> ## Источники`, `> ## Правки автора`, nested quotes | Quote lines stay text; cannot create outer boundaries |
+| G10 | `## Сейчас`, `##Сейчас`, two-space/tab indented start, `## Сейчас extra` | First variants exact body candidates; suffix form text; prefix alone never complete |
+| S01 | Full envelope missing sources/author/both | Read projections remain; remaining protected candidate makes incomplete legacy REFUSE A; both absent/plain may rebuild; review/delete refuse |
+| S02 | Author before sources | Read projection preserves both and remainder; destructive operations REFUSE A |
+| S03 | Repeated sources/author or extra trailing protected section | REFUSE A; never truncate at first/last match |
+| S04 | No body heading, prefix only, five sections out of order | Incomplete, never canonical/delete admission; no-protected plain may rebuild; protected ambiguity REFUSE A |
+| D01 | Known shape, invalid UTF-8 only in body/fingerprint, intact author, no revision hold | Existing ordinary repair may admit; exact raw backup and complete author content survive |
+| D02 | Invalid UTF-8 in author heading/payload | Refuse before generation/write; original bytes unchanged; not model failure |
+| D03 | Valid UTF-8 literal U+FFFD in author | Complete known shape keeps literal; author-only unknown REFUSE A for ambiguity, never code-point damage |
+| D04 | Valid revision date or damaged revision scalar containing U+FFFD; normal and `--full` | Hold before generation; unchanged bytes/no dossier backup; unrelated themes continue; preserve existing PR900 counter semantics |
+| B01 | LF/CRLF with/without BOM | Raw provenance explicit; admitted body edit preserves all outside-body bytes except deliberate revision field |
+| B02 | Bare CR, mixed LF/CRLF, Unicode line separator | Refuse affected existing-file write with visible unsupported-newline reason; readers remain non-destructive |
+| B03 | Direct `DossierLoad("ok", text)` and disk load of same normalized text | Same interpretation; only disk load has original-byte provenance; direct load cannot admit overwrite of an existing disk file alone |
+| B04 | Missing, empty, unreadable file | Distinct states; missing/empty rebuild still supported, unreadable refuses |
+| R01 | Split, manual, labels, composition, kept-from-night, plan, doctor | One shared interpretation with separate caller admission |
+| R02 | Label only in body/sources/author | Only admitted body label affects body predicate; ambiguous body is unknown, not clean evidence |
+| R03 | Composition `[]`, malformed empty, absent | Retain priority and None/empty distinction; fallback read does not admit write |
+| R04 | Metadata-looking body lines | Header readers never take body text as metadata |
+| W01 | Empty, no heading, no sources, author-only input | Empty/no-protected plain rebuild remains; author-only unknown REFUSE A; no blanket sources guard |
+| W02 | Review missing sources or ambiguous | No cloud/generation/write permission from projection |
+| W03 | Normal admitted review with links/warnings/manual | Change body plus deliberate revision scalar only; all other original bytes identical; sanitizer retained |
+| W04 | LABELS_ONLY with/without revision | Admitted body edit only; keep revision exactly, never add one; ambiguous structure REFUSE A |
+| W05 | Forget canonical automatic vs manual/ambiguous/revised/labeled | Never add eligible paths; all prior keep reasons remain; ambiguity preserves file; existing backup/report doors retained |
+| W06 | Plan force/unchanged/labeled/revised/gone-source/damaged-source | Existing hold/skip/add/rebuild semantics; U+FFFD revision stays held; no incremental implementation |
+| P01 | Full-shape G02/G03 rebuilt twice with identical generation/source input | Complete author text once; stable size/content after first rebuild; source links/warnings retained under full-rebuild contract |
+| P02 | Admitted review twice with identical fixed body | Stable protected bytes; no duplicate sections |
+| F01 | Dossier/source changes during generation/review | No overwrite; snapshot/fingerprint checks and visible reason retained |
+| F02 | Backup failure or graph lock unavailable | No write; existing reporting/index behavior retained |
+| F03 | Parse refusal just before write; equal normalized text/different bytes | No write; normalized equality never substitutes for disk provenance |
+| E01 | Own temporary graph/config, synthetic files, real rebuild/review/labels functions | Inspect same-input before/after files; deterministic generation doubles are explicitly zero real model calls |
+| E02 | Synthetic forget dry-run/apply public functions | Inspect plans/copies/final files; zero added deletion eligibility |
+| V01 | Focused regression, CI, critical mutations, OUTPUT/final risk | Exact source SHA and commands/results; unrun checks incomplete |
+| V02 | Installation if authorized by root | Independently verify installed files against accepted SHA |
 
-The proposed protected-heading grammar is a complete physical line matching
-`[ \t]*#+[ \t]*(Источники|Правки автора)[ \t]*`, outside fenced/quoted text.
-The number of hashes has no upper bound, preserving the existing seven-hash
-case. Body heading candidates match `[ \t]*##[ \t]*TITLE[ \t]*`, where TITLE
-is exactly one of `Сейчас`, `Как пришли`, `Решено`, `Открыто`, `Кто в теме`.
-These are syntax candidates, not permissions. Canonical generated classification
-requires the whole render envelope, all five ordered body sections and unique
-sources/author sections in generated order; a matching prefix is insufficient.
-Other structure remains explicitly legacy/incomplete/ambiguous. Readers can
-expose a non-destructive projection; destructive admission follows the selected
-policy and caller contract. Repeated protected sections or unclassified outer
-remainder refuse destructive admission. INPUT reviewers must challenge this
-proposed grammar before implementation, rather than leave an implicit regex
-choice to the implementation stage.
+Body edit means splice through existing gated writer with exact raw mapping;
+unsupported mapping refuses. Full rebuild regenerates the outer `render` text,
+retains admitted author content/source references/warnings and backs up all old
+bytes. It does not promise byte identity for the regenerated outer document.
 
 ## Review question
 
-Before code, assess whether the chosen policy, grammar, raw provenance and
-distinct admission rules form a complete minimal contract for these cases.
-Find concrete loss/duplication/deletion scenarios or unnecessary machinery.
-Use `Critical / Important / Minor`, source path and line, precise synthetic
-scenario, minimal correction and correct ownership layer. Reading code is not
-an executed experiment. A missing/aborted review is not a clean verdict.
+Before code, challenge whether the chosen policy, complete-shape/plain-class
+admission, grammar and raw provenance form a minimal complete contract. Find
+concrete loss/duplication/deletion cases, unnecessary machinery or unresolved
+outcomes. Return Critical / Important / Minor, path/line, precise constructed
+scenario, minimal correction and correct layer. Static reading is not an
+executed experiment; an absent/aborted verdict is not clean.
 
 ## Русское резюме
 
-Это чистый публичный проект INPUT-брифа на закреплённой базе, а не запуск круга.
-До явного выбора legacy-policy реализация и отправка брифа остаются закрыты.
-Матрица конечна по перечисленным случаям; полученные результаты пока ограничены
-ранее сохранённым baseline и текущей статической сверкой публичного кода.
+Codex выбрал A в рамках делегированного технического решения; отдельного
+ответа владельца больше не требуется. Спорный старый файл целиком сохраняется,
+опасная операция отклоняется до модели с понятной причиной, другие темы идут
+дальше. Это подготовленный INPUT-контракт, не реализация и не завершение №818.
