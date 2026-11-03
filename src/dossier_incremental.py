@@ -223,14 +223,13 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
                         remaining[key] -= 1
                     start = line.find(prior, start + len(prior))
             offset += len(physical)
-    old_links = {m[0] for m in dossier.LINK_RE.finditer(loaded.parsed.body)}
     known_targets = set(names) | _links(loaded.parsed.body)
     for match in dossier.LINK_RE.finditer(body):
         raw, target = match[0], graph_names.link_target_stem(match[1])
         inner = raw[2:-2]
         alias = inner.split("|", 1)[1] if "|" in inner else None
         pure_identifier = "#" not in inner and (alias is None or alias in {target, match[1]})
-        if raw in old_links or (target in known_targets and pure_identifier):
+        if target in known_targets and pure_identifier:
             required.difference_update(range(match.start(), match.end()))
     for section in dossier.DossierLoad("ok", body).parsed.sections:
         if section.title in dossier._BODY_TITLES:

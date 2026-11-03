@@ -20,12 +20,14 @@ def _transport(monkeypatch, claims):
     return audited
 
 
-@pytest.mark.parametrize("transfer", ["history-to-current", "warning-to-decided", "duplicate-current"])
+@pytest.mark.parametrize("transfer", ["history-to-current", "history-to-current-alias",
+                                     "warning-to-decided", "duplicate-current"])
 def test_aggregate_acceptance_cannot_hide_recontextualized_or_duplicated_old_line(monkeypatch, transfer):
     prior = BODY
-    if transfer == "history-to-current":
-        prior = prior.replace(OPEN, f"- Vent A is closed. [[{A}]]").replace("## Как пришли\n—", "## Как пришли\n" + OPEN)
-        destination, copied = "## Как пришли", OPEN
+    if transfer.startswith("history-to-current"):
+        copied = "- [[SensorGuide|Vent A is open.]]" if transfer.endswith("alias") else OPEN
+        prior = prior.replace(OPEN, f"- Vent A is closed. [[{A}]]").replace("## Как пришли\n—", "## Как пришли\n" + copied)
+        destination = "## Как пришли"
     elif transfer == "warning-to-decided":
         destination, copied = "## Открыто", "- ⚠ Sensor is unverified."
     else:
