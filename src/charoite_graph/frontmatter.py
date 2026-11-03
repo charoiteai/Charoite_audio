@@ -234,15 +234,23 @@ def scalar_field(text: str, key: str) -> str:
     raw = fm[span[0]:span[1]].split(":", 1)[1].strip().split("\n", 1)[0].strip()
     # A trailing comment is outside the scalar. Use the existing YAML marks,
     # without constructing values (dates must retain their literal spelling).
+    scalar_head = fm
     try:
-        node = yaml.compose(fm)
+        node = yaml.compose(scalar_head)
     except yaml.YAMLError:
-        node = None
+        # A malformed neighboring field must not turn a revision comment into
+        # part of its value. Reuse YAML marks on this field and its indented
+        # continuation; an invalid scalar still retains the old raw fallback.
+        scalar_head = re.match(r"[^\n]*(?:\n[ \t]+[^\n]*)*", fm[span[0]:])[0]
+        try:
+            node = yaml.compose(scalar_head)
+        except yaml.YAMLError:
+            node = None
     if isinstance(node, yaml.MappingNode):
         for k, v in node.value:
             if getattr(k, "value", None) == key and isinstance(v, yaml.ScalarNode):
                 if v.style not in ("|", ">"):
-                    raw = fm[v.start_mark.index:v.end_mark.index].strip()
+                    raw = scalar_head[v.start_mark.index:v.end_mark.index].strip()
                 break
     if raw.startswith('"'):
         try:

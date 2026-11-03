@@ -692,6 +692,10 @@ def without_revision(text: str) -> str:
 
 _BODY_TITLES = ("Сейчас", "Как пришли", "Решено", "Открыто", "Кто в теме")
 _SECTION_LINE = re.compile(r"[ \t]*(?:(#+)[ \t]*(Источники|Правки автора)|(##)[ \t]*(Сейчас|Как пришли|Решено|Открыто|Кто в теме))[ \t]*")
+# Deletion compatibility only: the old expressions also saw fenced lines and
+# allowed whitespace across physical lines. Their false boundaries still veto
+# deletion; they never supply sections to readers or authorize a write.
+_LEGACY_DELETE_PROTECTED = re.compile(r"(?m)^#{1,6}\s*(Источники|Правки автора)\s*$")
 _FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _ENVELOPE = re.compile(r"\n# Досье: [^\n]+\n\n> Собрано автоматически ночным проходом\. Правки руками сохранятся:\n> при пересборке раздел «Правки автора» не трогается\.\n\n")
 
@@ -721,6 +725,7 @@ class DossierParse:
     reason: str
     protected: bool
     remainder: str
+    legacy_delete_veto: bool
 
 
 def _parse_dossier(text: str) -> DossierParse:
@@ -798,7 +803,13 @@ def _parse_dossier(text: str) -> DossierParse:
         reason = f"неоднозначная структура защищённых разделов: {detail}"
     known = complete and not fence
     # Unknown input remains available in full, independently of read projections.
-    return DossierParse(head, body, sources, manual, sections, span, known, reason, bool(protected), "" if known else text)
+    admitted = {(s.start, s.title) for s in protected}
+    legacy_body = VALID_RE.search(text)
+    legacy_start = legacy_body.start() + legacy_body[0].index("#") if legacy_body else None
+    legacy_delete_veto = (legacy_start != start or any(
+        (m.start(), m[1]) not in admitted for m in _LEGACY_DELETE_PROTECTED.finditer(text)))
+    return DossierParse(head, body, sources, manual, sections, span, known, reason,
+                        bool(protected), "" if known else text, legacy_delete_veto)
 
 
 @dataclass(frozen=True)
@@ -931,6 +942,8 @@ def kept_from_night(text: str | None) -> str:
             hashes = len(line) - len(line.lstrip("#"))
             if not 1 <= hashes <= 6:
                 return "защищённый заголовок вне прежнего допуска удаления"
+    if loaded.parsed.legacy_delete_veto:
+        return "прежние границы разделов удерживают досье от удаления"
     return ""
 
 

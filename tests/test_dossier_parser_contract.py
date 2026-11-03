@@ -436,3 +436,90 @@ def test_W05_full_header_reader_does_not_expand_deletion():
     loaded = dossier.DossierLoad("ok", text)
     assert loaded.parsed.complete and dossier.read_fingerprint(loaded) == "synthetic-fingerprint"
     assert dossier.kept_from_night(text) == "нет отпечатка ночи"
+
+
+@pytest.mark.parametrize("neighbor", ["тема: Sample", "тема: A: B"])
+@pytest.mark.parametrize("field, scalar, held", [
+    ("2026-11-03 # checked", "2026-11-03", True),
+    ("'2026-11-03' # checked", "2026-11-03", True),
+    ('"2026-11-03" # checked', "2026-11-03", True),
+    ("\n  2026-11-03 # checked", "2026-11-03", True),
+    ("# checked\n  '2026-11-03'", "2026-11-03", True),
+    ("2026-99-99 # shape only", "2026-99-99", True),
+    ("2026-11-0\ufffd # damaged", "2026-11-0\ufffd", True),
+    ('"literal \\ufffd" # checked', "literal \ufffd", True),
+    ("'2026-11-03 # literal' # outside", "2026-11-03 # literal", False),
+    ("2026-11-03#literal", "2026-11-03#literal", False),
+    ("false # no hold", "false", False),
+])
+def test_D04_revision_scalar_comment_with_invalid_neighbor(neighbor, field, scalar, held):
+    text = f"---\n{neighbor}\nревизия: {field}\n---\n# Synthetic\n"
+    assert frontmatter.scalar_field(text, "ревизия") == scalar
+    assert dossier.revision(text) == (scalar if held else "")
+    # A renderer-supported unquoted colon in another field remains readable.
+    assert frontmatter.scalar_field(text, "тема") == neighbor.split(": ", 1)[1]
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_D04_actual_revision_comment_hold_with_invalid_neighbor(world, full):
+    nd, graph, path, calls = world
+    (graph / "Ядра/Other.md").write_text("# Other\nsynthetic core\n")
+    for i in range(2):
+        (graph / f"Встречи/Other_source_{i}.md").write_text("# Synthetic\n[[Ядра/Other]] source\n")
+    original = complete().replace("тема: Sample", "тема: A: B\nревизия: 2026-11-03 # checked").encode()
+    path.write_bytes(original)
+    assert dossier.load_dossier(path).parsed.complete
+    result = nd.run(graph, {}, full=full, dry=False, limit=12)
+    assert path.read_bytes() == original
+    assert result["ревизия"] == 1 and result["пропущено"] == 1
+    assert result["собрано"] == 1 and result["отказы"] == 0
+    assert calls == ["Other"]
+    assert not list((path.parent / ".backup").glob("*/Sample.md"))
+    assert (path.parent / "Other.md").exists()
+
+
+@pytest.mark.parametrize("false_heading", [
+    "## Источники\n## Правки автора\nfenced note",
+    "#Источники\n######Правки автора\nfenced note",
+    "##\nИсточники\n##\nПравки автора\nfenced note",
+    "##\t\nИсточники\n# \n\tПравки автора\nfenced note",
+])
+@pytest.mark.parametrize("fenced", [False, True])
+def test_W05_legacy_protected_matches_veto_new_deletion(false_heading, fenced):
+    extra = f"```text\n{false_heading}\n```" if fenced else false_heading
+    text = complete(manual="—").replace("body-tail", f"body-tail\n{extra}")
+    loaded = dossier.DossierLoad("ok", text)
+    if loaded.parsed.complete:
+        assert loaded.parsed.manual == "—" and extra in loaded.parsed.body
+    assert dossier.kept_from_night(text)
+
+
+def test_W05_legacy_body_start_in_header_vetoes_new_deletion():
+    text = complete(manual="—").replace("tags:", "note: |\n  ## Сейчас\n  Собеседник 3\ntags:")
+    assert dossier.DossierLoad("ok", text).parsed.complete
+    assert dossier.kept_from_night(text)
+
+
+def test_W05_actual_forget_keeps_legacy_fenced_file_and_continues(tmp_path):
+    forget = script("forget_meeting")
+    root, graph = tmp_path / "data", tmp_path / "graph"
+    (root / "transcripts").mkdir(parents=True)
+    (graph / "Встречи").mkdir(parents=True)
+    (graph / f"Встречи/{STAMP}.md").write_text("# Synthetic meeting\n")
+    folder = graph / "Досье"
+    folder.mkdir()
+    path = folder / "Fenced.md"
+    text = complete(manual="—").replace("body-tail", (
+        f"body-tail [[Встречи/{STAMP}]]\n```text\n## Источники\n## Правки автора\nfenced note\n```"))
+    path.write_text(text)
+    automatic = folder / "Automatic.md"
+    automatic.write_text(complete(manual="—").replace("body-tail", f"body-tail [[Встречи/{STAMP}]]"))
+    plan = forget.plan(STAMP, root, graph)
+    assert path not in plan.delete and path in plan.edit
+    assert automatic in plan.delete
+    assert any("Fenced.md" in line and "проверь сам" in line for line in plan.check)
+    assert forget.apply(plan, yes=True)
+    assert path.exists() and "fenced note" in path.read_text()
+    assert not dossier.cites(path.read_text(), [STAMP])
+    assert not automatic.exists()
+    assert (graph / forget.BACKUP_DIR / STAMP / "Досье/Automatic.md").exists()
