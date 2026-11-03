@@ -3,7 +3,7 @@
   "base_tree": "20a04d09b803db3efce9d193e5c8ec065562e9ba",
   "preparation_start": "efd89490bd218cf58d371341fca02eac308dcf69",
   "kind": "public_input_preparation_no_implementation",
-  "formal_input_submitted": false,
+  "formal_input_submitted": true,
   "implementation_changes": false,
   "new_test_runs": 0,
   "new_model_calls": 0,
@@ -49,7 +49,9 @@
     "E01",
     "E02",
     "V01",
-    "V02"
+    "V02",
+    "P03",
+    "E03"
   ],
   "source_blobs": [
     {
@@ -248,7 +250,7 @@
         "start": 398,
         "end": 538
       },
-      "_собрано": {
+      "_\u0441\u043e\u0431\u0440\u0430\u043d\u043e": {
         "start": 688,
         "end": 695
       }
@@ -269,5 +271,13 @@
   "current_baseline": "docs/design/dossier-parser-baseline-bcf.json",
   "historical_baseline_preserved": "docs/design/dossier-parser-baseline.json",
   "baseline_probe": "reports/handoff/tasks/818_baseline_probe.py",
-  "new_test_suite_runs": 0
+  "new_test_suite_runs": 0,
+  "input_review": {
+    "source": "93f976899c6f07c37135028ac1d2ab1ae0406be1",
+    "base": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81",
+    "snapshot_sha256": "f651a70209edd6e4149cac1cfdeca296347c2b4b1f73d111ba4d3ea0b75126b7",
+    "gpt-6.1-terra/high": "C0I2M0",
+    "gpt-6-luna/high": "C0I0M1",
+    "root_resolution": "P03/E03 added; shape-only revision wording; no source edits yet"
+  }
 }

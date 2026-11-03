@@ -94,6 +94,24 @@ are inspected existing assertions, not tests executed by this preparation.
 Source lineage: `fdaae018c3db9dd713bd9f60a21c79a1081490d4` (PR900). This
 hold stays ahead of parser admission and must survive W06/D04 and forget.
 
+The existing date predicate is shape-only (`YYYY-MM-DD`), not calendar
+validation; preserve its conservative hold for `2026-99-99` as well. INPUT Luna's
+Minor is a documentation clarification, not permission to narrow protection.
+
+## Accepted INPUT findings before code
+
+Terra Important1: forget's deletion hold does not cover its later edit path.
+For every affected ambiguous dossier, including handled snapshots, refuse both
+edit/delete before `_strip_meeting` and `without_revision`; preserve raw bytes
+and surface the existing manual-follow-up signal. Check plan and actual apply.
+
+Terra Important2: existing looks_valid permits four headings and incomplete or
+misordered render results. After untrusted-body sanitization and full rendering,
+the producer must validate the candidate with the same shared classifier before
+backup/write; an admitted output remains admitted on the next load/rebuild.
+Use the current malformed-generation/retry boundary, not an expanded call budget.
+Final matrix is43oracles/15groups (P03/E03 added); no new source/data migration.
+
 ## Ordered implementation and evidence plan
 
 1. Root freezes this selected policy A and exact grammar/admission packet,

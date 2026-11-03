@@ -1,5 +1,7 @@
 # Task 818 policy-A preparation journal
 
+- Root INPUT closure: same93f97689/basebcf/publicf651a702; Terra6.1/high C0I2M0, Luna6/high C0I0M1, full reports read. Root checked actual forget edit continuation and looks_valid>=4/render path, accepted both Important into P03/E03 before implementation. Wording preserves date-shaped revision hold, including2026-99-99. Finite matrix43oracles/15groups; no code change or executed correction yet. Source baseline remains502/602/702. This entry is implementation context and excluded from reviewer exports.
+
 - 2026-11-03 07:37 MSK: inspected public base bcfdbad0, prior three documentation commits and existing source contracts. Revision delta is 6 source lines plus 19 test lines; no unrelated source refresh needed.
 - 2026-11-03 07:38 MSK: created a new worktree/branch from exact bcfdbad0 and imported only 5309257d/efd89490/f12d0d4f. Old preparation branch remains f12d0d4f. No src/tests changed.
 - 2026-11-03 07:38 MSK: inspected all three constructed baseline strings: inline author mention plus real final section; unspaced real author heading plus inline mention; bare source heading with meaningful tail. These are synthetic source inspection, not new execution or owner-data evidence.

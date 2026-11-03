@@ -87,7 +87,8 @@ distinct, explicit admissions; an arbitrary author-only file is not the latter.
 For decode damage, raw byte provenance and the intact author boundary/content
 must be established before repair; damaged author data refuses before generation.
 Literal valid U+FFFD in intact author text is not decode damage. Independently,
-`revision()` at the current base holds a valid date **or any U+FFFD in the closed
+`revision()` at the current base holds a `YYYY-MM-DD`-shaped scalar (calendar
+validity is not checked) **or any U+FFFD in the closed
 revision scalar**. The damaged-date hold from PR900 takes priority even under
 `--full`: no generation, overwrite, backup or forget-eligibility expansion.
 
@@ -117,7 +118,7 @@ a model failure. All former POLICY placeholders are resolved below.
 | D01 | Known shape, invalid UTF-8 only in body/fingerprint, intact author, no revision hold | Existing ordinary repair may admit; exact raw backup and complete author content survive |
 | D02 | Invalid UTF-8 in author heading/payload | Refuse before generation/write; original bytes unchanged; not model failure |
 | D03 | Valid UTF-8 literal U+FFFD in author | Complete known shape keeps literal; author-only unknown REFUSE A for ambiguity, never code-point damage |
-| D04 | Valid revision date or damaged revision scalar containing U+FFFD; normal and `--full` | Hold before generation; unchanged bytes/no dossier backup; unrelated themes continue; preserve existing PR900 counter semantics |
+| D04 | Date-shaped revision (including `2026-99-99`) or scalar containing U+FFFD; normal and `--full` | Hold before generation; unchanged bytes/no dossier backup; unrelated themes continue; preserve current conservative check and PR900 counters |
 | B01 | LF/CRLF with/without BOM | Raw provenance explicit; admitted body edit preserves all outside-body bytes except deliberate revision field |
 | B02 | Bare CR, mixed LF/CRLF, Unicode line separator | Refuse affected existing-file write with visible unsupported-newline reason; readers remain non-destructive |
 | B03 | Direct `DossierLoad("ok", text)` and disk load of same normalized text | Same interpretation; only disk load has original-byte provenance; direct load cannot admit overwrite of an existing disk file alone |
@@ -134,11 +135,13 @@ a model failure. All former POLICY placeholders are resolved below.
 | W06 | Plan force/unchanged/labeled/revised/gone-source/damaged-source | Existing hold/skip/add/rebuild semantics; U+FFFD revision stays held; no incremental implementation |
 | P01 | Full-shape G02/G03 rebuilt twice with identical generation/source input | Complete author text once; stable size/content after first rebuild; source links/warnings retained under full-rebuild contract |
 | P02 | Admitted review twice with identical fixed body | Stable protected bytes; no duplicate sections |
+| P03 | Generator returns only four headings, reordered/duplicated headings or an unclosed fence; also a complete valid output | Check the fully rendered, sanitized candidate with the same parser before backup/write. Reject invalid candidates via existing malformed-output handling without replacing the old file; accepted output is admitted on the next load/rebuild |
 | F01 | Dossier/source changes during generation/review | No overwrite; snapshot/fingerprint checks and visible reason retained |
 | F02 | Backup failure or graph lock unavailable | No write; existing reporting/index behavior retained |
 | F03 | Parse refusal just before write; equal normalized text/different bytes | No write; normalized equality never substitutes for disk provenance |
 | E01 | Own temporary graph/config, synthetic files, real rebuild/review/labels functions | Inspect same-input before/after files; deterministic generation doubles are explicitly zero real model calls |
 | E02 | Synthetic forget dry-run/apply public functions | Inspect plans/copies/final files; zero added deletion eligibility |
+| E03 | Ambiguous dossier with a meeting link and revision, both live graph and handled snapshots | Neither edit nor delete the dossier; skip `_strip_meeting` and `without_revision` for it, keep complete original bytes after dry-run/apply, report manual follow-up and continue unrelated eligible files |
 | V01 | Focused regression, CI, critical mutations, OUTPUT/final risk | Exact source SHA and commands/results; unrun checks incomplete |
 | V02 | Installation if authorized by root | Independently verify installed files against accepted SHA |
 
@@ -146,6 +149,21 @@ Body edit means splice through existing gated writer with exact raw mapping;
 unsupported mapping refuses. Full rebuild regenerates the outer `render` text,
 retains admitted author content/source references/warnings and backs up all old
 bytes. It does not promise byte identity for the regenerated outer document.
+
+## INPUT closure before implementation
+
+Independent Terra C0/I2/M0 and Luna C0/I0/M1 reviewed source93f97689 against
+basebcf on the identical public snapshot. Coordinating Codex checked the source
+and accepted the two Important paths: forget can edit after refusing deletion;
+looks_valid accepts four headings and does not establish producer/parser closure.
+P03/E03 above add explicit oracles; the original41 become43 without adding an
+acceptance group. Forget must hold every destructive edit, including snapshots,
+not merely its deletion predicate. Validate final rendered producer output with
+the same classifier before any write/backup; keep untrusted-output sanitization
+separate and use existing malformed-generation handling, not a new retry policy.
+Luna's wording finding is resolved by preserving the date-shaped check above,
+including malformed calendar dates; no new calendar semantics are introduced.
+These are source-reading decisions, not executed correction experiments.
 
 ## Review question
 
