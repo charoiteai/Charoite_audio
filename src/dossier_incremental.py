@@ -7,7 +7,6 @@ of the source. The caller owns graph locks, snapshots, backup and publication.
 """
 from __future__ import annotations
 
-from collections import Counter
 import json
 import re
 
@@ -157,11 +156,6 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
         raise Refused("candidate lost a canonical link target")
     if not set(names) <= _links(body):
         raise Refused("candidate does not attribute each accepted source")
-    # Exact old lines remain available as attributed history even when current
-    # state changes. This intentionally rejects harmless wholesale paraphrases.
-    for line in loaded.parsed.body.splitlines():
-        if line.strip() and not re.match(r"^\s*#", line) and line.strip() != "—" and line not in body:
-            raise Refused("candidate lost a prior claim or unresolved warning")
     if not isinstance(changes, list):
         raise Refused("missing change ledger")
     for change in changes:
@@ -183,6 +177,9 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
                 or before not in new_sections.get("Как пришли", "")
                 or after not in new_sections.get("Сейчас", "")):
             raise Refused("superseded current claim must move to history with its replacement current")
+    # Conservation and claim coverage share the same physical-line mapping.
+    # A prior substring hidden inside new markup is not a retained assertion.
+    _new_content_positions(loaded, body, names, changes)
 
 
 def validate_candidate(theme: str, loaded: dossier.DossierLoad, names: list[str],
@@ -195,36 +192,69 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
                            changes: list) -> set[int]:
     """A lexical completeness gate, not a claim of semantic truth.
 
-    Retained lines may remain inside an extended line, within their original
-    section and occurrence count. Only a declared correction permits a current
-    line to move to history. Visible aliases/page names require evidence too.
+    Retained physical lines are exact prefixes, in their original section,
+    count and order. Only a declared correction permits a current line to move
+    to history. New opaque markup is refused; existing markup and the entire
+    span between its first/last lines stay exact, including delimiter-only
+    lines. This binds old delimiters to their content without rendering Markdown.
     """
+    body = dossier.DossierLoad("ok", body).text or ""
     required = {i for i, character in enumerate(body) if character.isalnum()}
     old = dossier.DossierLoad("ok", loaded.parsed.body)
-    remaining = Counter((section.title, line)
-                        for section in old.parsed.sections
-                        for line in old.text[section.content:section.end].splitlines()
-                        if any(c.isalnum() for c in line) and not line.lstrip().startswith("#"))
     candidate = dossier.DossierLoad("ok", body)
-    for section in candidate.parsed.sections:
+
+    def section_lines(document, section):
         offset = section.content
-        eligible = sorted((key for key in remaining if key[0] == section.title or (
-            key[0] == "Сейчас" and section.title == "Как пришли"
-            and any(change["before"] in key[1] for change in changes))), key=lambda key: -len(key[1]))
-        for physical in body[section.content:section.end].splitlines(keepends=True):
-            line = physical.rstrip("\r\n")
-            represented = set()
-            for key in eligible:
-                prior = key[1]
-                start = line.find(prior)
-                while start >= 0 and remaining[key]:
-                    span = set(range(start, start + len(prior)))
-                    if not represented.intersection(span):
-                        required.difference_update(i + offset for i in span)
-                        represented.update(span)
-                        remaining[key] -= 1
-                    start = line.find(prior, start + len(prior))
+        result = []
+        for physical in document.text[section.content:section.end].splitlines(keepends=True):
+            line = physical.rstrip("\n")
+            result.append((offset, offset + len(line), line))
             offset += len(physical)
+        return result
+
+    new_sections = {section.title: section_lines(candidate, section)
+                    for section in candidate.parsed.sections}
+    used, retained = set(), set()
+    for section in old.parsed.sections:
+        previous, matched = {}, {}
+        lines = section_lines(old, section)
+        for index, (start, end, prior) in enumerate(lines):
+            if not prior.strip() or prior.strip() == "—":
+                continue
+            destinations = [section.title]
+            if section.title == "Сейчас" and any(change["before"] in prior for change in changes):
+                destinations.append("Как пришли")
+            selected = None
+            for destination in destinations:
+                for new_start, new_end, line in new_sections.get(destination, []):
+                    if new_start in used or new_start <= previous.get(destination, -1) or not line.startswith(prior):
+                        continue
+                    suffix = line[len(prior):]
+                    if suffix and (not any(c.isalnum() for c in prior) or re.search(r"[<>`~]", prior)
+                                   or not re.match(r"(?:[ \t]|[;,.!?](?:[ \t]|$))", suffix)):
+                        continue
+                    selected = (new_start, new_end, destination)
+                    break
+                if selected is not None:
+                    break
+            if selected is None:
+                raise Refused("candidate lost a prior claim or has uncovered new significant text (section/count/order)")
+            new_start, new_end, destination = selected
+            matched[index] = selected
+            previous[destination] = new_start
+            used.add(new_start)
+            retained.update(range(new_start, new_start + len(prior)))
+        opaque = [index for index, (_, _, line) in enumerate(lines) if re.search(r"[<>`~]", line)]
+        if opaque:
+            first, last = opaque[0], opaque[-1]
+            new_start, _, first_destination = matched[first]
+            _, new_end, last_destination = matched[last]
+            if (first_destination != last_destination
+                    or body[new_start:new_end] != old.text[lines[first][0]:lines[last][1]]):
+                raise Refused("candidate changed prior opaque markup context")
+    if any(match.start() not in retained for match in re.finditer(r"[<>`~]", body)):
+        raise Refused("candidate introduced opaque markup around dossier content")
+    required.difference_update(retained)
     known_targets = set(names) | _links(loaded.parsed.body)
     for match in dossier.LINK_RE.finditer(body):
         raw, target = match[0], graph_names.link_target_stem(match[1])

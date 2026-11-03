@@ -190,3 +190,23 @@ The manual controller checks actual component verdicts, stage order, payloads,
 strict schema, model digest and source hashes. A transport error or wrong-stage
 rejection does not count as a successful model negative. This matrix supplements
 all S01–S15 gates; it does not replace the full writer or manual artifact review.
+
+### Visible retention and installed-server control
+
+Retention matches old physical-line prefixes in their section, order and
+occurrence count; an explicit correction may move current text to history.
+Plain additions to an old line still need their own evidence. New opaque
+markup is a retryable refusal: preserving a warning's bytes inside a new
+comment, strikeout or code wrapper does not preserve the visible warning.
+An existing literal markup span must remain contiguous and exact; a plain
+addition may appear before or after it in the same section. This conservative
+gate may refuse harmless new formatting and is not a general Markdown renderer.
+
+The manual `tests/dossier_ollama_control.py` control requires an external quiet
+gate and its own repeated guard checks, a reviewed public source snapshot,
+the installed Ollama binary and one already downloaded public generation GGUF.
+It uses an independent temporary model copy, store, home and loopback port,
+with native sandbox restrictions and a TCP routing tripwire. It checks real
+local generation, remote-retag refusal and same-input overflow/truncation
+controls. Preparing the driver is not execution evidence. Generation-time
+context-shift refusal needs a separate successful boundary experiment.
