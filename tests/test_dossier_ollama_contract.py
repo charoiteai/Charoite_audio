@@ -245,19 +245,23 @@ def test_explicit_flags_require_strict_booleans_before_http(backend, flag, value
     assert backend.calls == []
 
 
-def test_nonollama_stream_cannot_accept_ollama_safety_flags(backend):
+@pytest.mark.parametrize("flags", [{"truncate": False}, {"shift": False}, {"truncate": False, "shift": False}],
+                         ids=["truncate", "shift", "both"])
+def test_nonollama_stream_cannot_accept_ollama_safety_flags(backend, flags):
     config = copy.deepcopy(CONFIG)
     config["llm"]["engine"] = "mlx-server"
-    with pytest.raises(privacy.PrivacyRefused):
-        list(llm.LLM(config).stream(PROMPT, truncate=False, shift=False))
+    with pytest.raises(privacy.PrivacyRefused, match="truncate/shift request flags require Ollama"):
+        list(llm.LLM(config).stream(PROMPT, **flags))
     assert backend.calls == []
 
 
-def test_cloud_ready_stream_cannot_accept_ollama_safety_flags(backend):
+@pytest.mark.parametrize("flags", [{"truncate": False}, {"shift": False}, {"truncate": False, "shift": False}],
+                         ids=["truncate", "shift", "both"])
+def test_cloud_ready_stream_cannot_accept_ollama_safety_flags(backend, flags):
     client = llm.LLM(copy.deepcopy(CONFIG))
     client.cloud_ready = True
-    with pytest.raises(privacy.PrivacyRefused):
-        list(client.stream(PROMPT, model=MODEL, truncate=False, shift=False))
+    with pytest.raises(privacy.PrivacyRefused, match="truncate/shift request flags require Ollama"):
+        list(client.stream(PROMPT, model=MODEL, **flags))
     assert backend.calls == []
 
 

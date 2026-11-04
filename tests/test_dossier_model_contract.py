@@ -297,7 +297,8 @@ def test_claim_for_only_an_old_fact_does_not_cover_new_text(monkeypatch):
 
 
 @pytest.mark.parametrize("field,bad", [("before", "unknown prior claim"), ("after", "not in candidate"),
-                                      ("source", "not-a-new-source"), ("quote", "not in source")])
+                                      ("source", "not-a-new-source"), ("quote", "not in source"),
+                                      ("extra", "unexpected")])
 def test_correction_evidence_is_checked_before_semantic_judge(monkeypatch, field, bad):
     before = f"Vent A is open. [[{A}]]"
     after = f"Vent A is now closed. [[{B}]]"
@@ -309,5 +310,5 @@ def test_correction_evidence_is_checked_before_semantic_judge(monkeypatch, field
     good = {"before": before, "after": after, "source": B, "quote": quote}
     inc.deterministic_check(old, corrected, [B], files, [good])
     monkeypatch.setattr(inc, "semantic_check", lambda *args: pytest.fail("unsupported evidence reached the judge"))
-    with pytest.raises(inc.Refused):
+    with pytest.raises(inc.Refused, match="malformed correction ledger" if field == "extra" else None):
         inc.validate_candidate("Glasshouse", old, [B], files, {}, corrected, [good | {field: bad}])
