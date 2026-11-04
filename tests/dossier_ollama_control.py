@@ -510,8 +510,10 @@ def main():
             for shift in (False, True):
                 log_offset = (runtime / "ollama.log").stat().st_size
                 gate("production-adapter-generation-boundary")
+                # A pretty-printed 128-item array exhausted 512 tokens before
+                # its closing bracket. Give both controls room to finish.
                 text = "".join(client.stream("Return the required array of ones.", model=selected, system=SYSTEM,
-                                             num_predict=512, temperature=0, busy_wait=0,
+                                             num_predict=768, temperature=0, busy_wait=0,
                                              timeout=(3, 180), truncate=False, shift=shift))
                 row = wire[-1]
                 frames = [json.loads(line) for line in row["response"].splitlines() if line]
