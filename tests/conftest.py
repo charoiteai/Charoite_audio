@@ -767,9 +767,19 @@ def _граф_в_tmp(tmp_path):
     `monkeypatch.undo()` в теле теста (`test_graph_hygiene.py:1710, 1804`)
     снимал заодно и эту переменную — дальше тест шёл без изоляции графа
     (круг 9 по коду №327, DS C1). Тот же образец, что у сброса корня.
+
+    Снятие обеих переменных для проверки config-ветки не открывает ambient
+    iCloud: fallback `graphs.ICLOUD` тоже пустой vault в tmp (№910). Явная
+    подмена на другой synthetic vault остаётся доступна самому тесту.
     """
+    import graphs
+
     graph = tmp_path / "graph-isolated" / "Граф"
     graph.mkdir(parents=True, exist_ok=True)
+    ambient = tmp_path / "icloud-isolated"
+    ambient.mkdir()
+    прежний_icloud = graphs.ICLOUD
+    graphs.ICLOUD = ambient
     # Имён у переменной два (`graphs.ENV_GRAPH_NAMES`), и второе тоже читается:
     # снять его мало — его надо перекрыть, иначе экспортированный в шелле
     # SUFLER_GRAPH_DIR всплывёт, стоит тесту тронуть первое имя (DS I4 круга 9).
@@ -780,6 +790,7 @@ def _граф_в_tmp(tmp_path):
     try:
         yield
     finally:
+        graphs.ICLOUD = прежний_icloud
         for имя, значение in было.items():
             if значение is None:
                 os.environ.pop(имя, None)

@@ -1,0 +1,27 @@
+{
+  "pr": 902,
+  "pr_head": "e7849c6321192cb677605be8a2ce34857e97d72f",
+  "ci_merge_commit": "9a6441fafae97a62cc18107f5f03215f27fe23bf",
+  "tree_equal": true,
+  "tree": "fddc858aec38ed05e4c33be4a4ccfa7865d139e6",
+  "base": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81",
+  "workflow_run": 41588128766,
+  "shards": 4,
+  "full": 219,
+  "tested": 219,
+  "critical_full": 211,
+  "critical_tested": 211,
+  "critical_survived": 33,
+  "noncritical_survived": 2,
+  "canonical_conclusion": "failure",
+  "skipped": 0,
+  "unread": 0,
+  "zones": "369795e53b71",
+  "artifact_ids": [
+    13209998289,
+    13210187872,
+    13210128414,
+    13210253454,
+    13211101229
+  ]
+}

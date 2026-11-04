@@ -1,0 +1,13 @@
+Проверено мутантов: 55 из 55, выжило: 9 (в критичных зонах: 8)
+Выборка: 219 из 219 мутантов плана; критичных в плане 211, в выборке 211, в доле 52, рассуждено 52
+  ВЫЖИЛ scripts/nightly_dossier_review.py:220: return X → return None @8-85 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:743: Lt → LtE @30-45 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:786: In → NotIn @32-55 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:801: not X → X @13-33 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:865: return X → return None @8-17 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:871: Or → And @29-89 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: And → Or @21-66 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: 1 → 0 @51-52 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:715: True → False @18-22 — вне критичных зон
+
+Выживший мутант — это изменение поведения, которого не заметил ни один тест. Либо тест на это место есть, но он ничего не держит, либо места в тестах нет вовсе.

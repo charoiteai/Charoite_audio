@@ -13,6 +13,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "scripts"))
 import cloud  # noqa: E402
+from charoite_graph import dossier  # noqa: E402
 
 
 def test_probe_returns_none_on_exec_failure(monkeypatch):
@@ -118,7 +119,11 @@ def test_dossier_review_exits_2_when_some_themes_failed(monkeypatch):
         review.FAILED_STEPS.clear()
 
 
-DOSSIER = "## Сейчас\nстарое\n\n## Источники\n- [[Встречи/2026-09-01_1000]]\n\n## Правки автора\n\n—\n"
+DOSSIER = dossier.render(
+    "Тема", "## Сейчас\nстарое\n\n## Как пришли\n—\n\n## Решено\n—\n\n## Открыто\n—\n\n## Кто в теме\n—",
+    ["Встречи/2026-09-01_1000"], {"Встречи/2026-09-01_1000": {"kind": "Встречи"}},
+    "synthetic-fingerprint", "2026-09-01",
+)
 
 
 def _review_call(monkeypatch, run):

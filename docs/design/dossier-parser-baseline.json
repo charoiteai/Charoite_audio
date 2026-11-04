@@ -1,0 +1,14 @@
+{
+  "base_sha": "826001b200fa4f6cd63666df0c285d4553641145",
+  "synthetic_only": true,
+  "model_calls": 0,
+  "inline_growth_lengths": [
+    502,
+    602,
+    702
+  ],
+  "inline_growth_reproduced": true,
+  "unspaced_manual_kept_both": true,
+  "bare_heading_body_tail_present": false,
+  "implementation_changed": false
+}

@@ -113,6 +113,10 @@ ENTRY_CANDIDATES = (f"{FLAT_DIR}/*.py", "scripts/*.py", "scripts/*.sh", "app/*.s
 #: фолбэк дал правдоподобный вид, и ни одна проверка не заметила).
 KINDS: tuple[tuple[str, str, str, str], ...] = (
     ("docs/design/layout.md", "out", "git", "карта — производная замера, не источник"),
+    ("reports/handoff/tasks/818_baseline_probe.py", "history", "git",
+     "синтетический снимок базового разбора №818: привязан к SHA и blob manifest, не точка входа продукта"),
+    ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git",
+     "синтетическое воспроизведение OUTPUT №818 с закреплёнными base/source SHA, не точка входа продукта"),
     ("tests/", "out", "git", "тесты строят синтетические деревья: пути в них — не факты о репозитории"),
     ("app/Tests/", "out", "git", "Swift-тесты приложения: те же выдуманные пути"),
     ("app-ios/", "out", "git", "телефон python и shell не запускает — пути там только в тексте"),

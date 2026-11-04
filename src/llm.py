@@ -741,6 +741,22 @@ class LLM:
         # ru (дефолт) | en. Роль подсказок задаёт сам пользователь в sufler.role.
         self.lang = str(cfg["sufler"].get("language", "ru")).strip().lower()
 
+    def _ollama_metadata(self, endpoint: str) -> tuple[int, object]:
+        """Read and close one metadata response without acquiring a model lease.
+
+        This is the only GET transport seam for Ollama: the closed endpoint
+        list excludes generation and model-registry mutations. Both metadata
+        readers use the same timeout, loopback proxy policy and cleanup.
+        """
+        if endpoint not in {"tags", "version"}:
+            raise ValueError("unsupported Ollama metadata endpoint")
+        url = f"{self.base}/api/{endpoint}"
+        response = requests.get(url, timeout=3, **privacy.proxies_for(url))
+        try:
+            return response.status_code, response.json()
+        finally:
+            response.close()
+
     def _models_available(self) -> set[str]:
         """Имена скачанных моделей; «сервера нет» и «моделей нет» — оба `set()`.
 
@@ -752,9 +768,7 @@ class LLM:
         об этом (№397). Форма ответа проверяется явно, а не падением на `m["name"]`.
         """
         try:
-            url = f"{self.base}/api/tags"
-            r = requests.get(url, timeout=3, **privacy.proxies_for(url))
-            body = r.json()
+            _, body = self._ollama_metadata("tags")
         except requests.RequestException:
             return set()
         models = body.get("models") if isinstance(body, dict) else None
@@ -803,12 +817,57 @@ class LLM:
             return self.mlx_model
         return self.cloud_model if self.cloud_ready else model
 
+    def require_local_ollama_model(self, model: str | None = None) -> str:
+        """Force local manifest selection on a trusted compatible Ollama server.
+
+        Ollama >= 0.34.4 checks an explicit :local selector against the actual
+        manifest before remote routing on every chat request, including after a
+        retag. Version metadata is capability evidence for a trusted server,
+        not authentication of a malicious loopback proxy. No model is modified.
+        """
+        if self.engine != "ollama" or self.cloud_ready or not privacy.is_loopback_url(self.base):
+            raise privacy.PrivacyRefused("local model selection requires loopback Ollama")
+        requested = self.resolve_model() if model is None else model
+        if not isinstance(requested, str) or not requested or any(c.isspace() or not c.isprintable() for c in requested):
+            raise privacy.PrivacyRefused("invalid local Ollama model reference")
+        selectors = list(re.finditer(r":(local|cloud)(?=:|$)", requested, re.IGNORECASE))
+        if any(match[1].lower() == "cloud" for match in selectors):
+            raise privacy.PrivacyRefused("cloud model references are not allowed for local generation")
+        if selectors and (len(selectors) != 1 or selectors[0].end() != len(requested)):
+            raise privacy.PrivacyRefused("nested model selectors are not allowed")
+        base = requested[:selectors[0].start()] if selectors else requested
+        if not base or base.lower().endswith("-cloud"):
+            raise privacy.PrivacyRefused("legacy cloud model references are not allowed for local generation")
+        reference = base + ":local"
+        try:
+            status, body = self._ollama_metadata("version")
+        except ValueError as exc:
+            raise RuntimeError("Ollama local model contract: invalid /api/version JSON") from exc
+        if status != 200:
+            raise RuntimeError(f"Ollama local model contract: /api/version returned HTTP {status}")
+        if not isinstance(body, dict) or body.get("error"):
+            raise RuntimeError("Ollama local model contract: unexpected /api/version response")
+        version = body.get("version")
+        # Build metadata is stable SemVer; prereleases and unknown formats
+        # do not establish the local-selector/no-truncation contract.
+        stable = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                              r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", version) if isinstance(version, str) else None
+        if stable is None or tuple(map(int, stable.groups())) < (0, 34, 4):
+            raise RuntimeError("Ollama local model contract requires a stable server version >= 0.34.4")
+        return reference
+
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
                think: bool = False, num_predict: int | None = None,
                temperature: float | None = None,
                busy_wait: float = BUSY_WAIT_LIVE,
                timeout: tuple[float, float] = STREAM_TIMEOUT,
-               _method: str = "stream") -> Iterator[str]:
+               _method: str = "stream", *, truncate: bool | None = None,
+               shift: bool | None = None) -> Iterator[str]:
+        for name, value in (("truncate", truncate), ("shift", shift)):
+            if value is not None and type(value) is not bool:
+                raise ValueError(f"{name} must be a boolean or None")
+        if (truncate is not None or shift is not None) and (self.engine != "ollama" or self.cloud_ready):
+            raise privacy.PrivacyRefused("truncate/shift request flags require Ollama")
         # `_method` — имя обёртки для журнала вызовов (№807): к первому next()
         # её кадра на стеке уже нет.
         #
@@ -863,6 +922,10 @@ class LLM:
             "keep_alive": self._chat_keep_alive(),
             "options": options,
         }
+        if truncate is not None:
+            payload["truncate"] = truncate
+        if shift is not None:
+            payload["shift"] = shift
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
                                timeout=timeout, method=_method) as r:
             done = False

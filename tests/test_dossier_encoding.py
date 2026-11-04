@@ -41,10 +41,12 @@ def night(tmp_path, monkeypatch):
             (graph / "Встречи" / f"{theme}_{i}.md").write_text(
                 f"# Встреча\n[[Ядра/{theme}]] источник\n", encoding="utf-8")
         paths[theme] = folder / f"{theme}.md"
-        paths[theme].write_text(
-            f"---\nтема: {theme}\nотпечаток: старый\nсобрано: 2026-07-20\n---\n"
-            f"# {theme}\n## Сейчас\nстарое тело\n## Правки автора\n\nоставить решение автора\n",
-            encoding="utf-8")
+        text = dossier.render(theme, GOOD.replace("новое тело", "старое тело"),
+            [], {}, "старый", "2026-07-20").replace("## Правки автора\n\n—\n",
+            "## Правки автора\n\nоставить решение автора\n")
+        # A genuinely gone historical meeting requires rebuilding; source mtime
+        # alone deliberately no longer authorizes this destructive operation.
+        paths[theme].write_text(dossier.with_composition(text, [f"{theme}_retired"]), encoding="utf-8")
     calls = []
 
     def generate(theme, members, files, c, **kw):
@@ -341,7 +343,9 @@ def test_matching_fingerprint_does_not_force_damaged_rebuild(night, monkeypatch,
     clusters = dossier.clusters(files, links, schema=CHAROITE)
     for theme, path in paths.items():
         fp = dossier.fingerprint(clusters[theme], files)
-        path.write_text(path.read_text(encoding="utf-8").replace("старый", fp), encoding="utf-8")
+        text = path.read_text(encoding="utf-8").replace("старый", fp)
+        text = dossier.with_composition(text, [n for n in clusters[theme] if CHAROITE.is_meeting_folder(files[n]["kind"])])
+        path.write_text(text, encoding="utf-8")
     before = _damage(paths["Бета"], "старое тело", b"old\xffbody")
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=False, limit=12)
@@ -404,14 +408,17 @@ def test_strict_utf8_never_refuses_author_text(night, monkeypatch, capsys, kind)
     elif kind == "no_heading":
         path.write_bytes(b"# old dossier without a manual section\n")
     elif kind == "literal_replacement":
-        path.write_text("## Правки автора\n\nавтор написал \ufffd\n", encoding="utf-8")
+        text = dossier.render("Бета", GOOD, [], {}, "старый", "2026-07-20").replace(
+            "## Правки автора\n\n—\n", "## Правки автора\n\nавтор написал \ufffd\n")
+        path.write_text(dossier.with_composition(text, ["Бета_retired"]), encoding="utf-8")
     else:
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=False, limit=12)
-    assert result["собрано"] == 3 and result["отказы"] == 0
+    assert result["собрано"] == (2 if kind == "no_heading" else 3) and result["отказы"] == 0
     _all_index(folder)
-    _account(result, counts, paths, capsys, damaged=0, verified=paths.values())
+    _account(result, counts, paths, capsys, damaged=0,
+             verified=[p for p in paths.values() if kind != "no_heading" or p != path])
     if kind == "literal_replacement":
         assert "автор написал \ufffd" in path.read_text(encoding="utf-8")
     elif kind == "crlf":

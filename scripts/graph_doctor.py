@@ -234,6 +234,8 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
     # в «Правках автора» пересборкой не чинится и в счёт не идёт (n815-in3 DS C2)
     dossier_labels = [p for p in nodes if rel[p].startswith("Досье/") and not _is_stub(notes[p])
                       and dossier.labeled_body(notes[p])]
+    dossier_unknown = [p for p in nodes if rel[p].startswith("Досье/") and not _is_stub(notes[p])
+                       and dossier.labeled_body(notes[p]) is None]
 
     links_total = sum(outbound.values())
     rep = {
@@ -250,6 +252,7 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
         "collective": len(collective), "collective_multi": sum(1 for _, n in collective if len(n) >= 2),
         "collective_links": len(set().union(*(linkers[p] for p, _ in collective))),   # заметка на два сборных — одна
         "people_in_systems": len(people_in_systems), "dossier_labels": len(dossier_labels),
+        "dossier_unknown": len(dossier_unknown),
     }
     # Конфликтные копии «Имя N» документов встреч (№361): по имени, без чтения —
     # доктор сигналит, убирает `dedup_graph.py` вторым правилом. Сигнал — на РОСТ
@@ -332,6 +335,7 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
                        for p, (q, n) in zip(collective_paths, collective)],
         "people_in_systems": [rel[p] for p in people_in_systems],
         "dossier_labels": [rel[p] for p in dossier_labels],
+        "dossier_unknown": [rel[p] for p in dossier_unknown],
         "placeholders": [rel[p] for p in placeholders],
     }
     if examples:
@@ -350,6 +354,7 @@ def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = Non
                            for p, n in collective[:examples]],
             "people_in_systems": [rel[p] for p in people_in_systems[:examples]],
             "dossier_labels": [rel[p] for p in dossier_labels[:examples]],
+            "dossier_unknown": [rel[p] for p in dossier_unknown[:examples]],
         }
     return rep
 
@@ -365,6 +370,7 @@ def summary(rep: dict) -> str:
              f"сборных {rep.get('collective', 0)} (≥ 2 тёзок {rep.get('collective_multi', 0)}, "
              f"ссылаются заметок {rep.get('collective_links', 0)}); "
              f"людей в Системах {rep.get('people_in_systems', 0)}; досье с меткой {rep.get('dossier_labels', 0)}; "
+             f"досье с неизвестным телом {rep.get('dossier_unknown', 0)}; "
              f"изменено за 7 дн. {rep['fresh_7d']}"]
     lines += [f"  ⚠️ {w}" for w in rep["warnings"]]
     for kind, items in (rep.get("examples") or {}).items():

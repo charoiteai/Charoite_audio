@@ -232,6 +232,26 @@ def scalar_field(text: str, key: str) -> str:
     if not span:
         return ""
     raw = fm[span[0]:span[1]].split(":", 1)[1].strip().split("\n", 1)[0].strip()
+    # A trailing comment is outside the scalar. Use the existing YAML marks,
+    # without constructing values (dates must retain their literal spelling).
+    scalar_head = fm
+    try:
+        node = yaml.compose(scalar_head)
+    except yaml.YAMLError:
+        # A malformed neighboring field must not turn a revision comment into
+        # part of its value. Reuse YAML marks on this field and its indented
+        # continuation; an invalid scalar still retains the old raw fallback.
+        scalar_head = re.match(r"[^\n]*(?:\n[ \t]+[^\n]*)*", fm[span[0]:])[0]
+        try:
+            node = yaml.compose(scalar_head)
+        except yaml.YAMLError:
+            node = None
+    if isinstance(node, yaml.MappingNode):
+        for k, v in node.value:
+            if getattr(k, "value", None) == key and isinstance(v, yaml.ScalarNode):
+                if v.style not in ("|", ">"):
+                    raw = scalar_head[v.start_mark.index:v.end_mark.index].strip()
+                break
     if raw.startswith('"'):
         try:
             return str(json.loads(raw))
@@ -243,6 +263,33 @@ def scalar_field(text: str, key: str) -> str:
 def with_field(text: str, key: str, value: str) -> str:
     """Скалярное поле шапки: заменить или дописать одной строкой."""
     return _put_line(text, key, f"{key}: {yaml_str(value)}")
+
+
+def with_scalar_preserving(text: str, key: str, value: str) -> str:
+    """Replace only a scalar (or insert one field), preserving every other byte."""
+    bom = _BOM if text.startswith(_BOM) else ""
+    fm, _ = split(text[len(bom):])
+    if fm is None:
+        raise ValueError("шапка не закрыта")
+    try:
+        node = yaml.compose(fm)
+    except yaml.YAMLError as e:
+        raise ValueError("шапка не поддерживает точную замену поля") from e
+    if not isinstance(node, yaml.MappingNode):
+        raise ValueError("шапка не является отображением")
+    matches = [v for k, v in node.value if getattr(k, "value", None) == key]
+    if len(matches) > 1 or (matches and (not isinstance(matches[0], yaml.ScalarNode)
+                                       or matches[0].style in ("|", ">"))):
+        raise ValueError("поле не является единственным скаляром")
+    base = len(bom) + 3
+    if matches:
+        scalar = matches[0]
+        start, end = base + scalar.start_mark.index, base + scalar.end_mark.index
+        gap = " " if start == end and text[start - 1:start] == ":" else ""
+        return text[:start] + gap + yaml_str(value) + text[end:]
+    nl = "\r\n" if "\r\n" in fm else "\n"
+    at = base + len(fm)
+    return text[:at] + nl + f"{key}: {yaml_str(value)}" + text[at:]
 
 
 def without_field(text: str, key: str) -> str:

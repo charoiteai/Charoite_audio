@@ -1,0 +1,13 @@
+{
+  "source": "Installed Ollama 0.34.4 paired context-boundary control; public phi4 GGUF, invented input only. Original controller run failed its HTTP-error criterion.",
+  "model_blob_sha256": "3c168af1dea0a414299c7d9077e100ac763370e5a98b3c53801a958a47f0a5db",
+  "context": 256,
+  "prompt_eval_count": 12,
+  "eval_count": 244,
+  "http_status": 200,
+  "done_reason": "length",
+  "shift": false,
+  "output_sha256": "6b9dead53a445d90756f533d285fa7929e4e65b76a76992c8d83252f75e3d7a6",
+  "test_classification": "Captured real server output replay; tests using this fixture make zero real model calls.",
+  "output": "[\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1, 1, 1, 1, 1, 1, 1,\n1, 1, 1, 1,"
+}
