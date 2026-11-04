@@ -80,6 +80,33 @@ def test_generation_feedback_preserves_guards_and_is_bounded(monkeypatch, correc
     assert loaded.raw == text.encode()
 
 
+def test_generation_retry_requires_only_verbatim_content_lines(monkeypatch):
+    prior = BODY.replace("## Как пришли", "\n \t\n## Как пришли", 1)
+    loaded = _old(prior)
+    files = {B: {"text": "A rain cover was fitted."}}
+    calls, judged = [], []
+
+    def complete(prompt, config, *, system, **kwargs):
+        calls.append(json.JSONDecoder().raw_decode(prompt)[0])
+        if len(calls) == 1:
+            return "not JSON"
+        return json.dumps({"body": ADDED, "changes": []})
+
+    # Exercise the real retry and deterministic validation; only completion and
+    # semantic judgement are explicit doubles, so this makes no model calls.
+    monkeypatch.setattr(inc, "local_complete", complete)
+    monkeypatch.setattr(inc, "semantic_check", lambda *args: judged.append(1))
+    assert inc.append("Glasshouse", loaded, [B], files, {}) == ADDED
+    assert len(calls) == 2 and judged == [1]
+    assert "correction_feedback" not in calls[0]
+    assert calls[1]["correction_feedback"]["required_verbatim_lines"] == [
+        f"- Vent A is open. [[{A}]]",
+        "- Keep purple labels.",
+        "- ⚠ Sensor is unverified.",
+    ]
+    assert loaded.parsed.body == prior and loaded.raw == _old(prior).raw
+
+
 @pytest.mark.parametrize("raw", ["not JSON", "null", "[]", "{}",
     '{"verdict":"relevant","reason":"supported","quote":"absent from source"}',
     '{"verdict":"irrelevant","reason":"","quote":""}',

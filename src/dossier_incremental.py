@@ -290,7 +290,7 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
     known_targets = set(names) | _links(loaded.parsed.body)
     for match in dossier.LINK_RE.finditer(body):
         raw, target = match[0], graph_names.link_target_stem(match[1])
-        inner = raw[2:-2]
+        inner = raw.removeprefix("[[").removesuffix("]]")
         alias = inner.split("|", 1)[1] if "|" in inner else None
         pure_identifier = "#" not in inner and (alias is None or alias in {target, match[1]})
         if target in known_targets and pure_identifier:
