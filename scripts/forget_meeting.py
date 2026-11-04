@@ -243,6 +243,27 @@ def _link_re(stamps: str | list[str]) -> re.Pattern[str]:
     return re.compile(rf"\[\[{MEETINGS_DIR}/(?:{alt})(?:\|[^\]\r\n]*)?\]\]")
 
 
+def _forget_membership(text: str, keys: typing.Iterable[str],
+                       snapshot: dossier.GraphSnapshot) -> str:
+    """Снять встречу из обоих списков, включая канонические redirect-алиасы.
+
+    Это отдельная правка шапки: штамп без wiki-ссылки не виден `cites`, а
+    удаление Markdown-пункта блок-списка оставляло бы пустое значение поля.
+    Разбор/запись списков остаётся у frontmatter, канонизация — у досье.
+    """
+    identities = set(keys)
+    canonical = {dossier._canon(key, snapshot) for key in identities}
+    identities |= canonical | {name for name in snapshot.redirects
+                               if dossier._canon(name, snapshot) in canonical}
+    for field in (dossier.COMPOSITION_FIELD, dossier.REJECTED_FIELD):
+        names = frontmatter.list_field(text, field)
+        kept = [name for name in names
+                if dossier.member_name(name) not in identities]
+        if kept != names:
+            text = frontmatter.set_list_field(text, field, kept)
+    return dossier.without_rejections(text, identities)
+
+
 # Строка Markdown (CommonMark, Obsidian): конец — только `\r\n`, `\r` или `\n`, с
 # разделителем; U+2028, `\x0b`, `\x0c`, `\x85` — внутри строки (out7 Haiku C1, DS I2)
 _MD_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
@@ -1117,6 +1138,7 @@ def plan(stamp: str, root: pathlib.Path,
         # в копии ядра — такой же след встречи, как в самом ядре (круг по
         # PR #363, GLM+DeepSeek: старое место правилось, новое — нет).
         snapshot_roots = tuple(base / CLOUD_BACKUP_DIR.lstrip(".") for base in backup_bases)
+        membership_snapshots: dict[pathlib.Path, dossier.GraphSnapshot] = {}
         editable = sorted({*g.rglob("*.md"), *(f for snap in snapshot_roots for f in snap.rglob("*.md"))})
         for f in editable:
             real = f.resolve()
@@ -1147,6 +1169,8 @@ def plan(stamp: str, root: pathlib.Path,
             try:
                 raw = f.read_bytes()        # одно чтение: файл не исчезнет между двумя (out5 DS I4)
             except OSError:
+                if in_dossier:
+                    p.check.append(f"{where}: досье не прочитано — проверь след встречи вручную; файл не тронут")
                 continue
             try:
                 text = raw.decode("utf-8")
@@ -1157,9 +1181,46 @@ def plan(stamp: str, root: pathlib.Path,
                     p.check.append(f"{where}: ссылается на встречу, но не в UTF-8 — убери след руками"
                                    + ("; строка «ревизия:» не даст ночи пересобрать досье" if in_dossier else ""))
                 continue
-            cited = dossier.cites(text, keys)
-            revised = in_dossier and cited and bool(dossier.revision(text))
-            linked = bool(link.search(text))
+            if in_dossier and (why := dossier.membership_refusal(text)):
+                p.check.append(f"{where}: {why} — проверь след встречи вручную; досье не тронуто")
+                continue
+            membership_text = text
+            if in_dossier and any(frontmatter.has_field(text, field) for field in (
+                    dossier.COMPOSITION_FIELD, dossier.REJECTED_FIELD, dossier.REJECTION_VERSIONS_FIELD)):
+                # Historical snapshots may contain redirects already removed
+                # from the live graph. Resolve each header against its own graph.
+                member_graph = (snap / f.relative_to(snap).parts[0] if snap is not None else
+                                g / CLOUD_BACKUP_DIR / f.relative_to(g).parts[1] if in_snap else g)
+                if member_graph not in membership_snapshots:
+                    try:
+                        membership_snapshots[member_graph] = dossier.scan_snapshot(member_graph, schema=CHAROITE, strict=True)
+                    except OSError:
+                        p.check.append(f"{where}: канонический состав графа не прочитан — "
+                                       "проверь след встречи вручную; досье не тронуто")
+                        continue
+                membership_text = _forget_membership(text, owned, membership_snapshots[member_graph])
+            membership_changed = membership_text != text
+            composition_changed = in_dossier and (
+                frontmatter.list_field(text, dossier.COMPOSITION_FIELD) !=
+                frontmatter.list_field(membership_text, dossier.COMPOSITION_FIELD))
+            # Rejected sources are deliberately absent from the accepted body.
+            # A wiki spelling in their bookkeeping must not turn them into a
+            # body citation and delete the dossier or remove its revision hold.
+            citation_text = text
+            if in_dossier:
+                for field in (dossier.REJECTED_FIELD, dossier.REJECTION_VERSIONS_FIELD):
+                    citation_text = frontmatter.without_field(citation_text, field)
+            cited = dossier.cites(citation_text, keys)
+            represented = cited or composition_changed
+            revised = in_dossier and represented and bool(dossier.revision(text))
+            linked = bool(link.search(citation_text))
+            if in_dossier and (cited or linked or membership_changed):
+                # A deletion hold alone is insufficient: the later edit path also
+                # strips meeting lines and revision fields, including snapshots.
+                loaded_dossier = dossier.DossierLoad("ok", text, raw)
+                if why := loaded_dossier.refusal("forget"):
+                    p.check.append(f"{where}: {why} — убери след встречи руками; досье не тронуто")
+                    continue
             # Досье ночи без руки человека — `Досье/<тема>.md` и его копия ночи
             # `Досье/.backup/<прогон>/<тема>.md` — уходит целиком: тема пересоберётся
             # без встречи, а выпавшая из кластеров (< MIN_CLUSTER) не оставит
@@ -1168,7 +1229,7 @@ def plan(stamp: str, root: pathlib.Path,
             night_file = in_dossier and not in_snap and (
                 len(parts) == 2 or (len(parts) == 4 and parts[1] == dossier.BACKUP_DIR))
             kept = dossier.kept_from_night(text) if night_file else "этот путь ночь не пересобирает"
-            if cited and night_file and not kept:
+            if represented and night_file and not kept:
                 # с копией в `.forget_backup`: правку тела без следов в шапке и
                 # «Правках автора» предикат не видит (out1 Sonnet I1, Haiku C1)
                 p.delete.append(f)
@@ -1178,7 +1239,7 @@ def plan(stamp: str, root: pathlib.Path,
                 continue
             lost: list[str] = []
             told: list[str] = []
-            fixed = _strip_meeting(text, link, lost, keys, told) if linked else text
+            fixed = _strip_meeting(membership_text, link, lost, keys, told) if linked else membership_text
             if lost:
                 p.check.append(f"{where}: с пунктом о встрече ушли ссылки на другие встречи — "
                                + ", ".join(dict.fromkeys(lost)))
@@ -1190,7 +1251,7 @@ def plan(stamp: str, root: pathlib.Path,
                 # копию правки снимка `apply` не снимает — бэкап бэкапа (out3 Sonnet I2, Haiku I2)
                 p.check.append(f"{where}: с пунктом о встрече снята строка без отступа ({told.count('ленивая')})"
                                " — проверь сам" + ("" if in_snap else f", копия в {BACKUP_DIR}/{p.stamp}"))
-            if cited and in_dossier:
+            if represented and in_dossier:
                 # любое досье графа и снимка, не только `Досье/<тема>.md` (out1 DS I1, out3 Haiku C2)
                 p.check.append(f"{where}: {kept} — пересказ встречи в теле проверь сам")
             if revised:

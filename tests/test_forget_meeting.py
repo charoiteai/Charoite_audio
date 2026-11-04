@@ -451,9 +451,13 @@ def _revised_dossier(graph: pathlib.Path, sources: str) -> pathlib.Path:
     """Досье, тело которого правила облачная ревизия (`ревизия:`, №841);
     источники — голыми именами узлов, как пишет `render`."""
     path = graph / "Досье" / "Ревизия.md"
-    path.write_text("---\nтема: Ревизия\nревизия: 2026-10-18\n---\n# Ревизия\n\n"
-                    "Выбран ЮPay ⚠ срок не сходится.\n\n## Источники\n"
-                    f"- **Встречи:** {sources}\n\n## Правки автора\n\n—\n", encoding="utf-8")
+    # Complete shape, but no usable night fingerprint: this fixture tests
+    # revision editing, not automatic-dossier deletion eligibility.
+    text = dossier_mod.render("Ревизия", "## Сейчас\nВыбран ЮPay ⚠ срок не сходится.\n"
+                              "## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—",
+                              [], {}, "", "2026-10-18")
+    text = text.replace("## Источники\n\n", f"## Источники\n- **Встречи:** {sources}\n\n")
+    path.write_text(text.replace("type: досье\n", "type: досье\nревизия: 2026-10-18\n"), encoding="utf-8")
     return path
 
 
@@ -505,15 +509,21 @@ def test_forget_keeps_an_own_revision_field_outside_the_dossier_folder(tmp_path)
     assert node in p.edit and dossier_mod.revision(p.edit[node]) == "2026-10-01", p.edit.get(node)
 
 
-def test_forget_lifts_the_revision_without_touching_the_body(tmp_path):
+@pytest.mark.parametrize("separator,held", [("\x0b", False), ("\u2028\x0b", True)])
+def test_forget_lifts_the_revision_without_touching_the_body(tmp_path, separator, held):
     """Досье с полем и голой ссылкой: снимается только поле, тело как было —
     U+2028 и `\\x0b` в теле не трогаются (out4 Sonnet M1)."""
     root, graph = _world(tmp_path)
     path = _revised_dossier(graph, f"[[{STAMP}]]")
-    path.write_text(path.read_text(encoding="utf-8").replace("ЮPay ", "ЮPay\u2028\x0b"), encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8").replace("ЮPay ", "ЮPay" + separator), encoding="utf-8")
     before = path.read_text(encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
-    assert path in p.edit and p.edit[path] == dossier_mod.without_revision(before), p.edit.get(path)
+    if held:
+        assert path not in p.edit and path not in p.delete
+        assert any("переводы строк" in why for why in p.check)
+        assert path.read_text(encoding="utf-8") == before
+    else:
+        assert path in p.edit and p.edit[path] == dossier_mod.without_revision(before), p.edit.get(path)
 
 
 def test_forget_names_a_revised_dossier_it_cannot_read(tmp_path):
@@ -570,8 +580,10 @@ def test_forget_drops_revision_of_a_dossier_copy_in_a_snapshot(tmp_path, place):
             else graph / forget.CLOUD_BACKUP_DIR)
     copy = base / "2026-07-20_0300" / "Досье" / "Платёжный провайдер.md"
     copy.parent.mkdir(parents=True)
-    copy.write_text(f"---\nревизия: 2026-10-01\n---\n## Сейчас\n- выбрали ЮPay\n"
-                    f"## Источники\n- [[{STAMP}]]\n", encoding="utf-8")
+    text = dossier_mod.render("Snapshot", "## Сейчас\n- выбрали ЮPay\n## Как пришли\n—\n"
+                              "## Решено\n—\n## Открыто\n—\n## Кто в теме\n—", [], {}, "snapshot", "2026-10-01")
+    text = text.replace("## Источники\n\n", f"## Источники\n- [[{STAMP}]]\n\n")
+    copy.write_text(dossier_mod.with_revision(text, "2026-10-01"), encoding="utf-8")
     p = forget.plan(STAMP, root, graph)
     assert copy in p.edit and not dossier_mod.revision(p.edit[copy]), p.edit.get(copy)
 
@@ -2971,7 +2983,8 @@ def test_forget_names_other_meetings_that_leave_with_the_block(tmp_path):
 
 def _night_dossier(path: pathlib.Path, *, manual: str = "—", nl: str = "\n", extra: str = "") -> pathlib.Path:
     """Досье, как его пишет ночь (`dossier.render`)."""
-    text = dossier_mod.render("Платёж", f"## Сейчас\n- выбрали ЮPay [[Встречи/{STAMP}]]",
+    text = dossier_mod.render("Платёж", f"## Сейчас\n- выбрали ЮPay [[Встречи/{STAMP}]]\n"
+                              "## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—",
                               [f"Встречи/{STAMP}", f"Встречи/{OTHER}"],
                               {f"Встречи/{STAMP}": {"kind": "Встречи"}, f"Встречи/{OTHER}": {"kind": "Встречи"}},
                               "abc123", "2026-10-30")

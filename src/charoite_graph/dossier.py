@@ -41,7 +41,7 @@ import re
 import shutil
 import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Iterable, Literal
 from charoite_graph import frontmatter, graph_names
@@ -187,7 +187,8 @@ def _strict_source_paths(graph: pathlib.Path, schema: GraphSchema) -> Iterable[p
                 yield folder / name
 
 
-def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = False) -> GraphSnapshot:
+def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = False,
+                  warn_damaged: bool = True) -> GraphSnapshot:
     """Все .md графа → карта файлов и обратные ссылки.
 
     Возвращает (files, backlinks): files[title] = {path, text, mtime, kind},
@@ -211,7 +212,13 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = Fa
         if schema.is_dossier(rel.as_posix()) or schema.is_service_name(p.name):
             continue
         try:
+            before = p.stat()
+            physical = p.resolve(strict=True)
             raw = p.read_bytes()
+            after = p.stat()
+            identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+            if identity(before) != identity(after) or p.resolve(strict=True) != physical:
+                raise OSError(f"source changed during scan: {p}")
         except OSError:
             if strict:
                 raise
@@ -220,7 +227,8 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = Fa
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("utf-8", errors="replace")
-            print(f"  ⚠️ файл графа не в UTF-8: {p} — читаю с заменой")
+            if warn_damaged:
+                print(f"  ⚠️ файл графа не в UTF-8: {p} — читаю с заменой")
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         # Redirect-заглушка после tier3-слияния — не тема: она сохраняет
         # входящие ссылки заметок и ссылку на канон, кластер вокруг неё
@@ -253,16 +261,18 @@ def scan_snapshot(graph: pathlib.Path, *, schema: GraphSchema, strict: bool = Fa
             # rglob вернул первым, и состав графа зависел от порядка обхода.
             rank = lambda meta: (schema.is_core_folder(meta["kind"]), len(meta["text"]),
                                  meta["rel"])
-            new_meta = {"path": p, "rel": str(rel), "text": text,
-                        "mtime": p.stat().st_mtime, "kind": kind}
+            new_meta = {"path": p, "rel": str(rel), "text": text, "sha256": hashlib.sha256(raw).hexdigest(),
+                        "mtime": after.st_mtime, "kind": kind,
+                        "identity": identity(after), "physical": physical}
             keep, drop = ((new_meta, old_meta) if rank(new_meta) > rank(old_meta)
                           else (old_meta, new_meta))
             print(f"досье: имя «{t}» занято дважды — беру {keep['rel']}, "
                   f"пропускаю {drop['rel']}")
             files[t] = keep
             continue
-        files[t] = {"path": p, "rel": str(rel), "text": text,
-                    "mtime": p.stat().st_mtime, "kind": kind}
+        files[t] = {"path": p, "rel": str(rel), "text": text, "sha256": hashlib.sha256(raw).hexdigest(),
+                    "mtime": after.st_mtime, "kind": kind,
+                    "identity": identity(after), "physical": physical}
     # Ссылки разбираем ВТОРЫМ проходом, когда состав files уже устоялся: при
     # дублирующемся имени первый проход успевал записать ссылки проигравшего
     # файла под общим титулом, и кластер тянул за собой связи, которых у
@@ -460,14 +470,30 @@ def trim_to_format(body: str) -> str:
     return body[m.start():].strip() if m else (body or "").strip()
 
 
-def source_text(meta: dict) -> str:
+def source_text(meta: dict, *, full: bool = False) -> str:
     """Текст узла для модели — один на сборку досье и ревизию: без шапки, без
     меток деятелем (`graph_names.unlabel_speakers`), не длиннее `SRC_CHARS`.
     Чистка — до среза, в памяти: файл графа не меняется (№815)."""
     # BOM и пустые строки до шапки: прежний срез их терпел (n815-out1 M6); сам
     # `frontmatter.split` строг — им же пишется шапка на запись
     _, body = frontmatter.split((meta.get("text") or "").lstrip("\ufeff\n\r "))
-    return graph_names.unlabel_speakers(body.strip())[:SRC_CHARS]
+    text = graph_names.unlabel_speakers(body.strip())
+    return text if full else text[:SRC_CHARS]
+
+
+def prompt_members(members: list[str], files: dict[str, dict]) -> list[str]:
+    """Exactly the members admitted to the bounded rebuild prompt."""
+    selected, total = [], 0
+    for name in members[:MAX_SOURCES]:
+        meta = files.get(name)
+        if meta is None:
+            continue
+        block = f"### [[{name}]] ({meta['kind']})\n{source_text(meta, full=True)}\n"
+        if total + len(block) > PROMPT_CHARS:
+            break
+        selected.append(name)
+        total += len(block)
+    return selected
 
 
 def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
@@ -480,16 +506,12 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
     дате от старой к новой, встречи без даты и прочие — в порядке отбора.
     """
     selected: list[tuple[str, dict, str]] = []
-    total = 0
-    for m in members[:MAX_SOURCES]:
+    for m in prompt_members(members, files):
         meta = files.get(m)
         if not meta:
             continue
-        block = f"### [[{m}]] ({meta['kind']})\n{source_text(meta)}\n"
-        if total + len(block) > PROMPT_CHARS:
-            break
+        block = f"### [[{m}]] ({meta['kind']})\n{source_text(meta, full=True)}\n"
         selected.append((m, meta, block))
-        total += len(block)
 
     core: list[str] = []
     dated: list[tuple[str, str, str]] = []
@@ -553,8 +575,12 @@ def read_input(loaded: DossierLoad) -> str:
 
 
 def render(theme: str, body: str, members: list[str], files: dict[str, dict],
-           fp: str, today: str, gen: str = "") -> str:
-    """Готовый файл досье: frontmatter для машины, текст для человека."""
+           fp: str, today: str, gen: str = "", *, author_payload: str | None = None) -> str:
+    """Готовый файл досье: frontmatter для машины, текст для человека.
+
+    `author_payload` — точное содержимое после строки авторского заголовка,
+    включая пустые строки. None создаёт прежний маркер; "" сохраняет пустоту.
+    """
     kinds: dict[str, list[str]] = defaultdict(list)
     for m in members:
         if m in files:
@@ -585,15 +611,10 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
     for kind in sorted(kinds):
         links = " · ".join(f"[[{m}]]" for m in sorted(kinds[kind]))
         fm.append(f"- **{kind}:** {links}")
-    fm += ["", "## Правки автора", "", "—", ""]
-    return "\n".join(fm)
+    fm += ["", "## Правки автора", ""]
+    return "\n".join(fm) + ("\n—\n" if author_payload is None else author_payload)
 
 
-# Заголовок правок — без пробела и с хвостом пробелов: так его набирает владелец в
-# Obsidian, а литерал «## Правки автора\n» терял правки — пересборка писала «—» поверх
-# (№856). Шаблон — надмножество литерала: что находил он, находит и этот (отступ, любое
-# число «#», середина строки; min1 Haiku C1). Раздел — до конца файла, как прежде
-KEEP_RE = re.compile(r"#+[ \t]*Правки автора[ \t]*(?:\n|\Z)(.*)", re.S)
 BACKUP_DIR = ".backup"       # копии досье до пересборки и ревизии: `Досье/.backup/<штамп>/`
 
 
@@ -626,10 +647,7 @@ def backup(folder: pathlib.Path, stamp: str, path: pathlib.Path, keep: int = 40)
 
 def preserve_manual(old_text: str) -> str | None:
     """Ручные правки переживают пересборку — иначе досье никто не будет править."""
-    m = KEEP_RE.search(old_text or "")
-    if not m:
-        return None
-    kept = m.group(1).strip()
+    kept = DossierLoad("ok", old_text).parsed.manual
     return kept if kept and kept != "—" else None
 
 
@@ -640,8 +658,6 @@ PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
 # «##Правки автора» строка из стенограммы подсунет так же легко, как «## »,
 # а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
 _PROTECTED_RE = re.compile(r"(?m)^[ \t]*#+\s*(?:Правки автора|Источники)\s*$")
-_SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
-_MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
 
 
 def strip_protected(body: str) -> str:
@@ -650,7 +666,11 @@ def strip_protected(body: str) -> str:
     Режем по СТРОКЕ-заголовку, а не по подстроке: упоминание «## Источники»
     внутри абзаца — не раздел (ревью 17.08).
     """
-    return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
+    # Use the same physical-line/fence/quote boundaries as every other reader.
+    # A literal heading inside code is content, and must survive rendering.
+    protected = next((s for s in _parse_dossier(body).sections
+                      if s.title in ("Источники", "Правки автора")), None)
+    return body[:protected.start].rstrip() if protected else body.rstrip()
 
 
 def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
@@ -661,34 +681,16 @@ def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
     только префикс (круг-1 по PR #382, Codex Critical). Источники — None,
     если раздела нет: такое досье собрано руками, и трогать его нельзя.
     """
-    m = VALID_RE.search(text or "")
-    if not m:
-        return text or "", "", None, None
-    # VALID_RE допускает пробелы и переводы строк перед «## Сейчас» — они
-    # остаются в шапке, тело начинается с самого заголовка
-    start = m.start() + (m.group(0).index("#"))
-    head, rest = text[:start], text[start:]
-    ms = _SOURCES_RE.search(rest)
-    mm = _MANUAL_RE.search(rest)
-    # раздел кончается на следующем найденном заголовке или в конце текста;
-    # «Правки автора» раньше «Источников» — правки кончаются на соседнем
-    # заголовке, иначе список источников уезжал внутрь авторского раздела
-    # и дублировался при записи (круг-2 по PR #382, DS + Codex)
-    cuts = sorted(x.start() for x in (ms, mm) if x) + [len(rest)]
-    body = rest[:cuts[0]].rstrip()
-    sources = manual = None
-    if ms:
-        sources = rest[ms.end():cuts[cuts.index(ms.start()) + 1]].strip("\n").rstrip()
-    if mm:
-        manual = rest[mm.end():cuts[cuts.index(mm.start()) + 1]].strip()
-    return head, body, sources, manual
+    parsed = DossierLoad("ok", text).parsed
+    return parsed.head, parsed.body, parsed.sources, parsed.manual
 
 
-def labeled_body(text: str) -> bool:
+def labeled_body(text: str) -> bool | None:
     """В теле досье (пять разделов, без «Источников» и «Правок автора») действует
     метка диаризации? Один предикат на доктора графа и ночную очередь — иначе
     лента считала бы одно, а ночь чинила другое (n815-in3 DS C2)."""
-    return graph_names.has_speaker_actor(split_dossier(text or "")[1])
+    parsed = DossierLoad("ok", text).parsed
+    return graph_names.has_speaker_actor(parsed.body) if parsed.complete else None
 
 
 REVISION_FIELD = "ревизия"
@@ -718,10 +720,199 @@ def without_revision(text: str) -> str:
     return frontmatter.without_field(text, REVISION_FIELD)
 
 
+_BODY_TITLES = ("Сейчас", "Как пришли", "Решено", "Открыто", "Кто в теме")
+_SECTION_LINE = re.compile(r"[ \t]*(?:(#+)[ \t]*(Источники|Правки автора)|(##)[ \t]*(Сейчас|Как пришли|Решено|Открыто|Кто в теме))[ \t]*")
+# Deletion compatibility only: the old expressions also saw fenced lines and
+# allowed whitespace across physical lines. Their false boundaries still veto
+# deletion; they never supply sections to readers or authorize a write.
+_LEGACY_DELETE_PROTECTED = re.compile(r"(?m)^#{1,6}\s*(Источники|Правки автора)\s*$")
+_FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+_ENVELOPE = re.compile(r"\n# Досье: [^\n]+\n\n> Собрано автоматически ночным проходом\. Правки руками сохранятся:\n> при пересборке раздел «Правки автора» не трогается\.\n\n")
+
+
+@dataclass(frozen=True)
+class DossierSection:
+    title: str
+    start: int
+    content: int
+    end: int
+
+
+@dataclass(frozen=True)
+class DossierParse:
+    """Normalized spans are read projections, never write permission by themselves.
+
+    Every byte-equivalent character belongs to head/body or a section/remainder;
+    all boundaries remain available even when a duplicate makes projection unsafe.
+    """
+    head: str
+    body: str
+    sources: str | None
+    manual: str | None
+    sections: tuple[DossierSection, ...]
+    body_span: tuple[int, int] | None
+    complete: bool
+    reason: str
+    protected: bool
+    remainder: str
+    legacy_delete_veto: bool
+
+
+def _parse_dossier(text: str) -> DossierParse:
+    fm, envelope = frontmatter.split(text.removeprefix("\ufeff"))
+    prefix = len(text) - len(envelope)
+    found: list[tuple[str, int, int]] = []
+    fence: tuple[str, int] | None = None
+    offset = 0
+    # Scan physical LF lines, not splitlines(): Unicode separators are text.
+    for line in re.findall(r"[^\n]*\n|[^\n]+$", text):
+        if fm is not None and offset < prefix:
+            offset += len(line)
+            continue
+        # Offsets must include LF even in unsupported-newline read projections.
+        physical = line.rstrip("\n")
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", physical):
+                fence = None
+        elif not re.match(r" {0,3}>", physical):
+            opening = _FENCE_OPEN.fullmatch(physical)
+            if opening and (opening[1][0] != "`" or "`" not in opening[2]):
+                fence = (opening[1][0], len(opening[1]))
+            else:
+                m = _SECTION_LINE.fullmatch(physical)
+                if m:
+                    found.append((m[2] or m[4], offset, offset + len(line)))
+        offset += len(line)
+    sections = tuple(DossierSection(title, start, content, found[i + 1][1] if i + 1 < len(found) else len(text))
+                     for i, (title, start, content) in enumerate(found))
+    protected = [s for s in sections if s.title in ("Источники", "Правки автора")]
+    bodies = [s for s in sections if s.title == "Сейчас"]
+    start = bodies[0].start if bodies else None
+    body_tail = sections[sections.index(bodies[0]):] if bodies else ()
+    end = next((s.start for s in body_tail if s.title in ("Источники", "Правки автора")), len(text))
+    body_end = len(text[:end].rstrip())
+    span = (start, body_end) if start is not None else None
+    head = text[:start] if start is not None else text
+    body = text[start:body_end] if start is not None else ""
+
+    def payload(title):
+        matches = [s for s in protected if s.title == title]
+        if len(matches) != 1:
+            return None
+        s = matches[0]
+        # Ordinary Markdown headings in author text belong to the author too.
+        stop = next((p.start for p in protected if p.start > s.start), len(text))
+        return text[s.content:stop].strip()
+
+    sources, manual = payload("Источники"), payload("Правки автора")
+    env = _ENVELOPE.match(envelope) if fm is not None else None
+    have_fingerprint = fm is not None and frontmatter.has_field(text, "отпечаток")
+    before_sources = [s.title for s in sections[:sections.index(protected[0])]] if protected else []
+    complete = bool(env and have_fingerprint and start == prefix + env.end()
+                    and [s.title for s in protected] == ["Источники", "Правки автора"]
+                    and before_sources == list(_BODY_TITLES)
+                    and not any(s.title in _BODY_TITLES for s in
+                                sections[sections.index(protected[0]):sections.index(protected[1])]))
+    reason = ""
+    if fence:
+        reason = "незакрытый блок кода"
+    elif protected and not complete:
+        titles = [s.title for s in protected]
+        if len(set(titles)) != len(titles):
+            detail = "повтор защищённого заголовка"
+        elif set(titles) != {"Источники", "Правки автора"}:
+            detail = "неполный набор защищённых разделов"
+        elif titles != ["Источники", "Правки автора"]:
+            detail = "обратный порядок защищённых разделов"
+        elif not env or start != prefix + env.end():
+            detail = "неизвестная внешняя оболочка или остаток перед телом"
+        elif not have_fingerprint:
+            detail = "нет поля отпечатка в закрытой шапке"
+        elif before_sources == list(_BODY_TITLES):
+            detail = "заголовок тела внутри раздела Источники"
+        else:
+            detail = "неполный или нарушенный порядок пяти разделов тела"
+        reason = f"неоднозначная структура защищённых разделов: {detail}"
+    known = complete and not fence
+    # Unknown input remains available in full, independently of read projections.
+    admitted = {(s.start, s.title) for s in protected}
+    legacy_body = VALID_RE.search(text)
+    legacy_start = legacy_body.start() + legacy_body[0].index("#") if legacy_body else None
+    legacy_delete_veto = (legacy_start != start or any(
+        (m.start(), m[1]) not in admitted for m in _LEGACY_DELETE_PROTECTED.finditer(text)))
+    return DossierParse(head, body, sources, manual, sections, span, known, reason,
+                        bool(protected), "" if known else text, legacy_delete_veto)
+
+
 @dataclass(frozen=True)
 class DossierLoad:
     state: Literal["ok", "damaged", "unreadable", "missing"]
     text: str | None = None
+    raw: bytes | None = field(default=None, repr=False)
+    parsed: DossierParse = field(init=False)
+    newline: str | None = field(init=False)
+
+    def __post_init__(self):
+        original = self.raw.decode("utf-8", errors="replace") if self.raw is not None else (self.text or "")
+        supported = not any(c in original for c in "\x85\u2028\u2029")
+        rest = original.replace("\r\n", "")
+        supported = supported and "\r" not in rest and not ("\r\n" in original and "\n" in rest)
+        object.__setattr__(self, "newline", ("\r\n" if "\r\n" in original else "\n") if supported else None)
+        normalized = original.replace("\r\n", "\n").replace("\r", "\n")
+        object.__setattr__(self, "text", normalized if self.text is not None or self.raw is not None else None)
+        object.__setattr__(self, "parsed", _parse_dossier(normalized))
+
+    def refusal(self, operation: Literal["rebuild", "review", "edit", "forget"]) -> str:
+        if self.state == "unreadable":
+            return "прежнее досье не прочитано"
+        if self.newline is None:
+            return "неподдерживаемые переводы строк"
+        if self.parsed.reason:
+            return self.parsed.reason
+        if operation in ("review", "edit") and not self.parsed.complete:
+            return "нет полного тела и защищённых разделов досье"
+        if operation == "edit" and self.raw is None:
+            return "нет исходного снимка байтов"
+        if self.state == "damaged":
+            if operation != "rebuild" or not self.parsed.complete or self.raw is None:
+                return "Правки автора повреждены или не найдены"
+            # Only the raw author suffix establishes damage versus literal U+FFFD.
+            author = next(s for s in self.parsed.sections if s.title == "Правки автора")
+            lines = self.raw.splitlines(keepends=True)
+            count = 0
+            author_reason = "граница Правок автора не подтверждена"
+            for i, line in enumerate(lines):
+                if count == author.start:
+                    try:
+                        b"".join(lines[i:]).decode("utf-8")
+                    except UnicodeDecodeError:
+                        author_reason = "Правки автора повреждены"
+                    else:
+                        author_reason = ""
+                    break
+                count += len(line.decode("utf-8", errors="replace").replace("\r\n", "\n"))
+            if author_reason:
+                return author_reason
+        return ""
+
+    def replace_body(self, body: str, revision_date: str | None = None) -> str:
+        """Exact outside-body bytes through the existing UTF-8 CAS writer only."""
+        why = self.refusal("edit")
+        if why or self.raw is None or self.state != "ok":
+            raise ValueError(why or "нет исходного снимка байтов")
+        raw_text = self.raw.decode("utf-8")
+        if raw_text.replace("\r\n", "\n") != self.text:
+            raise ValueError("снимок байтов не соответствует тексту")
+        start, end = self.parsed.body_span
+        prefix = self.text[:start].replace("\n", self.newline)
+        suffix = self.text[end:].replace("\n", self.newline)
+        text = prefix + body.strip().replace("\r\n", "\n").replace("\n", self.newline) + suffix
+        if revision_date is not None:
+            text = frontmatter.with_scalar_preserving(text, REVISION_FIELD, revision_date)
+        candidate = DossierLoad("ok", text)
+        if not candidate.parsed.complete or candidate.refusal("review"):
+            raise ValueError(candidate.parsed.reason or "ответ не образует полное досье")
+        return text
 
 
 def load_dossier(path: pathlib.Path) -> DossierLoad:
@@ -743,14 +934,12 @@ def load_dossier(path: pathlib.Path) -> DossierLoad:
         state = "damaged"
         text = raw.decode("utf-8", errors="replace")
     # Сохраняем перевод строк, который раньше делал Path.read_text.
-    return DossierLoad(state, text.replace("\r\n", "\n").replace("\r", "\n"))
+    return DossierLoad(state, text, raw)
 
 
 def read_fingerprint(source: pathlib.Path | DossierLoad) -> str:
     loaded = load_dossier(source) if isinstance(source, pathlib.Path) else source
-    head = (loaded.text or "")[:600]
-    m = re.search(r"^отпечаток:\s*(\S+)", head, re.M)
-    return m.group(1) if m else ""
+    return frontmatter.scalar_field(loaded.text or "", "отпечаток")
 
 
 def kept_from_night(text: str | None) -> str:
@@ -763,8 +952,12 @@ def kept_from_night(text: str | None) -> str:
     строк — как у `load_dossier`: CRLF не прячет правки автора (вход n845-in1
     DS C1); заголовок раздела — любого уровня, как у `split_dossier`."""
     t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    _, _, sources, manual = split_dossier(t)
-    if not read_fingerprint(DossierLoad("ok", t)):
+    loaded = DossierLoad("ok", text)
+    sources, manual = loaded.parsed.sources, loaded.parsed.manual
+    # Keep the old 600-character visibility exclusion for deletion. The shared
+    # header reader is more precise; recognizing more metadata grants no new
+    # eligibility to forget a stored file.
+    if not read_fingerprint(loaded) or not re.search(r"^отпечаток:\s*\S+", t[:600], re.M):
         return "нет отпечатка ночи"
     if sources is None or manual is None:
         return "нет раздела «Источники» или «Правки автора»"
@@ -772,8 +965,19 @@ def kept_from_night(text: str | None) -> str:
         return "есть правки автора"
     if revision(t):
         return "тело правила облачная ревизия"
-    if labeled_body(t):
+    if loaded.parsed.complete and graph_names.has_speaker_actor(loaded.parsed.body):
         return "в теле метка диаризации"
+    why = loaded.refusal("forget")
+    if why or not loaded.parsed.complete:
+        return why or "нет полного тела досье ночи"
+    for section in loaded.parsed.sections:
+        if section.title in ("Источники", "Правки автора"):
+            line = t[section.start:section.content]
+            hashes = len(line) - len(line.lstrip("#"))
+            if not 1 <= hashes <= 6:
+                return "защищённый заголовок вне прежнего допуска удаления"
+    if loaded.parsed.legacy_delete_veto:
+        return "прежние границы разделов удерживают досье от удаления"
     return ""
 
 
@@ -789,6 +993,90 @@ def in_sync(loaded: DossierLoad, fp: str) -> bool:
 
 COMPOSITION_FIELD = "состав"       # встречи, по которым собрано тело
 REJECTED_FIELD = "не_принято"      # встречи, чью добавку отверг гейт: в «новые» не возвращаются
+REJECTION_VERSIONS_FIELD = "не_принято_версии"
+
+
+def member_name(value: str) -> str:
+    """One meeting identity grammar for list scalars and full wiki links."""
+    value = value.strip()
+    match = LINK_RE.fullmatch(value)
+    target = "" if value.startswith("[[") and match is None else (match[1] if match else value)
+    return graph_names.link_target_stem(target)
+
+
+def membership_refusal(text: str) -> str | None:
+    """Duplicate writable keys are ambiguous even when YAML picks a winner."""
+    fm, _ = frontmatter.split(text.removeprefix("\ufeff"))
+    if fm is None:
+        return None
+    for key in (COMPOSITION_FIELD, REJECTED_FIELD, REJECTION_VERSIONS_FIELD):
+        first = frontmatter._field_span(fm, key)
+        if first and frontmatter._field_span(fm[:first[0]] + fm[first[1]:], key):
+            return f"duplicate membership field: {key}"
+        if first:
+            if not frontmatter.list_field(text, key) and not re.fullmatch(
+                    r"\[\s*\](?:\s+#.*)?", frontmatter.scalar_field(text, key)):
+                return f"unreadable membership value: {key}"
+            raw = frontmatter.parse(text.removeprefix("\ufeff")).get(key)
+            if isinstance(raw, list) and any(not isinstance(item, str) and not frontmatter._is_literal(item)
+                                             for item in raw):
+                return f"unreadable membership item: {key}"
+            if isinstance(raw, list) and key != REJECTION_VERSIONS_FIELD and any(
+                    isinstance(item, str) and not member_name(item) for item in raw):
+                return f"empty membership identity: {key}"
+            for item in frontmatter.list_field(text, key):
+                if key == REJECTION_VERSIONS_FIELD:
+                    digest, separator, name = item.partition(":")
+                    # Unknown legacy values are opaque and preserved. A known
+                    # version envelope with an empty identity is ambiguous.
+                    if separator and re.fullmatch(r"[0-9a-f]{64}", digest) and not member_name(name):
+                        return f"unreadable membership version: {key}"
+                elif not member_name(item):
+                    return f"empty membership identity: {key}"
+    return None
+
+
+def rejection_context(text: str) -> str:
+    """Membership/index bookkeeping cannot invalidate its own semantic verdict."""
+    parsed = DossierLoad("ok", text).parsed
+    payload = [frontmatter.scalar_field(text, "тема"), parsed.body, parsed.manual]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
+
+
+def rejection_version(text: str, name: str, meta: dict) -> str:
+    raw_hash = meta.get("sha256") or hashlib.sha256(meta["text"].encode()).hexdigest()
+    return hashlib.sha256(json.dumps([name, raw_hash, rejection_context(text)],
+                                     ensure_ascii=False).encode()).hexdigest()
+
+
+def rejection_versions(text: str) -> dict[str, str]:
+    out = {}
+    for item in frontmatter.list_field(text, REJECTION_VERSIONS_FIELD):
+        digest, separator, name = item.partition(":")
+        if separator and re.fullmatch(r"[0-9a-f]{64}", digest) and name:
+            out[member_name(name)] = digest
+    return out
+
+
+def without_rejections(text: str, identities: set[str]) -> str:
+    """Forget's identity set already includes canonical names and aliases."""
+    items = frontmatter.list_field(text, REJECTION_VERSIONS_FIELD)
+    kept = [item for item in items
+            if not (item.partition(":")[1] and
+                    member_name(item.partition(":")[2]) in identities)]
+    return frontmatter.set_list_field(text, REJECTION_VERSIONS_FIELD, kept) if kept != items else text
+
+
+def effective_rejections(text: str, snap: GraphSnapshot) -> list[str]:
+    versions = rejection_versions(text)
+    valid = []
+    for name in frontmatter.list_field(text, REJECTED_FIELD):
+        canonical = _canon(member_name(name), snap)
+        meta = snap.files.get(canonical)
+        # Legacy/unversioned or changed context/content is retryable.
+        if meta and versions.get(canonical) == rejection_version(text, canonical, meta):
+            valid.append(canonical)
+    return valid
 GROW_LIMIT = 12_000                # тело длиннее после добавки — пересобрать, а не дописывать
 ADD_CHARS = 1_300                  # замер пилота 30.10: столько добавляет одна встреча
 
@@ -825,7 +1113,7 @@ def composition(text: str | None, *, schema: GraphSchema) -> list[str] | None:
         # не «встреч нет», а «не читается»: иначе все встречи темы стали бы новыми (out2 Haiku I2)
         if not names and not re.fullmatch(r"\[\s*\](?:\s+#.*)?", frontmatter.scalar_field(text, COMPOSITION_FIELD)):
             return None
-        return [graph_names.link_target_stem(n) for n in names]
+        return [member_name(n) for n in names]
     sources = split_dossier(text or "")[2]
     return None if sources is None else _source_meetings(sources, schema)
 
@@ -901,10 +1189,12 @@ def plan(loaded: DossierLoad, members: list[str], snap: GraphSnapshot, *, schema
     composed = composition(text, schema=schema)
     if composed is None:
         return Plan("hold", "no_composition")
-    rejected = [graph_names.link_target_stem(n) for n in frontmatter.list_field(text, REJECTED_FIELD)]
+    if membership_refusal(text):
+        return Plan("hold", "ambiguous_membership")
+    rejected = effective_rejections(text, snap)
     new, gone = membership_delta(composed, rejected, members, snap, schema=schema, on_disk=on_disk)
     # ушедшее идёт в план и при hold: отчёт обязан назвать забытое (out2 Haiku C3)
-    if not VALID_RE.search(text):
+    if not loaded.parsed.complete or loaded.newline is None:
         return Plan("hold", "unparsed", tuple(new), tuple(gone))
     if gone:
         return Plan("hold" if held else "rebuild", "gone", tuple(new), tuple(gone))

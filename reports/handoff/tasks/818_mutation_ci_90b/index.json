@@ -1,0 +1,26 @@
+{
+  "run": 41604449004,
+  "source_sha": "90bced818c64663debb609db6bcbac322cd8049b",
+  "ci_merge_sha": "78fd9661cdcf9993f83b85d1b719f099d23dc5bc",
+  "source_tree": "b317086465a87158ce89b876a27afadf58d7564c",
+  "ci_merge_tree": "b317086465a87158ce89b876a27afadf58d7564c",
+  "tree_binding": "GitHub git commit API tree equals local source Git tree",
+  "compared_base": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81",
+  "tested": 213,
+  "critical_tested": 205,
+  "survived": 0,
+  "skipped": 0,
+  "unread": 0,
+  "checked_at": "2026-11-03T09:34:57.143589+00:00",
+  "files": {
+    "mutation-report-1.txt": "933fe35881eb6ce4aa9efcd6de78b73ec2ee658d773e658b709773c18c92d74c",
+    "mutation-report-1.txt.json": "fa84ca6e5e998c1cb8e433dcb14c5307afb1e37cad56e00159e19c47443fa3e5",
+    "mutation-report-2.txt": "ba4f51e6b8bef95a3795963b6ab2d8e27f4221a904586866bee019ea2054841e",
+    "mutation-report-2.txt.json": "21464f9ef6244477d1d6085cbfd153586817d25ee7cb274e4fae085a6b638595",
+    "mutation-report-3.txt": "906ffb9784f1b53667a8ee641a7a127e973c7b4aa8d32f8280cf3b5b88ef5b7c",
+    "mutation-report-3.txt.json": "923f1bc0996057656c98ae481b4935bc907e3088a9676aeaf8be344907ff127d",
+    "mutation-report-4.txt": "906ffb9784f1b53667a8ee641a7a127e973c7b4aa8d32f8280cf3b5b88ef5b7c",
+    "mutation-report-4.txt.json": "0efa8020f6ba63f33b0561500a5dae07da5366821c99d1198e4a60afa3fe4356",
+    "mutation-verdict.txt": "f965aa5c4b73e8dc9b55716e0aa02c28a7a10e6d8be8adf45c8a70333106914a"
+  }
+}

@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "topic": "Glasshouse",
+  "cases": [
+    {
+      "case": "qualifier-before-anchor",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "The following statement is tentative and has not been verified.\nA rain cover was fitted to the Glasshouse.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "qualifier-after-anchor",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "A rain cover was fitted to the Glasshouse.\nThe preceding statement is only a hypothesis and has not been verified.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "negation-before-anchor",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "The following line is a false draft, not an accepted fact.\nA rain cover was fitted to the Glasshouse.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "negation-after-anchor",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "A rain cover was fitted to the Glasshouse.\nCorrection: the preceding line is false. No rain cover was fitted to the Glasshouse.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "fully-qualified-positive",
+      "candidate": "A rain cover may have been fitted to the Glasshouse; this is unverified.",
+      "quote": "A rain cover may have been fitted to the Glasshouse; this is unverified.",
+      "source": "Preliminary observation:\nA rain cover may have been fitted to the Glasshouse; this is unverified.\nDo not treat it as confirmed installation.\n",
+      "expected_support": true,
+      "expected_topic": true
+    },
+    {
+      "case": "own-only-positive",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "[[Ядра/Glasshouse]] A rain cover was fitted to the Glasshouse.\n",
+      "expected_support": true,
+      "expected_topic": true
+    },
+    {
+      "case": "mixed-context-own",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "[[Ядра/Glasshouse]] A rain cover was fitted to the Glasshouse.\n[[Ядра/WaterTank]] A level sensor was fitted to the WaterTank.\n",
+      "expected_support": true,
+      "expected_topic": true
+    },
+    {
+      "case": "mixed-context-foreign",
+      "candidate": "A level sensor was fitted to the WaterTank.",
+      "quote": "A level sensor was fitted to the WaterTank.",
+      "source": "[[Ядра/Glasshouse]] A rain cover was fitted to the Glasshouse.\n[[Ядра/WaterTank]] A level sensor was fitted to the WaterTank.\n",
+      "expected_support": true,
+      "expected_topic": false
+    },
+    {
+      "case": "explicit-new-relationship",
+      "candidate": "The WaterTank pump supplies irrigation water to the Glasshouse.",
+      "quote": "The WaterTank pump supplies irrigation water to the Glasshouse.",
+      "source": "A rain cover was fitted to the Glasshouse.\nThe WaterTank pump supplies irrigation water to the Glasshouse.\nA level sensor was fitted to the WaterTank.\n",
+      "expected_support": true,
+      "expected_topic": true
+    },
+    {
+      "case": "suspected-relationship",
+      "candidate": "The WaterTank pump supplies irrigation water to the Glasshouse.",
+      "quote": "A relationship between the WaterTank pump and Glasshouse irrigation is suspected but unverified.",
+      "source": "A relationship between the WaterTank pump and Glasshouse irrigation is suspected but unverified.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "compound-full-proof",
+      "candidate": "A rain cover was fitted to the Glasshouse. A level sensor was fitted to the WaterTank.",
+      "quote": "A rain cover was fitted to the Glasshouse.\nA level sensor was fitted to the WaterTank.",
+      "source": "A rain cover was fitted to the Glasshouse.\nA level sensor was fitted to the WaterTank.\n",
+      "expected_support": true,
+      "expected_topic": false
+    },
+    {
+      "case": "compound-partial-proof",
+      "candidate": "A rain cover was fitted to the Glasshouse. A level sensor was fitted to the WaterTank.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "A rain cover was fitted to the Glasshouse.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "unrelated-neighbor-qualifier",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the Glasshouse.",
+      "source": "A rain cover was fitted to the Glasshouse.\nThe WaterTank sensor installation is unverified.\n",
+      "expected_support": true,
+      "expected_topic": true
+    },
+    {
+      "case": "different-subject-proof",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A rain cover was fitted to the WaterTank.",
+      "source": "A rain cover was fitted to the WaterTank.\nNo rain cover was fitted to the Glasshouse.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "prior-object-coreference",
+      "candidate": "Vent A is now closed.",
+      "quote": "That vent is now closed.",
+      "source": "[[Ядра/Glasshouse]] That vent is now closed.\n",
+      "expected_support": true,
+      "expected_topic": true
+    },
+    {
+      "case": "prior-event-is-not-new-evidence",
+      "candidate": "Vent A is open.",
+      "quote": "We discussed the schedule.",
+      "source": "We discussed the schedule.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "foreign-prior-mention",
+      "candidate": "A level sensor was fitted to the WaterTank.",
+      "quote": "A level sensor was fitted to the WaterTank.",
+      "source": "A level sensor was fitted to the WaterTank.\n",
+      "expected_support": true,
+      "expected_topic": false,
+      "prior_history_note": "WaterTank is only an unrelated comparison, not a Glasshouse component."
+    },
+    {
+      "case": "historical-evidence-not-current",
+      "candidate": "Vent A is closed now.",
+      "quote": "Yesterday Vent A was closed.",
+      "source": "Yesterday Vent A was closed.\nToday Vent A is open.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "historical-qualified-positive",
+      "candidate": "Yesterday Vent A was closed.",
+      "quote": "Yesterday Vent A was closed.",
+      "source": "Yesterday Vent A was closed.\nToday Vent A is open.\n",
+      "expected_support": true,
+      "expected_topic": true
+    },
+    {
+      "case": "wrong-anchor-cannot-borrow-event",
+      "candidate": "A rain cover was fitted to the Glasshouse.",
+      "quote": "A level sensor was fitted to the WaterTank.",
+      "source": "[[Ядра/Glasshouse]] A rain cover was fitted to the Glasshouse.\n[[Ядра/WaterTank]] A level sensor was fitted to the WaterTank.\n",
+      "expected_support": false,
+      "expected_topic": null
+    },
+    {
+      "case": "same-name-foreign-object",
+      "candidate": "The Glasshouse Vent A is now closed.",
+      "quote": "WaterTank's Vent A is now closed.",
+      "source": "WaterTank has a different Vent A.\nWaterTank's Vent A is now closed.\n",
+      "expected_support": false,
+      "expected_topic": null
+    }
+  ]
+}

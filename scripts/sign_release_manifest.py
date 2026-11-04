@@ -9,7 +9,7 @@
 после каждого релиза — шаг записан в docs/RELEASING.md. Приложение
 (UpdateAuthenticity.swift) требует эту подпись перед подменой бандла.
 
-    .venv/bin/python scripts/sign_release_manifest.py v0.57.0
+    .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z --expected-sha256 <проверенный-sha256>
     .venv/bin/python scripts/sign_release_manifest.py --file m.sha256  # без gh
 
 Подпись — raw ed25519 над СЫРЫМИ байтами файла .sha256, в base64: ровно то,
@@ -19,13 +19,21 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import hashlib
 import json
 import os
 import pathlib
+import plistlib
 import re
 import subprocess
 import sys
 import tempfile
+from xml.parsers.expat import ExpatError
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+
+from charoite_paths import code_root
 
 KEY = pathlib.Path.home() / ".config" / "charoite" / "update_manifest_ed25519.pem"
 ZIP = "Charoite.app.zip"
@@ -33,6 +41,9 @@ ASSET = ZIP + ".manifest"
 TEAM_REQUIREMENT = ('anchor apple generic and '
                     'certificate leaf[subject.OU] = "AR7PDJQNR4"')
 REPO = "charoiteai/Charoite_audio"
+UPDATE_AUTHENTICITY = (code_root(__file__) / "app"
+                       / "Sources" / "CharoiteApp" / "Services"
+                       / "UpdateAuthenticity.swift")
 
 
 def sign_bytes(manifest: bytes, key_path: pathlib.Path = KEY) -> str:
@@ -50,13 +61,56 @@ def public_key_base64(key_path: pathlib.Path = KEY) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
+def load_manifest_anchor() -> bytes:
+    """Единственный literal-якорь из того же tracked Swift-файла, что у приложения."""
+    try:
+        swift = UPDATE_AUTHENTICITY.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as e:
+        raise SystemExit("не удалось прочитать публичный якорь приложения") from e
+    assignments = re.findall(r"\bmanifestKeyBase64\s*=", swift)
+    literals = re.findall(
+        r'(?m)^[ \t]*static[ \t]+let[ \t]+manifestKeyBase64[ \t]*=[ \t]*"([^"\r\n]*)"[ \t]*$',
+        swift)
+    if len(assignments) != 1 or len(literals) != 1:
+        raise SystemExit("нужна единственная строковая константа manifestKeyBase64")
+    try:
+        raw = base64.b64decode(literals[0], validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise SystemExit("публичный якорь приложения — некорректный base64") from e
+    if len(raw) != 32 or base64.b64encode(raw).decode("ascii") != literals[0]:
+        raise SystemExit("публичный якорь приложения — не raw ed25519 (32 байта)")
+    return raw
+
+
+def verify_signing_key(key: pathlib.Path, anchor: bytes) -> None:
+    """До любого gh-вызова отказать ключу, которому приложение не доверяет."""
+    try:
+        public = base64.b64decode(public_key_base64(key), validate=True)
+    except (OSError, ValueError, TypeError) as e:
+        raise SystemExit("не удалось прочитать публичную половину ключа ed25519") from e
+    if public != anchor:
+        raise SystemExit("ключ подписи не совпадает с публичным якорем приложения")
+
+
+def verify_manifest_signature(manifest: bytes, signature: str, anchor: bytes) -> None:
+    """Проверить именно результат подписи: файл ключа мог смениться после preflight."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    try:
+        raw = base64.b64decode(signature, validate=True)
+        Ed25519PublicKey.from_public_bytes(anchor).verify(raw, manifest)
+    except (binascii.Error, ValueError, InvalidSignature) as e:
+        raise SystemExit("подпись манифеста не подтверждена публичным якорем приложения; "
+                         "загрузка отменена, релиз остался pre-release") from e
+
+
 def build_manifest(tag: str, zip_path: pathlib.Path) -> bytes:
     """«<версия>  <sha256>\n» — версию несёт сам подписанный файл.
 
     Голый хеш позволял реплей: старая честная тройка под новым тегом
     проходила все проверки (круг по PR #366, GLM + DeepSeek).
     """
-    import hashlib
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     version = tag[1:] if tag.startswith("v") else tag
     return f"{version}  {digest}\n".encode("ascii")
@@ -83,11 +137,26 @@ def verify_zip_is_ours(zip_path: pathlib.Path, workdir: pathlib.Path) -> None:
                     "-R", "=" + TEAM_REQUIREMENT, str(app)], check=True)
 
 
+def verify_bundle_version(workdir: pathlib.Path, tag: str) -> None:
+    """Версия подписанного бандла должна в точности совпадать с тегом без v."""
+    try:
+        info = plistlib.loads((workdir / "Charoite.app" / "Contents"
+                              / "Info.plist").read_bytes())
+    except (OSError, ValueError, TypeError, plistlib.InvalidFileException, ExpatError) as e:
+        raise SystemExit("Info.plist приложения отсутствует или повреждён; "
+                         "релиз остался pre-release") from e
+    version = info.get("CFBundleShortVersionString") if isinstance(info, dict) else None
+    if not isinstance(version, str) or version != tag.removeprefix("v"):
+        raise SystemExit("CFBundleShortVersionString не совпадает с тегом релиза; "
+                         "релиз остался pre-release")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("tag", nargs="?", help="тег релиза (vX.Y.Z) — скачать, подписать, загрузить")
     ap.add_argument("--file", help="подписать локальный файл: подпись — рядом, в .sig")
     ap.add_argument("--key", default=str(KEY), help="путь к приватному ключу (для тестов)")
+    ap.add_argument("--expected-sha256", help="проверенный SHA-256 архива релиза (64 hex)")
     a = ap.parse_args()
     key = pathlib.Path(a.key).expanduser()
     if not key.exists():
@@ -104,6 +173,12 @@ def main() -> int:
 
     if not a.tag:
         ap.error("нужен тег релиза или --file")
+    if not a.expected_sha256 or not re.fullmatch(r"[0-9a-fA-F]{64}", a.expected_sha256):
+        ap.error("для релиза нужен --expected-sha256: ровно 64 hex-символа")
+    expected_sha256 = a.expected_sha256.lower()
+    anchor = load_manifest_anchor()
+    verify_signing_key(key, anchor)
+    retry = f"sign_release_manifest.py {a.tag} --expected-sha256 {expected_sha256}"
     token = (pathlib.Path.home() / ".config" / "charoite" / "gh_token").read_text().strip()
     env = dict(os.environ, GH_TOKEN=token)
     # Гейт (PR #375): latest без подписи для приложения существовать не
@@ -136,21 +211,21 @@ def main() -> int:
             raise SystemExit(
                 f"{a.tag}: не удалось перевести релиз в pre-release "
                 f"(gh release edit: код {e.returncode}) — релиз как был, так и "
-                f"остался latest; повтори позже: sign_release_manifest.py {a.tag}"
+                f"остался latest; повтори позже: {retry}"
             ) from e
     try:
-        sign_and_upload(a.tag, key, env)
+        sign_and_upload(a.tag, key, env, expected_sha256, anchor)
     except subprocess.CalledProcessError as e:
         raise SystemExit(
             f"{a.tag}: шаг `{' '.join(map(str, e.cmd[:3]))}` упал (код "
             f"{e.returncode}); релиз остался pre-release — повтори: "
-            f"sign_release_manifest.py {a.tag}") from e
+            f"{retry}") from e
     # Подпись на месте — релиз становится стабильным. latest — только если
     # тег не старше нынешнего latest и без суффикса версии: подпись
     # исторического v0.57.0 после v0.58.0 не должна откатывать
     # /releases/latest, а v0.58.0-rc.1 не должен обгонять v0.58.0
     # (круг-1 DeepSeek/Codex, круг-2 Codex).
-    newest = latest_stable_tag(env)
+    newest = latest_stable_tag(env, retry=retry)
     make_latest = (newest is None or version_tuple(a.tag) >= version_tuple(newest)) \
         and not has_prerelease_suffix(a.tag)
     try:
@@ -159,16 +234,16 @@ def main() -> int:
         raise SystemExit(
             f"{a.tag}: подпись загружена, но снять pre-release не удалось "
             f"(gh release edit: код {e.returncode}); релиз остался pre-release — "
-            f"повтори: gh release edit {a.tag} --repo {REPO} --prerelease=false"
-            f"{' --latest' if make_latest else ''}") from e
+            f"повтори: {retry}") from e
     print(f"{a.tag}: архив сверен по codesign, манифест подписан, "
           f"{ASSET} и {ASSET}.sig загружены, релиз стабильный"
           + (", latest" if make_latest else f" (latest остаётся {newest})"))
     return 3 if gate_failed else 0
 
 
-def sign_and_upload(tag: str, key: pathlib.Path, env: dict) -> None:
-    """Скачать архив, сверить по codesign, построить и подписать манифест,
+def sign_and_upload(tag: str, key: pathlib.Path, env: dict,
+                    expected_sha256: str, anchor: bytes) -> None:
+    """Скачать архив, сверить pin/codesign/версию, построить и подписать манифест,
     приложить пару к релизу. Любой сбой — CalledProcessError/SystemExit."""
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -176,14 +251,21 @@ def sign_and_upload(tag: str, key: pathlib.Path, env: dict) -> None:
         subprocess.run(["gh", "release", "download", tag, "--repo", REPO,
                         "-p", ZIP, "-O", str(zip_path), "--clobber"],
                        check=True, env=env)
+        if hashlib.sha256(zip_path.read_bytes()).hexdigest() != expected_sha256:
+            raise SystemExit("SHA-256 скачанного архива не совпадает с --expected-sha256; "
+                             "подпись отменена, релиз остался pre-release")
         # чужому бандлу — отказ ДО подписи; манифест строим сами из архива
-        verify_zip_is_ours(zip_path, tdp / "unpacked")
+        unpacked = tdp / "unpacked"
+        verify_zip_is_ours(zip_path, unpacked)
+        verify_bundle_version(unpacked, tag)
         manifest = build_manifest(tag, zip_path)
         m = tdp / ASSET
         m.write_bytes(manifest)
         print("подписываю:", manifest.decode("ascii").strip())
         sig_path = tdp / f"{ASSET}.sig"
-        sig_path.write_text(sign_bytes(manifest, key) + "\n", encoding="ascii")
+        signature = sign_bytes(manifest, key)
+        verify_manifest_signature(manifest, signature, anchor)
+        sig_path.write_text(signature + "\n", encoding="ascii")
         subprocess.run(["gh", "release", "upload", tag, "--repo", REPO,
                         str(m), str(sig_path), "--clobber"], check=True, env=env)
 
@@ -199,7 +281,7 @@ def release_state(tag: str, env: dict) -> tuple[bool, bool]:
     return bool(d.get("isPrerelease")), {ASSET, f"{ASSET}.sig"} <= names
 
 
-def latest_stable_tag(env: dict) -> str | None:
+def latest_stable_tag(env: dict, *, retry: str) -> str | None:
     """Тег нынешнего /releases/latest; None — стабильных релизов нет."""
     r = subprocess.run(["gh", "release", "view", "--repo", REPO,
                         "--json", "tagName", "-q", ".tagName"],
@@ -213,7 +295,7 @@ def latest_stable_tag(env: dict) -> str | None:
         return None
     raise SystemExit(f"не удалось узнать нынешний latest (gh release view: "
                      f"код {r.returncode}): {r.stderr.strip()}; повтори: "
-                     f"sign_release_manifest.py <тег>")
+                     f"{retry}")
 
 
 def version_tuple(tag: str) -> tuple[int, ...]:

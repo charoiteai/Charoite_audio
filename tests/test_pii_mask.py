@@ -15,7 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import cloud_door  # noqa: E402
 import pii_fake  # noqa: E402
-from charoite_graph import graph_names  # noqa: E402
+from charoite_graph import dossier, graph_names  # noqa: E402
 import pii_mask as pm  # noqa: E402
 import privacy  # noqa: E402
 from charoite_graph.graph_nodes import NodeIndex  # noqa: E402
@@ -484,11 +484,13 @@ def _night_dossier(monkeypatch):
     return ndr
 
 
-_NIGHT_DOSSIER = ("# ЗЛК\n\n## Сейчас\n- Идёт пилот [[2026-07-15_1400]]\n\n"
+_NIGHT_DOSSIER = dossier.render("ЗЛК", "## Сейчас\n- Идёт пилот [[2026-07-15_1400]]\n\n"
                   "## Как пришли\n- Начали в июне [[2026-07-15_1400]]\n\n"
                   "## Решено\n- Провайдер выбран [[2026-07-15_1400]]\n\n"
                   "## Открыто\n- Срок до 1.08 [[2026-07-15_1400]]\n\n"
-                  "## Кто в теме\n- Анна Белова\n\n## Источники\n- [[2026-07-15_1400]]\n")
+                  "## Кто в теме\n- Анна Белова",
+                  ["2026-07-15_1400"], {"2026-07-15_1400": {"kind": "встреча"}},
+                  "synthetic-fingerprint", "2026-07-16")
 
 
 def test_night_dossier_sends_theme_body_and_sources_only_masked(tmp_path, monkeypatch, capsys):

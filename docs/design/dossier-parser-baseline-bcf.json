@@ -1,0 +1,17 @@
+{
+  "base_sha": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81",
+  "synthetic_only": true,
+  "model_calls": 0,
+  "inline_growth_lengths": [
+    502,
+    602,
+    702
+  ],
+  "inline_growth_reproduced": true,
+  "unspaced_manual_kept_both": true,
+  "bare_heading_body_tail_present": false,
+  "implementation_changed": false,
+  "damaged_revision_scalar_still_held": true,
+  "literal_author_replacement_is_not_decode_damage": true,
+  "probe_kind": "three synthetic parser baseline cases plus scalar observations; no pipeline write"
+}

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import pathlib
+import plistlib
 import subprocess
 import sys
 
@@ -19,11 +21,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import sign_release_manifest as srm  # noqa: E402
 
+ZIP_BYTES = b"fixed synthetic release archive"
+SUBSTITUTE_ZIP_BYTES = b"same-version codesign-valid substitute"
+ZIP_SHA256 = hashlib.sha256(ZIP_BYTES).hexdigest()
+DEFAULT_PLIST = object()
 
-def _ephemeral_key(tmp_path: pathlib.Path) -> pathlib.Path:
+
+def _ephemeral_key(tmp_path: pathlib.Path, name="test_ed25519.pem") -> pathlib.Path:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization as s
-    kp = tmp_path / "test_ed25519.pem"
+    kp = tmp_path / name
     kp.write_bytes(Ed25519PrivateKey.generate().private_bytes(
         s.Encoding.PEM, s.PrivateFormat.PKCS8, s.NoEncryption()))
     return kp
@@ -74,12 +81,7 @@ def test_built_in_swift_constant_matches_owner_key_format():
     Сверка с боевым приватным здесь невозможна и не нужна: боевой ключ не
     покидает машину владельца; форму держит и Swift-тест, этот — страховка
     от правки константы мимо обеих сторон."""
-    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
-             / "UpdateAuthenticity.swift").read_text(encoding="utf-8")
-    import re
-    m = re.search(r'manifestKeyBase64 = "([^"]+)"', swift)
-    assert m, "константа ключа не найдена"
-    assert len(base64.b64decode(m.group(1))) == 32
+    assert len(srm.load_manifest_anchor()) == 32
 
 def test_manifest_binds_version_to_content(tmp_path):
     """«<версия>  <хеш>» — голый хеш позволял реплей старой тройки под новым
@@ -89,7 +91,6 @@ def test_manifest_binds_version_to_content(tmp_path):
     m = srm.build_manifest("v0.57.0", z)
     version, digest = m.decode("ascii").split()
     assert version == "0.57.0"
-    import hashlib
     assert digest == hashlib.sha256(b"zip-bytes").hexdigest()
     assert m.endswith(b"\n")
 
@@ -133,7 +134,8 @@ def test_symlink_app_in_zip_is_refused(tmp_path):
 # не отдаёт туда pre-release: выпуск без .manifest.sig для приложения не
 # существует, вместо «у выпуска нет верной подписи» в рантайме.
 
-def _fake_gh(calls: list, state: dict, fail_on: str | None = None):
+def _fake_gh(calls: list, state: dict, fail_on: str | None = None, *,
+             zip_bytes=ZIP_BYTES, plist_bytes=None, uploaded=None):
     """Подобие gh с состоянием релиза: isPrerelease, assets, latest.
     Круг-1 (Codex): фейк без состояния проверял только порядок вызовов."""
     import json
@@ -158,8 +160,11 @@ def _fake_gh(calls: list, state: dict, fail_on: str | None = None):
                 out = json.dumps({"isPrerelease": state["pre"],
                                   "assets": [{"name": n} for n in state["assets"]]})
         elif sub == "download":
-            pathlib.Path(argv[argv.index("-O") + 1]).write_bytes(b"zip")
+            pathlib.Path(argv[argv.index("-O") + 1]).write_bytes(zip_bytes)
         elif sub == "upload":
+            if uploaded is not None:
+                uploaded.update({pathlib.Path(p).name: pathlib.Path(p).read_bytes()
+                                 for p in argv if p.endswith((".manifest", ".sig"))})
             state["assets"] |= {pathlib.Path(p).name for p in argv
                                 if p.endswith((".manifest", ".sig"))}
         elif sub == "edit":
@@ -172,21 +177,37 @@ def _fake_gh(calls: list, state: dict, fail_on: str | None = None):
                 state["pre"] = False
             if "--latest" in argv:
                 state["latest"] = tag
+        elif sub == "/usr/bin/ditto":
+            contents = pathlib.Path(argv[-1]) / "Charoite.app" / "Contents"
+            contents.mkdir(parents=True)
+            if plist_bytes is not None:
+                (contents / "Info.plist").write_bytes(plist_bytes)
+        elif sub != "/usr/bin/codesign":
+            raise AssertionError(f"unexpected subprocess: {argv}")
         return subprocess.CompletedProcess(argv, 0, out, "")
     return run
 
 
 def _wire_main(monkeypatch, tmp_path, key, calls, state, fail_on=None,
-               tag="v0.1.0"):
+               tag="v0.1.0", *, expected_sha256=ZIP_SHA256,
+               zip_bytes=ZIP_BYTES, plist_bytes=DEFAULT_PLIST, uploaded=None):
     home = tmp_path / "home"
     (home / ".config" / "charoite").mkdir(parents=True, exist_ok=True)
     (home / ".config" / "charoite" / "gh_token").write_text("t\n")
     monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: home))
-    monkeypatch.setattr(srm.subprocess, "run", _fake_gh(calls, state, fail_on))
-    monkeypatch.setattr(srm, "verify_zip_is_ours", lambda z, u: None)
-    monkeypatch.setattr(srm, "build_manifest", lambda tag, z: b"0.1.0  ab\n")
-    monkeypatch.setattr(sys, "argv", ["sign_release_manifest.py", tag,
-                                      "--key", str(key)])
+    if plist_bytes is DEFAULT_PLIST:
+        plist_bytes = plistlib.dumps({"CFBundleShortVersionString": tag.removeprefix("v")})
+    monkeypatch.setattr(srm.subprocess, "run", _fake_gh(
+        calls, state, fail_on, zip_bytes=zip_bytes, plist_bytes=plist_bytes,
+        uploaded=uploaded))
+    anchor = tmp_path / "UpdateAuthenticity.swift"
+    anchor.write_text('static let manifestKeyBase64 = "'
+                      + srm.public_key_base64(key) + '"\n', encoding="utf-8")
+    monkeypatch.setattr(srm, "UPDATE_AUTHENTICITY", anchor)
+    argv = ["sign_release_manifest.py", tag, "--key", str(key)]
+    if expected_sha256 is not None:
+        argv += ["--expected-sha256", expected_sha256]
+    monkeypatch.setattr(sys, "argv", argv)
 
 
 def _subs(calls):
@@ -195,6 +216,144 @@ def _subs(calls):
 
 def _edits(calls):
     return [c for c in calls if c[:3] == ["gh", "release", "edit"]]
+
+
+def _watch_signing(monkeypatch):
+    signed = []
+    original = srm.sign_bytes
+
+    def sign(manifest, key):
+        signed.append(manifest)
+        return original(manifest, key)
+
+    monkeypatch.setattr(srm, "sign_bytes", sign)
+    return signed
+
+
+@pytest.mark.parametrize("zip_bytes", [ZIP_BYTES, SUBSTITUTE_ZIP_BYTES])
+def test_pinned_download_signs_exact_manifest_bytes(tmp_path, monkeypatch, zip_bytes):
+    """CLI хеширует байты, которые скачал gh; upload несёт проверяемую пару."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    key = _ephemeral_key(tmp_path)
+    calls, state, uploaded = [], {"pre": True, "assets": set(), "latest": None}, {}
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+    _wire_main(monkeypatch, tmp_path, key, calls, state, zip_bytes=zip_bytes,
+               expected_sha256=digest.upper(), uploaded=uploaded)
+    assert srm.main() == 0
+    manifest = f"0.1.0  {digest}\n".encode("ascii")
+    assert uploaded[srm.ASSET] == manifest
+    public = Ed25519PublicKey.from_public_bytes(base64.b64decode(srm.public_key_base64(key)))
+    public.verify(base64.b64decode(uploaded[f"{srm.ASSET}.sig"]), manifest)
+    assert state["pre"] is False and state["latest"] == "v0.1.0"
+    assert [c[0] for c in calls].count("/usr/bin/codesign") == 1
+
+
+@pytest.mark.parametrize("pin", [None, "", "a" * 63, "g" * 64, "a" * 65, "a" * 63 + "\n"])
+def test_missing_or_bad_pin_refuses_before_any_gh_call(tmp_path, monkeypatch, pin):
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": False, "assets": set(), "latest": "v0.1.0"}
+    _wire_main(monkeypatch, tmp_path, key, calls, state, expected_sha256=pin)
+    signed = _watch_signing(monkeypatch)
+    with pytest.raises(SystemExit) as error:
+        srm.main()
+    assert error.value.code == 2
+    assert calls == [] and signed == []
+    assert state == {"pre": False, "assets": set(), "latest": "v0.1.0"}
+
+
+@pytest.mark.parametrize("zip_bytes", [b"truncated archive", SUBSTITUTE_ZIP_BYTES])
+def test_mismatched_download_refuses_before_codesign_or_signing(
+        tmp_path, monkeypatch, zip_bytes):
+    """Даже проходящий fake-codesign бандл той же версии требует точного pin."""
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": True, "assets": set(), "latest": None}
+    _wire_main(monkeypatch, tmp_path, key, calls, state, zip_bytes=zip_bytes)
+    signed = _watch_signing(monkeypatch)
+    with pytest.raises(SystemExit, match="SHA-256"):
+        srm.main()
+    assert _subs(calls) == ["view", "download"]
+    assert all(c[0] == "gh" for c in calls) and signed == []
+    assert state == {"pre": True, "assets": set(), "latest": None}
+
+
+@pytest.mark.parametrize("plist_bytes", [
+    None,
+    b"not a plist",
+    b"<?xml version='1.0'?><plist><dict>",
+    plistlib.dumps({}),
+    plistlib.dumps({"CFBundleShortVersionString": "0.0.9"}),
+    plistlib.dumps({"CFBundleShortVersionString": "v0.1.0"}),
+    plistlib.dumps({"CFBundleShortVersionString": 1}),
+    plistlib.dumps(["0.1.0"]),
+])
+def test_invalid_bundle_version_refuses_before_sign_or_upload(
+        tmp_path, monkeypatch, plist_bytes):
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": True, "assets": set(), "latest": None}
+    _wire_main(monkeypatch, tmp_path, key, calls, state, plist_bytes=plist_bytes)
+    signed = _watch_signing(monkeypatch)
+    with pytest.raises(SystemExit, match="Info.plist|CFBundleShortVersionString"):
+        srm.main()
+    assert _subs(calls) == ["view", "download"] and signed == []
+    assert [c[0] for c in calls].count("/usr/bin/codesign") == 1
+    assert state == {"pre": True, "assets": set(), "latest": None}
+
+
+def test_wrong_local_key_refuses_before_any_gh_call(tmp_path, monkeypatch):
+    key = _ephemeral_key(tmp_path)
+    other = _ephemeral_key(tmp_path, "other.pem")
+    calls, state = [], {"pre": False, "assets": set(), "latest": "v0.1.0"}
+    _wire_main(monkeypatch, tmp_path, key, calls, state)
+    srm.UPDATE_AUTHENTICITY.write_text(
+        f'static let manifestKeyBase64 = "{srm.public_key_base64(other)}"\n')
+    signed = _watch_signing(monkeypatch)
+    with pytest.raises(SystemExit, match="ключ подписи не совпадает"):
+        srm.main()
+    assert calls == [] and signed == []
+    assert state == {"pre": False, "assets": set(), "latest": "v0.1.0"}
+
+
+@pytest.mark.parametrize("source", [
+    "// no anchor\n",
+    'static let manifestKeyBase64 = "!!!"\n',
+    'static let manifestKeyBase64 = "' + base64.b64encode(b"x" * 31).decode() + '"\n',
+    'static let manifestKeyBase64 = "' + base64.b64encode(b"x" * 32).decode() + '="\n',
+    'static let manifestKeyBase64 = keyFromElsewhere\n',
+    ('static let manifestKeyBase64 = "' + base64.b64encode(b"x" * 32).decode() + '"\n') * 2,
+    ('static let manifestKeyBase64 = "' + base64.b64encode(b"x" * 32).decode()
+     + '"\nstatic let manifestKeyBase64 = keyFromElsewhere\n'),
+])
+def test_invalid_or_ambiguous_app_anchor_refuses_before_gh(tmp_path, monkeypatch, source):
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": False, "assets": set(), "latest": "v0.1.0"}
+    _wire_main(monkeypatch, tmp_path, key, calls, state)
+    srm.UPDATE_AUTHENTICITY.write_text(source, encoding="utf-8")
+    signed = _watch_signing(monkeypatch)
+    with pytest.raises(SystemExit, match="якорь|manifestKeyBase64"):
+        srm.main()
+    assert calls == [] and signed == []
+    assert state == {"pre": False, "assets": set(), "latest": "v0.1.0"}
+
+
+def test_key_rotated_after_preflight_cannot_upload_a_foreign_signature(tmp_path, monkeypatch):
+    key = _ephemeral_key(tmp_path)
+    other = _ephemeral_key(tmp_path, "rotated.pem")
+    calls, state = [], {"pre": True, "assets": set(), "latest": None}
+    _wire_main(monkeypatch, tmp_path, key, calls, state)
+    signed = []
+    original = srm.sign_bytes
+
+    def rotate_and_sign(manifest, key_path):
+        key_path.write_bytes(other.read_bytes())
+        signed.append(manifest)
+        return original(manifest, key_path)
+
+    monkeypatch.setattr(srm, "sign_bytes", rotate_and_sign)
+    with pytest.raises(SystemExit, match="подпись манифеста не подтверждена"):
+        srm.main()
+    assert len(signed) == 1 and _subs(calls) == ["view", "download"]
+    assert state == {"pre": True, "assets": set(), "latest": None}
 
 
 def test_release_is_promoted_to_latest_only_after_signature_upload(
@@ -222,7 +381,8 @@ def test_failed_signature_upload_leaves_release_as_prerelease(
     key = _ephemeral_key(tmp_path)
     calls, state = [], {"pre": True, "assets": set(), "latest": None}
     _wire_main(monkeypatch, tmp_path, key, calls, state, fail_on="upload")
-    with pytest.raises(SystemExit, match="повтори: sign_release_manifest.py v0.1.0"):
+    with pytest.raises(SystemExit, match=(
+            "повтори: sign_release_manifest.py v0.1.0 --expected-sha256 " + ZIP_SHA256)):
         srm.main()
     assert not _edits(calls)
     assert state["pre"] is True and state["latest"] is None
@@ -234,8 +394,9 @@ def test_failed_promotion_is_loud_and_leaves_prerelease(tmp_path, monkeypatch):
     key = _ephemeral_key(tmp_path)
     calls, state = [], {"pre": True, "assets": set(), "latest": None}
     _wire_main(monkeypatch, tmp_path, key, calls, state, fail_on="edit")
-    with pytest.raises(SystemExit, match="остался pre-release"):
+    with pytest.raises(SystemExit, match="остался pre-release") as error:
         srm.main()
+    assert "--expected-sha256 " + ZIP_SHA256 in str(error.value)
     assert "upload" in _subs(calls)
     assert state["pre"] is True
 
@@ -291,8 +452,9 @@ def test_failed_hide_is_loud_and_release_stays_as_it_was(tmp_path, monkeypatch):
     key = _ephemeral_key(tmp_path)
     calls, state = [], {"pre": False, "assets": {"Charoite.app.zip"}, "latest": "v0.1.0"}
     _wire_main(monkeypatch, tmp_path, key, calls, state, fail_on="edit")
-    with pytest.raises(SystemExit, match="остался latest"):
+    with pytest.raises(SystemExit, match="остался latest") as error:
         srm.main()
+    assert "--expected-sha256 " + ZIP_SHA256 in str(error.value)
     assert "download" not in _subs(calls) and "upload" not in _subs(calls)
 
 
@@ -303,8 +465,9 @@ def test_api_error_on_latest_lookup_is_not_treated_as_no_latest(
     key = _ephemeral_key(tmp_path)
     calls, state = [], {"pre": True, "assets": set(), "latest": "v0.2.0", "api_down": True}
     _wire_main(monkeypatch, tmp_path, key, calls, state)
-    with pytest.raises(SystemExit, match="не удалось узнать нынешний latest"):
+    with pytest.raises(SystemExit, match="не удалось узнать нынешний latest") as error:
         srm.main()
+    assert "--expected-sha256 " + ZIP_SHA256 in str(error.value)
     assert not _edits(calls) and state["pre"] is True
 
 
