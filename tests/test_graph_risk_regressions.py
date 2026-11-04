@@ -254,7 +254,9 @@ def test_recovery_cli_fails_on_publication_or_read_error_and_can_retry(tmp_path,
     before = _indexes(graph)
     failed = _night_cli(root, graph, fault)
     assert failed.returncode != 0, failed.stdout + failed.stderr
-    assert "индекс не обновлён" in failed.stdout, failed.stdout
+    # Strict source capture now fails before index publication is attempted.
+    expected = "скан не удался" if fault in {"source", "source-directory"} else "индекс не обновлён"
+    assert expected in failed.stdout, failed.stdout
     if fault in {"source", "dossier", "json", "source-directory", "dossier-directory"}:
         assert _indexes(graph) == before
     repaired = _night_cli(root, graph)

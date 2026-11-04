@@ -16,7 +16,7 @@ from test_forget_night_processes import (
     REPO, STAMP, OTHER, THIRD, THEME, _world, _seed_indexes, _body,
     charoite_paths, CHAROITE,
 )
-from charoite_graph import dossier
+from charoite_graph import dossier, frontmatter
 import forget_meeting as forget
 import nightly_dossier as night
 
@@ -121,10 +121,15 @@ def test_nightly_legacy_fallback_drops_a_source_removed_after_scan(tmp_path, mon
     charoite_paths.use_data_root(root, replace=True)
     source = graph / "Встречи" / "Retired source.md"
     source.write_text(f"# Synthetic source\n[[Ядра/{THEME}]]\n", encoding="utf-8")
-    (graph / CHAROITE.dossier_dir / f"{THEME}.md").write_text(
-        # Plain legacy without metadata still admits ordinary rebuild; an
-        # unknown protected author heading would correctly hold before generation.
-        "## Сейчас\nLegacy dossier without metadata.\nAuthor note.\n", encoding="utf-8")
+    files, backlinks = dossier.scan(graph, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)[THEME]
+    # A complete legacy envelope admits a forced rebuild. Omit only the index
+    # metadata so recovery must derive current membership after the source race.
+    legacy_members = [name for name in members if name != source.stem]
+    legacy = dossier.render(THEME, _body(), legacy_members, files, "synthetic-fingerprint", "2099-01-01")
+    for key in ("источников", "ключи"):
+        legacy = frontmatter.without_field(legacy, key)
+    (graph / CHAROITE.dossier_dir / f"{THEME}.md").write_text(legacy, encoding="utf-8")
 
     def generate(*args, **kwargs):
         with night._graph_lock(graph, 0) as taken:

@@ -102,9 +102,17 @@ def test_new_meeting_is_added_under_revision(world):
     assert _plan(text, members, snap).action == "add"
 
 
-def test_rejected_meeting_is_not_new_again(world):
+def test_unversioned_rejection_is_reassessed(world):
     snap, built, members = world
     text = frontmatter.set_list_field(_dossier(snap, built), dossier.REJECTED_FIELD, [NEW])
+    assert _plan(text, members, snap) == dossier.Plan("add", "appendable", (NEW,))
+
+
+def test_unchanged_versioned_rejection_is_not_new_again(world):
+    snap, built, members = world
+    text = frontmatter.set_list_field(_dossier(snap, built), dossier.REJECTED_FIELD, [NEW])
+    version = dossier.rejection_version(text, NEW, snap.files[NEW])
+    text = frontmatter.set_list_field(text, dossier.REJECTION_VERSIONS_FIELD, [f"{version}:{NEW}"])
     assert _plan(text, members, snap) == dossier.Plan("skip", "same")
 
 
@@ -282,6 +290,8 @@ def test_rejected_through_stub_stays_rejected(tmp_path):
     (g / "Встречи" / "Старое имя.md").write_text(f"# Старое имя → [[Встречи/{NEW}]]\n", encoding="utf-8")
     snap = dossier.scan_snapshot(g, schema=CHAROITE)
     text = frontmatter.set_list_field(_dossier(snap, [THEME, OLD]), dossier.REJECTED_FIELD, ["Старое имя"])
+    version = dossier.rejection_version(text, NEW, snap.files[NEW])
+    text = frontmatter.set_list_field(text, dossier.REJECTION_VERSIONS_FIELD, [f"{version}:{NEW}"])
     assert _plan(text, [THEME, OLD, NEW], snap) == dossier.Plan("skip", "same")
 
 

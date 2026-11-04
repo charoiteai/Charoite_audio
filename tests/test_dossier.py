@@ -119,7 +119,7 @@ def _эталон_отбора(members: list[str], files: dict[str, dict]) -> li
         meta = files.get(m)
         if not meta:
             continue
-        block = f"### [[{m}]] ({meta['kind']})\n{dossier.source_text(meta)}\n"
+        block = f"### [[{m}]] ({meta['kind']})\n{dossier.source_text(meta, full=True)}\n"
         if total + len(block) > dossier.PROMPT_CHARS:
             break
         out.append(m)
@@ -479,13 +479,14 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
     nd = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(nd)
 
-    original_scan = dossier.scan
+    original_scan = dossier.scan_snapshot
 
     def ordered_scan(*args, **kwargs):
-        files, backlinks = original_scan(*args, **kwargs)
-        return dict(sorted(files.items(), reverse=reverse_scan)), backlinks
+        snap = original_scan(*args, **kwargs)
+        return dossier.GraphSnapshot(dict(sorted(snap.files.items(), reverse=reverse_scan)),
+                                     snap.backlinks, snap.redirects, snap.stubs)
 
-    monkeypatch.setattr(dossier, "scan", ordered_scan)
+    monkeypatch.setattr(dossier, "scan_snapshot", ordered_scan)
 
     g = _граф(tmp_path)
     # вторая тема-ядро с двумя источниками
@@ -498,10 +499,11 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
         "# Пётр\nВедёт [[Ядра/Настройка доступа]] и [[Ядра/Отчётность]].\n", encoding="utf-8")
     folder = g / CHAROITE.dossier_dir
     folder.mkdir()
-    # у обеих тем уже есть досье на диске (с чужим отпечатком → «изменилось»)
+    # A genuinely gone historical meeting requests rebuilding. Changing only
+    # the fingerprint no longer authorizes replacing an existing body.
     for theme in ("Настройка доступа", "Отчётность"):
         (folder / f"{theme}.md").write_text(
-            f"---\nтема: {theme}\nотпечаток: старый\nсобрано: 2026-07-20\n---\n\n# Досье: {theme}\n\n"
+            f"---\nтема: {theme}\nотпечаток: старый\nсостав: [retired_meeting]\nсобрано: 2026-07-20\n---\n\n# Досье: {theme}\n\n"
             "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
             "> при пересборке раздел «Правки автора» не трогается.\n\n"
             "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
@@ -666,7 +668,7 @@ def test_пересборка_делает_копию_досье_до_перез
     folder = g / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Настройка доступа.md").write_text(
-        "---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n\n# Досье: Настройка доступа\n\n"
+        "---\nтема: Настройка доступа\nотпечаток: старый\nсостав: [retired_meeting]\nсобрано: 2026-07-20\n---\n\n# Досье: Настройка доступа\n\n"
         "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
         "> при пересборке раздел «Правки автора» не трогается.\n\n"
         "## Сейчас\nправка ревизии, которую нельзя терять\n## Как пришли\n—\n## Решено\n—\n"
@@ -689,7 +691,7 @@ def test_пересборка_без_копии_не_перезаписывае�
     g = _граф(tmp_path)
     folder = g / CHAROITE.dossier_dir
     folder.mkdir()
-    old = ("---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n\n# Досье: Настройка доступа\n\n"
+    old = ("---\nтема: Настройка доступа\nотпечаток: старый\nсостав: [retired_meeting]\nсобрано: 2026-07-20\n---\n\n# Досье: Настройка доступа\n\n"
         "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
         "> при пересборке раздел «Правки автора» не трогается.\n\n"
            "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
@@ -698,11 +700,14 @@ def test_пересборка_без_копии_не_перезаписывае�
     good = ("## Сейчас\nвсё в порядке\n## Как пришли\nт\n## Решено\nт\n## Открыто\nт\n## Кто в теме\nт")
     monkeypatch.setattr(nd, "generate", lambda *a, **k: good)
 
+    attempted_copies = []
     def no_copy(*a, **k):
+        attempted_copies.append(a)
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(nd.dossier, "backup", no_copy)
     r = nd.run(g, {"sufler": {}}, full=False, dry=False, limit=5)
+    assert len(attempted_copies) == 1
     assert r["собрано"] == 0 and r["отказы"] == 1
     assert (folder / "Настройка доступа.md").read_text(encoding="utf-8") == old, "переписано без копии"
     assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа"}, "тема выпала из индекса"

@@ -314,7 +314,7 @@ def test_D03_valid_replacement_is_not_decode_damage(tmp_path):
 @pytest.mark.parametrize("revision", ["2026-99-99", "2026-11-03", "2026-11-0\ufffd", "literal \ufffd"])
 def test_D04_revision_hold_is_shape_only(world, revision):
     nd, graph, path, calls = world
-    text = dossier.with_revision(complete(), revision)
+    text = dossier.with_revision(dossier.with_composition(complete(), ["Sample_0", "Sample_1"]), revision)
     path.write_text(text)
     for full in (False, True):
         result = nd.run(graph, {}, full=full, dry=False, limit=12)
@@ -382,6 +382,11 @@ def test_W02_review_refuses_ambiguity_before_cloud(tmp_path, monkeypatch):
 def test_E01_actual_review_labels_response(world, monkeypatch):
     _nd, graph, path, calls = world
     ndr = script("nightly_dossier_review")
+    # The subprocess is a double; its proxy configuration must be synthetic too.
+    settings = graph.parent / "synthetic-cli-settings.json"
+    settings.write_text('{"env": {}}')
+    proxy_env = ndr.cloud.proxy_env
+    monkeypatch.setattr(ndr.cloud, "proxy_env", lambda _settings=None: proxy_env(settings))
     files, backlinks = dossier.scan(graph, schema=CHAROITE)
     members = dossier.clusters(files, backlinks, schema=CHAROITE)["Sample"]
     labeled = BODY.replace("body-tail", "Собеседник 3 body-tail")
@@ -471,7 +476,8 @@ def test_D04_actual_revision_comment_hold_with_invalid_neighbor(world, full):
     (graph / "Ядра/Other.md").write_text("# Other\nsynthetic core\n")
     for i in range(2):
         (graph / f"Встречи/Other_source_{i}.md").write_text("# Synthetic\n[[Ядра/Other]] source\n")
-    original = complete().replace("тема: Sample", "тема: A: B\nревизия: 2026-11-03 # checked").encode()
+    original = dossier.with_composition(complete(), ["Sample_0", "Sample_1"]).replace(
+        "тема: Sample", "тема: A: B\nревизия: 2026-11-03 # checked").encode()
     path.write_bytes(original)
     assert dossier.load_dossier(path).parsed.complete
     result = nd.run(graph, {}, full=full, dry=False, limit=12)
@@ -541,7 +547,10 @@ def test_P01_actual_rebuild_retains_exact_author_payload_twice(world, full, nl, 
     section = next(s for s in loaded.parsed.sections if s.title == "Правки автора")
     path.write_bytes((loaded.text[:section.content] + author_payload).replace("\n", nl).encode())
     for iteration in range(2):
-        # Each normal run sees a real changed synthetic source, not a SAME skip.
+        # Rebuild needs a genuinely gone source; editing an existing source's
+        # mtime is deliberately a no-op under the incremental policy.
+        path.write_bytes(dossier.with_composition(path.read_bytes().decode(),
+                                                 [f"retired_{iteration}"]).encode())
         source = graph / "Ядра/Sample.md"
         source.write_text(f"# Sample\nsynthetic source version {iteration}\n")
         os.utime(source, (1_700_000_000 + iteration, 1_700_000_000 + iteration))
@@ -566,7 +575,14 @@ def test_P01_actual_rebuild_without_author_section_keeps_default(world, full, ol
         path.unlink()
     else:
         path.write_text(old)
+    if old == "# Plain previous dossier\n":
+        before = path.read_bytes()
+        assert nd.run(graph, {}, full=full, dry=False, limit=12)["собрано"] == 0
+        assert path.read_bytes() == before and calls == []
+        return
     for iteration in range(2):
+        if iteration:
+            path.write_text(dossier.with_composition(path.read_text(), [f"retired_{iteration}"]))
         source = graph / "Ядра/Sample.md"
         source.write_text(f"# Sample\nsynthetic source version {iteration}\n")
         os.utime(source, (1_700_000_000 + iteration, 1_700_000_000 + iteration))
