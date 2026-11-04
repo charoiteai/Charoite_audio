@@ -18,7 +18,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(SCRIPTS))
 
-from charoite_graph import graph_names  # noqa: E402
+from charoite_graph import dossier, graph_names  # noqa: E402
 import graph_doctor  # noqa: E402
 import graph_updater  # noqa: E402
 
@@ -200,7 +200,8 @@ def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
     # считается тело досье — тот же предикат, что у ночной очереди (n815-in3 DS C2): метка в
     # «Источниках» и в «Правках автора» пересборкой не чинится и в счёт не идёт
     (graph / "Досье" / "Релиз.md").write_text(
-        "# Релиз\n## Сейчас\nСобеседник 2 решил ждать.\n## Источники\n- [[Встречи/2026-10-01_1000]]\n",
+        dossier.render("Релиз", "## Сейчас\nСобеседник 2 решил ждать. [[Встречи/2026-10-01_1000]]\n"
+                       "## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—", [], {}, "fp", "2026-10-30"),
         encoding="utf-8")
     (graph / "Досье" / "Бюджет.md").write_text("# Бюджет\n## Сейчас\nВера (Собеседник 4) за.\n", encoding="utf-8")
     (graph / "Досье" / "Сроки.md").write_text(
@@ -228,6 +229,8 @@ def test_doctor_counts_collective_nodes_without_owner_stub_or_label(tmp_path):
     assert rep["examples"]["collective"] == ["Люди/Саша.md ← из 2 заметок; тёзки: Саша Образцов, Сидоров Саша"]
     assert rep["people_in_systems"] == 1 and rep["feed"]["people_in_systems"] == ["Системы/Настя.md"]
     assert rep["dossier_labels"] == 1 and rep["feed"]["dossier_labels"] == ["Досье/Релиз.md"]
+    assert rep["dossier_unknown"] == 2
+    assert set(rep["feed"]["dossier_unknown"]) == {"Досье/Бюджет.md", "Досье/Сроки.md"}
     assert rep["feed"]["placeholders"] == ["Люди/Вера (Собеседник 4).md"]
     assert {p: p.read_bytes() for p in graph.rglob("*.md")} == before, "доктор граф не меняет"
 

@@ -1,0 +1,7 @@
+{
+  "source": "e7849c6321192cb677605be8a2ce34857e97d72f",
+  "test_sha256": "8fc95774749dc8ca07b1b6ea011bb64a303f98f73d9b9808012d2c969ddefde7",
+  "baseline_rc": 0,
+  "baseline": ".......................................................                  [100%]\n55 passed in 0.50s\n",
+  "scope": "original production source plus final new test module, same synthetic inputs; zero real model calls"
+}

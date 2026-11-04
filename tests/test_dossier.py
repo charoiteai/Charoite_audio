@@ -119,7 +119,7 @@ def _эталон_отбора(members: list[str], files: dict[str, dict]) -> li
         meta = files.get(m)
         if not meta:
             continue
-        block = f"### [[{m}]] ({meta['kind']})\n{dossier.source_text(meta)}\n"
+        block = f"### [[{m}]] ({meta['kind']})\n{dossier.source_text(meta, full=True)}\n"
         if total + len(block) > dossier.PROMPT_CHARS:
             break
         out.append(m)
@@ -289,7 +289,7 @@ def test_заголовок_правок_как_его_набирает_влад
     """№856: литерал «## Правки автора\\n» не видел заголовок без пробела и с хвостом —
     пересборка писала «—» поверх правок. Раздел по-прежнему до конца файла."""
     text = f"# Досье: Т\n## Сейчас\nтело\n## Источники\n- x\n{head}\n\nмоё\nещё\n"
-    assert dossier.preserve_manual(text) == "моё\nещё"
+    assert dossier.preserve_manual(text) == (None if head.startswith("см.") else "моё\nещё")
     assert dossier.preserve_manual(text.replace("моё\nещё", "—")) is None
     # строка с текстом после «Правки автора» — не заголовок
     assert dossier.preserve_manual(text.replace(head, "## Правки автора: черновик")) is None
@@ -479,13 +479,14 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
     nd = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(nd)
 
-    original_scan = dossier.scan
+    original_scan = dossier.scan_snapshot
 
     def ordered_scan(*args, **kwargs):
-        files, backlinks = original_scan(*args, **kwargs)
-        return dict(sorted(files.items(), reverse=reverse_scan)), backlinks
+        snap = original_scan(*args, **kwargs)
+        return dossier.GraphSnapshot(dict(sorted(snap.files.items(), reverse=reverse_scan)),
+                                     snap.backlinks, snap.redirects, snap.stubs)
 
-    monkeypatch.setattr(dossier, "scan", ordered_scan)
+    monkeypatch.setattr(dossier, "scan_snapshot", ordered_scan)
 
     g = _граф(tmp_path)
     # вторая тема-ядро с двумя источниками
@@ -498,10 +499,13 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
         "# Пётр\nВедёт [[Ядра/Настройка доступа]] и [[Ядра/Отчётность]].\n", encoding="utf-8")
     folder = g / CHAROITE.dossier_dir
     folder.mkdir()
-    # у обеих тем уже есть досье на диске (с чужим отпечатком → «изменилось»)
+    # A genuinely gone historical meeting requests rebuilding. Changing only
+    # the fingerprint no longer authorizes replacing an existing body.
     for theme in ("Настройка доступа", "Отчётность"):
         (folder / f"{theme}.md").write_text(
-            f"---\nтема: {theme}\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# {theme}\n"
+            f"---\nтема: {theme}\nотпечаток: старый\nсостав: [retired_meeting]\nсобрано: 2026-07-20\n---\n\n# Досье: {theme}\n\n"
+            "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
+            "> при пересборке раздел «Правки автора» не трогается.\n\n"
             "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
             "## Источники\n- x\n## Правки автора\n\n—\n", encoding="utf-8")
 
@@ -562,7 +566,9 @@ def test_закрытое_окно_не_зовёт_модель_и_не_теря
     # у обеих тем уже есть досье на диске (с чужим отпечатком → «изменилось»)
     for theme in ("Настройка доступа", "Отчётность"):
         (folder / f"{theme}.md").write_text(
-            f"---\nтема: {theme}\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# {theme}\n"
+            f"---\nтема: {theme}\nотпечаток: старый\nсобрано: 2026-07-20\n---\n\n# Досье: {theme}\n\n"
+            "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
+            "> при пересборке раздел «Правки автора» не трогается.\n\n"
             "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
             "## Источники\n- x\n## Правки автора\n\n—\n", encoding="utf-8")
     before = {p.name: p.read_text(encoding="utf-8") for p in sorted(folder.glob("*.md"))
@@ -662,7 +668,9 @@ def test_пересборка_делает_копию_досье_до_перез
     folder = g / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Настройка доступа.md").write_text(
-        "---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# Настройка доступа\n"
+        "---\nтема: Настройка доступа\nотпечаток: старый\nсостав: [retired_meeting]\nсобрано: 2026-07-20\n---\n\n# Досье: Настройка доступа\n\n"
+        "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
+        "> при пересборке раздел «Правки автора» не трогается.\n\n"
         "## Сейчас\nправка ревизии, которую нельзя терять\n## Как пришли\n—\n## Решено\n—\n"
         "## Открыто\n—\n## Кто в теме\n—\n## Источники\n- x\n## Правки автора\n\n—\n",
         encoding="utf-8")
@@ -683,18 +691,23 @@ def test_пересборка_без_копии_не_перезаписывае�
     g = _граф(tmp_path)
     folder = g / CHAROITE.dossier_dir
     folder.mkdir()
-    old = ("---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# Настройка доступа\n"
+    old = ("---\nтема: Настройка доступа\nотпечаток: старый\nсостав: [retired_meeting]\nсобрано: 2026-07-20\n---\n\n# Досье: Настройка доступа\n\n"
+        "> Собрано автоматически ночным проходом. Правки руками сохранятся:\n"
+        "> при пересборке раздел «Правки автора» не трогается.\n\n"
            "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
            "## Источники\n- x\n## Правки автора\n\n—\n")
     (folder / "Настройка доступа.md").write_text(old, encoding="utf-8")
     good = ("## Сейчас\nвсё в порядке\n## Как пришли\nт\n## Решено\nт\n## Открыто\nт\n## Кто в теме\nт")
     monkeypatch.setattr(nd, "generate", lambda *a, **k: good)
 
+    attempted_copies = []
     def no_copy(*a, **k):
+        attempted_copies.append(a)
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(nd.dossier, "backup", no_copy)
     r = nd.run(g, {"sufler": {}}, full=False, dry=False, limit=5)
+    assert len(attempted_copies) == 1
     assert r["собрано"] == 0 and r["отказы"] == 1
     assert (folder / "Настройка доступа.md").read_text(encoding="utf-8") == old, "переписано без копии"
     assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа"}, "тема выпала из индекса"
@@ -760,17 +773,17 @@ def test_вход_модели_без_меток_деятелем_а_файлы_
 
 
 def test_тело_досье_с_меткой_только_в_пяти_разделах():
-    тело = "## Сейчас\nСобеседник 3 решил\n## Кто в теме\nВера\n"
-    assert dossier.labeled_body("---\nтема: x\n---\n# Досье\n" + тело + "## Источники\n- [[В1]]\n")
-    чистое = ("# Досье\n## Сейчас\nВера (Собеседник 4) решила\n## Источники\n- **Люди:** [[Люди/Собеседник 3]]\n"
-              "## Правки автора\n\nСобеседник 3 — это Вера\n")
+    тело = "## Сейчас\nСобеседник 3 решил\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\nВера\n"
+    assert dossier.labeled_body(dossier.render("Т", тело, [], {}, "fp", "2026-10-30"))
+    чистое = dossier.render("Т", тело.replace("Собеседник 3 решил", "Вера (Собеседник 4) решила"), [], {}, "fp", "2026-10-30").replace(
+        "## Правки автора\n\n—\n", "## Правки автора\n\nСобеседник 3 — это Вера\n")
     assert not dossier.labeled_body(чистое), "метка в «Источниках» и «Правках автора» — не тело"
     переставлено = "# Досье\n## Сейчас\nок\n## Правки автора\n\nСобеседник 3 — Вера\n\n## Источники\n- [[В1]]\n"
     assert not dossier.labeled_body(переставлено)
     assert not dossier.labeled_body(None)
     assert not dossier.labeled_body("# Собеседник 3\n## Сейчас\nок\n"), "шапка до «## Сейчас» — не тело"
     # «грязно» и «чистка изменит» — один предикат: узел-метка без номера — тоже метка (n815-out1 DS M2)
-    assert dossier.labeled_body("# Д\n## Сейчас\n[[Люди/Собеседник]] за\n")
+    assert dossier.labeled_body(dossier.render("Т", тело.replace("Собеседник 3 решил", "[[Люди/Собеседник]] за"), [], {}, "fp", "2026-10-30"))
 
 
 def test_узел_метка_не_роняет_тему_ниже_порога(tmp_path):

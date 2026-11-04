@@ -1,0 +1,28 @@
+{
+  "source": "e7d20aba5d64a956d6d307a4e5ad45680bb882af",
+  "real_model_calls": 0,
+  "actual_writes": 0,
+  "cases": [
+    {
+      "expected_payload": "  \u2014  \n",
+      "returned_manual": null,
+      "complete": true,
+      "admitted": true,
+      "failures": 0
+    },
+    {
+      "expected_payload": "",
+      "returned_manual": null,
+      "complete": true,
+      "admitted": true,
+      "failures": 0
+    },
+    {
+      "expected_payload": "\n\nowner-note\n\n",
+      "returned_manual": "owner-note",
+      "complete": true,
+      "admitted": true,
+      "failures": 0
+    }
+  ]
+}

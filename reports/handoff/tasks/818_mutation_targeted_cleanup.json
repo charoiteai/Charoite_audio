@@ -1,0 +1,262 @@
+{
+  "source_base": "e7849c6321192cb677605be8a2ce34857e97d72f",
+  "scope": "candidate cleanup changed-line mutations, new test module only; local targeted not canonical CI",
+  "source_sha256": {
+    "src/charoite_graph/dossier.py": "78ee30a391324de3d65e560d8d9d7e840d5b964f3b6fb717745bf90187293b72",
+    "scripts/nightly_dossier_review.py": "fd1ea57faa7a974ebdb8e2b4664fa4fa9ae2767d37bab44cf0783bf1ad657014",
+    "tests/test_dossier_mutation_contract.py": "8fc95774749dc8ca07b1b6ea011bb64a303f98f73d9b9808012d2c969ddefde7"
+  },
+  "baseline": ".......................................................                  [100%]\n55 passed in 0.48s\n",
+  "results": [
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::In → NotIn::57d42dc97a3e49df#1",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 766,
+      "what": "In → NotIn @46-108",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[~~~info`tick-~~~-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028literal separator-\\u043e\\u0442\\u0432\\u0435\\u0442 \\u043d\\u0435 \\u043e\\u0431\\u0440\\u0430\\u0437\\u0443\\u0435\\u0442 \\u043f\\u043e\\u043b\\u043d\\u043e\\u0435 \\u0434\\u043e\\u0441\\u044c\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_result_cannot_be_changed_after_admission",
+        "FAILED tests/test_dossier_mutation_contract.py::test_author_body_headings_remain_author_payload_during_body_edit",
+        "FAILED tests/test_dossier_mutation_contract.py::test_protected_section_before_first_body_is_not_the_body_end",
+        "FAILED tests/test_dossier_mutation_contract.py::test_section_boundaries_cannot_be_changed_after_parsing",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-True]",
+        "10 failed, 45 passed in 0.57s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::Eq → NotEq::486854a6b41480db#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 787,
+      "what": "Eq → NotEq @24-60",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[~~~info`tick-~~~-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[rebuild]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[review]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[forget]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_reports_missing_raw_snapshot_in_value_error",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028literal separator-\\u043e\\u0442\\u0432\\u0435\\u0442 \\u043d\\u0435 \\u043e\\u0431\\u0440\\u0430\\u0437\\u0443\\u0435\\u0442 \\u043f\\u043e\\u043b\\u043d\\u043e\\u0435 \\u0434\\u043e\\u0441\\u044c\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\n```\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028unsupported separator]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_result_cannot_be_changed_after_admission",
+        "FAILED tests/test_dossier_mutation_contract.py::test_author_body_headings_remain_author_payload_during_body_edit",
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[1]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[6]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_incomplete_body_has_explicit_deletion_hold_reason",
+        "FAILED tests/test_dossier_mutation_contract.py::test_every_invalid_single_body_byte_keeps_confirmed_author_boundary[\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_every_invalid_single_body_byte_keeps_confirmed_author_boundary[\\r\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\r\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_complete_body_with_unsupported_newline_cannot_be_deleted",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-True]",
+        "26 failed, 29 passed in 0.45s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::not X → X::fd81c26f3569303d#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 788,
+      "what": "not X → X @24-100",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[~~~info`tick-~~~-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[rebuild]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[review]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[forget]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_reports_missing_raw_snapshot_in_value_error",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028literal separator-\\u043e\\u0442\\u0432\\u0435\\u0442 \\u043d\\u0435 \\u043e\\u0431\\u0440\\u0430\\u0437\\u0443\\u0435\\u0442 \\u043f\\u043e\\u043b\\u043d\\u043e\\u0435 \\u0434\\u043e\\u0441\\u044c\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\n```\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028unsupported separator]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_result_cannot_be_changed_after_admission",
+        "FAILED tests/test_dossier_mutation_contract.py::test_author_body_headings_remain_author_payload_during_body_edit",
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[1]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[6]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_every_invalid_single_body_byte_keeps_confirmed_author_boundary[\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_every_invalid_single_body_byte_keeps_confirmed_author_boundary[\\r\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\r\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_complete_body_with_unsupported_newline_cannot_be_deleted",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-True]",
+        "26 failed, 29 passed in 0.45s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::In → NotIn::6c700b84bf6cdd3c#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 788,
+      "what": "In → NotIn @32-55",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[~~~info`tick-~~~-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[rebuild]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[review]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[forget]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_reports_missing_raw_snapshot_in_value_error",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028literal separator-\\u043e\\u0442\\u0432\\u0435\\u0442 \\u043d\\u0435 \\u043e\\u0431\\u0440\\u0430\\u0437\\u0443\\u0435\\u0442 \\u043f\\u043e\\u043b\\u043d\\u043e\\u0435 \\u0434\\u043e\\u0441\\u044c\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\n```\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028unsupported separator]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_result_cannot_be_changed_after_admission",
+        "FAILED tests/test_dossier_mutation_contract.py::test_author_body_headings_remain_author_payload_during_body_edit",
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[1]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[6]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_every_invalid_single_body_byte_keeps_confirmed_author_boundary[\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_every_invalid_single_body_byte_keeps_confirmed_author_boundary[\\r\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\r\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_complete_body_with_unsupported_newline_cannot_be_deleted",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-True]",
+        "24 failed, 31 passed in 0.43s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::1 → 0::54865cce079c38a2#7",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 789,
+      "what": "1 → 0 @95-96",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "2 failed, 53 passed in 0.54s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::Eq → NotEq::486854a6b41480db#1",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 805,
+      "what": "Eq → NotEq @13-49",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "FAILED tests/test_dossier_mutation_contract.py::test_incomplete_body_has_explicit_deletion_hold_reason",
+        "5 failed, 50 passed in 0.55s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::DossierLoad.refusal::return X → return None::5bea74a95ceb90ec#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 869,
+      "what": "return X → return None @16-36",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_damaged_author_returns_the_specific_hold_without_changing_bytes[\\r\\n]",
+        "2 failed, 53 passed in 0.56s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::kept_from_night::Or → And::a525e949ebe27e97#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 945,
+      "what": "Or → And @7-40",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_complete_body_with_unsupported_newline_cannot_be_deleted",
+        "1 failed, 54 passed in 0.55s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::kept_from_night::not X → X::b77e4fa91f4f4dc4#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 945,
+      "what": "not X → X @14-40",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[1]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_old_deletion_heading_levels_remain_eligible[6]",
+        "2 failed, 53 passed in 0.56s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::kept_from_night::return X → return None::1d25cf003af69265#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 946,
+      "what": "return X → return None @8-74",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "FAILED tests/test_dossier_mutation_contract.py::test_incomplete_body_has_explicit_deletion_hold_reason",
+        "FAILED tests/test_dossier_mutation_contract.py::test_complete_body_with_unsupported_newline_cannot_be_deleted",
+        "3 failed, 52 passed in 0.54s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::kept_from_night::Or → And::f7cb719c4d1e4133#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 946,
+      "what": "Or → And @15-74",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "FAILED tests/test_dossier_mutation_contract.py::test_incomplete_body_has_explicit_deletion_hold_reason",
+        "FAILED tests/test_dossier_mutation_contract.py::test_complete_body_with_unsupported_newline_cannot_be_deleted",
+        "3 failed, 52 passed in 0.54s"
+      ]
+    },
+    {
+      "key": "scripts/nightly_dossier_review.py::_review_loop::10 → 0::098eb32ba392607f#0",
+      "path": "scripts/nightly_dossier_review.py",
+      "line": 504,
+      "what": "10 → 0 @35-37",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[False-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_review_preview_and_write_use_the_same_revision_date[True-False]",
+        "2 failed, 53 passed in 0.53s"
+      ]
+    }
+  ]
+}

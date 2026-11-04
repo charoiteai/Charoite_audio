@@ -1,0 +1,373 @@
+{
+  "source": "e7849c6321192cb677605be8a2ce34857e97d72f",
+  "scope": "exact CI survivor mutations, new test module only; local targeted not canonical CI",
+  "baseline": ".....................................                                    [100%]\n37 passed in 0.24s\n",
+  "results": [
+    {
+      "key": "scripts/nightly_dossier_review.py::review::return X → return None::abbe618be9a560a3#0",
+      "path": "scripts/nightly_dossier_review.py",
+      "line": 220,
+      "what": "return X → return None @8-85",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_review_unread_file_returns_named_failure_without_cloud[missing]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_review_unread_file_returns_named_failure_without_cloud[unreadable]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_review_unread_file_returns_named_failure_without_cloud[damaged]",
+        "3 failed, 34 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::DossierParse::True → False::2202827bf79899cf#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 715,
+      "what": "True → False @18-22",
+      "critical": false,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_result_cannot_be_changed_after_admission",
+        "1 failed, 36 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::Lt → LtE::399ecf4108909fd0#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 743,
+      "what": "Lt → LtE @30-45",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_closed_header_does_not_hide_first_protected_physical_line",
+        "1 failed, 36 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::In → NotIn::6c700b84bf6cdd3c#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 786,
+      "what": "In → NotIn @32-55",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "2 failed, 35 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::not X → X::8dcd0a280f366746#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 801,
+      "what": "not X → X @13-33",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u0442 \\u043f\\u043e\\u043b\\u044f \\u043e\\u0442\\u043f\\u0435\\u0447\\u0430\\u0442\\u043a\\u0430 \\u0432 \\u0437\\u0430\\u043a\\u0440\\u044b\\u0442\\u043e\\u0439 \\u0448\\u0430\\u043f\\u043a\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "5 failed, 32 passed in 0.28s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::DossierLoad.refusal::return X → return None::f7d79d668bfda80d#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 865,
+      "what": "return X → return None @8-17",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[~~~info`tick-~~~-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[rebuild]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[review]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_admitted_refusal_api_returns_empty_string[forget]",
+        "4 failed, 33 passed in 0.28s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::DossierLoad.replace_body::Or → And::78148e0dfac37f07#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 871,
+      "what": "Or → And @29-89",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_preserves_the_specific_refusal_reason",
+        "1 failed, 36 passed in 0.28s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/frontmatter.py::with_scalar_preserving::And → Or::690110e02bb8f4fd#0",
+      "path": "src/charoite_graph/frontmatter.py",
+      "line": 288,
+      "what": "And → Or @21-66",
+      "critical": true,
+      "rc": 0,
+      "result": "survived",
+      "detail": [
+        "37 passed in 0.23s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/frontmatter.py::with_scalar_preserving::1 → 0::54865cce079c38a2#1",
+      "path": "src/charoite_graph/frontmatter.py",
+      "line": 288,
+      "what": "1 → 0 @51-52",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\" ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:  -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"  ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\" ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:  -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"  ]",
+        "6 failed, 31 passed in 0.28s"
+      ]
+    },
+    {
+      "key": "scripts/nightly_dossier.py::_build::And → Or::61da76121f35fbd1#0",
+      "path": "scripts/nightly_dossier.py",
+      "line": 446,
+      "what": "And → Or @11-103",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\n```\\n]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_actual_nightly_rejects_incomplete_rendered_candidate[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028unsupported separator]",
+        "4 failed, 33 passed in 0.29s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::NotEq → Eq::80e969bec2c39984#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 753,
+      "what": "NotEq → Eq @28-48",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[~~~info`tick-~~~-True]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[```info`tick-```-False]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[   ```info`tick-   ```-False]",
+        "3 failed, 34 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::Gt → GtE::40109b805cceb788#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 765,
+      "what": "Gt → GtE @68-83",
+      "critical": true,
+      "rc": 0,
+      "result": "survived",
+      "detail": [
+        "37 passed in 0.23s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::Lt → LtE::710e4604c2fda424#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 787,
+      "what": "Lt → LtE @35-84",
+      "critical": true,
+      "rc": 0,
+      "result": "survived",
+      "detail": [
+        "37 passed in 0.24s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::NotEq → Eq::cc21c6367487b43e#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 793,
+      "what": "NotEq → Eq @11-42",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_closed_header_does_not_hide_first_protected_physical_line",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043f\\u043e\\u0432\\u0442\\u043e\\u0440 \\u0437\\u0430\\u0449\\u0438\\u0449\\u0451\\u043d\\u043d\\u043e\\u0433\\u043e \\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043a\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u043d\\u0430\\u0431\\u043e\\u0440 \\u0437\\u0430\\u0449\\u0438\\u0449\\u0451\\u043d\\u043d\\u044b\\u0445 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043e\\u0431\\u0440\\u0430\\u0442\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u0437\\u0430\\u0449\\u0438\\u0449\\u0451\\u043d\\u043d\\u044b\\u0445 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u0438\\u0437\\u0432\\u0435\\u0441\\u0442\\u043d\\u0430\\u044f \\u0432\\u043d\\u0435\\u0448\\u043d\\u044f\\u044f \\u043e\\u0431\\u043e\\u043b\\u043e\\u0447\\u043a\\u0430 \\u0438\\u043b\\u0438 \\u043e\\u0441\\u0442\\u0430\\u0442\\u043e\\u043a \\u043f\\u0435\\u0440\\u0435\\u0434 \\u0442\\u0435\\u043b\\u043e\\u043c]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u0442 \\u043f\\u043e\\u043b\\u044f \\u043e\\u0442\\u043f\\u0435\\u0447\\u0430\\u0442\\u043a\\u0430 \\u0432 \\u0437\\u0430\\u043a\\u0440\\u044b\\u0442\\u043e\\u0439 \\u0448\\u0430\\u043f\\u043a\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "10 failed, 27 passed in 0.28s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::Eq → NotEq::eaa01583d626048d#1",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 803,
+      "what": "Eq → NotEq @13-94",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "4 failed, 33 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::DossierLoad.replace_body::Or → And::7acbd9dcdc93d903#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 882,
+      "what": "Or → And @11-71",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople\\u2028literal separator-\\u043e\\u0442\\u0432\\u0435\\u0442 \\u043d\\u0435 \\u043e\\u0431\\u0440\\u0430\\u0437\\u0443\\u0435\\u0442 \\u043f\\u043e\\u043b\\u043d\\u043e\\u0435 \\u0434\\u043e\\u0441\\u044c\\u0435]",
+        "1 failed, 36 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::kept_from_night::return X → return None::33daf27be27c0428#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 940,
+      "what": "return X → return None @8-18",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "1 failed, 36 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/frontmatter.py::with_scalar_preserving::Eq → NotEq::0bca859e51e8214e#0",
+      "path": "src/charoite_graph/frontmatter.py",
+      "line": 288,
+      "what": "Eq → NotEq @21-33",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\" ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:  -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"  ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\" ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:  -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"  ]",
+        "6 failed, 31 passed in 0.29s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::1 → 0::54865cce079c38a2#1",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 753,
+      "what": "1 → 0 @36-37",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_backtick_in_fence_info_obeys_opening_character[   ```info`tick-   ```-False]",
+        "1 failed, 36 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::1 → 0::54865cce079c38a2#7",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 787,
+      "what": "1 → 0 @76-77",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "2 failed, 35 passed in 0.26s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::NotEq → Eq::8d384319f80de005#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 795,
+      "what": "NotEq → Eq @13-79",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_closed_header_does_not_hide_first_protected_physical_line",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u043d\\u0430\\u0431\\u043e\\u0440 \\u0437\\u0430\\u0449\\u0438\\u0449\\u0451\\u043d\\u043d\\u044b\\u0445 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043e\\u0431\\u0440\\u0430\\u0442\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u0437\\u0430\\u0449\\u0438\\u0449\\u0451\\u043d\\u043d\\u044b\\u0445 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u0438\\u0437\\u0432\\u0435\\u0441\\u0442\\u043d\\u0430\\u044f \\u0432\\u043d\\u0435\\u0448\\u043d\\u044f\\u044f \\u043e\\u0431\\u043e\\u043b\\u043e\\u0447\\u043a\\u0430 \\u0438\\u043b\\u0438 \\u043e\\u0441\\u0442\\u0430\\u0442\\u043e\\u043a \\u043f\\u0435\\u0440\\u0435\\u0434 \\u0442\\u0435\\u043b\\u043e\\u043c]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u0442 \\u043f\\u043e\\u043b\\u044f \\u043e\\u0442\\u043f\\u0435\\u0447\\u0430\\u0442\\u043a\\u0430 \\u0432 \\u0437\\u0430\\u043a\\u0440\\u044b\\u0442\\u043e\\u0439 \\u0448\\u0430\\u043f\\u043a\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "9 failed, 28 passed in 0.29s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::NotEq → Eq::ee8b322e98cd217b#0",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 799,
+      "what": "NotEq → Eq @24-51",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u0438\\u0437\\u0432\\u0435\\u0441\\u0442\\u043d\\u0430\\u044f \\u0432\\u043d\\u0435\\u0448\\u043d\\u044f\\u044f \\u043e\\u0431\\u043e\\u043b\\u043e\\u0447\\u043a\\u0430 \\u0438\\u043b\\u0438 \\u043e\\u0441\\u0442\\u0430\\u0442\\u043e\\u043a \\u043f\\u0435\\u0440\\u0435\\u0434 \\u0442\\u0435\\u043b\\u043e\\u043c]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u0442 \\u043f\\u043e\\u043b\\u044f \\u043e\\u0442\\u043f\\u0435\\u0447\\u0430\\u0442\\u043a\\u0430 \\u0432 \\u0437\\u0430\\u043a\\u0440\\u044b\\u0442\\u043e\\u0439 \\u0448\\u0430\\u043f\\u043a\\u0435]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_replace_body_rejects_structural_or_newline_damage[## \\u0421\\u0435\\u0439\\u0447\\u0430\\u0441\\ncurrent\\n## \\u041a\\u0430\\u043a \\u043f\\u0440\\u0438\\u0448\\u043b\\u0438\\nhistory\\n## \\u0420\\u0435\\u0448\\u0435\\u043d\\u043e extra\\ndecision\\n## \\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e\\nopen\\n## \\u041a\\u0442\\u043e \\u0432 \\u0442\\u0435\\u043c\\u0435\\npeople-\\u043d\\u0435\\u043f\\u043e\\u043b\\u043d\\u044b\\u0439 \\u0438\\u043b\\u0438 \\u043d\\u0430\\u0440\\u0443\\u0448\\u0435\\u043d\\u043d\\u044b\\u0439 \\u043f\\u043e\\u0440\\u044f\\u0434\\u043e\\u043a \\u043f\\u044f\\u0442\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u043e\\u0432 \\u0442\\u0435\\u043b\\u0430]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "6 failed, 31 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/dossier.py::_parse_dossier::Lt → LtE::0d6128171d6ae2cf#1",
+      "path": "src/charoite_graph/dossier.py",
+      "line": 803,
+      "what": "Lt → LtE @43-71",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_parse_refusal_names_the_specific_boundary_problem[<lambda>-\\u0437\\u0430\\u0433\\u043e\\u043b\\u043e\\u0432\\u043e\\u043a \\u0442\\u0435\\u043b\\u0430 \\u0432\\u043d\\u0443\\u0442\\u0440\\u0438 \\u0440\\u0430\\u0437\\u0434\\u0435\\u043b\\u0430 \\u0418\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u0438]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_keep_reason_exposes_parser_refusal_for_body_heading_in_sources",
+        "2 failed, 35 passed in 0.27s"
+      ]
+    },
+    {
+      "key": "src/charoite_graph/frontmatter.py::with_scalar_preserving::Eq → NotEq::823ca7f445472158#0",
+      "path": "src/charoite_graph/frontmatter.py",
+      "line": 288,
+      "what": "Eq → NotEq @38-66",
+      "critical": true,
+      "rc": 1,
+      "result": "killed",
+      "detail": [
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\" ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\n--\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:  -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"  ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\" ]",
+        "FAILED tests/test_dossier_mutation_contract.py::test_scalar_replacement_preserves_spacing_and_neighbors[\\r\\n-\\ufeff-\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f:  -\\u0440\\u0435\\u0432\\u0438\\u0437\\u0438\\u044f: \"2026-11-03\"  ]",
+        "6 failed, 31 passed in 0.29s"
+      ]
+    }
+  ]
+}

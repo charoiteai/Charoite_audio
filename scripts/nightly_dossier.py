@@ -36,7 +36,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402,F401 — compatibility integration seam
-from charoite_graph import dossier, graph_names  # noqa: E402
+from charoite_graph import dossier, frontmatter, graph_names  # noqa: E402
+import dossier_incremental  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
@@ -121,18 +122,15 @@ def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, 
 
     Третий элемент — отказ для сводки; повреждение не означает отказ модели.
     """
-    if loaded.state == "unreadable":
-        print(f"  ✗ {theme}: прежнее досье не прочитано — не трогаю")
-        return False, None, 1
-    text = loaded.text or ""
-    if loaded.state == "damaged":
-        section = dossier.KEEP_RE.search(text)
-        # в заголовке шаблона знака замены нет (`#`, пробелы, «Правки автора»), поэтому знак
-        # замены во всём совпадении означает знак замены в тексте раздела
-        if section is None or "\ufffd" in section.group():
-            print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
-            return False, None, 0
-    return True, dossier.preserve_manual(text), 0
+    if why := loaded.refusal("rebuild"):
+        print(f"  ✗ {theme}: {why} — не трогаю")
+        return False, None, int(loaded.state == "unreadable")
+    section = next((s for s in loaded.parsed.sections if s.title == "Правки автора"), None)
+    if section is None:
+        return True, None, 0
+    # The admitted complete shape makes the author section terminal. Keep its
+    # exact normalized payload; compatibility projections may trim or collapse it.
+    return True, (loaded.text or "")[section.content:], 0
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
@@ -141,21 +139,11 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
     рассуждение съедает бюджет генерации и документ выходит беднее.
     `fell_back` получает флаг стрима «облако не ответило, отвечал запас»:
     метка `вход:` такому телу не годится (финальный Opus №842, M1)."""
-    sys.path.insert(0, str(CODE / "src"))
-    from llm import LLM  # noqa: PLC0415
-
-    llm = LLM(c)
     prompt = dossier.build_prompt(theme, members, files, schema=CHAROITE)
-    model = (c.get("llm") or {}).get("model")
-    out = []
     if temperature is None:
         temperature = dossier.GEN_TEMPERATURES[0]
-    for chunk in llm.stream(prompt, model=model, temperature=temperature, **dossier.gen_call()):
-        out.append(chunk)
-    if fell_back is not None:
-        # поле напрямую: переименуют — громкий отказ, не тихая чужая метка (n842-fix3 M1)
-        fell_back.append(bool(llm._fell_back_local))
-    return "".join(out).strip()
+    return dossier_incremental.local_complete(prompt, c, temperature=temperature,
+                                              fell_back=fell_back, **dossier.gen_call())
 
 
 def generator_label(c: dict) -> str:
@@ -171,7 +159,7 @@ def generator_label(c: dict) -> str:
     sys.path.insert(0, str(CODE / "src"))
     try:
         from llm import LLM  # noqa: PLC0415
-        llm = LLM(c)
+        llm = LLM(dossier_incremental.local_config(c))
         num_ctx = llm.num_ctx if llm.engine == "ollama" else None
         return dossier.generator_input(llm.effective_model(model), num_ctx)
     except Exception as e:  # noqa: BLE001
@@ -220,6 +208,8 @@ class _GraphRun:
                  gen: str = ""):
         self.graph, self.folder = graph, graph / CHAROITE.dossier_dir
         self.gen = gen            # `вход:` генератора этой ночи (№842)
+        self.snapshot = dossier.GraphSnapshot(files, {}, {})
+        self.addresses = None
         self.files, self.cl, self.today, self.stamp = files, cl, today, stamp
         self.reads = _DossierReads()
         self.entries: dict[str, dict] = {}
@@ -308,44 +298,49 @@ def _graph_snapshot(graph: pathlib.Path, wait: float = LOCK_WAIT):
 
 def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str,
           gen: str = "") -> tuple[_GraphRun, list[Candidate]]:
-    files, backlinks = dossier.scan(graph, schema=CHAROITE)
+    addresses = graphs.mutation_addresses(graph, root=_root())
+    snapshot = dossier.scan_snapshot(graph, schema=CHAROITE, strict=True)
+    addresses.revalidate()
+    files, backlinks = snapshot.files, snapshot.backlinks
     cl = dossier.clusters(files, backlinks, schema=CHAROITE) if files else {}
     g = _GraphRun(graph, files, cl, today, stamp, gen)
+    g.snapshot, g.addresses, g.full = snapshot, addresses, full
     found = []
     for theme, members in cl.items():
         path = g.folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
         loaded = g.reads.load(path)
         g.keep(theme, members, loaded, fp)
-        same = dossier.in_sync(loaded, fp)
-        # Тело правила облачная ревизия: пересказ модели стёр бы её (25.10
-        # `--full` — текст −80 %, ⚠ 999 → 0), повторить её некому. Проверка —
-        # до классов, иначе `--full` взял бы SAME (вход n841-in1 DS M1).
-        # Снимает поле «забыть встречу» или владелец (выход out3: состав по
-        # разделу «Источники» три круга подряд давал ложный уход источника)
-        rev = dossier.revision(loaded.text)
-        if rev:
-            _skip_held(g, theme, rev, same)
+        decision = dossier.plan(loaded, members, snapshot, schema=CHAROITE,
+                                on_disk=False, force=full)
+        if decision.action in ("skip", "hold"):
+            _record_plan(g, theme, loaded, decision)
             continue
-        # Метка диаризации в теле при тех же источниках: пересказ модели стёр бы
-        # правки облачной ревизии (⚠️, ссылки), а своё тело без модели четыре
-        # круга подряд теряло хвост на разборе (n815-out6, решение координатора)
-        # — ночь такую тему не трогает, и ручной `--full` тоже (n815-out7
-        # Haiku I3); видна строкой лога и счётчиком. Пересборка — отдельно
-        labeled = dossier.labeled_body(loaded.text)
-        if same and (not full or labeled):
-            g.skipped += 1
-            if labeled:
-                g.labeled += 1
-                print(f"  ⏭ {graph.name} · {theme}: метка в теле — ночь не трогает")
-            else:
-                g.unchanged += 1
-                _count_input(g, loaded)
-            continue
-        cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
+        cls = NEW if decision.reason == "new" else SAME if decision.reason == "forced" else CHANGED
         found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
+
+
+def _record_plan(g: _GraphRun, theme: str, loaded: dossier.DossierLoad,
+                 decision: dossier.Plan) -> None:
+    revised = dossier.revision(loaded.text)
+    if revised:
+        _skip_held(g, theme, revised, dossier.in_sync(loaded, dossier.fingerprint(g.cl.get(theme, []), g.files)))
+    else:
+        g.skipped += 1
+    if decision.action == "skip" and not revised:
+        if dossier.labeled_body(loaded.text):
+            g.labeled += 1
+            print(f"  ⏭ {g.graph.name} · {theme}: метка в теле — ночь не трогает")
+        else:
+            g.unchanged += 1
+            _count_input(g, loaded)
+    elif decision.action == "hold":
+        g.отказы += int(decision.reason == "unreadable")
+        g.broken_manual += int(decision.reason in ("unparsed", "no_composition"))
+        reason = "прежнее досье не прочитано" if decision.reason == "unreadable" else decision.reason
+        print(f"  ⏸ {g.graph.name} · {theme}: {reason}; ушли {list(decision.gone)} — не трогаю")
 
 
 def _count_input(g: _GraphRun, loaded: dossier.DossierLoad) -> None:
@@ -395,6 +390,80 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
+def _input_refusal(g: _GraphRun, theme: str, members: list[str], loaded: dossier.DossierLoad,
+                   decision: dossier.Plan, captured) -> str | None:
+    """A visible refusal reason, or None, under the captured graph lock."""
+    if g.addresses is not None:
+        g.addresses.revalidate()
+        if captured != g.addresses:
+            return "изменились адреса графа"
+    captured.revalidate()
+    fresh = dossier.scan_snapshot(captured.graph, schema=CHAROITE, strict=True, warn_damaged=False)
+    current = dossier.clusters(fresh.files, fresh.backlinks, schema=CHAROITE)
+    if set(current.get(theme, [])) != set(members):
+        return "изменился набор источников темы"
+    if (fresh.redirects, fresh.stubs) != (g.snapshot.redirects, g.snapshot.stubs):
+        return "изменились перенаправления графа"
+    for name in members:
+        # Cluster members belong to each captured files map; the fresh
+        # membership was checked above before accessing either snapshot.
+        before, after = g.files[name], fresh.files[name]
+        for key in ("rel", "kind", "text", "mtime", "sha256", "identity", "physical"):
+            if before.get(key) != after.get(key):
+                return "источник изменён или заменён"
+        if captured.bind(before["path"]).resolve() != after["path"].resolve():
+            return "изменился путь источника"
+    if dossier.plan(loaded, members, fresh, schema=CHAROITE, on_disk=True,
+                    force=g.full) != decision:
+        return "изменился план обновления"
+    return None
+
+
+def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list[str],
+                   rejected: list[str], g: _GraphRun, fp: str) -> str:
+    """Change only the body, append source citations, then stamp committed inputs."""
+    text = loaded.replace_body(body) if body is not None else loaded.raw.decode("utf-8")
+    if accepted:
+        parsed = dossier.DossierLoad("ok", text).parsed
+        manual = next(s for s in parsed.sections if s.title == "Правки автора")
+        # Normalize for span editing, then restore the original newline style.
+        normalized = dossier.DossierLoad("ok", text).text
+        groups: dict[str, list[str]] = {}
+        for name in accepted:
+            groups.setdefault(g.files[name]["kind"], []).append(name)
+        citations = "".join(f"- **{kind}:** " + " · ".join(f"[[{n}]]" for n in sorted(names)) + "\n"
+                            for kind, names in sorted(groups.items()))
+        text = (normalized[:manual.start].rstrip() + "\n" + citations + "\n" + normalized[manual.start:])
+        text = text.replace("\n", loaded.newline)
+        composed = dossier.composition(loaded.text, schema=CHAROITE) or []
+        canonical = {dossier._canon(name, g.snapshot) for name in composed} | set(accepted)
+        text = dossier.with_composition(text, sorted(canonical))
+        text = frontmatter.with_field(text, "собрано", g.today)
+        text = frontmatter.with_field(text, "отпечаток", fp)
+        text = frontmatter.with_field(text, "источников", str(len({graph_names.link_target_stem(m[1])
+                                     for m in dossier.LINK_RE.finditer(dossier.split_dossier(text)[2] or "")})))
+    # Existing rejection entries expire when the body context changes. Preserve
+    # their old versions so they are re-evaluated next time, rather than claiming
+    # they were judged against the newly generated body.
+    versions = dossier.rejection_versions(loaded.text or "")
+    old_rejected = {dossier._canon(dossier.member_name(n), g.snapshot)
+                    for n in frontmatter.list_field(loaded.text or "", dossier.REJECTED_FIELD)}
+    all_rejected = (old_rejected | set(rejected)) - set(accepted)
+    for name in rejected:
+        versions[name] = dossier.rejection_version(loaded.text or "", name, g.files[name])
+    text = frontmatter.set_list_field(text, dossier.REJECTED_FIELD, sorted(all_rejected))
+    text = frontmatter.set_list_field(text, dossier.REJECTION_VERSIONS_FIELD,
+                                     [f"{versions[n]}:{n}" for n in sorted(all_rejected) if n in versions])
+    candidate = dossier.DossierLoad("ok", text)
+    if not candidate.parsed.complete or candidate.refusal("review"):
+        raise dossier_incremental.Refused(candidate.parsed.reason or "invalid rendered append")
+    before_manual = next(s for s in loaded.parsed.sections if s.title == "Правки автора")
+    after_manual = next(s for s in candidate.parsed.sections if s.title == "Правки автора")
+    if (loaded.text or "")[before_manual.content:] != candidate.text[after_manual.content:]:
+        raise dossier_incremental.Refused("author payload changed")
+    return text
+
+
 def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | None:
     """Собрать одну тему. Возвращает секунды генерации — цену темы для
     `need`, без ожидания замка; None — модель не звали. Собрана ли тема —
@@ -409,14 +478,17 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         # генерации» (вход in3 №621, DS M2).
         loaded = g.reads.reload(path)
         g.keep(theme, members, loaded, fp)
-    # Поле могли поставить, пока тема ждала очереди: решение «переписать
-    # можно» — по тому снимку, с которым идём к модели (вход n841-in1 S-I1)
-    rev = dossier.revision(loaded.text)
-    if rev:
+    decision = dossier.plan(loaded, members, g.snapshot, schema=CHAROITE,
+                            on_disk=False, force=g.full)
+    if decision.action in ("skip", "hold"):
         g.keep(theme, members, loaded, fp)
-        _skip_held(g, theme, rev, cand.cls == SAME)
+        _record_plan(g, theme, loaded, decision)
         return None
-    allowed, manual, failures = _manual_for_rebuild(theme, loaded)
+    if decision.action == "add":
+        why = loaded.refusal("edit")
+        allowed, author_payload, failures = not why, None, int(bool(why))
+    else:
+        allowed, author_payload, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
         g.отказы += failures
         if failures == 0:
@@ -428,23 +500,48 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     g0 = clock()
     body = ""
     fell_back: list = []
-    for temperature in dossier.GEN_TEMPERATURES:
+    if decision.action == "add":
         try:
-            # метка деятелем — тем же словом, что во входе: отказом она красила
-            # бы ночь и держала тему в голове очереди (n815-in1 C2); «Правки
-            # автора» ниже вставляются как были
-            body = graph_names.unlabel_speakers(dossier.trim_to_format(
-                generate(theme, members, g.files, c, temperature=temperature, fell_back=fell_back)))
+            accepted, rejected = [], []
+            # Judge independently and finish every source before candidate
+            # generation: a bad candidate cannot reject any source.
+            for name in decision.new:
+                relevant = dossier_incremental.source_relevance(theme, loaded, name, g.files[name], c)
+                if type(relevant) is not bool:
+                    raise dossier_incremental.Refused("source relevance did not return a literal boolean")
+                (accepted if relevant else rejected).append(name)
+            body = dossier_incremental.append(theme, loaded, accepted, g.files, c) if accepted else ""
+            text = _append_result(loaded, body if accepted else None, accepted, rejected, g, fp)
         except Exception as e:  # noqa: BLE001
-            print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
+            print(f"  ✗ {theme}: добавка не принята ({type(e).__name__}: {e}) — источники остаются для повтора")
+            g.отказы += 1
+            return clock() - g0
+    else:
+        supplied = dossier.prompt_members(members, g.files)
+        for temperature in dossier.GEN_TEMPERATURES:
+            try:
+                raw_body = generate(theme, supplied, g.files, c, temperature=temperature, fell_back=fell_back)
+                body = "" if dossier.DossierLoad("ok", raw_body).parsed.protected else graph_names.unlabel_speakers(
+                    dossier.trim_to_format(raw_body))
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
+                body = ""
+                break
+            # Refuse protected output instead of hiding injected sections.
+            if dossier.DossierLoad("ok", body).parsed.protected:
+                body = ""
+            # Validate the fully rendered candidate, including preserved author
+            # text, within the existing two-attempt malformed-output budget.
+            gen = "" if fell_back and fell_back[-1] else g.gen
+            text = dossier.render(theme, body, supplied, g.files, fp, g.today, gen,
+                                  author_payload=author_payload)
+            text = dossier.with_composition(text, [n for n in supplied if CHAROITE.is_meeting_folder(g.files[n]["kind"])])
+            candidate = dossier.DossierLoad("ok", text)
+            if dossier.looks_valid(body) and candidate.parsed.complete and not candidate.refusal("rebuild"):
+                break
+            print(f"  … {theme}: ответ не по формату (температура {temperature})")
             body = ""
-            break          # отказ считается ниже, в ветке `if not body`
-        body = dossier.strip_protected(body)
-        if dossier.looks_valid(body):
-            break
-        print(f"  … {theme}: ответ не по формату (температура {temperature})")
-        body = ""
-    if not body:
+    if not body and decision.action != "add":
         # Брак дважды подряд — тот же отказ, что и исключение: тема
         # осталась без разбора. Раньше он не считался, ночь при
         # «Принято, что дальше?» на всех темах выходила с кодом 0 и
@@ -452,13 +549,6 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         g.отказы += 1
         return clock() - g0
     gen_s = clock() - g0
-
-    # ответил облачный запас — генератор не тот, что в метке: тело без `вход:`
-    # (чужая метка навсегда сошла бы за «тот же генератор», финальный Opus M1)
-    gen = "" if fell_back and fell_back[-1] else g.gen
-    text = dossier.render(theme, body, members, g.files, fp, g.today, gen)
-    if manual:
-        text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
 
     copy = None
     wait = lock_wait()
@@ -483,20 +573,24 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         snap = safe_write.stat_snapshot(path)
         # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
         fresh = dossier.load_dossier(path)
-        if fresh.state != loaded.state or fresh.text != loaded.text:
+        if fresh.state != loaded.state or fresh.raw != loaded.raw:
             print(f"  ⏸ {theme}: досье изменилось за время генерации — "
                   "тема уйдёт на следующую ночь")
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
             return gen_s
-        if dossier.fingerprint_on_disk(members, g.files) != fp:
+        try:
+            input_refusal = _input_refusal(g, theme, members, loaded, decision, captured)
+        except (OSError, ValueError):
+            input_refusal = "не удалось повторно проверить источники"
+        if input_refusal is not None:
             # Источник удалён или поправлен после скана («забыть встречу» посреди ночи):
             # тело собрано по снимку с текстом ушедшей встречи и записалось бы с отпечатком
             # несуществующего состава. Сверка — под замком, который берёт и «забыть»
             # (круг n841-opus-fix DS I2)
             print(f"  ⏸ {theme}: источники изменились за время генерации — "
-                  "тема уйдёт на следующую ночь")
+                  f"тема уйдёт на следующую ночь ({input_refusal})")
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
@@ -518,6 +612,15 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         except OSError as e:
             print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
             g.отказы += 1
+            return gen_s
+        try:
+            input_refusal = _input_refusal(g, theme, members, loaded, decision, captured)
+        except (OSError, ValueError):
+            input_refusal = "не удалось повторно проверить источники"
+        if input_refusal is not None:
+            print(f"  ⏸ {theme}: источники или адрес графа изменились перед записью — повторю позже ({input_refusal})")
+            g.skipped += 1
+            g.changed += 1
             return gen_s
         # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
         if not safe_write.write_text(path, text, expect=snap, expect_absent=snap is None):

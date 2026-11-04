@@ -48,6 +48,11 @@ def test_сторож_зон_краснеет_на_каждом_нарушени
     # модуль с сетью без решения
     без_llm = copy.deepcopy(layout)
     del без_llm["mutation_not_critical"]["llm"]
+    # The local-selector and streaming doors now have explicit critical decisions.
+    # A module is undecided only after both module and function decisions are removed.
+    for entry in list(без_llm["mutation_critical"]):
+        if entry == "llm" or entry.startswith("llm::"):
+            del без_llm["mutation_critical"][entry]
     problems = lm.zone_problems(inv, без_llm, scanned)
     assert any(p.startswith("src/llm.py: импорт requests — дверь мутатора не решена") for p in problems), problems
     # потребитель своего транспорта наружу без решения (выходной круг 1 по №469, GLM I2)

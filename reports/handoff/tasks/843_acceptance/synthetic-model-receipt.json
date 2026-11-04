@@ -1,0 +1,149 @@
+{
+  "implementation_sha": "09e424b37971c23e3ea75238b8fd5bb790ef64da",
+  "implementation_base": "ca7144d9b46481c9572fa74f03a112b4207b7639",
+  "product_source_sha256": {
+    "scripts/nightly_dossier.py": "24dc00d6c75682c17410934c290a15f8e3738c326aef6fdd4b776c52df0652f5",
+    "scripts/forget_meeting.py": "af39998d245da7ff15bac9f7c1bc380fb132ff63a8eefc108af91ee36281e823",
+    "src/charoite_graph/dossier.py": "60a2f2330ed46854664c31ec42f407f1e1fd67db250d03354aacea2f6f0de497",
+    "src/dossier_incremental.py": "02f622e1c3b8a7a82a24ca1ce6474df01fafe37ca675618b49215e111716ce98",
+    "tests/dossier_incremental_control.py": "566bbad9bed3c8f403d3a140318904c7d1f666d2f403ebe4dacff5dd43a6703d"
+  },
+  "fixture_scope": "Wholly invented Glasshouse meetings; no production records/configuration/graph",
+  "model": {
+    "engine": "ollama",
+    "server_version": "0.34.4",
+    "name": "qwen3.6:35b-mlx",
+    "digest": "1b50c6fdc2d4f75f94e6c19b49b20051bc6a7e73620d1ccdfc6687ec042ce754",
+    "num_ctx": 8192
+  },
+  "actual_model_calls": 13,
+  "call_roles": {
+    "You are an independent conservative dossier judge.": 5,
+    "You extend factual dossiers conservatively.": 4,
+    "You judge source relevance conservatively.": 4
+  },
+  "cloud_fallbacks": 0,
+  "audit_tripwire_events": 0,
+  "passed": true,
+  "writer_cases": [
+    {
+      "scenario": "S01-plain",
+      "revision": false,
+      "calls": 3,
+      "before_sha256": "e892c681ded9258cec381a8d86ce3fa8d5b4c4f68d47fd11cb59e7facfa72b8c",
+      "after_sha256": "7c0c5c91c0b964a4f333036c1a22cb675a2cc9665180c5a9264467a76306dd69",
+      "warning_retained": true,
+      "manual_retained": true,
+      "old_link_retained": true,
+      "rejected": [],
+      "composition": [
+        "2099-01-01_100000",
+        "2099-01-02_100000"
+      ],
+      "repeat": {
+        "model_calls": 0,
+        "unchanged": true,
+        "no_new_backup": true,
+        "built": 0
+      },
+      "passed": true
+    },
+    {
+      "scenario": "S01-revised",
+      "revision": true,
+      "calls": 3,
+      "before_sha256": "7e7130a0c3a4609ed2e51d896a2310942841389c77f3de529088128b4ac06886",
+      "after_sha256": "9e633a079a428c346e52f96e7f4f2b467238cae7a03611d81dc7a2fbe617bcec",
+      "warning_retained": true,
+      "manual_retained": true,
+      "old_link_retained": true,
+      "rejected": [],
+      "composition": [
+        "2099-01-01_100000",
+        "2099-01-02_100000"
+      ],
+      "repeat": {
+        "model_calls": 0,
+        "unchanged": true,
+        "no_new_backup": true,
+        "built": 0
+      },
+      "passed": true
+    },
+    {
+      "scenario": "S02-correction",
+      "revision": false,
+      "calls": 4,
+      "before_sha256": "e892c681ded9258cec381a8d86ce3fa8d5b4c4f68d47fd11cb59e7facfa72b8c",
+      "after_sha256": "6238d09d8b978beea98bd3d20c909cbd1b5d67885fe9327218750494ab2063a8",
+      "warning_retained": true,
+      "manual_retained": true,
+      "old_link_retained": true,
+      "rejected": [],
+      "composition": [
+        "2099-01-01_100000",
+        "2099-01-02_100000"
+      ],
+      "repeat": {
+        "model_calls": 0,
+        "unchanged": true,
+        "no_new_backup": true,
+        "built": 0
+      },
+      "passed": true
+    },
+    {
+      "scenario": "S04-irrelevant",
+      "revision": false,
+      "calls": 1,
+      "before_sha256": "e892c681ded9258cec381a8d86ce3fa8d5b4c4f68d47fd11cb59e7facfa72b8c",
+      "after_sha256": "b6be47df830affea1a960fddf7b6ee440cee74e0ccc31dfaf109b70999cb1bc5",
+      "warning_retained": true,
+      "manual_retained": true,
+      "old_link_retained": true,
+      "rejected": [
+        "2099-01-02_100000"
+      ],
+      "composition": [
+        "2099-01-01_100000"
+      ],
+      "repeat": {
+        "model_calls": 0,
+        "unchanged": true,
+        "no_new_backup": true,
+        "built": 0
+      },
+      "passed": true
+    }
+  ],
+  "fixed_candidate_judges": [
+    {
+      "scenario": "S04-fixed-unrelated",
+      "calls": 1,
+      "rejected": true,
+      "reason": "candidate semantic conservation was not accepted",
+      "scope": "candidate-validation",
+      "passed": true
+    },
+    {
+      "scenario": "S05-fixed-warning-loss",
+      "calls": 1,
+      "rejected": true,
+      "reason": "candidate semantic conservation was not accepted",
+      "scope": "semantic-only",
+      "passed": true
+    }
+  ],
+  "deterministic_validation": {
+    "passed": 1070,
+    "existing_xfailed": 3,
+    "tripwire_events": 0,
+    "actual_model_calls": 0
+  },
+  "boundaries": [
+    "Warning-loss semantic-only judge probe is separate from actual writer validation; deterministic gate refuses the loss before writer judgment.",
+    "No production migration or installed-runtime claim.",
+    "Source statements are preserved from the previous dossier, not retrospectively validated against old meetings.",
+    "Complete inputs exceeding the configured context are refused; generation/judge failures remain retryable."
+  ]
+}

@@ -1,0 +1,15 @@
+Проверено мутантов: 54 из 54, выжило: 11 (в критичных зонах: 10)
+Выборка: 219 из 219 мутантов плана; критичных в плане 211, в выборке 211, в доле 52, рассуждено 52
+  ВЫЖИЛ scripts/nightly_dossier_review.py:505: 10 → 0 @71-73 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:782: And → Or @23-91 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:797: NotEq → Eq @13-74 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:799: Add → Sub @33-51 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:823: False → True @49-54 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:864: return X → return None @16-95 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:883: Or → And @29-114 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:942: return X → return None @8-67 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:947: LtE → Lt @19-35 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/frontmatter.py:288: Sub → Add @43-52 — критичная зона — держит мерж
+  ВЫЖИЛ src/charoite_graph/dossier.py:707: True → False @18-22 — вне критичных зон
+
+Выживший мутант — это изменение поведения, которого не заметил ни один тест. Либо тест на это место есть, но он ничего не держит, либо места в тестах нет вовсе.

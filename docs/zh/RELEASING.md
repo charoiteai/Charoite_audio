@@ -128,13 +128,15 @@ CI 既无法重现真实设备，也无法重现与大型本地模型（完整�
 
 更新器不会安装没有所有者密钥签名清单的版本 —— 这是独立于 GitHub 的锚点（卡片 №24）：校验和就放在压缩包旁边，能改压缩包的人也能改校验和。私钥永远不进 CI。
 
-发布（release-please + release-app）完成后，在所有者的机器上执行一条命令（需要 `gh` ≥ 2.28 —— `--latest` 参数；GitHub 令牌从 `~/.config/charoite/gh_token` 读取）：
+发布（release-please + release-app）完成后，在所有者的机器上执行一条命令（需要 `gh` ≥ 2.28 —— `--latest` 参数；GitHub 令牌从 `~/.config/charoite/gh_token` 读取）。把审查具体发布压缩包时记录的 SHA-256 设为 `EXPECTED_SHA256`：
 
-    .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z
+    .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z --expected-sha256 "$EXPECTED_SHA256"
 
-没有私钥时脚本以退出码 2 拒绝，什么都不签。`--file <路径>` 改为签名本地文件（签名以 `.sig` 放在旁边，不经过 `gh`）。
+没有私钥时脚本以退出码 2 拒绝，什么都不签。`--file <路径>` 改为签名本地文件（签名以 `.sig` 放在旁边，不经过 `gh`，也不要求压缩包哈希或应用公钥检查）。
 
-脚本读取发布状态，下载 `Charoite.app.zip`，解包并**核对**应用包签名（codesign --strict，团队 AR7PDJQNR4）—— 签名前被调包的压缩包会被拒绝，而不是被签名；`Charoite.app` 是符号链接的压缩包同样被拒绝（codesign 会跟随链接，为链接目标——例如已安装的应用——作保）。随后它**自己**生成清单 `<版本>  <sha256>`（被签名的文件携带版本号——裸哈希允许把旧的诚实三件套挂到新标签下重放），用 `~/.config/charoite/update_manifest_ed25519.pem` 对其原始字节做签名（raw ed25519 → base64），把 `Charoite.app.zip.manifest` 和 `.manifest.sig` 附加到 release，最后一步取消 pre-release 标记（`gh release edit --prerelease=false`；当标签不早于当前 latest 时再加 `--latest`）。
+读取或改变发布状态前，脚本要求 64 位十六进制哈希，并把签名密钥的公钥与 tracked `UpdateAuthenticity.swift` 中唯一、有效的 raw ed25519 常量 `manifestKeyBase64` 核对。哈希缺失、格式不对或公钥不符时，不做任何远程修改。随后下载 `Charoite.app.zip`，实际下载字节的哈希必须与 pin 相同，才能解包、运行 codesign 或签名；不符时发布保持 pre-release。应使用审查压缩包时记录的哈希，而不是直接信任当前发布旁边未经核对的校验和。
+
+脚本解包并**核对**应用包签名（codesign --strict，团队 AR7PDJQNR4）—— 签名前被调包的压缩包会被拒绝，而不是被签名；`Charoite.app` 是符号链接的压缩包同样被拒绝（codesign 会跟随链接，为链接目标——例如已安装的应用——作保）。`Info.plist` 的 `CFBundleShortVersionString` 必须是字符串，且严格等于去掉前导 `v` 的标签；缺失、损坏或版本不符时拒绝签名。随后它**自己**生成清单 `<版本>  <sha256>`（被签名的文件携带版本号——裸哈希允许把旧的诚实三件套挂到新标签下重放），用 `~/.config/charoite/update_manifest_ed25519.pem` 对其原始字节做签名（raw ed25519 → base64），再用同一应用公钥验证实际签名（防止 preflight 后密钥被更换），把 `Charoite.app.zip.manifest` 和 `.manifest.sig` 附加到 release，最后一步取消 pre-release 标记（`gh release edit --prerelease=false`；当标签不早于当前 latest 时再加 `--latest`）。
 
 ### 门禁：没有签名的版本不会成为 latest（PR #375）
 
@@ -144,6 +146,6 @@ CI 既无法重现真实设备，也无法重现与大型本地模型（完整�
 - **release-app**（CI）兜住其余一切。运行开始时：没有 `.manifest.sig` 的稳定版会被改为 pre-release（人工发布、手动取消的标记、1.0+）；触发器也监听 `released`，以捕捉在网页里取消的标记。每次构建之后：旧的 `.manifest`/`.manifest.sig` 会被删除（它们签的是**另一个**压缩包，已不再匹配），release 保持 pre-release 直到重新签名。CI 不上传 `.manifest`：没有签名，它对应用毫无用处。
 - **签名脚本**按 release 状态行事。pre-release 且未签名 —— 常规路径。稳定且已签名 —— 重新签名：替换这对文件期间先把 release 隐藏为 pre-release（两次上传不是原子的，其间更新器会看到带着别人签名的清单）。稳定却**未**签名 —— 门禁失效：脚本照样签名（用户反正已被挡住），但会向 stderr 大声报警并以退出码 3 退出 —— 请查清这个 release 从何而来。只有当标签不早于当前 latest 且不带版本后缀时才加 `--latest`：在 v0.58.0 之后签署历史版本 v0.57.0 不会让 `/releases/latest` 倒退，v0.58.0-rc.1 也不会超过 v0.58.0。
 
-在所有者签名之前，用户停留在上一个版本；签名上传或取消标记失败时，release 保持 pre-release，脚本会打印重试命令。绕过脚本手动执行 `gh release edit --latest` 恰恰是门禁要防的事：不要这样做（CI 会在下一个事件时恢复 pre-release，但在此之前的窗口期由你负责）。
+在所有者签名之前，用户停留在上一个版本；签名上传或取消标记失败时，release 保持 pre-release，脚本会打印带相同 `--expected-sha256` 的重试命令。绕过脚本手动执行 `gh release edit --latest` 恰恰是门禁要防的事：不要这样做（CI 会在下一个事件时恢复 pre-release，但在此之前的窗口期由你负责）。
 
 私钥丢失意味着所有用户的更新都会停止：由所有者生成新密钥对，把公钥写入 `UpdateAuthenticity.swift`（常量 `manifestKeyBase64`），再发布新版本。
