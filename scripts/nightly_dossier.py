@@ -38,6 +38,7 @@ import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402,F401 — compatibility integration seam
 from charoite_graph import dossier, frontmatter, graph_names  # noqa: E402
 import dossier_incremental  # noqa: E402
+import dossier_telemetry as telemetry  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
@@ -242,17 +243,22 @@ class _GraphRun:
         if self.indexed:
             return
         self.indexed = True
-        if not dry and (self.entries or self.folder.is_dir()):
-            with _graph_snapshot(self.graph, 0) as captured:
-                if captured is None:
-                    print(f"  ⏸ {self.graph.name}: индекс не опубликован — замок графа недоступен")
-                    self.index_failed = True
-                    return
-                try:
-                    dossier.rebuild_index(captured.graph, schema=CHAROITE, read=self.reads.current)
-                except OSError as e:
-                    print(f"  ✗ {self.graph.name}: индекс не обновлён ({e})")
-                    self.index_failed = True
+        try:
+            if not dry and (self.entries or self.folder.is_dir()):
+                with _graph_snapshot(self.graph, 0) as captured:
+                    if captured is None:
+                        print(f"  ⏸ {self.graph.name}: индекс не опубликован — замок графа недоступен")
+                        self.index_failed = True
+                        return
+                    try:
+                        dossier.rebuild_index(captured.graph, schema=CHAROITE, read=self.reads.current)
+                    except OSError as e:
+                        print(f"  ✗ {self.graph.name}: индекс не обновлён ({e})")
+                        self.index_failed = True
+        except BaseException:
+            # Covers both g.done() and final cleanup; one flag per graph/run.
+            self.index_failed = True
+            raise
 
     def done(self, dry: bool) -> None:
         self.pending -= 1
@@ -482,6 +488,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
                             on_disk=False, force=g.full)
     if decision.action in ("skip", "hold"):
         g.keep(theme, members, loaded, fp)
+        telemetry.refusal(telemetry.Reason.INPUT)
         _record_plan(g, theme, loaded, decision)
         return None
     if decision.action == "add":
@@ -490,6 +497,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     else:
         allowed, author_payload, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
+        telemetry.refusal(telemetry.Reason.INPUT)
         g.отказы += failures
         if failures == 0:
             # Отказ из-за повреждённых «Правок автора» — это пропуск темы,
@@ -513,18 +521,22 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             body = dossier_incremental.append(theme, loaded, accepted, g.files, c) if accepted else ""
             text = _append_result(loaded, body if accepted else None, accepted, rejected, g, fp)
         except Exception as e:  # noqa: BLE001
+            telemetry.request_refusal(telemetry.Reason.VALIDATION if isinstance(e, dossier_incremental.Refused)
+                                      else telemetry.exception_reason(e))
             print(f"  ✗ {theme}: добавка не принята ({type(e).__name__}: {e}) — источники остаются для повтора")
             g.отказы += 1
             return clock() - g0
     else:
         supplied = dossier.prompt_members(members, g.files)
         for temperature in dossier.GEN_TEMPERATURES:
+            telemetry.begin_attempt()
             try:
                 raw_body = generate(theme, supplied, g.files, c, temperature=temperature, fell_back=fell_back)
                 body = "" if dossier.DossierLoad("ok", raw_body).parsed.protected else graph_names.unlabel_speakers(
                     dossier.trim_to_format(raw_body))
             except Exception as e:  # noqa: BLE001
-                print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
+                telemetry.request_refusal(telemetry.exception_reason(e))
+                print(f"  ⚠️ {theme}: сборка не завершена ({type(e).__name__}: {e})")
                 body = ""
                 break
             # Refuse protected output instead of hiding injected sections.
@@ -539,6 +551,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             candidate = dossier.DossierLoad("ok", text)
             if dossier.looks_valid(body) and candidate.parsed.complete and not candidate.refusal("rebuild"):
                 break
+            telemetry.refusal(telemetry.Reason.FORMAT if raw_body else telemetry.Reason.EMPTY)
             print(f"  … {theme}: ответ не по формату (температура {temperature})")
             body = ""
     if not body and decision.action != "add":
@@ -610,6 +623,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         try:
             copy = dossier.backup(folder, g.stamp, path)
         except OSError as e:
+            telemetry.refusal(telemetry.Reason.IO)
             print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
             g.отказы += 1
             return gen_s
@@ -678,6 +692,7 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
            limit: int | None, budget_s: float | None, started: float) -> int:
     """Пройти очередь; вернуть число попыток с моделью — знаменатель порога
     «модель молчала» (выход out1 №621: «занят» и «изменилось» тоже попытки)."""
+    c_telemetry = telemetry.current() or telemetry.Collector()
     attempts = 0
     built = 0                 # --limit — потолок прогона, а не графа (аудит 26.08, Codex)
     spent: list[float] = []   # все попытки с моделью, и отказы тоже (вход in3, DS M1)
@@ -723,7 +738,10 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             return live_gate.night_wait_cap(
                 LOCK_WAIT if rest is None else min(LOCK_WAIT, rest), now=wall_clock)
         refused, before = g.отказы, g.built
-        gen_s = _build(cand, c, lock_wait)
+        with c_telemetry.topic():
+            gen_s = _build(cand, c, lock_wait)
+            c_telemetry.complete_topic(attempted=gen_s is not None or g.отказы > refused,
+                                       committed=g.built - before, refused=g.отказы - refused)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
         if called:                 # цена темы — генерация, без ожидания замка (Haiku I1)
             spent.append(gen_s)
@@ -740,6 +758,7 @@ class RunResult:
         self.graphs: list[_GraphRun] = []
         self.attempts = 0
         self.scan_failed: list[str] = []
+        self.telemetry = telemetry.Collector()
 
 
 def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
@@ -751,29 +770,44 @@ def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
     today = date.today().isoformat()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")   # штамп копий .backup/, с секундами как у ревизии
     out = RunResult()
-    gen = generator_label(c)
-    candidates: list[Candidate] = []
-    try:
-        for path in paths:
-            # Граф — единица отказа: прежний цикл по графам успевал собрать
-            # графы до сломанного, а общий скан без этой границы отменял бы
-            # работу всех (выход out1 №621, Sonnet I1, DS I1).
+    with out.telemetry.activate():
+        gen = generator_label(c)
+        candidates: list[Candidate] = []
+        original_error = False
+        try:
+            for path in paths:
+                # Граф — единица отказа: прежний цикл по графам успевал собрать
+                # графы до сломанного, а общий скан без этой границы отменял бы
+                # работу всех (выход out1 №621, Sonnet I1, DS I1).
+                try:
+                    g, found = _scan(path, full, today, stamp, gen)
+                except Exception as e:  # noqa: BLE001
+                    print(f"⚠️ скан {path.name} не удался ({type(e).__name__}: {e}) — граф пропущен")
+                    out.scan_failed.append(path.name)
+                    continue
+                out.telemetry.scanned(topics=len(g.cl), refused=g.отказы)
+                out.graphs.append(g)
+                candidates += found
+                print(f"скан {path.name}: тем {len(g.cl)}, к сборке {len(found)}")
+            out.attempts = _drive(queue_order(candidates), c, full=full, dry=dry, limit=limit,
+                                  budget_s=budget_s, started=started)
+        except BaseException:
+            original_error = True
+            raise
+        finally:
+            # Исключение или SIGTERM посреди очереди не оставляет графы со старым
+            # индексом (вход in3 №621, Sonnet I2, DS I2).
             try:
-                g, found = _scan(path, full, today, stamp, gen)
-            except Exception as e:  # noqa: BLE001
-                print(f"⚠️ скан {path.name} не удался ({type(e).__name__}: {e}) — граф пропущен")
-                out.scan_failed.append(path.name)
-                continue
-            out.graphs.append(g)
-            candidates += found
-            print(f"скан {path.name}: тем {len(g.cl)}, к сборке {len(found)}")
-        out.attempts = _drive(queue_order(candidates), c, full=full, dry=dry, limit=limit,
-                              budget_s=budget_s, started=started)
-    finally:
-        # Исключение или SIGTERM посреди очереди не оставляет графы со старым
-        # индексом (вход in3 №621, Sonnet I2, DS I2).
-        for g in out.graphs:
-            g.write_index(dry)
+                for g in out.graphs:
+                    try:
+                        g.write_index(dry)
+                    except BaseException:
+                        g.index_failed = True
+                        if not original_error:
+                            raise
+            finally:
+                out.telemetry.scan_failed = len(out.scan_failed)
+                out.telemetry.index_failed = sum(g.index_failed for g in out.graphs)
     return out
 
 
@@ -867,7 +901,7 @@ def main() -> int:
     for g in result.graphs:
         r = g.result()
         print(f"=== {r['граф']}: тем: {r['тем']}, собрано: {r['собрано']}, пропущено: {r['пропущено']}, битые: {r['битые']}"
-              + (f", отказов модели: {r['отказы']}" if r["отказы"] else ""))
+              + (f", отказов сборки: {r['отказы']}" if r["отказы"] else ""))
         g.report()
         total += r["собрано"]
         отказов += r["отказы"]
@@ -875,8 +909,8 @@ def main() -> int:
     print(f"итого собрано досье: {total}")
     попыток = result.attempts
     if отказов:
-        print(f"отказов модели: {отказов} из {попыток} попыток")
-    # Молчащая модель — это не успех.
+        print(f"отказов сборки: {отказов} из {попыток} попыток")
+    # Повторяющиеся отказы сборки — это не успех.
     #
     # 12.08 локальный сервер лёг посреди прогона: 258 тем ушли без разбора,
     # а шаг закончился нулём — и статус ночи получился «ok». Досье не

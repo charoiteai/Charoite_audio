@@ -372,13 +372,17 @@ def test_running_is_visible_while_the_pass_is_going(tmp_path):
     assert '"state":"running"' in r.stdout, r.stdout
 
 
-def test_silent_model_is_not_a_success(tmp_path):
+@pytest.mark.parametrize("code", [2, 4])
+def test_dossier_refusals_are_not_a_success_or_model_silence(tmp_path, code):
     """12.08: локальный сервер лёг посреди прогона, 258 тем ушли без
     разбора — и ночь отчиталась как успешная."""
-    _run(tmp_path, DOSSIER_WITHOUT_MODEL)
+    result = _run(tmp_path, _stub_exit("nightly_dossier.py", code))
     s = _status(tmp_path)
     assert s["state"] == "failed", s
-    assert "модель-молчала" in s["failed"], s
+    assert "досье(отказы-сборки)" in s["failed"], s
+    assert "модель-молчала" not in s["failed"] and "молчала" not in result.stdout
+    assert ("скан части графов" in result.stdout) == (code == 4)
+    assert ("досье(отказы-сборки) досье" in s["failed"]) == (code == 4)
 
 
 def test_sudden_death_leaves_a_failure_not_a_forever_running(tmp_path):

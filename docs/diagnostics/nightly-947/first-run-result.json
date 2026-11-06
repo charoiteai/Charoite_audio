@@ -1,0 +1,11 @@
+{
+  "phase": "synthetic_pytest",
+  "test_bodies_passed": 213,
+  "teardown_errors": 213,
+  "elapsed_seconds": 5.67,
+  "reason_code": "explicit_basetemp_outside_platform_tempfile_root",
+  "product_changes": 0,
+  "result": "failed",
+  "raw_log": "kept_outside_public_packet",
+  "network_evidence": "No independent network counter in the historical pytest run; transport isolation was a test-design assumption. Measured boundary evidence applies only to the new paired causal control."
+}

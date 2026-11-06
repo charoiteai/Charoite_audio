@@ -151,7 +151,8 @@ def test_nightly_index_failure_contributes_to_the_cli_failure_verdict(tmp_path):
     result = _run(root, graphs, "index-error-verdict")
     assert result.returncode == 1, result.stdout + result.stderr
     assert "индекс не обновлён" in result.stdout
-    assert "отказов модели: 2 из 4 попыток" in result.stdout
+    assert "отказов сборки: 2 из 4 попыток" in result.stdout
+    assert "отказов модели:" not in result.stdout
 
 
 def test_dossier_index_is_a_readable_utf8_version_one_document(tmp_path):

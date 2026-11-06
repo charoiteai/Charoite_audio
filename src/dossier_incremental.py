@@ -12,6 +12,7 @@ import re
 
 from charoite_graph import dossier, graph_names
 import privacy
+import dossier_telemetry as telemetry
 
 
 class Refused(ValueError):
@@ -28,21 +29,25 @@ def local_config(c: dict) -> dict:
     return local
 
 
+@telemetry.observe_request(Refused)
 def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
                    num_predict: int = 1800, think: bool = False,
                    fell_back: list | None = None) -> str:
     """One local transport seam, shared by generation and both judges."""
     local = local_config(c)
+    telemetry.phase(telemetry.Phase.ADMISSION)
     # Refuse the complete input rather than silently letting the backend trim it.
     # UTF-8 bytes are a conservative token bound for supported byte tokenizers;
     # reserve output and an early envelope estimate. The server-side controls
     # below must reject template overflow rather than trim or shift any input.
     context = int((local.get("llm") or {}).get("num_ctx") or 8192)
     if len((system + prompt).encode("utf-8")) + num_predict + 256 > context:
+        telemetry.refusal(telemetry.Reason.CONTEXT)
         raise Refused("complete dossier input exceeds the configured context budget")
     # The provider must use the same effective window as the complete-input guard.
     local["llm"]["num_ctx"] = context
-    from llm import LLM  # noqa: PLC0415
+    telemetry.phase(telemetry.Phase.CONTRACT)
+    from llm import LLM, LLMHTTPError  # noqa: PLC0415
 
     llm = LLM(local)
     try:
@@ -67,13 +72,21 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
         raise Refused("adapter did not return a verified local model reference")
     if requested and model_ref != (requested if requested.endswith(":local") else requested + ":local"):
         raise Refused("verified model reference changed the requested model")
-    out = "".join(llm.stream(prompt, model=model_ref, system=system,
-                           temperature=temperature, num_predict=num_predict, think=think,
-                           truncate=False, shift=False)).strip()
+    telemetry.phase(telemetry.Phase.STREAM)
+    telemetry.stream_entry()
+    try:
+        out = "".join(llm.stream(prompt, model=model_ref, system=system,
+                               temperature=temperature, num_predict=num_predict, think=think,
+                               truncate=False, shift=False)).strip()
+    except LLMHTTPError as exc:
+        telemetry.refusal(telemetry.Reason.STREAM if exc.status == 200 else telemetry.Reason.HTTP)
+        raise
     if fell_back is not None:
+        telemetry.phase(telemetry.Phase.FALLBACK)
         try:
             fell_back.append(bool(llm._fell_back_local))
         except AttributeError as exc:
+            telemetry.refusal(telemetry.Reason.CONTRACT)
             raise Refused("unsupported local model adapter: missing fallback status") from exc
     return out
 
@@ -567,6 +580,7 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
     # the same deterministic and semantic guards still judge the final output.
     feedback = None
     for attempt in range(2):
+        telemetry.begin_attempt()
         payload = {**data, **({"correction_feedback": feedback} if feedback else {})}
         prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
         raw = local_complete(prompt, c, system="You extend factual dossiers conservatively.",

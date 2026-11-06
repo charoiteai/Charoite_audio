@@ -598,6 +598,8 @@ APPROVED_PYTHON_AREAS = ("src/", "scripts/")
 
 APPROVED_KINDS = (
     ("docs/design/layout.md", "out", "git"),
+    ("docs/diagnostics/nightly-947/causal-control.py", "history", "git"),
+    ("docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py", "history", "git"),
     ("reports/handoff/tasks/818_baseline_probe.py", "history", "git"),
     ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git"),
     ("tests/", "out", "git"),
@@ -631,6 +633,8 @@ RULE_DEPENDENT = {
     "docs/reviews/2026-07-30-x.md": "history", "CHANGELOG.md": "history", "devlog/_posts/2026-08-19-x.md": "history",
     "app/Sources/A.swift": "code", ".github/workflows/ci.yml": "code", ".pre-commit-config.yaml": "code",
     "docs/design/layout.md": "out",
+    "docs/diagnostics/nightly-947/causal-control.py": "history",
+    "docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py": "history",
 }
 
 #: Пути, вид которых даёт суффиксный фолбэк без всякого правила — он был злодеем

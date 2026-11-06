@@ -16,7 +16,8 @@
       "file_locks",
       "charoite_graph.frontmatter",
       "charoite_graph.redirects",
-      "exit_codes"
+      "exit_codes",
+      "dossier_telemetry"
     ],
     "runtime": [
       "live_gate",
@@ -616,6 +617,7 @@
     "llm::LLM.stream": "сериализует явные запреты truncate/shift и обрабатывает поток: ошибка принимает усечённый результат или теряет отказ сервера"
   },
   "mutation_not_critical": {
+    "dossier_telemetry": "закрытые счётчики в памяти и stdout — производная; не допускают модель и не пишут данные графа",
     "busy_signals": "сторож занятости: в сеть — только GET переписи моделей Ollama на loopback (№595); пишет лишь свой замок мутатора, не данные владельца",
     "channel_trace": "журнал трассировки канала — производная, восстановима",
     "charoite_graph.graph_search": "кэш индекса поиска — производная, пересобирается",

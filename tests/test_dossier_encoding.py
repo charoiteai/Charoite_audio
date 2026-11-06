@@ -471,7 +471,7 @@ def test_main_reports_damage_without_model_failure_exit(night, monkeypatch, caps
     assert counts == Counter({p: 1 for p in paths.values()})
     _all_index(folder)
     log = capsys.readouterr().out
-    assert "битые: 3" in log and "отказов модели:" not in log
+    assert "битые: 3" in log and "отказов сборки:" not in log
     assert all(sum(str(p) in line for line in log.splitlines()) == 1 for p in paths.values())
 
 
