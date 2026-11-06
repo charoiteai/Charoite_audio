@@ -16,6 +16,7 @@ import llm
 from charoite_graph import dossier
 from test_dossier_incremental import world, _new, _responses, LOCAL  # noqa: F401
 from test_dossier_encoding import night, GOOD, _watch  # noqa: F401
+from test_dossier_ollama_contract import backend  # noqa: F401
 
 SENTINEL = "PRIVATE_CONTENT_SENTINEL_954"
 
@@ -239,3 +240,44 @@ def test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request
     assert data["final_refusals"] == sum(g.отказы for g in result.graphs)
     assert data["legacy_attempts"] == result.attempts == data["committed_topics"] == 2
     assert data["local_completion_attempts"] == data["adapter_stream_entries"] == 0
+
+
+@pytest.mark.parametrize("broken_stream", [False, True])
+def test_actual_response_decoder_distinguishes_200_stream_error_from_http_error(
+        night, backend, monkeypatch, capsys, broken_stream):
+    nd, graph, _, _, _ = night
+    from test_dossier_ollama_contract import CONFIG
+    backend.late_error = broken_stream
+    backend.template_cost = 0 if broken_stream else 100000
+    monkeypatch.setattr(nd, "generate", lambda theme, members, files, c, **kw:
+                        inc.local_complete("synthetic", c, system="synthetic", **kw))
+    result = nd.run_all([graph], CONFIG, full=False, dry=False)
+    data = aggregate(capsys)
+    reason = "stream_error" if broken_stream else "http_error"
+    assert data["request_outcomes"] == {"stream": {reason: 3}}
+    assert data["final_reasons"] == {reason: 3} and data["final_refusals"] == 3
+    assert result.attempts == data["legacy_attempts"] == 3
+    assert data["adapter_stream_entries"] == data["local_completion_attempts"] == 3
+    assert len([call for call in backend.calls if call["method"] == "POST"]) == 3
+    assert all(response.closed for _, response in backend.responses)
+
+
+@pytest.mark.parametrize("original_error", [False, True])
+def test_aggregate_output_failure_preserves_an_original_exception(monkeypatch, original_error):
+    import builtins
+    original_print = builtins.print
+
+    def broken_print(*args, **kwargs):
+        if args and str(args[0]).startswith("dossier_telemetry "):
+            raise BrokenPipeError(SENTINEL)
+        return original_print(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", broken_print)
+    collector = telemetry.Collector()
+    expected = KeyboardInterrupt if original_error else BrokenPipeError
+    with pytest.raises(expected, match=SENTINEL):
+        with collector.activate():
+            if original_error:
+                raise KeyboardInterrupt(SENTINEL)
+    assert telemetry.current() is None
+    assert collector.interrupted == original_error

@@ -78,8 +78,8 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
         out = "".join(llm.stream(prompt, model=model_ref, system=system,
                                temperature=temperature, num_predict=num_predict, think=think,
                                truncate=False, shift=False)).strip()
-    except LLMHTTPError:
-        telemetry.refusal(telemetry.Reason.HTTP)
+    except LLMHTTPError as exc:
+        telemetry.refusal(telemetry.Reason.STREAM if exc.status == 200 else telemetry.Reason.HTTP)
         raise
     if fell_back is not None:
         telemetry.phase(telemetry.Phase.FALLBACK)

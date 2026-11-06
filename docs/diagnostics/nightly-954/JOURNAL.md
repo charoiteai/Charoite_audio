@@ -11,3 +11,8 @@
 - Code commit a8926a41: обязательные hooks PASS, 12 файлов. Дополнение 958 сохраняется отдельным коммитом.
 - №958: layout --check выявил 2 historical controls без KINDS + устаревшую карту (3 нарушения); точная классификация двух файлов/history и регенерация карты → PASS.
 - 08:46 +03:00: live quota 68% / 10080, новых model calls 0. OUTPUT/CI/синтетическая финальная матрица ещё не завершены.
+
+- OUTPUT49d9: gpt-6.1-terra high C0/I1/M1; gpt-6-luna high C0/I0/M0. Обе находки Terra приняты и причинно подтверждены 2FAIL/2PASS.
+- stream_error для типизированного HTTP200 и сохранение исходного исключения при сбое stdout: 209 PASS / 5.85с, ruff PASS.
+- Команда адресного повтора: quiet_guard.sh && heavy_run.sh <project-python> -m pytest -q tests/test_dossier_telemetry_954.py tests/test_dossier_ollama_contract.py tests/test_dossier_transport_contract.py tests/test_dossier_encoding.py.
+- Ранее: те же guard wrappers + pytest tests/test_dossier_transport_contract.py tests/test_dossier_incremental.py tests/test_dossier_queue.py (baseline185); после реализации добавлен tests/test_nightly_exit.py (260).

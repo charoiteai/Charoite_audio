@@ -33,7 +33,7 @@ A request attempt starts at `local_complete`; exactly one phase/reason outcome r
 Stream entries count only the adapter call boundary. Returned means text returned, not validated or committed.
 Phases: preflight, admission, contract, stream, fallback.
 Reasons: returned, empty_reply, preflight_refused, context_budget, contract_refused, timeout, http_error,
-transport_error, unexpected_error, interrupted, input_refused, format_refused, validation_refused,
+stream_error, transport_error, unexpected_error, interrupted, input_refused, format_refused, validation_refused,
 io_refused, unknown. Final refusal uses the last failed request unless a later explicit topic gate failed.
 The aggregate schema contains only fixed keys, booleans and integer counts, never exception attributes/text.
 Acceptance includes exact multi-request append counts, no-source-contribution success, an interrupted second
@@ -43,3 +43,7 @@ Scan-time unreadable refusals are included in final_refusals/input_refused and s
 they do not invent build entries, legacy attempts or local completion attempts. topics_scanned counts
 all scanned clusters; topics_started only counts `_build` entries. Sum(final_reasons) = final_refusals
 = scan_refusals + completed-build refusals. A scan failure is a separate graph count, not a topic refusal.
+
+OUTPUT refinement: typed LLMHTTPError with status 200 is stream_error, never inferred from detail/body.
+If aggregate stdout fails during an existing run exception, retain the original exception; aggregate delivery
+is then unconfirmed. Without an original exception, the output error remains visible and propagates.

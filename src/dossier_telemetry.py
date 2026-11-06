@@ -32,6 +32,7 @@ class Reason(str, Enum):
     CONTRACT = "contract_refused"
     TIMEOUT = "timeout"
     HTTP = "http_error"
+    STREAM = "stream_error"
     TRANSPORT = "transport_error"
     ERROR = "unexpected_error"
     INTERRUPTED = "interrupted"
@@ -95,14 +96,22 @@ class Collector:
     @contextmanager
     def activate(self):
         token = _run.set(self)
+        original_error = False
         try:
             yield self
         except BaseException:
+            original_error = True
             self.interrupted = True
             raise
         finally:
             _run.reset(token)
-            print("dossier_telemetry " + json.dumps(self.snapshot(), sort_keys=True))
+            try:
+                print("dossier_telemetry " + json.dumps(self.snapshot(), sort_keys=True))
+            except (OSError, ValueError):
+                # A closed output cannot replace the run's original exception.
+                # Delivery is unconfirmed; with no original error, propagate it.
+                if not original_error:
+                    raise
 
     @contextmanager
     def topic(self):
