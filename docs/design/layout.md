@@ -230,7 +230,8 @@
 - `src/diarize.py` ← docs/DIARIZATION.md
 - `src/diarize_live.py` ← docs/DIARIZATION.md
 - `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md, requirements-nemotron.in, scripts/README.md
-- `src/dossier_incremental.py` ← docs/diagnostics/nightly-947/TECHNICAL.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/reviews/output-luna.md, docs/diagnostics/nightly-954/INPUT-TERRA.md
+- `src/dossier_incremental.py` ← docs/diagnostics/nightly-947/TECHNICAL.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/reviews/output-luna.md, docs/diagnostics/nightly-954/INPUT-TERRA.md, docs/diagnostics/nightly-954/OUTPUT-TERRA.md
+- `src/dossier_telemetry.py` ← docs/diagnostics/nightly-954/OUTPUT-TERRA.md
 - `src/exit_codes.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
 - `src/file_locks.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/foreign_python.py` ← docs/research/diarization-log.md, docs/ru/DIARIZATION.md
@@ -238,7 +239,7 @@
 - `src/graph_updater.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/live_gate.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/live_nemotron.py` ← docs/DIARIZATION.md
-- `src/llm.py` ← config/config.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
+- `src/llm.py` ← config/config.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/diagnostics/nightly-954/OUTPUT-TERRA.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `src/machine_power.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/main.py` ← README.md, docs/ARCHITECTURE.md, docs/MODELS.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/MODELS.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/MODELS.md, docs/zh/README.md, docs/zh/SETUP.md
 - `src/mcp_server.py` ← README.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/README.md, docs/zh/SETUP.md
@@ -260,8 +261,8 @@
 
 ## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
-- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
-- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
 
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)

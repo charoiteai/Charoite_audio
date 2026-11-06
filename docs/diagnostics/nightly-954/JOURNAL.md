@@ -16,3 +16,7 @@
 - stream_error для типизированного HTTP200 и сохранение исходного исключения при сбое stdout: 209 PASS / 5.85с, ruff PASS.
 - Команда адресного повтора: quiet_guard.sh && heavy_run.sh <project-python> -m pytest -q tests/test_dossier_telemetry_954.py tests/test_dossier_ollama_contract.py tests/test_dossier_transport_contract.py tests/test_dossier_encoding.py.
 - Ранее: те же guard wrappers + pytest tests/test_dossier_transport_contract.py tests/test_dossier_incremental.py tests/test_dossier_queue.py (baseline185); после реализации добавлен tests/test_nightly_exit.py (260).
+
+- Публикационная ошибка исполнителя: предварительный raw-list grep отказал, но зависимый push1bee ошибочно продолжился из-за отдельных shell-команд. Последующие push/PR остановлены root до разбора; обхода штатных Git hooks не было.
+- Разбор выявил отличие raw substring/binary matching от канонического Unicode boundary scanner. Безопасная приватная квитанция сохранена отдельно, значения маркеров/совпавшие строки не публикуются. Нативный commit/pre-push scanner прошёл; дальнейшая доставка ждёт оценки root.
+- Root принял причинный разбор false positives и разрешил продолжение при штатных scanner/hooks. Raw grep не объявлен зелёным; отдельный долг канонической команды — №959. Синтетический Unicode-boundary контроль воспроизводим отдельным скриптом без real marker-list.
