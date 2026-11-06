@@ -1,6 +1,6 @@
 # №954: журнал ограниченной реализации
 
-- 2026-11-06 08:33 +03:00: база 2f706a3, отдельный worktree/ветка; приватные файлы не копировались. Quota 68% / 10080.
+- 2026-11-06 08:33 +03:00: база 2f706a3, отдельный worktree/ветка; приватные файлы не копировались. Ресурсные ограничения сохранены.
 - До кода: прочитаны 947/954, досье передачи, инструкции продукта и диагностический REPORT. Создан PLAN.
 - INPUT: gpt-6.1-terra high C0/I2/M1; gpt-6-luna high C0/I2/M0. Все находки приняты, уточнения — в PLAN.
 - Baseline: quiet_guard && heavy_run, transport/incremental/queue: 185 PASS / 6.14 с.
@@ -10,7 +10,7 @@
 - Найден и исправлен scan-time unreadable accounting: 77 PASS / 5.17 с, из них 21 новая causal-проверка; requests не выдумываются.
 - Code commit a8926a41: обязательные hooks PASS, 12 файлов. Дополнение 958 сохраняется отдельным коммитом.
 - №958: layout --check выявил 2 historical controls без KINDS + устаревшую карту (3 нарушения); точная классификация двух файлов/history и регенерация карты → PASS.
-- 08:46 +03:00: live quota 68% / 10080, новых model calls 0. OUTPUT/CI/синтетическая финальная матрица ещё не завершены.
+- 08:46 +03:00: новых model calls 0. OUTPUT/CI/синтетическая финальная матрица ещё не завершены.
 
 - OUTPUT49d9: gpt-6.1-terra high C0/I1/M1; gpt-6-luna high C0/I0/M0. Обе находки Terra приняты и причинно подтверждены 2FAIL/2PASS.
 - stream_error для типизированного HTTP200 и сохранение исходного исключения при сбое stdout: 209 PASS / 5.85с, ruff PASS.
@@ -24,3 +24,9 @@
 - PR910 создан штатным GitHub connector от аккаунта продукта после отказа collaborator-права у CLI; auth CLI не переключался. Head6b5369e4, source/test7hashes точно совпали с предыдущей проверкой.
 - Первый PR-CI42171863496: mutation verdict FAIL — база 1FAIL/664PASS, 49 в плане/48critical/судилось0. Пропущенное ожидание старой фразы в forget-regression приведено к нейтральному build-refusal, отрицательная проверка encoding также обновлена. Продуктовый код не менялся.
 - Адресная проверка двух изменённых regression-наборов и telemetry: quiet_guard && heavy_run, 92 PASS / 7.60с. Новая CI обязательна; прежние 0/48critical зелёными не считаются.
+
+- PR-CI42172791582: Linux: 11081 PASS / 2 FAIL (READERS/KINDS утверждённые копии); mutation: 49/49 judged, 15 critical + 1 noncritical survived. Все findings в текущей №954, не отложены.
+- Расширены сквозные сценарии и настоящий direct CLI import для mutation tests_for; обе утверждённые копии обновлены точными записями. Порядок JSON-ключей не включён в контракт; sort_keys устранён.
+- Подтверждён новый lifecycle FAIL: empty first reply → preparation error на retry оставлял прежнюю причину. Теперь start-attempt очищает атрибуцию текущего отказа, сохранённая история requests прежняя; implicit bool-switch заменён явной optional Reason и двумя отказными функциями.
+- Адресно: 173 PASS / 69.36 с; отдельный clean-source replay штатных AST-операторов: baseline: 35 PASS, 11 retained survivors killed / 0 survived. 5 удалённых переключателей отсутствуют, не whitelist. Receipt survivor-replay.json.
+- 09:29 +03:00: далее точный source snapshot, обе final-risk модели, обычные hooks/push и вся CI той же SHA; реальных моделей/owner-data 0.

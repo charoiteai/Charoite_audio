@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 # Shared pytest fixtures are intentionally imported under their fixture names.
-# ruff: noqa: F811
+# ruff: noqa: F811, E402
 
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import requests
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
 import dossier_incremental as inc
+import nightly_dossier as night_cli
 import dossier_telemetry as telemetry
 import llm
 from charoite_graph import dossier
@@ -52,7 +57,9 @@ def aggregate(capsys):
     lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("dossier_telemetry ")]
     assert len(lines) == 1
     assert SENTINEL not in lines[0]
-    return json.loads(lines[0].split(" ", 1)[1])
+    data = json.loads(lines[0].split(" ", 1)[1])
+    assert data["version"] == 1  # The consumer accepts the declared v1 wire protocol.
+    return data
 
 
 @pytest.mark.parametrize("case,phase,reason,entries", [
@@ -60,7 +67,9 @@ def aggregate(capsys):
     ("admission", "admission", "context_budget", 0),
     ("contract", "contract", "contract_refused", 0),
     ("timeout", "stream", "timeout", 1),
+    ("interrupt", "stream", "interrupted", 1),
     ("http", "stream", "http_error", 1),
+    ("requests_http", "stream", "http_error", 1),
     ("transport", "stream", "transport_error", 1),
     ("unexpected", "stream", "unexpected_error", 1),
     ("empty", "stream", "empty_reply", 1),
@@ -73,7 +82,8 @@ def test_each_completion_has_one_closed_outcome(provider, capsys, case, phase, r
     if case == "admission":
         c = {"llm": {**LOCAL["llm"], "num_ctx": 1}}
     provider.contract_error = case == "contract"
-    errors = {"timeout": requests.Timeout(SENTINEL), "http": llm.LLMHTTPError(503, SENTINEL),
+    errors = {"interrupt": KeyboardInterrupt(SENTINEL), "timeout": requests.Timeout(SENTINEL), "http": llm.LLMHTTPError(503, SENTINEL),
+              "requests_http": requests.HTTPError(SENTINEL),
               "transport": requests.ConnectionError(SENTINEL), "unexpected": ValueError(SENTINEL)}
 
     def reply(*a, **k):
@@ -87,7 +97,7 @@ def test_each_completion_has_one_closed_outcome(provider, capsys, case, phase, r
         if case in ("empty", "success"):
             assert inc.local_complete(SENTINEL, c, system=SENTINEL) == reply()
         else:
-            with pytest.raises(Exception):
+            with pytest.raises(BaseException if case == "interrupt" else Exception):
                 inc.local_complete(SENTINEL, c, system=SENTINEL)
     data = aggregate(capsys)
     assert data["local_completion_attempts"] == 1
@@ -107,7 +117,9 @@ def test_unknown_freeform_values_cannot_enter_projection(capsys):
     assert aggregate(capsys)["request_outcomes"] == {}
 
 
-@pytest.mark.parametrize("kind,expected", [("timeout", "timeout"), ("empty", "empty_reply"),
+@pytest.mark.parametrize("kind,expected", [("preflight", "preflight_refused"),
+                                            ("admission", "context_budget"),
+                                            ("contract", "contract_refused"), ("timeout", "timeout"), ("empty", "empty_reply"),
                                             ("format", "format_refused"), ("success", None)])
 def test_full_build_terminal_counts_are_topics_not_requests(night, provider, capsys, kind, expected):
     nd, graph, _, _, _ = night
@@ -119,11 +131,14 @@ def test_full_build_terminal_counts_are_topics_not_requests(night, provider, cap
     def reply(*a, **k):
         if kind == "timeout":
             raise requests.Timeout(SENTINEL)
-        return {"empty": "", "format": SENTINEL, "success": GOOD}[kind]
+        return {"empty": "", "format": SENTINEL}.get(kind, GOOD)
 
     provider.reply = reply
+    provider.contract_error = kind == "contract"
+    config = {"llm": {"engine": "cloud"}} if kind == "preflight" else (
+        {"llm": {**LOCAL["llm"], "num_ctx": 1}} if kind == "admission" else LOCAL)
     try:
-        result = nd.run_all([graph], LOCAL, full=False, dry=False)
+        result = nd.run_all([graph], config, full=False, dry=False)
     finally:
         monkeypatch.undo()
     data = aggregate(capsys)
@@ -133,7 +148,8 @@ def test_full_build_terminal_counts_are_topics_not_requests(night, provider, cap
     assert data["final_reasons"] == ({expected: 3} if expected else {})
     assert data["committed_topics"] == (0 if expected else 3)
     expected_requests = 6 if kind in ("empty", "format") else 3
-    assert data["local_completion_attempts"] == data["adapter_stream_entries"] == expected_requests
+    assert data["local_completion_attempts"] == expected_requests
+    assert data["adapter_stream_entries"] == (0 if kind in ("preflight", "admission", "contract") else expected_requests)
 
 
 def test_append_multiple_requests_and_recovered_retry_have_no_final_refusal(world, provider, monkeypatch, capsys):
@@ -281,3 +297,87 @@ def test_aggregate_output_failure_preserves_an_original_exception(monkeypatch, o
                 raise KeyboardInterrupt(SENTINEL)
     assert telemetry.current() is None
     assert collector.interrupted == original_error
+
+
+def test_another_writer_finishing_after_scan_does_not_invent_an_attempt(night, monkeypatch, capsys):
+    nd, graph, _, _, _ = night
+    scan = nd._scan
+    delivered = {}
+
+    def concurrent_finish(*args, **kwargs):
+        group, candidates = scan(*args, **kwargs)
+        cand = candidates[0]
+        text = dossier.render(cand.theme, GOOD, cand.members, group.files, cand.fp, group.today, group.gen)
+        meetings = [name for name in cand.members if nd.CHAROITE.is_meeting_folder(group.files[name]["kind"])]
+        text = dossier.with_composition(text, meetings)
+        path = group.folder / f"{cand.theme}.md"
+        path.write_text(text)
+        delivered[path] = path.read_bytes()
+        return group, candidates
+
+    monkeypatch.setattr(nd, "_scan", concurrent_finish)
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert data["topics_started"] == data["topics_completed"] == 3
+    assert data["legacy_attempts"] == result.attempts == data["committed_topics"] == 2
+    assert data["final_refusals"] == 0
+    assert all(path.read_bytes() == content for path, content in delivered.items())
+
+
+def test_prompt_preparation_error_before_a_request_is_not_unknown(world, monkeypatch, capsys):
+    _, graph, _ = world
+    monkeypatch.setattr(night_cli, "_root", lambda: graph.parent)
+    monkeypatch.setattr(night_cli, "generator_label", lambda c: "synthetic")
+    monkeypatch.setattr(night_cli.live_gate, "night_window_open", lambda *a, **k: True)
+
+    def broken_prompt(*a, **k):
+        raise ValueError(SENTINEL)
+
+    monkeypatch.setattr(dossier, "build_prompt", broken_prompt)
+    result = night_cli.run_all([graph], LOCAL, full=True, dry=False)
+    data = aggregate(capsys)
+    assert data["final_refusals"] == result.attempts == data["legacy_attempts"] == 1
+    assert data["final_reasons"] == {"unexpected_error": 1}
+    assert data["adapter_stream_entries"] == data["local_completion_attempts"] == 0
+
+
+def test_an_empty_first_reply_does_not_mask_a_retry_prompt_error(world, provider, monkeypatch, capsys):
+    nd, graph, _ = world
+    original = dossier.build_prompt
+    prepared = 0
+
+    def prepare(*args, **kwargs):
+        nonlocal prepared
+        prepared += 1
+        if prepared == 2:
+            raise ValueError(SENTINEL)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dossier, "build_prompt", prepare)
+    provider.reply = lambda *a, **k: ""
+    result = nd.run_all([graph], LOCAL, full=True, dry=False)
+    data = aggregate(capsys)
+    assert prepared == 2
+    assert data["legacy_attempts"] == result.attempts == data["final_refusals"] == 1
+    assert data["local_completion_attempts"] == data["adapter_stream_entries"] == 1
+    assert data["final_reasons"] == {"unexpected_error": 1}
+
+
+def test_standalone_completion_keeps_its_result_without_an_active_collector(provider, capsys):
+    provider.reply = lambda *a, **k: "synthetic standalone answer"
+    assert telemetry.current() is None
+    assert inc.local_complete("synthetic", LOCAL, system="synthetic") == "synthetic standalone answer"
+    assert provider.calls == 1
+    assert "dossier_telemetry " not in capsys.readouterr().out
+
+
+def test_append_admission_refusal_keeps_its_request_reason(world, provider, capsys):
+    nd, graph, path = world
+    _new(graph)
+    before = path.read_bytes()
+    result = nd.run_all([graph], {"llm": {**LOCAL["llm"], "num_ctx": 1}}, full=False, dry=False)
+    data = aggregate(capsys)
+    assert data["legacy_attempts"] == result.attempts == data["final_refusals"] == 1
+    assert data["final_reasons"] == {"context_budget": 1}
+    assert data["local_completion_attempts"] == 1 and data["adapter_stream_entries"] == 0
+    assert path.read_bytes() == before

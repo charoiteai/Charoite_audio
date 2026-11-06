@@ -47,3 +47,10 @@ all scanned clusters; topics_started only counts `_build` entries. Sum(final_rea
 OUTPUT refinement: typed LLMHTTPError with status 200 is stream_error, never inferred from detail/body.
 If aggregate stdout fails during an existing run exception, retain the original exception; aggregate delivery
 is then unconfirmed. Without an original exception, the output error remains visible and propagates.
+
+Mutation follow-up: a new generation/candidate attempt clears only its pending failure attribution;
+request history counters remain accumulated. A current request's failure is explicit optional Reason,
+not an independent boolean. Explicit gate refusal and outer request-aware refusal use separate functions.
+JSON object key order is not a wire promise; only version, closed field names, types and values are.
+The CLI is explicitly imported by a real full-path test, so mutation suite discovery includes the telemetry
+scenarios for nightly_dossier as well as local_complete. No mutation waiver or critical-zone reduction.

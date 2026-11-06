@@ -21,3 +21,24 @@ Terra: C0/I1/M1; Luna: C0/I0/M0. Чтение не выдаётся за экс�
 Critical отсутствуют. Important/Minor проверены адресными опытами; новый бесконечный круг не нужен по правилам проекта.
 №958: classifier меняет ровно два сохранённых historical controls; карта регенерирована. До: 3 layout-расхождения; после: PASS.
 Полная приёмка ждёт обязательные CI той же SHA. Реальная ночь/установка/причина инцидента остаются вне данного опыта.
+
+## Обязательная матрица и survivor follow-up
+
+PR-CI42172791582/head2202643f: Linux: 11081 PASS / 2 FAIL, mutation: 49/49 judged, 15 critical + 1 noncritical survived.
+Два полных regression failures — обязательные реестры: новый LLMHTTPError reader и две точные KINDS history-записи.
+Ожидания обновлены вместе с независимыми rule-dependent проверками, без расширения области исключения.
+Мутационная suite-discovery не видела косвенный nightly import в новом telemetry suite; реальный CLI теперь
+импортирован явно и используется сценарием pre-request подготовки. Официальный tests_for находит suite (18 наборов).
+
+Все 16 findings закрываются в №954. 11 сохранившихся операторов воспроизведены штатным AST-mutator API в отдельном
+чистом архиве с теми же 35 сценариями: 11 killed / 0 survived. Пять прежних bool/default-format переключателей
+(два preserve_request arguments, его default, отдельный начальный request_failed bool и sort_keys) удалены
+из источника; waiver/исключения/понижение зон не добавлялись. JSON-ключи уже обходятся детерминированно,
+а лексикографический порядок контракт не обещает.
+
+Новые случаи проверяют целую сборку при admission/preflight/contract refusal, append admission, завершение
+темы другим писателем после скана, отказ подготовки до запроса, HTTPError, прерывание и standalone completion.
+Также обнаружен настоящий lifecycle-дефект: empty первой попытки маскировал ошибку подготовки повтора.
+Этот сценарий упал до исправления; теперь новая попытка очищает только текущую атрибуцию, сохраняя историю.
+Последняя адресная проверка: 173 PASS / 69.36 с (telemetry35 + failure-kind/import-boundary contracts).
+Факты/хеши и causal failures — в survivor-replay.json. Полная новая CI и обе final-risk проверки ещё обязательны.

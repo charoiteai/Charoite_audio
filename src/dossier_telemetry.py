@@ -52,7 +52,7 @@ class _Request:
 @dataclass
 class _Topic:
     reason: Reason = Reason.UNKNOWN
-    request_failed: bool = False
+    request_failure: Reason | None = None
 
 
 _run: ContextVar[Collector | None] = ContextVar("dossier_telemetry_run", default=None)
@@ -106,7 +106,7 @@ class Collector:
         finally:
             _run.reset(token)
             try:
-                print("dossier_telemetry " + json.dumps(self.snapshot(), sort_keys=True))
+                print("dossier_telemetry " + json.dumps(self.snapshot()))
             except (OSError, ValueError):
                 # A closed output cannot replace the run's original exception.
                 # Delivery is unconfirmed; with no original error, propagate it.
@@ -146,14 +146,26 @@ def phase(value: Phase):
         current.phase = value
 
 
-def refusal(value: Reason, *, preserve_request: bool = False):
+def begin_attempt():
+    """A retry's preparation cannot inherit an earlier empty/failed reply."""
+    if topic := _topic.get():
+        topic.reason = Reason.UNKNOWN
+        topic.request_failure = None
+
+
+def refusal(value: Reason):
     if not isinstance(value, Reason):
         raise TypeError("closed telemetry reason required")
     if topic := _topic.get():
-        if not (preserve_request and topic.request_failed):
-            topic.reason = value
+        topic.reason = value
     if current := _request.get():
         current.reason = value
+
+
+def request_refusal(default: Reason):
+    """Prefer the current request's closed failure over a generic outer catch."""
+    topic = _topic.get()
+    refusal(topic.request_failure if topic and topic.request_failure is not None else default)
 
 
 def stream_entry():
@@ -201,8 +213,8 @@ def observe_request(refusal_type: type[Exception]):
             finally:
                 run.outcomes[request.phase, reason] += 1
                 if topic := _topic.get():
-                    topic.request_failed = reason != Reason.RETURNED
-                    topic.reason = reason if topic.request_failed else Reason.UNKNOWN
+                    topic.request_failure = None if reason == Reason.RETURNED else reason
+                    topic.reason = topic.request_failure or Reason.UNKNOWN
                 _request.reset(token)
         return observed
     return decorate

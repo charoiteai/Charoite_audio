@@ -1,0 +1,200 @@
+{
+  "scope": "11 retained previously surviving mutations; 5 removed obsolete boolean/default-format switches are absent, not waived",
+  "source_sha256": {
+    "scripts/nightly_dossier.py": "39f06d3e7e49ba5c301cdd0f6fabd3adfed7654fd49d6923291a80a47a6ba2d1",
+    "src/dossier_incremental.py": "c852dd1d9b75a92cc22587daf279a8b234c433d538e3546657b1b09f179921e5",
+    "src/dossier_telemetry.py": "506122eda8236966c02bd8d25a4243bd3397e1f87f2ec9118d089755050c9245",
+    "tests/test_dossier_telemetry_954.py": "28ccba25c205383c7b5d86c8a529068cb54ec34fbd5fcbdfac4f53c9142d28e0"
+  },
+  "outcomes": [
+    {
+      "path": "scripts/nightly_dossier.py",
+      "line": 690,
+      "mutation": "Or → And @18-62",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[preflight-preflight_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[admission-context_budget]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[contract-contract_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[timeout-timeout]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[empty-empty_reply]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[format-format_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[success-None]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_multiple_requests_and_recovered_retry_have_no_final_refusal",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_audit_refusal_differs_from_no_contribution_success[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_audit_refusal_differs_from_no_contribution_success[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_io_refusal_after_good_text_is_not_a_model_failure",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request",
+        "FAILED tests/test_dossier_telemetry_954.py::test_actual_response_decoder_distinguishes_200_stream_error_from_http_error[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_actual_response_decoder_distinguishes_200_stream_error_from_http_error[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_another_writer_finishing_after_scan_does_not_invent_an_attempt",
+        "FAILED tests/test_dossier_telemetry_954.py::test_prompt_preparation_error_before_a_request_is_not_unknown",
+        "FAILED tests/test_dossier_telemetry_954.py::test_an_empty_first_reply_does_not_mask_a_retry_prompt_error",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_admission_refusal_keeps_its_request_reason"
+      ],
+      "seconds": 2.189
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "line": 738,
+      "mutation": "Or → And @49-94",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[success-None]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_multiple_requests_and_recovered_retry_have_no_final_refusal",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_audit_refusal_differs_from_no_contribution_success[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request",
+        "FAILED tests/test_dossier_telemetry_954.py::test_another_writer_finishing_after_scan_does_not_invent_an_attempt"
+      ],
+      "seconds": 2.212
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "line": 738,
+      "mutation": "IsNot → Is @49-66",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[success-None]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_multiple_requests_and_recovered_retry_have_no_final_refusal",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_audit_refusal_differs_from_no_contribution_success[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request",
+        "FAILED tests/test_dossier_telemetry_954.py::test_another_writer_finishing_after_scan_does_not_invent_an_attempt"
+      ],
+      "seconds": 2.149
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "line": 738,
+      "mutation": "Gt → GtE @70-94",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_another_writer_finishing_after_scan_does_not_invent_an_attempt"
+      ],
+      "seconds": 2.107
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "line": 739,
+      "mutation": "Sub → Add @49-65",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[success-None]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request",
+        "FAILED tests/test_dossier_telemetry_954.py::test_another_writer_finishing_after_scan_does_not_invent_an_attempt"
+      ],
+      "seconds": 2.136
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "line": 739,
+      "mutation": "Sub → Add @75-99",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[preflight-preflight_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[admission-context_budget]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[contract-contract_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[timeout-timeout]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[empty-empty_reply]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[format-format_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_io_refusal_after_good_text_is_not_a_model_failure",
+        "FAILED tests/test_dossier_telemetry_954.py::test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request",
+        "FAILED tests/test_dossier_telemetry_954.py::test_actual_response_decoder_distinguishes_200_stream_error_from_http_error[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_actual_response_decoder_distinguishes_200_stream_error_from_http_error[True]"
+      ],
+      "seconds": 2.205
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "line": 796,
+      "mutation": "1 → 0 @54-55",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[True]"
+      ],
+      "seconds": 2.113
+    },
+    {
+      "path": "src/dossier_telemetry.py",
+      "line": 75,
+      "mutation": "1 → 0 @23-24",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[preflight-preflight-preflight_refused-0]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[admission-admission-context_budget-0]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[contract-contract-contract_refused-0]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[timeout-stream-timeout-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[interrupt-stream-interrupted-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[http-stream-http_error-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[requests_http-stream-http_error-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[transport-stream-transport_error-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[unexpected-stream-unexpected_error-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[empty-stream-empty_reply-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[success-stream-returned-1]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_unknown_freeform_values_cannot_enter_projection",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[preflight-preflight_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[admission-context_budget]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[contract-contract_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[timeout-timeout]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[empty-empty_reply]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[format-format_refused]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_full_build_terminal_counts_are_topics_not_requests[success-None]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_multiple_requests_and_recovered_retry_have_no_final_refusal",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_audit_refusal_differs_from_no_contribution_success[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_audit_refusal_differs_from_no_contribution_success[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_io_refusal_after_good_text_is_not_a_model_failure",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_interruption_keeps_completed_attempt_and_always_emits[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request",
+        "FAILED tests/test_dossier_telemetry_954.py::test_actual_response_decoder_distinguishes_200_stream_error_from_http_error[False]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_actual_response_decoder_distinguishes_200_stream_error_from_http_error[True]",
+        "FAILED tests/test_dossier_telemetry_954.py::test_another_writer_finishing_after_scan_does_not_invent_an_attempt",
+        "FAILED tests/test_dossier_telemetry_954.py::test_prompt_preparation_error_before_a_request_is_not_unknown",
+        "FAILED tests/test_dossier_telemetry_954.py::test_an_empty_first_reply_does_not_mask_a_retry_prompt_error",
+        "FAILED tests/test_dossier_telemetry_954.py::test_append_admission_refusal_keeps_its_request_reason"
+      ],
+      "seconds": 2.37
+    },
+    {
+      "path": "src/dossier_telemetry.py",
+      "line": 178,
+      "mutation": "return X → return None @8-33",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[interrupt-stream-interrupted-1]"
+      ],
+      "seconds": 2.098
+    },
+    {
+      "path": "src/dossier_telemetry.py",
+      "line": 182,
+      "mutation": "return X → return None @8-26",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_each_completion_has_one_closed_outcome[requests_http-stream-http_error-1]"
+      ],
+      "seconds": 2.157
+    },
+    {
+      "path": "src/dossier_telemetry.py",
+      "line": 194,
+      "mutation": "return X → return None @16-48",
+      "returncode": 1,
+      "failed_tests": [
+        "FAILED tests/test_dossier_telemetry_954.py::test_standalone_completion_keeps_its_result_without_an_active_collector"
+      ],
+      "seconds": 2.109
+    }
+  ],
+  "baseline": {
+    "returncode": 0,
+    "tail": [
+      "35 passed in 1.61s"
+    ]
+  }
+}

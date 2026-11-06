@@ -516,20 +516,21 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             body = dossier_incremental.append(theme, loaded, accepted, g.files, c) if accepted else ""
             text = _append_result(loaded, body if accepted else None, accepted, rejected, g, fp)
         except Exception as e:  # noqa: BLE001
-            telemetry.refusal(telemetry.Reason.VALIDATION if isinstance(e, dossier_incremental.Refused)
-                              else telemetry.exception_reason(e), preserve_request=True)
+            telemetry.request_refusal(telemetry.Reason.VALIDATION if isinstance(e, dossier_incremental.Refused)
+                                      else telemetry.exception_reason(e))
             print(f"  ✗ {theme}: добавка не принята ({type(e).__name__}: {e}) — источники остаются для повтора")
             g.отказы += 1
             return clock() - g0
     else:
         supplied = dossier.prompt_members(members, g.files)
         for temperature in dossier.GEN_TEMPERATURES:
+            telemetry.begin_attempt()
             try:
                 raw_body = generate(theme, supplied, g.files, c, temperature=temperature, fell_back=fell_back)
                 body = "" if dossier.DossierLoad("ok", raw_body).parsed.protected else graph_names.unlabel_speakers(
                     dossier.trim_to_format(raw_body))
             except Exception as e:  # noqa: BLE001
-                telemetry.refusal(telemetry.exception_reason(e), preserve_request=True)
+                telemetry.request_refusal(telemetry.exception_reason(e))
                 print(f"  ⚠️ {theme}: сборка не завершена ({type(e).__name__}: {e})")
                 body = ""
                 break

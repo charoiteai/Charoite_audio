@@ -580,6 +580,7 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
     # the same deterministic and semantic guards still judge the final output.
     feedback = None
     for attempt in range(2):
+        telemetry.begin_attempt()
         payload = {**data, **({"correction_feedback": feedback} if feedback else {})}
         prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
         raw = local_complete(prompt, c, system="You extend factual dossiers conservatively.",
