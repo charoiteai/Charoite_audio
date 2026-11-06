@@ -455,6 +455,8 @@ state is read with a default, failures stay a line on stderr.
 
 ### What the night promises the morning
 
+Dossier builds emit one `dossier_telemetry` JSON aggregate with closed phase/reason counters. Local completion attempts, adapter stream entries, legacy threshold attempts and final topic refusals are separate; stream entries do not prove HTTP delivery. The aggregate contains no names, paths, prompts, replies or exception text and is emitted after index cleanup even on interruption. Refusal exits 2/4 keep the existing threshold and failure policy; the status calls them build refusals.
+
 The nightly run (`scripts/nightly.sh`) grooms the graph while nobody
 is at the machine: graph doctor, file dedup, memory vectors, an early brief,
 cores revision, dossiers, cloud revisions, folder indexes, a second doctor

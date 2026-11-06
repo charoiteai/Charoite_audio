@@ -303,10 +303,10 @@ else
   fi
   $PY scripts/nightly_dossier.py --all-graphs --budget-s "$DOSSIER_BUDGET" $DOSSIER_MODE || {
     case $? in
-      2) echo "⚠️ досье собирались без модели — темы остались без разбора"
-         FAILED="$FAILED досье(модель-молчала)" ;;
-      4) echo "⚠️ досье: модель молчала, и скан части графов не удался"
-         FAILED="$FAILED досье(модель-молчала) досье" ;;
+      2) echo "⚠️ сборка досье отклонена — причины в счётчиках dossier_telemetry"
+         FAILED="$FAILED досье(отказы-сборки)" ;;
+      4) echo "⚠️ досье: сборка отклонена, и скан части графов не удался"
+         FAILED="$FAILED досье(отказы-сборки) досье" ;;
       *) echo "⚠️ сборка досье не отработала"; FAILED="$FAILED досье" ;;
     esac
   }

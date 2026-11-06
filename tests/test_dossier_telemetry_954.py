@@ -1,0 +1,241 @@
+"""Synthetic causal boundaries: real collector/planner, no model or owner data."""
+from __future__ import annotations
+
+# Shared pytest fixtures are intentionally imported under their fixture names.
+# ruff: noqa: F811
+
+import json
+from types import SimpleNamespace
+
+import pytest
+import requests
+
+import dossier_incremental as inc
+import dossier_telemetry as telemetry
+import llm
+from charoite_graph import dossier
+from test_dossier_incremental import world, _new, _responses, LOCAL  # noqa: F401
+from test_dossier_encoding import night, GOOD, _watch  # noqa: F401
+
+SENTINEL = "PRIVATE_CONTENT_SENTINEL_954"
+
+
+@pytest.fixture
+def provider(monkeypatch):
+    state = SimpleNamespace(reply=lambda *a, **k: GOOD, calls=0, contract_error=False)
+
+    class Synthetic:
+        cloud_ready = False
+        engine = "ollama"
+        base = "http://127.0.0.1:13701"
+        _fell_back_local = False
+
+        def __init__(self, c):
+            pass
+
+        def require_local_ollama_model(self, model):
+            if state.contract_error:
+                raise RuntimeError(SENTINEL)
+            return model + ":local"
+
+        def stream(self, prompt, **kwargs):
+            state.calls += 1
+            assert kwargs["truncate"] is False and kwargs["shift"] is False
+            yield state.reply(prompt, **kwargs)
+
+    monkeypatch.setattr(llm, "LLM", Synthetic)
+    return state
+
+
+def aggregate(capsys):
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("dossier_telemetry ")]
+    assert len(lines) == 1
+    assert SENTINEL not in lines[0]
+    return json.loads(lines[0].split(" ", 1)[1])
+
+
+@pytest.mark.parametrize("case,phase,reason,entries", [
+    ("preflight", "preflight", "preflight_refused", 0),
+    ("admission", "admission", "context_budget", 0),
+    ("contract", "contract", "contract_refused", 0),
+    ("timeout", "stream", "timeout", 1),
+    ("http", "stream", "http_error", 1),
+    ("transport", "stream", "transport_error", 1),
+    ("unexpected", "stream", "unexpected_error", 1),
+    ("empty", "stream", "empty_reply", 1),
+    ("success", "stream", "returned", 1),
+])
+def test_each_completion_has_one_closed_outcome(provider, capsys, case, phase, reason, entries):
+    c = LOCAL
+    if case == "preflight":
+        c = {"llm": {"engine": "cloud"}}
+    if case == "admission":
+        c = {"llm": {**LOCAL["llm"], "num_ctx": 1}}
+    provider.contract_error = case == "contract"
+    errors = {"timeout": requests.Timeout(SENTINEL), "http": llm.LLMHTTPError(503, SENTINEL),
+              "transport": requests.ConnectionError(SENTINEL), "unexpected": ValueError(SENTINEL)}
+
+    def reply(*a, **k):
+        if case in errors:
+            raise errors[case]
+        return "" if case == "empty" else SENTINEL
+
+    provider.reply = reply
+    collector = telemetry.Collector()
+    with collector.activate():
+        if case in ("empty", "success"):
+            assert inc.local_complete(SENTINEL, c, system=SENTINEL) == reply()
+        else:
+            with pytest.raises(Exception):
+                inc.local_complete(SENTINEL, c, system=SENTINEL)
+    data = aggregate(capsys)
+    assert data["local_completion_attempts"] == 1
+    assert data["adapter_stream_entries"] == provider.calls == entries
+    assert data["request_outcomes"] == {phase: {reason: 1}}
+    assert data["final_refusals"] == 0
+    assert telemetry.current() is None
+
+
+def test_unknown_freeform_values_cannot_enter_projection(capsys):
+    collector = telemetry.Collector()
+    with collector.activate():
+        with pytest.raises(TypeError):
+            telemetry.phase(SENTINEL)
+        with pytest.raises(TypeError):
+            telemetry.refusal(SENTINEL)
+    assert aggregate(capsys)["request_outcomes"] == {}
+
+
+@pytest.mark.parametrize("kind,expected", [("timeout", "timeout"), ("empty", "empty_reply"),
+                                            ("format", "format_refused"), ("success", None)])
+def test_full_build_terminal_counts_are_topics_not_requests(night, provider, capsys, kind, expected):
+    nd, graph, _, _, _ = night
+    # Use actual local_complete/generate rather than the fixture's generation double.
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(nd, "generate", lambda theme, members, files, c, **kw:
+                        inc.local_complete("synthetic", c, system="synthetic", **kw))
+
+    def reply(*a, **k):
+        if kind == "timeout":
+            raise requests.Timeout(SENTINEL)
+        return {"empty": "", "format": SENTINEL, "success": GOOD}[kind]
+
+    provider.reply = reply
+    try:
+        result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    finally:
+        monkeypatch.undo()
+    data = aggregate(capsys)
+    assert data["legacy_attempts"] == result.attempts == 3
+    assert data["topics_started"] == data["topics_completed"] == 3
+    assert data["final_refusals"] == sum(g.отказы for g in result.graphs) == (3 if expected else 0)
+    assert data["final_reasons"] == ({expected: 3} if expected else {})
+    assert data["committed_topics"] == (0 if expected else 3)
+    expected_requests = 6 if kind in ("empty", "format") else 3
+    assert data["local_completion_attempts"] == data["adapter_stream_entries"] == expected_requests
+
+
+def test_append_multiple_requests_and_recovered_retry_have_no_final_refusal(world, provider, monkeypatch, capsys):
+    nd, graph, path = world
+    _new(graph)
+    actual = inc.local_complete
+    _responses(monkeypatch)
+    answer = inc.local_complete
+    monkeypatch.setattr(inc, "local_complete", actual)
+    generated = 0
+
+    def reply(prompt, **kwargs):
+        nonlocal generated
+        if kwargs["system"] == "You extend factual dossiers conservatively.":
+            generated += 1
+            if generated == 1:
+                return json.dumps({"body": "bad synthetic candidate", "changes": []})
+        return answer(prompt, LOCAL, **kwargs)
+
+    provider.reply = reply
+    before = path.read_bytes()
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert path.read_bytes() != before
+    assert data["legacy_attempts"] == result.attempts == 1
+    assert data["committed_topics"] == 1 and data["final_refusals"] == 0
+    assert data["local_completion_attempts"] == data["adapter_stream_entries"] == 6
+    assert data["request_outcomes"] == {"stream": {"returned": 6}}
+
+
+@pytest.mark.parametrize("irrelevant", [False, True])
+def test_append_audit_refusal_differs_from_no_contribution_success(world, provider, monkeypatch, capsys, irrelevant):
+    nd, graph, path = world
+    _new(graph)
+    actual = inc.local_complete
+    _responses(monkeypatch, irrelevant=("2099-01-02_100000",) if irrelevant else (),
+               body="bad synthetic candidate")
+    answer = inc.local_complete
+    monkeypatch.setattr(inc, "local_complete", actual)
+    provider.reply = lambda prompt, **kwargs: answer(prompt, LOCAL, **kwargs)
+    before = path.read_bytes()
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert data["legacy_attempts"] == result.attempts == 1
+    assert data["committed_topics"] == int(irrelevant)
+    assert data["final_refusals"] == int(not irrelevant)
+    assert data["final_reasons"] == ({} if irrelevant else {"validation_refused": 1})
+    assert data["local_completion_attempts"] == data["adapter_stream_entries"] == (1 if irrelevant else 3)
+    if not irrelevant:
+        assert path.read_bytes() == before
+
+
+def test_io_refusal_after_good_text_is_not_a_model_failure(night, provider, monkeypatch, capsys):
+    nd, graph, _, paths, _ = night
+    before = {name: path.read_bytes() for name, path in paths.items()}
+    # Keep the fixture's valid generation double: there is deliberately no request telemetry.
+    def denied(*a):
+        raise OSError(SENTINEL)
+    monkeypatch.setattr(dossier, "backup", denied)
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert result.attempts == data["legacy_attempts"] == 3
+    assert data["final_refusals"] == 3 and data["final_reasons"] == {"io_refused": 3}
+    assert data["adapter_stream_entries"] == 0
+    assert before == {name: path.read_bytes() for name, path in paths.items()}
+
+
+@pytest.mark.parametrize("index_failure", [False, True])
+def test_interruption_keeps_completed_attempt_and_always_emits(night, monkeypatch, capsys, index_failure):
+    nd, graph, _, _, _ = night
+    builds = 0
+    build = nd._build
+
+    def interrupted(*a, **kw):
+        nonlocal builds
+        builds += 1
+        if builds == 2:
+            raise KeyboardInterrupt(SENTINEL)
+        return build(*a, **kw)
+
+    monkeypatch.setattr(nd, "_build", interrupted)
+    if index_failure:
+        def denied(*a):
+            raise OSError(SENTINEL)
+        monkeypatch.setattr(nd._GraphRun, "write_index", denied)
+    with pytest.raises(OSError if index_failure else KeyboardInterrupt):
+        nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert data["legacy_attempts"] == data["committed_topics"] == 1
+    assert data["topics_started"] == 2 and data["topics_completed"] == 1
+    assert data["topics_interrupted"] == 1 and data["interrupted"] is True
+    assert data["index_failed"] == int(index_failure)
+    assert telemetry.current() is None
+
+
+def test_scan_time_unreadable_refusal_is_in_final_count_without_invented_request(night, monkeypatch, capsys):
+    nd, graph, _, paths, _ = night
+    _watch(monkeypatch, paths, unreadable=paths["Бета"])
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert data["topics_scanned"] == 3 and data["topics_started"] == 2
+    assert data["scan_refusals"] == data["final_refusals"] == 1
+    assert data["final_reasons"] == {"input_refused": 1}
+    assert data["final_refusals"] == sum(g.отказы for g in result.graphs)
+    assert data["legacy_attempts"] == result.attempts == data["committed_topics"] == 2
+    assert data["local_completion_attempts"] == data["adapter_stream_entries"] == 0
