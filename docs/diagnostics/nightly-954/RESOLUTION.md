@@ -66,3 +66,18 @@ gpt-6.1-terra high: C0/I1; gpt-6-luna high: C0/I1. Оба вердикта ст�
 
 Raw verdicts: [Terra](../../reviews/2026-11-06-nightly-954/terra-6b317.md), [Luna](../../reviews/2026-11-06-nightly-954/luna-6b317.md).
 Хеши и failing test IDs: [final-risk-mutants.json](final-risk-mutants.json).
+
+## Полная матрица e66 и удаление лишнего writer
+
+PR-CI42178354744/head e66a63a4449fe48a3025dd4631e350a7c022caf7: Linux: 11104 PASS / 25 skipped / 7 xfailed,
+macOS: 11116 PASS / 13 skipped / 7 xfailed. Полные тесты исполнили merge snapshot200dcdd2e1c8d71991af0a2285440e6e79ac7ff5
+(head e66 в base2ada7ff). Layout, lint, CodeQL и supply-chain прошли.
+Все 55/55 critical рассуждены; 54 killed, 1 survived. Вердикт FAIL сохранён, не выдан за зелёную приёмку.
+
+Оставшийся оператор — or→and у автозаписи topic.reason из request observer. Эта запись не используется
+при реальном финальном отказе: input/manual/format/IO gates назначают его явно, а outer catch выбирает
+request_failure через request_refusal. Scan-time отказ также учитывается явно. Удалена именно лишняя
+автозапись, чтобы request outcome не назначал final topic verdict; request_failure и история остаются.
+Никаких waiver, изменений критичности или ослабления тестов нет.
+После удаления: 184 PASS / 68.20 с (telemetry 46 + оба обязательных реестра). Повтор шести risk-мутантов
+на новых точных байтах: 6 killed / 0 survived. Новая обязательная CI итоговой SHA ещё нужна.

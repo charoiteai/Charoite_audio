@@ -213,8 +213,8 @@ def observe_request(refusal_type: type[Exception]):
             finally:
                 run.outcomes[request.phase, reason] += 1
                 if topic := _topic.get():
+                    # A request outcome is not a final topic verdict; the rejecting gate owns it.
                     topic.request_failure = None if reason == Reason.RETURNED else reason
-                    topic.reason = topic.request_failure or Reason.UNKNOWN
                 _request.reset(token)
         return observed
     return decorate

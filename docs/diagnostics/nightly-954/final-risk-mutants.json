@@ -1,7 +1,7 @@
 {
   "source_sha256": {
     "scripts/nightly_dossier.py": "01311fab3e34ca6033ca95bf424665ba7610cc6a44fa96e44a217efb3d85dda9",
-    "src/dossier_telemetry.py": "46235f5ffee1a89c3e51f2da91c75a165568e1989671a32c9dd9dc73afab04ed",
+    "src/dossier_telemetry.py": "0d4d9a191efa6f123a22ab6460be27ebeb6ce1b9f3e63ce6864f805b2439f299",
     "tests/test_dossier_telemetry_954.py": "0d83b0349d7c0532ed3f589d0b4c4fca263390c6b583c0ab4bef94ae77ea588e"
   },
   "cases": [
@@ -68,6 +68,6 @@
     }
   ],
   "baseline_tail": [
-    "46 passed in 2.32s"
+    "46 passed in 1.98s"
   ]
 }

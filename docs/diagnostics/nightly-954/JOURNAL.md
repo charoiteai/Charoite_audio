@@ -37,3 +37,7 @@
 - Эмиссия защищает исходный exception object от любого BaseException, без исходной ошибки сама ошибка вывода распространяется.
 - Дополнительная защита: чужой уже обработанный caller-except не является ошибкой run_all. Этот контроль сначала дал1FAIL/1PASS при sys.exc_info(), после локального unwind-флага прошёл.
 - Адресно198PASS/12.82с; отдельный clean replay6risk mutants killed/0survived. Ruff PASS; обязательная новая CI ещё впереди.
+
+- CI42178354744/e66: Linux: 11104 PASS / macOS: 11116 PASS, merge snapshot200dcdd2. Все 55 critical рассуждены, 1 survivor; verdict FAIL.
+- Удалена лишняя автозапись final topic.reason из request observer (or→and survivor): финальный отказ уже назначает rejecting gate. Request failure/history сохраняются. Исключения/waiver/критичность не менялись.
+- Адресно: 184 PASS / 68.20 с, telemetry 46+failure/import contracts; повтор risk replay: 6 killed / 0 survived. Новая CI обязательна.
