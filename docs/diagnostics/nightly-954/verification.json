@@ -20,5 +20,27 @@
     "tests/test_dossier_telemetry_954.py": "940a705e36d1ba0baf6b09f848a9ae82fb358d2491e4a7d57940cc4d27c0cc95",
     "tests/test_nightly_exit.py": "d289e2bf873511b0188518788d75e3766f78cf1e248ad80a9af27e621a5847e1"
   },
-  "review_packet_sha256": "b7b3e5af27ae49fd0cb5bebdf91c2582e873f2f459bcbb46cfd5aec36dba6bfb"
+  "review_packet_sha256": "b7b3e5af27ae49fd0cb5bebdf91c2582e873f2f459bcbb46cfd5aec36dba6bfb",
+  "ci_label_followup": {
+    "head_before_test_expectation_fix": "6b5369e460365c98faf58514dfbaefd9738a9c74",
+    "first_pr_ci_run": 42171863496,
+    "first_baseline": {
+      "failed": 1,
+      "passed": 664
+    },
+    "first_mutation": {
+      "plan": 49,
+      "critical_plan": 48,
+      "judged": 0
+    },
+    "after_targeted_test_expectation_fix": {
+      "passed": 92,
+      "seconds": 7.6
+    },
+    "product_source_unchanged": true,
+    "updated_test_sha256": {
+      "tests/test_forget_mutation_behaviors.py": "0903b4016e663e00352c7ed10d967b12f0121c4205d666723451f08520f4f90e",
+      "tests/test_dossier_encoding.py": "9424a47a30f6df3a774ca33d9227541ebc5a960588f793634907a188f473de76"
+    }
+  }
 }
