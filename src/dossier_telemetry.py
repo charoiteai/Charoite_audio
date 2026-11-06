@@ -107,8 +107,8 @@ class Collector:
             _run.reset(token)
             try:
                 print("dossier_telemetry " + json.dumps(self.snapshot()))
-            except (OSError, ValueError):
-                # A closed output cannot replace the run's original exception.
+            except BaseException:
+                # An output failure cannot replace the run's original exception.
                 # Delivery is unconfirmed; with no original error, propagate it.
                 if not original_error:
                     raise

@@ -243,17 +243,22 @@ class _GraphRun:
         if self.indexed:
             return
         self.indexed = True
-        if not dry and (self.entries or self.folder.is_dir()):
-            with _graph_snapshot(self.graph, 0) as captured:
-                if captured is None:
-                    print(f"  ⏸ {self.graph.name}: индекс не опубликован — замок графа недоступен")
-                    self.index_failed = True
-                    return
-                try:
-                    dossier.rebuild_index(captured.graph, schema=CHAROITE, read=self.reads.current)
-                except OSError as e:
-                    print(f"  ✗ {self.graph.name}: индекс не обновлён ({e})")
-                    self.index_failed = True
+        try:
+            if not dry and (self.entries or self.folder.is_dir()):
+                with _graph_snapshot(self.graph, 0) as captured:
+                    if captured is None:
+                        print(f"  ⏸ {self.graph.name}: индекс не опубликован — замок графа недоступен")
+                        self.index_failed = True
+                        return
+                    try:
+                        dossier.rebuild_index(captured.graph, schema=CHAROITE, read=self.reads.current)
+                    except OSError as e:
+                        print(f"  ✗ {self.graph.name}: индекс не обновлён ({e})")
+                        self.index_failed = True
+        except BaseException:
+            # Covers both g.done() and final cleanup; one flag per graph/run.
+            self.index_failed = True
+            raise
 
     def done(self, dry: bool) -> None:
         self.pending -= 1
@@ -768,6 +773,7 @@ def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
     with out.telemetry.activate():
         gen = generator_label(c)
         candidates: list[Candidate] = []
+        original_error = False
         try:
             for path in paths:
                 # Граф — единица отказа: прежний цикл по графам успевал собрать
@@ -785,6 +791,9 @@ def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
                 print(f"скан {path.name}: тем {len(g.cl)}, к сборке {len(found)}")
             out.attempts = _drive(queue_order(candidates), c, full=full, dry=dry, limit=limit,
                                   budget_s=budget_s, started=started)
+        except BaseException:
+            original_error = True
+            raise
         finally:
             # Исключение или SIGTERM посреди очереди не оставляет графы со старым
             # индексом (вход in3 №621, Sonnet I2, DS I2).
@@ -793,11 +802,12 @@ def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
                     try:
                         g.write_index(dry)
                     except BaseException:
-                        out.telemetry.index_failed += 1
-                        raise
+                        g.index_failed = True
+                        if not original_error:
+                            raise
             finally:
                 out.telemetry.scan_failed = len(out.scan_failed)
-                out.telemetry.index_failed += sum(g.index_failed for g in out.graphs)
+                out.telemetry.index_failed = sum(g.index_failed for g in out.graphs)
     return out
 
 

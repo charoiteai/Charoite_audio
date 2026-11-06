@@ -54,3 +54,9 @@ not an independent boolean. Explicit gate refusal and outer request-aware refusa
 JSON object key order is not a wire promise; only version, closed field names, types and values are.
 The CLI is explicitly imported by a real full-path test, so mutation suite discovery includes the telemetry
 scenarios for nightly_dossier as well as local_complete. No mutation waiver or critical-zone reduction.
+
+Final-risk refinement: every index publication failure is marked at the shared write_index boundary,
+including a publication initiated by the last topic's g.done(). Count one failed graph once, without a retry.
+Cleanup cannot replace the run's own active exception; a caller's previously handled exception is not
+an active run exception. Emitter BaseException cannot replace an original run error, but propagates normally
+when there is no original error. Aggregate delivery during an emitter failure remains unconfirmed.

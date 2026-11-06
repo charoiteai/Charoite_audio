@@ -30,3 +30,10 @@
 - Подтверждён новый lifecycle FAIL: empty first reply → preparation error на retry оставлял прежнюю причину. Теперь start-attempt очищает атрибуцию текущего отказа, сохранённая история requests прежняя; implicit bool-switch заменён явной optional Reason и двумя отказными функциями.
 - Адресно: 173 PASS / 69.36 с; отдельный clean-source replay штатных AST-операторов: baseline: 35 PASS, 11 retained survivors killed / 0 survived. 5 удалённых переключателей отсутствуют, не whitelist. Receipt survivor-replay.json.
 - 09:29 +03:00: далее точный source snapshot, обе final-risk модели, обычные hooks/push и вся CI той же SHA; реальных моделей/owner-data 0.
+
+- Resume: обе final-risk модели на6b317 C0/I1; исходные raw-вердикты сохранены в docs/reviews/2026-11-06-nightly-954.
+- Причинный before:4FAIL/7PASS. Index RuntimeError после последней темы не учитывался; emitter RuntimeError/второй KeyboardInterrupt/SystemExit маскировали исходное исключение.
+- Common write_index boundary ставит один графовый failure flag, cleanup суммирует флаги один раз. При body-error cleanup не подменяет исходный отказ; при нормальном body индексный отказ виден.
+- Эмиссия защищает исходный exception object от любого BaseException, без исходной ошибки сама ошибка вывода распространяется.
+- Дополнительная защита: чужой уже обработанный caller-except не является ошибкой run_all. Этот контроль сначала дал1FAIL/1PASS при sys.exc_info(), после локального unwind-флага прошёл.
+- Адресно198PASS/12.82с; отдельный clean replay6risk mutants killed/0survived. Ruff PASS; обязательная новая CI ещё впереди.

@@ -235,7 +235,7 @@ def test_interruption_keeps_completed_attempt_and_always_emits(night, monkeypatc
         def denied(*a):
             raise OSError(SENTINEL)
         monkeypatch.setattr(nd._GraphRun, "write_index", denied)
-    with pytest.raises(OSError if index_failure else KeyboardInterrupt):
+    with pytest.raises(KeyboardInterrupt):
         nd.run_all([graph], LOCAL, full=False, dry=False)
     data = aggregate(capsys)
     assert data["legacy_attempts"] == data["committed_topics"] == 1
@@ -279,22 +279,26 @@ def test_actual_response_decoder_distinguishes_200_stream_error_from_http_error(
 
 
 @pytest.mark.parametrize("original_error", [False, True])
-def test_aggregate_output_failure_preserves_an_original_exception(monkeypatch, original_error):
+@pytest.mark.parametrize("output_error", [BrokenPipeError, ValueError, RuntimeError, KeyboardInterrupt, SystemExit])
+def test_aggregate_output_failure_preserves_an_original_exception(monkeypatch, original_error, output_error):
     import builtins
     original_print = builtins.print
+    original = KeyboardInterrupt(SENTINEL + ":original")
+    emitted = output_error(SENTINEL + ":emit")
 
     def broken_print(*args, **kwargs):
         if args and str(args[0]).startswith("dossier_telemetry "):
-            raise BrokenPipeError(SENTINEL)
+            raise emitted
         return original_print(*args, **kwargs)
 
     monkeypatch.setattr(builtins, "print", broken_print)
     collector = telemetry.Collector()
-    expected = KeyboardInterrupt if original_error else BrokenPipeError
-    with pytest.raises(expected, match=SENTINEL):
+    expected = KeyboardInterrupt if original_error else output_error
+    with pytest.raises(expected, match=SENTINEL) as caught:
         with collector.activate():
             if original_error:
-                raise KeyboardInterrupt(SENTINEL)
+                raise original
+    assert caught.value is (original if original_error else emitted)
     assert telemetry.current() is None
     assert collector.interrupted == original_error
 
@@ -381,3 +385,52 @@ def test_append_admission_refusal_keeps_its_request_reason(world, provider, caps
     assert data["final_reasons"] == {"context_budget": 1}
     assert data["local_completion_attempts"] == 1 and data["adapter_stream_entries"] == 0
     assert path.read_bytes() == before
+
+
+def test_last_topic_index_publication_exception_counts_once_and_propagates(night, monkeypatch, capsys):
+    nd, graph, _, _, _ = night
+    original = RuntimeError(SENTINEL + ":index")
+    publications = 0
+
+    def broken_index(*args, **kwargs):
+        nonlocal publications
+        publications += 1
+        raise original
+
+    monkeypatch.setattr(dossier, "rebuild_index", broken_index)
+    with pytest.raises(RuntimeError) as caught:
+        nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert caught.value is original
+    assert publications == 1
+    assert data["index_failed"] == 1 and data["interrupted"] is True
+    assert data["legacy_attempts"] == data["committed_topics"] == 3
+    assert data["final_refusals"] == 0
+
+
+@pytest.mark.parametrize("caller_handling_error", [False, True])
+def test_index_cleanup_error_without_an_original_error_still_propagates(night, monkeypatch, capsys, caller_handling_error):
+    nd, graph, _, _, _ = night
+    nd.run_all([graph], LOCAL, full=False, dry=False)
+    aggregate(capsys)
+    original = RuntimeError(SENTINEL + ":cleanup")
+    publications = 0
+
+    def broken_index(*args, **kwargs):
+        nonlocal publications
+        publications += 1
+        raise original
+
+    monkeypatch.setattr(dossier, "rebuild_index", broken_index)
+    with pytest.raises(RuntimeError) as caught:
+        if caller_handling_error:
+            try:
+                raise ValueError(SENTINEL + ":caller-handled")
+            except ValueError:
+                nd.run_all([graph], LOCAL, full=False, dry=False)
+        else:
+            nd.run_all([graph], LOCAL, full=False, dry=False)
+    data = aggregate(capsys)
+    assert caught.value is original and publications == 1
+    assert data["index_failed"] == 1 and data["interrupted"] is True
+    assert data["topics_started"] == data["legacy_attempts"] == 0

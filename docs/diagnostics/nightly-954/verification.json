@@ -78,5 +78,41 @@
       "tests/test_failure_kind.py": "48ffa3f2c9d01a75737d264d95f2f76dbad6b03241bcbc4b8819b2165f954f6a",
       "tests/test_import_boundaries.py": "9dc12366cc62dd76ecd20e4a2911821c5ae3f33c200519256b855b2aa8dc0309"
     }
+  },
+  "final_risk_followup": {
+    "review_head": "6b317c0138269468681cda1fc8c6a359749a5241",
+    "review_base": "2f706a328bc7b880cd6c694f7786ca9b12b7de41",
+    "packet_digest": "ae827cf0d11bed487d29ef7d6495b65edd58a766275c81b9e2476cd89e8230b4",
+    "reviews": {
+      "gpt-6.1-terra/high": "C0/I1",
+      "gpt-6-luna/high": "C0/I1"
+    },
+    "before_new_cases": {
+      "failed": 4,
+      "passed": 7
+    },
+    "after_targeted_regressions": {
+      "passed": 198,
+      "seconds": 12.82
+    },
+    "telemetry_cases": 46,
+    "risk_mutants": {
+      "killed": 6,
+      "survived": 0
+    },
+    "source_sha256": {
+      "src/dossier_telemetry.py": "46235f5ffee1a89c3e51f2da91c75a165568e1989671a32c9dd9dc73afab04ed",
+      "src/dossier_incremental.py": "c852dd1d9b75a92cc22587daf279a8b234c433d538e3546657b1b09f179921e5",
+      "scripts/nightly_dossier.py": "01311fab3e34ca6033ca95bf424665ba7610cc6a44fa96e44a217efb3d85dda9",
+      "scripts/nightly.sh": "b3183917940a76308a247f86a551c3bf8d98f79639110e6632ff5c130111ffcf",
+      "scripts/layout_map.py": "307a90f2ab6fd7f30dabc41f7a55260e83c496f2477474cd658db52938d903ba",
+      "tests/test_dossier_telemetry_954.py": "0d83b0349d7c0532ed3f589d0b4c4fca263390c6b583c0ab4bef94ae77ea588e",
+      "tests/test_nightly_exit.py": "d289e2bf873511b0188518788d75e3766f78cf1e248ad80a9af27e621a5847e1",
+      "tests/test_forget_mutation_behaviors.py": "0903b4016e663e00352c7ed10d967b12f0121c4205d666723451f08520f4f90e",
+      "tests/test_dossier_encoding.py": "9424a47a30f6df3a774ca33d9227541ebc5a960588f793634907a188f473de76",
+      "tests/test_failure_kind.py": "48ffa3f2c9d01a75737d264d95f2f76dbad6b03241bcbc4b8819b2165f954f6a",
+      "tests/test_import_boundaries.py": "9dc12366cc62dd76ecd20e4a2911821c5ae3f33c200519256b855b2aa8dc0309"
+    },
+    "final_ci": "required_not_yet_run"
   }
 }
