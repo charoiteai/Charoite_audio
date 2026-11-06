@@ -1,0 +1,10 @@
+{
+  "result": "failed_closed",
+  "phase": "target_dependency_import",
+  "reason_code": "urllib3_import_ipv6_capability_probe_denied",
+  "control_sha256": "10c6ca8ba558b880385270ac23337fe5a1e9092768ddc6935e8d13cee6e49285",
+  "observed_boundary_exception": "BoundaryViolation:audit_socket",
+  "target_cases_completed": 0,
+  "remedy": "Pin socket.has_ipv6 false in both offline control environments; retain every network/process denial.",
+  "raw_traceback": "kept_outside_public_artifact"
+}

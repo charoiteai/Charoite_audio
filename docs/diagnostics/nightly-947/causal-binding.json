@@ -1,0 +1,52 @@
+{
+  "after_receipt_sha256": "ece69f434ef6c846303f7155b1863015065386a283fd61236c4489596e2052a7",
+  "before_receipt_sha256": "b7c646ad75ce13e149743f31c15eeb9cde1414ad9a98f482640ed4d61c0a5e09",
+  "checks": {
+    "after_archive_matches_expected_git_tree": true,
+    "after_executed_target_closure_bound": true,
+    "after_integrity_negative_probes_passed": true,
+    "after_network_process_negative_probes_measured": true,
+    "after_os_connect_denial_observed": true,
+    "after_target_boundary_events_absent": true,
+    "before_archive_matches_expected_git_tree": true,
+    "before_executed_target_closure_bound": true,
+    "before_integrity_negative_probes_passed": true,
+    "before_network_process_negative_probes_measured": true,
+    "before_os_connect_denial_observed": true,
+    "before_target_boundary_events_absent": true,
+    "incremental_closure_bound": true,
+    "long_32768_both_admitted": true,
+    "long_8192_delta": true,
+    "long_complete_source_delta": true,
+    "same_builtin_frozen_modules": true,
+    "same_capability_fixture": true,
+    "same_control": true,
+    "same_external_dependency_bytes": true,
+    "same_input_config": true,
+    "same_interpreter": true,
+    "same_stdlib_file_bytes": true,
+    "short_both_admitted": true
+  },
+  "control_sha256": "f2502619c90e5cbea091c5dff2b598cd3d4617151a6650ea4f602208c1f170be",
+  "prior_incomplete_proof": "intermediate/b7a73b57/README.md",
+  "proof_version": "archive_early_boundary_v2",
+  "readback_against_git": {
+    "after": {
+      "archive_files": 144,
+      "builtin_frozen_modules": 44,
+      "commit_sha": "1ae08c23c74ee1b0a3799e137c27c1c1b24b7962",
+      "verified_executed_target_files": 29,
+      "verified_external_files": 81,
+      "verified_stdlib_files": 162
+    },
+    "before": {
+      "archive_files": 143,
+      "builtin_frozen_modules": 44,
+      "commit_sha": "f0a3ce57568efb5e2246fd25e627fa76114e152f",
+      "verified_executed_target_files": 28,
+      "verified_external_files": 81,
+      "verified_stdlib_files": 162
+    }
+  },
+  "scope": "combined full-source/context admission in an offline adapter-double process; incident cause remains unknown"
+}

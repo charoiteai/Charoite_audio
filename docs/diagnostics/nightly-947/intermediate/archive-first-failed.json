@@ -1,0 +1,9 @@
+{
+  "result": "failed",
+  "phase": "first_target_import",
+  "reason_code": "resolved_origin_vs_unresolved_platform_temp_root",
+  "control_sha256": "7d4ffa0876f297b6c8b7e4d56e15d84d0faba7d0cb2d6c739976b0f9669d906e",
+  "target_cases_completed": 0,
+  "raw_traceback": "kept_outside_public_artifact",
+  "remedy": "Normalize the owned extraction root before comparing import origins; keep archive/blob checks unchanged."
+}

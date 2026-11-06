@@ -1,0 +1,16 @@
+{
+  "checks": {
+    "same_control": true,
+    "same_input_config": true,
+    "same_shared_dependency_bytes": true,
+    "short_both_admitted": true,
+    "long_8192_delta": true,
+    "long_32768_both_admitted": true,
+    "long_complete_source_delta": true,
+    "actual_http_generation_zero": true
+  },
+  "control_sha256": "abd802a9992d0c46787267771132544255189327a1d0f740ad5ac8cb1ff32a1c",
+  "before_receipt_sha256": "20654dd5a829f18311eaabd7590402fac432947c82421039c03d3194420c8069",
+  "after_receipt_sha256": "fae2c50a09c0f40db21a12158e552f608f3604abd68a088ba37898f9cfb2c926",
+  "scope": "same raw synthetic input and fake adapter; combined full-source and strict-admission source delta, not guard-only or actual incident cause"
+}

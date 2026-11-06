@@ -1,0 +1,19 @@
+{
+  "phase": "synthetic_pytest",
+  "source_sha": "1ae08c23c74ee1b0a3799e137c27c1c1b24b7962",
+  "tests_passed": 213,
+  "errors": 0,
+  "elapsed_seconds": 5.83,
+  "warning_count": 1,
+  "warning_reason_code": "pytest_timeout_plugin_not_loaded_in_bounded_diagnostic",
+  "actual_http_requests": 0,
+  "generation_requests": 0,
+  "result": "passed",
+  "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \"$CHAROITE_PYTHON\" -m pytest -o addopts= -q tests/test_dossier_ollama_contract.py tests/test_dossier_transport_contract.py tests/test_dossier_queue.py",
+  "prior_attempt": "first-run-result.json",
+  "limitations": [
+    "Deterministic adapters and intercepted HTTP, not a real model experiment.",
+    "No owner graph scan or owner nightly was executed.",
+    "Not a full release or mutation-suite result."
+  ]
+}

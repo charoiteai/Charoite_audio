@@ -1,0 +1,60 @@
+{
+  "source_sha": "1ae08c23c74ee1b0a3799e137c27c1c1b24b7962",
+  "real_generation_requests": 0,
+  "actual_http_requests": 0,
+  "scope": "generate function with fake adapter; no graph scan/publication",
+  "control_sha256": "abd802a9992d0c46787267771132544255189327a1d0f740ad5ac8cb1ff32a1c",
+  "source_file_sha256": {
+    "scripts/nightly_dossier.py": "3f6577a17c93a3efbe27b58a4f7502ea4a6f09e12e609ca72c192855867895c3",
+    "src/charoite_graph/dossier.py": "de4ae30e15dc935a01e59718d55724fc964814dad555c1a5f28093748dc2f063",
+    "src/llm.py": "453d790125a2269b7684338d4159f6cea4f833a971d91ccbce18bca41cd04199",
+    "src/privacy.py": "baee524ea8ee360a497efa29eaca47fb60453666b5889cc63bdd98aa703cb500",
+    "src/charoite_schema.py": "91fc3b91217477e124941537e355c1886ed926012c74e224b7d425f6b3333c8f",
+    "src/charoite_graph/frontmatter.py": "313164e3be7475f576e5dc132774a26167d4a034fee6ab667f9e886488eefc3c",
+    "src/charoite_graph/graph_names.py": "985047d9340d2bd79db08884d7b8d3a791e2da71d3d80c670adecae3520f1e45"
+  },
+  "cases": [
+    {
+      "case": "short_8192",
+      "input_sha256": "e55290e4e31ddf1bb7c9d3398f33ee428ae5c5eba9df022609795518ba6d5bd7",
+      "prompt_bytes": 2336,
+      "prompt_sha256": "eda76aecab02d643a7e9e510e61a08fea363f487613e61a863b1613da2b1edc8",
+      "complete_normalized_source_present_in_prompt": true,
+      "config_sha256": "d8cd6897ff82989df7d39bca7c720813618675bd24af10c47002b98e2c485774",
+      "context": 8192,
+      "outcome": "admitted_to_adapter_double",
+      "reason_code": null,
+      "constructors": 1,
+      "stream_entries": 1,
+      "contract_checks": 1
+    },
+    {
+      "case": "long_8192",
+      "input_sha256": "868eb5f13b7b4c75a3bab3761e4b772a04182cd42776be578640583505cae049",
+      "prompt_bytes": 17913,
+      "prompt_sha256": "7e95d44c0e5867d9b2d1891ba3af0c966cfcea592c75e8c25fa6483a6e9caf17",
+      "complete_normalized_source_present_in_prompt": true,
+      "config_sha256": "d8cd6897ff82989df7d39bca7c720813618675bd24af10c47002b98e2c485774",
+      "context": 8192,
+      "outcome": "refused_before_stream",
+      "reason_code": "context_budget",
+      "constructors": 0,
+      "stream_entries": 0,
+      "contract_checks": 0
+    },
+    {
+      "case": "long_32768",
+      "input_sha256": "868eb5f13b7b4c75a3bab3761e4b772a04182cd42776be578640583505cae049",
+      "prompt_bytes": 17913,
+      "prompt_sha256": "7e95d44c0e5867d9b2d1891ba3af0c966cfcea592c75e8c25fa6483a6e9caf17",
+      "complete_normalized_source_present_in_prompt": true,
+      "config_sha256": "122fdf2d8561e0ef419d9b90a97f2fad2473ee25af48e218fe5a8785ec936f4b",
+      "context": 32768,
+      "outcome": "admitted_to_adapter_double",
+      "reason_code": null,
+      "constructors": 1,
+      "stream_entries": 1,
+      "contract_checks": 1
+    }
+  ]
+}

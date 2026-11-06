@@ -1,0 +1,60 @@
+{
+  "source_sha": "f0a3ce57568efb5e2246fd25e627fa76114e152f",
+  "real_generation_requests": 0,
+  "actual_http_requests": 0,
+  "scope": "generate function with fake adapter; no graph scan/publication",
+  "control_sha256": "abd802a9992d0c46787267771132544255189327a1d0f740ad5ac8cb1ff32a1c",
+  "source_file_sha256": {
+    "scripts/nightly_dossier.py": "3862b94cd94e6125e9cb99b3cec59a52e09cce7eb0255cc7724358aac3251c0e",
+    "src/charoite_graph/dossier.py": "78ee30a391324de3d65e560d8d9d7e840d5b964f3b6fb717745bf90187293b72",
+    "src/llm.py": "e15d1296abc11622a3d6b5a1d363198a6e58f8922c4c3e6043a87d4d20f506db",
+    "src/privacy.py": "baee524ea8ee360a497efa29eaca47fb60453666b5889cc63bdd98aa703cb500",
+    "src/charoite_schema.py": "91fc3b91217477e124941537e355c1886ed926012c74e224b7d425f6b3333c8f",
+    "src/charoite_graph/frontmatter.py": "313164e3be7475f576e5dc132774a26167d4a034fee6ab667f9e886488eefc3c",
+    "src/charoite_graph/graph_names.py": "985047d9340d2bd79db08884d7b8d3a791e2da71d3d80c670adecae3520f1e45"
+  },
+  "cases": [
+    {
+      "case": "short_8192",
+      "input_sha256": "e55290e4e31ddf1bb7c9d3398f33ee428ae5c5eba9df022609795518ba6d5bd7",
+      "prompt_bytes": 2336,
+      "prompt_sha256": "eda76aecab02d643a7e9e510e61a08fea363f487613e61a863b1613da2b1edc8",
+      "complete_normalized_source_present_in_prompt": true,
+      "config_sha256": "d8cd6897ff82989df7d39bca7c720813618675bd24af10c47002b98e2c485774",
+      "context": 8192,
+      "outcome": "admitted_to_adapter_double",
+      "reason_code": null,
+      "constructors": 1,
+      "stream_entries": 1,
+      "contract_checks": 0
+    },
+    {
+      "case": "long_8192",
+      "input_sha256": "868eb5f13b7b4c75a3bab3761e4b772a04182cd42776be578640583505cae049",
+      "prompt_bytes": 6957,
+      "prompt_sha256": "329d83ecb38fb793b1b4eb2aee2ead5b72a42155f8f26e1d5e58b2f3a5147ed0",
+      "complete_normalized_source_present_in_prompt": false,
+      "config_sha256": "d8cd6897ff82989df7d39bca7c720813618675bd24af10c47002b98e2c485774",
+      "context": 8192,
+      "outcome": "admitted_to_adapter_double",
+      "reason_code": null,
+      "constructors": 1,
+      "stream_entries": 1,
+      "contract_checks": 0
+    },
+    {
+      "case": "long_32768",
+      "input_sha256": "868eb5f13b7b4c75a3bab3761e4b772a04182cd42776be578640583505cae049",
+      "prompt_bytes": 6957,
+      "prompt_sha256": "329d83ecb38fb793b1b4eb2aee2ead5b72a42155f8f26e1d5e58b2f3a5147ed0",
+      "complete_normalized_source_present_in_prompt": false,
+      "config_sha256": "122fdf2d8561e0ef419d9b90a97f2fad2473ee25af48e218fe5a8785ec936f4b",
+      "context": 32768,
+      "outcome": "admitted_to_adapter_double",
+      "reason_code": null,
+      "constructors": 1,
+      "stream_entries": 1,
+      "contract_checks": 0
+    }
+  ]
+}

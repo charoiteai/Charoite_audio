@@ -1,0 +1,3 @@
+# Intermediate proof — retained, superseded
+
+This is the reviewed b7a73b57 packet evidence before Important corrections. It is preserved as execution history, not accepted proof of a clean exact-SHA import closure or independently observed zero network traffic. The control installed its Python socket hooks after target imports, omitted connect_ex/child-process boundaries, printed literal zero HTTP/generation fields, and recorded only HEAD plus selected file hashes (excluding dossier_incremental). Both independent OUTPUT reviewers found Critical0 and identified these limitations. See the current top-level REPORT and receipts for corrected evidence. Do not combine these partial receipts with corrected runs or present the earlier clean/zero assertions as verified.
