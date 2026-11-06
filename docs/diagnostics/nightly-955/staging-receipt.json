@@ -1,0 +1,25 @@
+{
+  "advisory_ux_probe_before_ux": true,
+  "artifact_kind": "source_edit_only_not_executed",
+  "candidate_sha256": "f74773908af2261710432527c755966f67fa411fc0767ccc718a611e9df49032",
+  "candidate_syntax": "not_run_recording_gate3",
+  "execution_proof": "not_run_recording_gate3",
+  "fd_boundary_proof": "not_run",
+  "final_nightly_gate_unchanged": true,
+  "installed": false,
+  "manifest_sha256": "9cbd30bb0f8ced15c05a167f76c4bef0720357bd177d353b03d99ea2f0137998",
+  "patch_sha256": "59bb5553cac40465cc025d1cdfef0290ff03301741d1cf485e8fdd5509d83e6d",
+  "preserved_state_mkdir": true,
+  "removed_lines": [
+    [
+      74,
+      77
+    ],
+    [
+      197,
+      199
+    ]
+  ],
+  "source_sha256": "c88f5d6f10ca458e17f7d5e0ab94da70899b2ce0e3d3621b67f05e9c823a5a1c",
+  "source_unchanged": true
+}

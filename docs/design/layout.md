@@ -1,13 +1,13 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 97.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 99.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
 - **base** (зависит от: —; модулей 18): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `dossier_telemetry`, `exit_codes`, `file_locks`, `jsonl_log`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
-- **runtime** (зависит от: base; модулей 7): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`
+- **runtime** (зависит от: base; модулей 9): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`, `process_lock_exec`, `retry_wrapper_stage`
 - **llm** (зависит от: base, runtime; модулей 6): `decision_gate`, `llm`, `llm_health`, `model_lease`, `model_ledger`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 6): `cloud`, `night_cloud`, `pii_fake`, `pii_fake_pool`, `pii_mask`, `pii_ner`
@@ -51,6 +51,8 @@
 - `model_ledger` → llm: журнал вызовов модели по потребителям (№807): строку пишет транспорт llm.py из своих швов (_open_stream, _post_busy), метку потребителя ставят демон и разбор графа — слой транспорта, рядом с арендой model_lease; сам зовёт только runtime и base (charoite_paths, config_loader — выключатель из конфига корня, jsonl_log, once).
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3, daemon и scripts/doctor.py (годность — refusal(), проба — judge())
 - `once` → base: общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его llm (llm, model_lease; llm передаёт его двери векторов значением), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm
+- `process_lock_exec` → runtime: explicit argv/environment and file-lock lifecycle; uses only shared base lock primitive
+- `retry_wrapper_stage` → runtime: explicit private paths and bounded staging I/O; no default graph or installed runtime selection
 - `task_line` → base: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items и meeting_archive — источник саммари без учёта после встречи, without_statuses (№392); ничего из репо не импортирует
 - `threads` → base: шов потоков продукта: поток — сам threading.Thread/Timer, реестр — метаданные при потоке (роль и причина detached). Импортов из репозитория нет, только stdlib; зовут его app (daemon, main, dictate), audio, llm и meeting. В app он дал бы ребро base → app: реестр обязан быть ниже всех, кто заводит поток
 - `tier3` → graph: ревизия ядер графа: bge-m3 и NLI приходят через шов model_seam, ночное окно — параметром may_continue, у приложения его собирает одна дверь graphs.revise_cores (№365); корня данных и замка демона модуль не знает — граф, не облако
@@ -131,9 +133,11 @@
 - `scripts/retrieval_compare.py` ← ручной запуск: сравнение результатов поиска по эталонным вопросам, ручной прогон; проба help
 - `scripts/runtime_profile.py` ← ручной запуск: замер локального потокового транспорта на заданных запросах, ручной прогон; проба help
 - `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml; проба help
+- `scripts/stage_retry_wrapper.py` ← ручной запуск: explicit private hash-bound wrapper staging; never installs; проба help
 - `scripts/stt_bench.py` ← ручной запуск: бенчмарк STT, ручной прогон; проба help
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py; проба help
 - `scripts/wait_for_idle.py` ← scripts/nightly.sh; проба help
+- `scripts/with_process_lock.py` ← ручной запуск: explicit process-lock argv adapter; staged runtime integration only, not installed; проба help
 - `src/daemon.py` ← app/Sources/CharoiteApp/Models/AppSettings.swift, app/Sources/CharoiteApp/Services/SetupReadinessService.swift, app/Sources/CharoiteApp/Services/SuflerService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; проба refuse
 - `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом; проба refuse
 - `src/diarize_nemotron.py` ← scripts/lock_runtime_deps.py; проба help
@@ -157,9 +161,11 @@
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/charoite_schema.py` ← .github/workflows/swift-tests.yml
 - `src/exit_codes.py` ← scripts/preflight.sh
+- `src/file_locks.py` ← src/retry_wrapper_stage.py
 - `src/graphs.py` ← scripts/layout_map.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
+- `src/process_lock_exec.py` ← src/retry_wrapper_stage.py
 - `src/threads.py` ← scripts/layout_map.py
 
 ## Пути, названные в документации и конфигах
@@ -198,7 +204,7 @@
 - `scripts/nemotron_shadow_check.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md
 - `scripts/nemotron_shadow_replay.py` ← docs/DIARIZATION.md, docs/FEATURES.md
 - `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SETUP.md
-- `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/design/TIER3_REVISION.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/intermediate/b7a73b57/REPORT.md, docs/diagnostics/nightly-954/INPUT-LUNA.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
+- `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/design/TIER3_REVISION.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/intermediate/b7a73b57/REPORT.md, docs/diagnostics/nightly-954/INPUT-LUNA.md, docs/diagnostics/nightly-955/reviews/input-terra.md, docs/diagnostics/nightly-955/reviews/input-v3-terra.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/incremental-dossier-acceptance.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/intermediate/b7a73b57/REPORT.md, docs/diagnostics/nightly-947/reviews/input-terra.md, docs/diagnostics/nightly-954/INPUT-TERRA.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/incremental-dossier-acceptance.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
@@ -208,8 +214,10 @@
 - `scripts/retrieval_compare.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/RETRIEVAL_MODEL_EVALUATION.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `scripts/runtime_profile.py` ← docs/FEATURES.md, docs/design/RUNTIME_PROFILE.md
 - `scripts/sign_release_manifest.py` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/zh/RELEASING.md
+- `scripts/stage_retry_wrapper.py` ← docs/diagnostics/nightly-955/README.md, docs/diagnostics/nightly-955/reviews/output-luna.md, docs/diagnostics/nightly-955/reviews/output-terra.md
 - `scripts/stt_bench.py` ← docs/FEATURES.md, docs/MODELS.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/zh/FEATURES.md, docs/zh/MODELS.md
 - `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/design/NLI_LABEL_CONTRACT_2026-10.md, docs/design/TIER3_REVISION.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `scripts/with_process_lock.py` ← docs/diagnostics/nightly-955/README.md, docs/diagnostics/nightly-955/reviews/output-luna.md
 - `src/audio.py` ← docs/INVARIANTS.md, docs/ru/INVARIANTS.md, docs/zh/INVARIANTS.md
 - `src/brain.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/research/diarization-log.md, docs/ru/ARCHITECTURE.md, docs/ru/DIARIZATION.md, docs/zh/ARCHITECTURE.md, docs/zh/DIARIZATION.md
@@ -261,9 +269,10 @@
 
 ## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
-- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
-- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, docs/diagnostics/nightly-955/README.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, docs/diagnostics/nightly-955/README.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
+- `wrapper.sh` ← docs/diagnostics/nightly-955/reviews/output-luna.md, src/retry_wrapper_stage.py
 
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
 
