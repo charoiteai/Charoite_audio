@@ -14,6 +14,8 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/with_process_lock.py'
+sys.path.insert(0, str(ROOT / 'src'))
+import process_lock_exec  # noqa: E402
 
 
 class ProcessLock(unittest.TestCase):
@@ -78,6 +80,10 @@ class ProcessLock(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text()), ['a b', '$(never-run)', '*'])
         self.assertEqual(self.lock.read_bytes(), b'keep-existing-bytes')
 
+    def test_empty_argv_is_refused_without_creating_a_lock(self):
+        self.assertEqual(process_lock_exec.locked_exec(self.lock, []), 64)
+        self.assertFalse(self.lock.exists())
+
     def test_concurrent_owner_blocks_duplicate_and_then_releases(self):
         ready, release = self.root / 'ready', self.root / 'release'
         owner = self.owner('import pathlib,sys,time; p=pathlib.Path(sys.argv[2]);p.write_text("ready");'
@@ -97,6 +103,15 @@ class ProcessLock(unittest.TestCase):
                             str(self.root / 'absent-executable')], capture_output=True, timeout=5)
         self.assertEqual(r.returncode, 126)
         self.assertEqual(self.run_command().returncode, 0)
+
+    def test_entry_hardens_the_child_output_mask(self):
+        output = self.root / 'private-child-output'
+        argv = self.command('import pathlib,sys;pathlib.Path(sys.argv[2]).write_text("private fixture")', output)
+        launcher = 'import os,sys;os.umask(0o022);os.execv(sys.executable,sys.argv[1:])'
+        result = subprocess.run([sys.executable, '-c', launcher, *argv],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
     def test_symlink_lock_is_rejected_without_touching_target(self):
         target = self.root / 'target'

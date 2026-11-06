@@ -11,9 +11,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location('retry_stage', ROOT / 'scripts/stage_retry_wrapper.py')
-STAGE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(STAGE)
+sys.path.insert(0, str(ROOT / 'src'))
+import retry_wrapper_stage as STAGE  # noqa: E402
 FIXTURE_SPEC = importlib.util.spec_from_file_location(
     'synthetic_retry_wrapper', ROOT / 'tests/fixtures/nightly_955/synthetic_wrapper.py')
 FIXTURE_MODULE = importlib.util.module_from_spec(FIXTURE_SPEC)
@@ -96,6 +95,23 @@ class RetryStaging(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), {'status': 'staging_refused'})
             self.assertNotIn(source.name, result.stdout + result.stderr)
             self.assertFalse(output.exists())
+
+    def test_stage_refuses_git_output_before_writing_private_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='stage-input-') as tmp:
+            parent = Path(tmp).resolve()
+            source, nightly = parent / 'source.sh', parent / 'nightly.sh'
+            data = fixture()
+            source.write_bytes(data)
+            nightly.write_text('#!/bin/bash\nexit 0\n')
+            (parent / 'night_gate.py').write_text('print("go")\n')
+            with tempfile.TemporaryDirectory(prefix='stage-denied-', dir=ROOT / 'docs') as within:
+                output = Path(within) / 'candidate'
+                with self.assertRaisesRegex(ValueError, 'untrusted_output_parent'):
+                    STAGE.stage(source, output, Path(sys.executable),
+                                 ROOT / 'scripts/with_process_lock.py', nightly,
+                                 parent / 'run.lock', parent,
+                                 expected_sha=hashlib.sha256(data).hexdigest())
+                self.assertFalse(output.exists())
 
 
 if __name__ == '__main__':

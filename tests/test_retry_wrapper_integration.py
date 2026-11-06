@@ -12,6 +12,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
+import retry_wrapper_stage as STAGE  # noqa: E402
 
 
 def load(name, path):
@@ -21,7 +23,6 @@ def load(name, path):
     return module
 
 
-STAGE = load('contract_retry_stage', ROOT / 'scripts/stage_retry_wrapper.py')
 FIXTURE = load('contract_retry_fixture', ROOT / 'tests/fixtures/nightly_955/synthetic_wrapper.py')
 
 

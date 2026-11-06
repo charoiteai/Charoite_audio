@@ -1,0 +1,30 @@
+{
+  "base_head": "358efeccdcc7008825f032c79bfaf5c71fc9669a",
+  "command": "$CHAROITE_PYTHON -m pytest -q tests/test_private_permissions.py::test_каждая_точка_входа_закрывает_маску tests/test_process_lock.py tests/test_stage_retry_wrapper.py tests/test_retry_wrapper_integration.py tests/test_night_gate.py",
+  "guard": "fresh quiet_guard && heavy_run exit0",
+  "installed_wrapper_executed": false,
+  "kind": "targeted_local_public_synthetic_tests",
+  "passed": 55,
+  "pytest_exit": 0,
+  "real_model_calls": 0,
+  "seconds": 4.82,
+  "source_hashes": {
+    "scripts/night_gate.py": "3d8cf77b4532a287aeaf48342b4db9621fd506a8a37eddd86d60555a94fb7d0c",
+    "scripts/stage_retry_wrapper.py": "9ac227bb2fd2107db5102373af3cbff75b5813e9ddd7c3b776d1e0fea0b6574a",
+    "scripts/with_process_lock.py": "1e7a155f70d45f9bf42f472f4aac95df7f505a4849e182d8cbd6284a776042f0",
+    "src/charoite_paths.py": "d8758d017e4e024de617824682265549804bd79e6bab9587718eada43b881ec5",
+    "src/file_locks.py": "228f693e0a2c15f308b377d867ac2fb95754c3130702247bd04bea202b439fed",
+    "src/process_lock_exec.py": "ea3519897a1697e6f0d1ec5543d2069bdb6cc27432b2e8a9fcebae184e831a68",
+    "src/retry_wrapper_stage.py": "c20feb017760f1aa3fbf042259a8a65251d9f46c95c856588a7397caca167121",
+    "tests/conftest.py": "e7c5112d6cffa26be1a877bd898727bff2298cdcdcdb279bfb12cede38aefbdd",
+    "tests/fixtures/nightly_955/fake_nightly.py": "e46e3dd2dcff55e4a572020561b6b1244adc4192c920ba3e73e4346be08c2da5",
+    "tests/fixtures/nightly_955/synthetic_wrapper.py": "d52fc1ae2788a2a80e8f5ce5e7feff91824f9b44cbd87eb648078dd62eb94bc9",
+    "tests/test_night_gate.py": "0fa6d509e3a010e24483749194535b541435c63243839501f027c3a8ebfcc840",
+    "tests/test_private_permissions.py": "e2cfb7547027257b1adddefb2f42674a64097b02eba39268cc46601265774f1e",
+    "tests/test_process_lock.py": "5e73084cde78a219ae82055380428f2a59c4c11a433a8ce74a47a48215a967cc",
+    "tests/test_retry_wrapper_integration.py": "93e91cdb1dee9fc397061c08789eca266267266cbb0d771a37fd17b1da701b62",
+    "tests/test_stage_retry_wrapper.py": "a9979ba9e9b3c9f71d5f1eab5160b92d5e7f0349475afea36d60b6bd75a8589d"
+  },
+  "subtests_passed": 5,
+  "worktree_changes": "private entry hardening and targeted tests; source hashes below bind the later commit"
+}
