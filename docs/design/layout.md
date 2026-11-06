@@ -1,12 +1,12 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 96.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 97.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 17): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `exit_codes`, `file_locks`, `jsonl_log`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
+- **base** (зависит от: —; модулей 18): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `dossier_telemetry`, `exit_codes`, `file_locks`, `jsonl_log`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
 - **runtime** (зависит от: base; модулей 7): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 6): `decision_gate`, `llm`, `llm_health`, `model_lease`, `model_ledger`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
@@ -198,8 +198,8 @@
 - `scripts/nemotron_shadow_check.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md
 - `scripts/nemotron_shadow_replay.py` ← docs/DIARIZATION.md, docs/FEATURES.md
 - `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SETUP.md
-- `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/design/TIER3_REVISION.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
-- `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/incremental-dossier-acceptance.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
+- `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/design/TIER3_REVISION.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/intermediate/b7a73b57/REPORT.md, docs/diagnostics/nightly-954/INPUT-LUNA.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
+- `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/incremental-dossier-acceptance.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/intermediate/b7a73b57/REPORT.md, docs/diagnostics/nightly-947/reviews/input-terra.md, docs/diagnostics/nightly-954/INPUT-TERRA.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-2.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/design/818-contracts-and-plan.md, docs/design/incremental-dossier-acceptance.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-1.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-report-4.txt, reports/handoff/tasks/818_mutation_ci_e784/mutation-verdict.txt, reports/reviews/n818-mutation-resolution.md
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
@@ -230,6 +230,7 @@
 - `src/diarize.py` ← docs/DIARIZATION.md
 - `src/diarize_live.py` ← docs/DIARIZATION.md
 - `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md, requirements-nemotron.in, scripts/README.md
+- `src/dossier_incremental.py` ← docs/diagnostics/nightly-947/TECHNICAL.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/reviews/output-luna.md, docs/diagnostics/nightly-954/INPUT-TERRA.md
 - `src/exit_codes.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
 - `src/file_locks.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/foreign_python.py` ← docs/research/diarization-log.md, docs/ru/DIARIZATION.md
@@ -266,6 +267,8 @@
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
 
 - `docs/design/layout.md` — out (git): карта — производная замера, не источник
+- `docs/diagnostics/nightly-947/causal-control.py` — history (git): сохранённый автономный контроль исторического опыта; не модуль и не точка входа продукта
+- `docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py` — history (git): первый автономный контроль исторического опыта, сохранён для воспроизводимости
 - `reports/handoff/tasks/818_baseline_probe.py` — history (git): синтетический снимок базового разбора №818: привязан к SHA и blob manifest, не точка входа продукта
 - `reports/handoff/tasks/818_out1_admission_probe.py` — history (git): синтетическое воспроизведение OUTPUT №818 с закреплёнными base/source SHA, не точка входа продукта
 - `tests/` — out (git): тесты строят синтетические деревья: пути в них — не факты о репозитории

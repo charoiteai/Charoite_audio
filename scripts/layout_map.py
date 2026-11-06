@@ -113,6 +113,10 @@ ENTRY_CANDIDATES = (f"{FLAT_DIR}/*.py", "scripts/*.py", "scripts/*.sh", "app/*.s
 #: фолбэк дал правдоподобный вид, и ни одна проверка не заметила).
 KINDS: tuple[tuple[str, str, str, str], ...] = (
     ("docs/design/layout.md", "out", "git", "карта — производная замера, не источник"),
+    ("docs/diagnostics/nightly-947/causal-control.py", "history", "git",
+     "сохранённый автономный контроль исторического опыта; не модуль и не точка входа продукта"),
+    ("docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py", "history", "git",
+     "первый автономный контроль исторического опыта, сохранён для воспроизводимости"),
     ("reports/handoff/tasks/818_baseline_probe.py", "history", "git",
      "синтетический снимок базового разбора №818: привязан к SHA и blob manifest, не точка входа продукта"),
     ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git",
