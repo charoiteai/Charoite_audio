@@ -1,0 +1,72 @@
+{
+  "v": 1,
+  "source_run_id": 42420538017,
+  "source_head_sha": "432e65c520addaab5190782e0f3abf9c3253607d",
+  "source_run_status": "completed",
+  "source_run_conclusion": "failure",
+  "observed_public_failed_jobs": [
+    {
+      "job_id": 128547786710,
+      "role": "lint/Semgrep",
+      "status": "completed",
+      "conclusion": "failure",
+      "url": "https://github.com/charoiteai/Charoite_audio/actions/runs/42420538017/job/128547786710",
+      "raw_log_sha256": "6f76044dc8be5b2c339624cd2d44a59113a60938e560f192ebc55ffb95c07a4f",
+      "raw_log_bytes": 6886,
+      "raw_public_capture_retained_privately": true
+    },
+    {
+      "job_id": 128547786726,
+      "role": "pytestLinux/layout",
+      "status": "completed",
+      "conclusion": "failure",
+      "url": "https://github.com/charoiteai/Charoite_audio/actions/runs/42420538017/job/128547786726",
+      "raw_log_sha256": "59c2ede4dc9282457686c3d12ce204f3e666bb00d52e0dd312138d2ed2405566",
+      "raw_log_bytes": 74828,
+      "raw_public_capture_retained_privately": true
+    },
+    {
+      "job_id": 128547786548,
+      "role": "pytestmacOS",
+      "status": "completed",
+      "conclusion": "failure",
+      "url": "https://github.com/charoiteai/Charoite_audio/actions/runs/42420538017/job/128547786548",
+      "raw_log_sha256": "4ac176a0e06df88063a1a246420db586fe831b9c408ad3ae68710c31c92999b8",
+      "raw_log_bytes": 73273,
+      "raw_public_capture_retained_privately": true
+    }
+  ],
+  "targeted_finding": {
+    "path": "scripts/release980_external.py",
+    "line_at_base": 447,
+    "rule_id": "python.lang.security.audit.exec-detected.exec-detected",
+    "finding": "visible exec(compile(raw,...), module.__dict__) flagged in authenticated frozen loader"
+  },
+  "disposition": {
+    "scope": "specific rule annotation on exact exec line only, explanatory adjacent comment; no job/config/global rule changes",
+    "reason": "literal GATE_HASH authenticates exact frozen74ad SHA256 bytes before exec; wrong hash is rejected before execution; compile executes those verified bytes without an unchecked reread/pyc",
+    "official_specific_rule_syntax": "https://semgrep.dev/blog/2021/python-static-analysis-comparison-bandit-semgrep/",
+    "existing_repository_pattern": "scripts/check_private_markers.py:_label_rule",
+    "ci_policy": "existing .github/workflows/ci.yml allows nosemgrep only with justification"
+  },
+  "local_semgrep": {
+    "available": true,
+    "observed_version": "1.172.0",
+    "required_ci_version": "1.173.0",
+    "version_probe_resource_gated": true,
+    "matching_scan_run": false,
+    "reason": "version differs; no packages installed/updated; final CI remains the annotation verification gate"
+  },
+  "ast_check": "SEMGREP-AST-CHECK.json",
+  "behavioral_test_reuse": "previous36/11 actual controls on unchanged exact semantic AST, not a new behavioral run",
+  "other_observed_ci_failures_not_fixed_by_this_scope": [
+    "cloud-call-site matcher flags validate_snapshot app registration literal",
+    "generated layout.md stale",
+    "new CLI entrypoint umask contract"
+  ],
+  "actor_actual_external": 0,
+  "actor_release_install": 0,
+  "actor_authorizing_record_created": false,
+  "actor_host_recursive_hash": 0,
+  "independent_root_runtime_work": "root reports e505 host/startup work completed separately; not an actor operation"
+}

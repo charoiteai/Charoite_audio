@@ -443,8 +443,8 @@ def load_frozen(root):
     need(sha(regular(root / ".github/release970_plan.json")[0]) == PLAN_HASH, "frozen plan hash")
     spec = importlib.util.spec_from_file_location("release980_frozen", root / "scripts/release970_gate.py")
     module = importlib.util.module_from_spec(spec)
-    # Compile the authenticated bytes; avoid a stale/unchecked pyc or reread.
-    exec(compile(raw, str(spec.origin), "exec"), module.__dict__)
+    # Literal GATE_HASH authenticates frozen74ad SHA256 bytes above; wrong hashes fail before execution, with no unchecked reread/pyc.
+    exec(compile(raw, str(spec.origin), "exec"), module.__dict__)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
     need(module.ROOT == root, "original ROOT")
     return module
 

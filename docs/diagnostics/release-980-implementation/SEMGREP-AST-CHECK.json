@@ -1,0 +1,28 @@
+{
+  "v": 1,
+  "base_sha": "432e65c520addaab5190782e0f3abf9c3253607d",
+  "helper_before_sha256": "0d7994d3e7d177ff461829c1ed385388491197a5ae5334b68da045e406fb2847",
+  "helper_after_sha256": "94dacb02f8600542694a4209a358c01463db5c71c22f053c78813228f7d8df2b",
+  "ast_equal": true,
+  "semantic_ast_sha256": "29996e262908aac133e0385d98a12f55bd0d7219ddd21d04220a856f225ebeef",
+  "protected_source_and_tests_byte_equal": true,
+  "protected_git_paths": [
+    "tests",
+    "src",
+    "scripts/release970_gate.py",
+    "scripts/release970_observer.py",
+    "scripts/mutate_check.py",
+    "scripts/layout_map.py",
+    ".github",
+    "pyproject.toml"
+  ],
+  "behavioral_tests_reused": {
+    "base_tests": 36,
+    "base_guard_mutants": 11,
+    "new_behavioral_run": false,
+    "basis": "unchanged exact semantic AST and unchanged protected inputs/tests; wrong-GATE-hash pre-execution marker control remains the previously executed result"
+  },
+  "actor_actual_external": 0,
+  "actor_host_recursive_hash": 0,
+  "actor_authorizing_record_created": false
+}
