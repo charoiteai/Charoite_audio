@@ -20,3 +20,6 @@
 
 2026-11-07T18:28:23+00:00 — Bound exact37ccandidate pending976acceptance; canonical file-only planning preserves682ordered keys/module shares. Selected hashes99→99 and incremental suite16→17; test/conftest changes explicit. No actual mutation/variant execution.
 2026-11-07T18:29:16+00:00 — Addressed4 structural/partition tests passed; full plan differs2396 only candidate/tree/range/runkey, selected99/suites17/caps/682identities unchanged. Workflow differs only3runtime refs and explicit PYTEST_ADDOPTS clearing. Exact-head injected C12 still follows.
+
+2026-11-07T18:59:00+00:00 — Bound exact9486candidate pending976acceptance; canonical file-only planning preserves682ordered keys/module shares. Selected hashes99→99 and incremental suite16→17; test/conftest changes explicit. No actual mutation/variant execution.
+2026-11-07T19:00:51+00:00 — Final9486addressed4 binding/structural checks PASS. Core/env-clearing code unchangeda7; onecalibrationhash changes as explicitly authorized, all682IDs/99paths/17files/module shares/caps remain equal. Whole-suite625is separate976reported evidence, not Factscriticalcounts.

@@ -1,9 +1,9 @@
 {
-  "runtime_candidate": "37c282c5aa45dd27b3ca7d38fe39b1141f36efc0",
-  "candidate_tree": "3be810df7b13fb711f5ffd4ebd379d9be6248a65",
+  "runtime_candidate": "94867ecb54593018b0568a18fa9501770cdfb768",
+  "candidate_tree": "41698fc26e94f4431b5a9f1bb89aef15488b378f",
   "candidate_acceptance": "PENDING coordinator976OUTPUT/CI; binding is not release approval",
   "definition_baseline": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
-  "previous_provisional_runtime": "80302199a6997ad2e884c521b4efad70156adc51",
+  "previous_provisional_runtime": "37c282c5aa45dd27b3ca7d38fe39b1141f36efc0",
   "canonical_plan": {
     "count": 682,
     "same_ordered_keys": true,
@@ -44,15 +44,17 @@
       21,
       21
     ],
-    "plan_sha256": "367d8c0d174086ed63a37bab9c806599757b0bef2889eff7921aeec5562eaaa4",
-    "run_key": "c947ee82bcbc6f7d"
+    "plan_sha256": "091c9596f348066b323d22c6888872625c8c9d92f635dd7f8d382958f3bc3717",
+    "run_key": "92029aac8cfad70a"
   },
   "selected_hashes": {
     "old": 99,
     "new": 99,
     "added": [],
     "removed": [],
-    "changed": []
+    "changed": [
+      "tests/test_claim_progress_oracle.py"
+    ]
   },
   "selected_suite_delta": {},
   "critical_production_byte_equality": {
