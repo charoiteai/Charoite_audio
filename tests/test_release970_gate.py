@@ -365,7 +365,8 @@ SHALLOW_POLICY_RUN = textwrap.dedent("""\
       fi
     done
     cd "$clone"
-    python -m pytest tests/test_release970_gate.py tests/test_release970_observer.py tests/test_private_permissions.py -q
+    base="$(python -c 'import tempfile; print(tempfile.mkdtemp(prefix="release970-policy-test-"))')"
+    python -m pytest tests/test_release970_gate.py tests/test_release970_observer.py tests/test_private_permissions.py -q -p no:cacheprovider --basetemp "$base"
 """)
 
 
