@@ -61,6 +61,7 @@
 Канон: `src/charoite_paths.py`. Область правила: `src/`, `scripts/`.
 
 - `scripts/layout_map.py`, форма «file»: сам гейт раскладки: строка вычисляет корень РЕПОЗИТОРИЯ — две ступени вверх от scripts/layout_map.py, из него берутся src/, docs/design/layout.json и карта; sys.path она не трогает. Канон в этот момент недостижим: чтобы импортировать src/charoite_paths.py, надо сперва тем же подъёмом от __file__ положить src/ в sys.path — эта строка и есть такой подъём, сделанный до всякого канона. Цепочка ведёт к корню КОДА (src/, docs/design/layout.json), данных он не касается (№338)
+- `scripts/release970_gate.py`, форма «file»: №970: isolated CI policy locates its reviewed definition checkout and immutable plan, never owner data. Importing the product path canon from the definition would contaminate the separate runtime-candidate import origin; canonical runtime is loaded only from explicit --source and verified independently.
 - `src/deps.py`, форма «file»: рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
@@ -116,7 +117,7 @@
 - `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками; проба help
 - `scripts/migrate_placeholders.py` ← ручной запуск: разовая миграция заглушек руками; проба help
 - `scripts/morning_brief.py` ← scripts/nightly.sh; проба help
-- `scripts/mutate_check.py` ← .github/workflows/ci.yml, scripts/preflight.sh; проба help+refuse
+- `scripts/mutate_check.py` ← .github/workflows/ci.yml, scripts/preflight.sh, scripts/release970_gate.py; проба help+refuse
 - `scripts/nemotron_shadow_check.py` ← ручной запуск: сверка журнала тени Nemotron с финальной разметкой, ручной прогон (№478 B); проба help
 - `scripts/nemotron_shadow_replay.py` ← ручной запуск: прогон записи через тень Nemotron без звонка, ручной прогон (№478 B); проба help+refuse
 - `scripts/night_gate.py` ← scripts/nightly.sh; проба help
@@ -127,6 +128,7 @@
 - `scripts/notarize.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/protocol.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
+- `scripts/release970_gate.py` ← .github/workflows/release-970-critical.yml; проба help
 - `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; проба help
 - `scripts/retrieval_compare.py` ← ручной запуск: сравнение результатов поиска по эталонным вопросам, ручной прогон; проба help
 - `scripts/runtime_profile.py` ← ручной запуск: замер локального потокового транспорта на заданных запросах, ручной прогон; проба help
@@ -194,7 +196,7 @@
 - `scripts/merge_graphs.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/migrate_placeholders.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `scripts/morning_brief.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
-- `scripts/mutate_check.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/ru/tests/README.md, docs/zh/CONTRIBUTING.md, docs/zh/tests/README.md
+- `scripts/mutate_check.py` ← CONTRIBUTING.md, docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md, docs/ru/CONTRIBUTING.md, docs/ru/tests/README.md, docs/zh/CONTRIBUTING.md, docs/zh/tests/README.md
 - `scripts/nemotron_shadow_check.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md
 - `scripts/nemotron_shadow_replay.py` ← docs/DIARIZATION.md, docs/FEATURES.md
 - `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SETUP.md
@@ -204,6 +206,7 @@
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
+- `scripts/release970_gate.py` ← docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md
 - `scripts/rename_meeting.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/retrieval_compare.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/RETRIEVAL_MODEL_EVALUATION.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `scripts/runtime_profile.py` ← docs/FEATURES.md, docs/design/RUNTIME_PROFILE.md

@@ -295,6 +295,9 @@
     },
     "scripts/layout_map.py": {
       "file": "сам гейт раскладки: строка вычисляет корень РЕПОЗИТОРИЯ — две ступени вверх от scripts/layout_map.py, из него берутся src/, docs/design/layout.json и карта; sys.path она не трогает. Канон в этот момент недостижим: чтобы импортировать src/charoite_paths.py, надо сперва тем же подъёмом от __file__ положить src/ в sys.path — эта строка и есть такой подъём, сделанный до всякого канона. Цепочка ведёт к корню КОДА (src/, docs/design/layout.json), данных он не касается (№338)"
+    },
+    "scripts/release970_gate.py": {
+      "file": "№970: isolated CI policy locates its reviewed definition checkout and immutable plan, never owner data. Importing the product path canon from the definition would contaminate the separate runtime-candidate import origin; canonical runtime is loaded only from explicit --source and verified independently."
     }
   },
   "run_contracts": {
@@ -556,6 +559,10 @@
     "src/voice_memos_bridge.py": {
       "mode": "refuse",
       "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
+    },
+    "scripts/release970_gate.py": {
+      "mode": "help",
+      "why": "№970: argparse exits on --help before source loading, platform API or mutation execution; source/output paths are mandatory explicit arguments."
     }
   },
   "schema_module": "src/charoite_graph/graph_schema.py",

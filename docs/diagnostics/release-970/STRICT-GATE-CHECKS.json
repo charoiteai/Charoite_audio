@@ -1,0 +1,79 @@
+{
+  "stage": "OUTPUT; unpushed; real mutants=0; model calls=0; app launches=0",
+  "runtime_candidate": "50b0704fe280360b1d7f828fd601c6216959e55d",
+  "definition_base": "50b0704fe280360b1d7f828fd601c6216959e55d",
+  "approved_INPUT2_manifest": "671c751a4bf094019dd8fb1ac4b312ac20dedaf4b59982ef2eed879ca810b6bd",
+  "local_python": "3.14.7",
+  "synthetic_controls": {
+    "groups": 19,
+    "addressed_total": 78,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 6.765,
+    "command": "python -m pytest tests/test_release970_gate.py tests/test_workflows.py -q --basetemp=<platform-temp>/n970-final-synthetic --junitxml=<local-report>",
+    "gates": "quiet_guard && heavy_run; PASS"
+  },
+  "preflight": {
+    "kind": "actual exact runtime planning only, no mutation execution",
+    "status": "PASS",
+    "keys": 682,
+    "source_hashes": 98,
+    "core_hashes": 8,
+    "selected_dependencies": 90,
+    "plan_sha256": "30656652e03d97617fbd5b825d977e53061acb9e925d769822d5e34219742b99"
+  },
+  "checks": {
+    "layout_check": "PASS after explicit metadata and generated map",
+    "ruff": "PASS",
+    "assertion_guard": "PASS2files",
+    "privacy": "PASS1049files",
+    "critical_zone_maps_unchanged": true,
+    "canonical_engine_and_ordinary_ci_workflow_unchanged": true
+  },
+  "honest_failed_attempts": [
+    {
+      "kind": "nonexistent requested layout-test filename",
+      "tests": 0
+    },
+    {
+      "kind": "first synthetic suite",
+      "passed": 76,
+      "failed": 2,
+      "fix": "canonical emits report text only; narrowly scope immutable-attempt artifact guard"
+    },
+    {
+      "kind": "classification",
+      "fix": "move helper to scripts; add exact CI-only file-root reason and argparse help contract; regenerate map"
+    },
+    {
+      "kind": "wrong manually chosen basetemp",
+      "passed_bodies": 78,
+      "teardown_errors": 78,
+      "fix": "use platform tempfile root; no guard weakening"
+    },
+    {
+      "kind": "bounded layout repeat resource refusal",
+      "exit": 3,
+      "reason": "shared heavy lock did not become available within60s; no bypass"
+    }
+  ],
+  "file_sha256": {
+    "scripts/release970_gate.py": "c887a73b65bce1bac09fc1bbf335c4f444c883479f05c35e6d2189a151838760",
+    ".github/release970_plan.json": "30656652e03d97617fbd5b825d977e53061acb9e925d769822d5e34219742b99",
+    ".github/workflows/release-970-critical.yml": "01dee568f921cfa3eed8b838690db1ecbd3f9f7d1949fe5093bd7ca07b658c61",
+    "tests/test_release970_gate.py": "223aeea5fafc4b94289a7e3c218482e03397b988bbde4a616936aba4c53eb56d",
+    "tests/test_workflows.py": "2a6d83e38e3ac43a66984971d8768b15331cf291061c089fa999dabc56006909",
+    "docs/design/layout.json": "8abde5095f9986207a7c07dc1c453837bb63aeed1c456429ebdd56ec5d14b786",
+    "docs/design/layout.md": "67e17841246c3e8b38cb05ac7cf7c7cddca8f1269e7aaa352a13c8e6d8321f9b"
+  },
+  "receipt_transformation": "Structured result counters only; native temp/owner paths and full local tracebacks are excluded.",
+  "candidate_pr_API_readback": {
+    "head": "50b0704fe280360b1d7f828fd601c6216959e55d",
+    "base": "005832892bfb8b9d8cca9d90ed70537d69242d3a",
+    "checks": 26,
+    "success": 24,
+    "expected_push_skipped": 2,
+    "strict_release_PR_metadata_validator": "PASS; read-only data, no run triggered"
+  }
+}

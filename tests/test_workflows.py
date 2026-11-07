@@ -520,6 +520,14 @@ def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
         "сводка вердикта читает env.VERDICT")
 
 
+def assert_attempt_scoped_release_artifact(opts, job):
+    suffixes = {"plan": "plan", "critical": "shard-${{ matrix.K }}", "aggregate": "final"}
+    assert job in suffixes
+    assert opts.get("overwrite", False) is False
+    assert opts.get("name") == "release970-${{ github.run_id }}-${{ github.run_attempt }}-" + suffixes[job]
+    assert opts.get("if-no-files-found") == "error"
+
+
 def test_every_artifact_upload_overwrites():
     """Перезапуск упавшего job грузит артефакт с тем же именем: без `overwrite: true`
     upload-artifact падает «уже есть», и перезапуск красит прогон сам (№683)."""
@@ -529,6 +537,11 @@ def test_every_artifact_upload_overwrites():
             for s in job.get("steps", []):
                 if str(s.get("uses", "")).startswith("actions/upload-artifact"):
                     found += 1
+                    if wf.name == "release-970-critical.yml":
+                        # This finite proof separates every attempt, so duplicate
+                        # artifacts must fail rather than replace old evidence.
+                        assert_attempt_scoped_release_artifact(s.get("with") or {}, name)
+                        continue
                     assert (s.get("with") or {}).get("overwrite") is True, (
                         f"{wf.name}: job {name}, шаг {s.get('name')!r} — upload-artifact без overwrite: true")
     assert found, "ни одного upload-artifact — сторож смотрит не туда"

@@ -1,0 +1,186 @@
+name: Release 970 critical proof
+# Auxiliary definition SHA differs from the immutable runtime candidate SHA.
+on:
+  push:
+    branches: ["verify/release970-*"]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: release970-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  plan:
+    name: release970 plan+policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: definition checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          path: policy
+          persist-credentials: false
+      - name: runtime checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: 50b0704fe280360b1d7f828fd601c6216959e55d
+          path: runtime
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        timeout-minutes: 3
+        with:
+          python-version: "3.12.16"
+      - name: PortAudio
+        timeout-minutes: 12
+        run: |
+          for try in 1 2 3; do
+            sudo timeout 90 apt-get update -qq || echo "apt metadata retry"
+            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
+            sleep 15
+          done
+          exit 1
+      - name: dependencies
+        timeout-minutes: 6
+        working-directory: runtime
+        run: python -m pip -q install . "pytest==9.1.1" "pytest-timeout==2.4.0" "setuptools==83.0.0"
+      - name: synthetic policy controls
+        timeout-minutes: 6
+        run: python -m pytest policy/tests/test_release970_gate.py -q
+      - name: pinned plan preflight
+        timeout-minutes: 6
+        run: python policy/scripts/release970_gate.py preflight --source "$PWD/runtime" --out "$PWD/plan-evidence"
+      - name: evidence upload
+        if: ${{ always() }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release970-${{ github.run_id }}-${{ github.run_attempt }}-plan
+          path: plan-evidence/*
+          if-no-files-found: error
+          retention-days: 14
+  critical:
+    name: release970 critical ${{ matrix.K }}/16
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        K: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    steps:
+      - name: definition checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          path: policy
+          persist-credentials: false
+      - name: runtime checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: 50b0704fe280360b1d7f828fd601c6216959e55d
+          path: runtime
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        timeout-minutes: 3
+        with:
+          python-version: "3.12.16"
+      - name: PortAudio
+        timeout-minutes: 12
+        run: |
+          for try in 1 2 3; do
+            sudo timeout 90 apt-get update -qq || echo "apt metadata retry"
+            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
+            sleep 15
+          done
+          exit 1
+      - name: dependencies
+        timeout-minutes: 6
+        working-directory: runtime
+        run: python -m pip -q install . "pytest==9.1.1" "pytest-timeout==2.4.0" "setuptools==83.0.0"
+      # 3000s budget + canonical480s overrun < 60min mutation step.
+      # Bounded step sum=93min, plus post-step margin <=100min.
+      - name: exact source preflight
+        timeout-minutes: 6
+        run: python policy/scripts/release970_gate.py preflight --source "$PWD/runtime" --out "$PWD/local-plan"
+      - name: fresh canonical shard
+        timeout-minutes: 60
+        env:
+          K: ${{ matrix.K }}
+        run: python policy/scripts/release970_gate.py run --source "$PWD/runtime" --out "$PWD/shard-evidence" --K "$K"
+      - name: evidence upload
+        if: ${{ always() }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release970-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.K }}
+          path: shard-evidence/*
+          if-no-files-found: error
+          retention-days: 14
+  aggregate:
+    name: release970 aggregate
+    needs: [plan, critical]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: definition checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          path: policy
+          persist-credentials: false
+      - name: runtime checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: 50b0704fe280360b1d7f828fd601c6216959e55d
+          path: runtime
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        timeout-minutes: 3
+        with:
+          python-version: "3.12.16"
+      - name: PortAudio
+        timeout-minutes: 12
+        run: |
+          for try in 1 2 3; do
+            sudo timeout 90 apt-get update -qq || echo "apt metadata retry"
+            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
+            sleep 15
+          done
+          exit 1
+      - name: dependencies
+        timeout-minutes: 6
+        working-directory: runtime
+        run: python -m pip -q install . "pytest==9.1.1" "pytest-timeout==2.4.0" "setuptools==83.0.0"
+      - name: strict journals and live platform provenance
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python policy/scripts/release970_gate.py aggregate --source "$PWD/runtime" --out "$PWD/final-evidence"
+      - name: evidence upload
+        if: ${{ always() }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release970-${{ github.run_id }}-${{ github.run_attempt }}-final
+          path: |
+            final-evidence/strict.json
+            final-evidence/canonical.txt
+          if-no-files-found: error
+          retention-days: 14
