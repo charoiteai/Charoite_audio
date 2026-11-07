@@ -212,7 +212,7 @@
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
-- `scripts/release970_gate.py` ← docs/diagnostics/release-970/STRICT-GATE-FOLLOWUP.md, docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md
+- `scripts/release970_gate.py` ← docs/diagnostics/release-970/STRICT-GATE-FOLLOWUP.md, docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md, docs/diagnostics/release-975/975_three.md, docs/diagnostics/release-975/INPUT-CONTRACT.md
 - `scripts/rename_meeting.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/retrieval_compare.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/RETRIEVAL_MODEL_EVALUATION.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `scripts/runtime_profile.py` ← docs/FEATURES.md, docs/design/RUNTIME_PROFILE.md
