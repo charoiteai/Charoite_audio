@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import types
 
 import pytest
 
@@ -92,19 +91,18 @@ def test_collection_emits_exact_archive_payload_without_duplicate_facts(tmp_path
     assert g.collect(source, P, SHA, CTX, out, 1) == 0
     assert {p.name for p in out.iterdir()} == g.PAYLOAD
     assert not (out / "report.txt.json").exists()
-    assert len(g.validate_payload({p.name:p.read_bytes() for p in out.iterdir()}, P, SHA, CTX, 1, *fake_observation_policy(1))) == 43
+    assert len(g.validate_payload({p.name:p.read_bytes() for p in out.iterdir()}, P, SHA, CTX, 1, *fake_observation_policy(1))) == 22
 
 
-def test_before_old_receipt_has_no_actual_import_proof_after_rejects():
-    old = types.ModuleType("old_release970_validator")
-    old.__file__ = str(ROOT / "scripts/release970_gate.py")
-    raw = subprocess.check_output(["git", "-C", str(ROOT), "show", "79ea7fed419027c65f90f87d4c1d0d331a949544:scripts/release970_gate.py"])
-    exec(compile(raw, "<old-public-validator>", "exec"), old.__dict__)
+def test_actual_import_proof_required_and_foreign_source_rejected():
+    # The historical79ea before/after experiment is preserved in its receipt;
+    # this permanent regression must also work in a one-commit CI checkout.
     files = payload(1); files.pop("imports.json")
     prov = json.loads(files["provenance.json"])
     prov["files"] = {n: g.digest(b) for n, b in files.items() if n != "provenance.json"}
     files["provenance.json"] = encode(prov)
-    assert len(old.validate_payload(files, P, SHA, CTX, 1)) == 43
+    with pytest.raises(g.GateError, match="payload allowlist"):
+        g.validate_payload(files, P, SHA, CTX, 1, *fake_observation_policy(1))
     files = payload(1); observed = json.loads(files["imports.json"])
     observed["records"][-1]["errors"] = ["foreign same-name source"]
     files["imports.json"] = encode(observed)
@@ -118,7 +116,15 @@ def run_native_probe(tmp_path, foreign=False, callback_error=False):
     """A fake canonical script runs two actual one-test pytest subprocesses."""
     work = tmp_path / "work"
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(ROOT), str(work)], check=True)
-    subprocess.run(["git", "-C", str(work), "checkout", "-q", "--detach", P["candidate"]], check=True)
+    fixture_head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+    fixture_tree = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD^{tree}"], text=True).strip()
+    subprocess.run(["git", "-C", str(work), "checkout", "-q", "--detach", fixture_head], check=True)
+    mini = copy.deepcopy(P)
+    mini.update(candidate=fixture_head, candidate_tree=fixture_tree,
+                range=P["baseline"] + ".." + fixture_head)
+    key = "synthetic::V1_to_V2"
+    mini["plan"] = [{"key": key, "K": 1, "path": "src/n970_probe.py"}]
+    mini["suites_by_path"] = {"src/n970_probe.py": ["mini/test_probe.py"]}
     (work / "mini").mkdir()
     original, mutated = b"V = 1\n", b"V = 2\n"
     (work / "src/n970_probe.py").write_bytes(original)
@@ -154,9 +160,8 @@ hashlib.sha256 = saved
     bootstrap.mkdir(); receipts.mkdir()
     observer = (ROOT / "scripts/release970_observer.py").read_bytes()
     (bootstrap / "sitecustomize.py").write_bytes(observer)
-    cmd = g.canonical_command(work, P, 1, tmp_path / "report.txt")
+    cmd = g.canonical_command(work, mini, 1, tmp_path / "report.txt")
     hashes = {p: g.digest((work / p).read_bytes()) for p in ("scripts/mutate_check.py", "src/n970_probe.py")}
-    key = "synthetic::V1_to_V2"
     variants = {key: {"path": "src/n970_probe.py", "sha256": g.digest(mutated)}}
     config = {"directory": str(receipts), "runtime_root": str(work), "policy_pid": os.getpid(), "command": cmd,
               "hashes": hashes, "variants": variants, "context": CTX, "K": 1, "observer_sha256": g.digest(observer)}
@@ -169,9 +174,6 @@ hashlib.sha256 = saved
     assert os.environ.get("PYTHONPATH") == before
     result = {"v": 1, "canonical_pid": proc.pid, "policy_pid": os.getpid(), "observer_sha256": g.digest(observer),
               "records": [json.loads(p.read_text()) for p in receipts.glob("process-*.json")]}
-    mini = copy.deepcopy(P)
-    mini["plan"] = [{"key": key, "K": 1, "path": "src/n970_probe.py"}]
-    mini["suites_by_path"] = {"src/n970_probe.py": ["mini/test_probe.py"]}
     return result, mini, hashes, variants, json.loads((work / "probe-rc.json").read_text())
 
 

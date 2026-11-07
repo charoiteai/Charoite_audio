@@ -1,10 +1,12 @@
 """Finite S01-S19 synthetic policy controls. No real mutants or model calls."""
 import copy
+import collections
 import importlib.util
 import io
 import json
 from pathlib import Path
 import stat
+import textwrap
 import zipfile
 
 import pytest
@@ -42,7 +44,7 @@ def journal(rs):
 
 def facts(k=1):
     n = len(g.expected_keys(P, k))
-    return {"v": 2, "K": k, "N": 16, "M": n, "P": 682, "full": 687, "tested": n,
+    return {"v": 2, "K": k, "N": 32, "M": n, "P": 682, "full": 687, "tested": n,
             "skipped": 0, "unread": 0, "nodes": P["totals"]["nodes"], "lines_in": P["totals"]["lines_in"],
             "broken": "", "broken_rc": 0, "aborted": "", "critical_full": 682,
             "critical_sampled": 682, "critical_M": n, "critical_tested": n, "critical_skipped": 0,
@@ -94,7 +96,7 @@ def payload(k):
              "report.txt": b"synthetic evidence only\n", "environment.json": encode(env),
              "imports.json": encode(imports_evidence(k))}
     files["provenance.json"] = encode({"context": CTX, "candidate": P["candidate"], "tree": P["candidate_tree"],
-        "plan_sha256": SHA, "K": k, "N": 16, "mutator_rc": 0, "hashes": P["hashes"],
+        "plan_sha256": SHA, "K": k, "N": 32, "mutator_rc": 0, "hashes": P["hashes"],
         "files": {name: g.digest(data) for name, data in files.items()}})
     return files
 
@@ -111,12 +113,12 @@ def platform():
     run = {"id": 700, "run_attempt": 1, "head_sha": CTX["definition_sha"], "head_branch": CTX["branch"],
            "path": g.WORKFLOW, "event": "push", "repository": {"full_name": g.REPO, "id": 42},
            "status": "completed", "conclusion": "success"}
-    names = ["release970 plan+policy"] + [f"release970 critical {k}/16" for k in range(1, 17)] + ["release970 aggregate"]
+    names = ["release970 plan+policy"] + [f"release970 critical {k}/32" for k in range(1, 33)] + ["release970 aggregate"]
     jobs = [{"id": i+1, "run_id": 700, "head_sha": CTX["definition_sha"], "name": n,
              "status": "completed", "conclusion": "success"} for i, n in enumerate(names)]
     plan_files = {"plan.json": (ROOT / ".github/release970_plan.json").read_bytes(),
                   "provenance.json": encode(g.plan_provenance(P, SHA, CTX))}
-    blobs = {"plan": archive(plan_files)} | {f"shard-{k}": archive(payload(k)) for k in range(1, 17)}
+    blobs = {"plan": archive(plan_files)} | {f"shard-{k}": archive(payload(k)) for k in range(1, 33)}
     artifacts = []
     for i, (name, blob) in enumerate(blobs.items(), 100):
         artifacts.append({"id": i, "name": f"release970-700-1-{name}", "size_in_bytes": len(blob),
@@ -164,7 +166,7 @@ def test_s01_valid_all_682_and_independent_final_replay(tmp_path, monkeypatch):
 
 
 def test_s02_canonical_green_capped_assert_rejected(tmp_path):
-    for k in range(1, 17):
+    for k in range(1, 33):
         (tmp_path / f"shard-{k}.txt.json").write_bytes(encode(facts(k)))
     # Actual unchanged canonical merge reads Facts only; no mutants execute.
     canonical = g.engine(ROOT)
@@ -180,7 +182,7 @@ def test_s03_outcomes_flags_reasons():
         r = rows(); r[1][field] = value
         assert_rejected(g.validate_journal, journal(r), P, 1)
     r = rows(); r[1].update(capped=False, why="")
-    assert len(g.validate_journal(journal(r), P, 1)) == 43
+    assert len(g.validate_journal(journal(r), P, 1)) == 22
 
 
 def test_s04_missing_duplicate_extra_ids():
@@ -309,7 +311,7 @@ def test_s15_attempt_mix_and_typed_context(monkeypatch, tmp_path):
             artifact["workflow_run"].update(head_sha=other["definition_sha"], head_branch=other["branch"])
         final = copy.deepcopy(artifacts[0]); final.update(id=999, name="release970-700-1-final")
         artifacts.append(final)
-        assert len(g.validate_platform(run, jobs, artifacts, other, True)) == 18
+        assert len(g.validate_platform(run, jobs, artifacts, other, True)) == 34
         monkeypatch.setattr(g, "api", lambda *a, **k: pytest.fail("unapproved cohort must fail before API"))
         assert_rejected(g.aggregate, ROOT, P, SHA, other, tmp_path / field, True, trust())
     for field, value in [("expected_definition_sha", None), ("expected_branch", None),
@@ -345,12 +347,34 @@ def test_s17_self_pass_is_insufficient():
     assert not g.same_typed({"external": 0}, {"external": False})
 
 
+SHALLOW_POLICY_RUN = textwrap.dedent("""\
+    set -euo pipefail
+    unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+    clone="$RUNNER_TEMP/release970-shallow-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+    test ! -e "$clone"
+    git clone --quiet --no-local --no-hardlinks --depth 1 --single-branch --no-tags "file://$PWD/policy" "$clone"
+    test "$(git -C "$clone" rev-parse HEAD)" = "$DEFINITION_SHA"
+    test "$(git -C "$clone" rev-parse HEAD^{tree})" = "$(git -C policy rev-parse HEAD^{tree})"
+    test "$(git -C "$clone" rev-parse --is-shallow-repository)" = true
+    test "$(git -C "$clone" rev-list --count HEAD)" = 1
+    test ! -e "$clone/.git/objects/info/alternates"
+    for old in 79ea7fed419027c65f90f87d4c1d0d331a949544 50b0704fe280360b1d7f828fd601c6216959e55d; do
+      if git -C "$clone" cat-file -e "$old^{commit}" 2>/dev/null; then
+        echo "unexpected historical object in shallow policy checkout" >&2
+        exit 1
+      fi
+    done
+    cd "$clone"
+    python -m pytest tests/test_release970_gate.py tests/test_release970_observer.py tests/test_private_permissions.py -q
+""")
+
+
 def workflow_guard(w):
     assert set(w["jobs"]) == {"plan", "critical", "aggregate"}
     assert w["permissions"] == {"contents": "read", "actions": "read"}
     assert w[True] == {"push": {"branches": ["verify/release970-*"]}}
     assert w["concurrency"]["cancel-in-progress"] is False
-    assert w["jobs"]["critical"]["strategy"] == {"fail-fast": False, "matrix": {"K": list(range(1, 17))}}
+    assert w["jobs"]["critical"]["strategy"] == {"fail-fast": False, "max-parallel": 16, "matrix": {"K": list(range(1, 33))}}
     assert w["jobs"]["aggregate"]["if"] == "${{ always() }}"
     allowed = {"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
                "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
@@ -368,7 +392,10 @@ def workflow_guard(w):
         assert "overwrite" not in upload["with"]
         assert upload["with"]["name"].startswith("release970-${{ github.run_id }}-${{ github.run_attempt }}-")
         if role == "plan":
-            assert steps["synthetic policy controls"]["run"] == "python -m pytest policy/tests/test_release970_gate.py policy/tests/test_release970_observer.py -q"
+            shallow = steps["shallow policy controls"]
+            assert shallow["timeout-minutes"] == 8
+            assert shallow["env"] == {"DEFINITION_SHA": "${{ github.sha }}"}
+            assert shallow["run"] == SHALLOW_POLICY_RUN
         if role == "critical":
             mutation = steps["fresh canonical shard"]
             assert mutation["timeout-minutes"] == 60
@@ -379,11 +406,16 @@ def workflow_guard(w):
 def test_s18_workflow_bounds_pins_and_directed_weakening():
     assert g.canonical_command(Path("runtime"), P, 3, Path("out/report.txt")) == [
         g.sys.executable, "runtime/scripts/mutate_check.py", "--range", P["range"], "--only-critical",
-        "--max", "60", "--timeout", "120", "--budget-s", "3000", "--shard", "3/16", "--report", "out/report.txt"]
+        "--max", "60", "--timeout", "120", "--budget-s", "3000", "--shard", "3/32", "--report", "out/report.txt"]
     w = yaml.safe_load((ROOT / g.WORKFLOW).read_text())
     workflow_guard(w)
     for mutate in [lambda x: x["permissions"].update(contents="write"),
         lambda x: x["jobs"]["critical"]["strategy"]["matrix"]["K"].pop(),
+        lambda x: x["jobs"]["critical"]["strategy"].update(**{"max-parallel": 32}),
+        lambda x: x["jobs"]["plan"]["steps"][5].update(**{"timeout-minutes": 9}),
+        lambda x: x["jobs"]["plan"]["steps"][5]["env"].update(DEFINITION_SHA="main"),
+        lambda x: x["jobs"]["plan"]["steps"][5].update(run=SHALLOW_POLICY_RUN.replace("--no-local", "--shared")),
+        lambda x: x["jobs"]["plan"]["steps"][5].update(run=SHALLOW_POLICY_RUN.replace("cat-file -e", "rev-parse")),
         lambda x: x["jobs"]["critical"].update(**{"timeout-minutes": 92}),
         lambda x: x["jobs"]["critical"]["steps"][1]["with"].update(ref="main"),
         lambda x: x["jobs"]["critical"]["steps"][-1]["with"].update(overwrite=True),
@@ -440,3 +472,59 @@ def test_s19_normal_candidate_ci_is_independently_required():
         assert_rejected(g.validate_release_pr, bad, P)
     bad = copy.deepcopy(pr); bad["statusCheckRollup"] = []
     assert_rejected(g.validate_release_pr, bad, P)
+
+
+def test_d01_fixed32_partition_manifest_and_module_shares():
+    assert type(g.SHARDS) is int and g.SHARDS == 32 and P["shards"] == 32
+    assert [len(g.expected_keys(P, k)) for k in range(1, 33)] == [22]*10 + [21]*22
+    assert collections.Counter(r["path"] for r in P["plan"]) == {
+        "scripts/forget_meeting.py": 23, "scripts/nightly_dossier.py": 108,
+        "scripts/nightly_dossier_review.py": 7, "src/charoite_graph/dossier.py": 215,
+        "src/charoite_graph/frontmatter.py": 32, "src/dossier_incremental.py": 221,
+        "src/dossier_telemetry.py": 33, "src/llm.py": 43}
+    expected = []
+    for k in range(1, 33):
+        part = [r for r in P["plan"] if r["K"] == k]
+        expected.append({"K": k, "N": 32, "M": len(part),
+                         "keys_sha256": g.digest("\n".join(r["key"] for r in part).encode()),
+                         "by_path": dict(collections.Counter(r["path"] for r in part))})
+    assert P["shard_manifest"] == expected
+    assert P["plan"][557]["K"] == 14
+    assert P["plan"][557]["key"].endswith("b9a810e9dcc6a998#1")
+    for k in (0, 33, True, "32"):
+        assert_rejected(g.expected_keys, P, k)
+
+
+def test_d02_old16_plan_facts_and_observed_command_refused(tmp_path, monkeypatch):
+    plan = tmp_path / ".github/release970_plan.json"
+    plan.parent.mkdir()
+    for change in (lambda p: p.update(shards=16),
+                   lambda p: p["plan"][0].update(N=16),
+                   lambda p: p["plan"][32].update(K=1, N=16)):
+        bad = copy.deepcopy(P); change(bad); plan.write_bytes(encode(bad))
+        with monkeypatch.context() as scope:
+            scope.setattr(g, "ROOT", tmp_path)
+            assert_rejected(g.load_plan)
+    old_facts = facts(1)
+    old_facts.update(N=16, M=43, tested=43, critical_M=43, critical_tested=43)
+    assert_rejected(g.validate_facts, encode(old_facts), P, 1)
+    old_rows = rows(1)[:1] + [{"key": r["key"], "outcome": "killed", "s": 1.0}
+                               for r in P["plan"] if r["index"] % 16 == 0]
+    assert_rejected(g.validate_journal, journal(old_rows), P, 1)
+    observed = imports_evidence(1)
+    observed["records"][0]["argv"][-3] = "1/16"
+    assert_rejected(g.validate_imports, encode(observed), P, CTX, 1, *fake_observation_policy(1))
+
+
+def test_d03_old18_role_cohort_is_not_a_34_role_result():
+    run, jobs, artifacts, _ = platform()
+    assert len(jobs) == 34 and len(artifacts) == 33  # final upload follows internal aggregate.
+    old_jobs = copy.deepcopy(jobs[:17] + jobs[-1:])
+    for job in old_jobs:
+        job["name"] = job["name"].replace("/32", "/16")
+    assert_rejected(g.validate_platform, run, old_jobs, artifacts, CTX)
+    old_artifacts = copy.deepcopy(artifacts[:17])
+    final = copy.deepcopy(artifacts[0]); final.update(id=999, name="release970-700-1-final")
+    old_artifacts.append(final)
+    assert len(old_artifacts) == 18
+    assert_rejected(g.validate_platform, run, jobs, old_artifacts, CTX, True)

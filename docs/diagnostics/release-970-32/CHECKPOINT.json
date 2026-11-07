@@ -1,0 +1,56 @@
+{
+  "stage": "recoverable development checkpoint; final runtime/candidate acceptance pending",
+  "base_definition": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+  "provisional_candidate": "50b0704fe280360b1d7f828fd601c6216959e55d",
+  "975_two_file_patch_source": "7f3f072f700a602305fea7ddd70332c5b19a082d",
+  "975_patch_sha256": "8cf00e5098d6d87fdf13e264e7ed30560927d10e52e9ed20d149e0aa9cae098a",
+  "source_hashes": {
+    "scripts/release970_gate.py": "efbb97708d07e1a0654155516711f7c303154c6a22a1976d8fef196b81bcc4bf",
+    "tests/test_release970_gate.py": "a975ccc8abf1bcbe979862beee92593383c2c49fd77659a5a40db6683c74fa25",
+    "tests/test_release970_observer.py": "ec0a2c54ec34f2a28817bb3eed7eabc8cc807cc3ba3202e504e0493317b1078f",
+    "tests/test_private_permissions.py": "d990334e834c38eaca59af834ad8ddba754b299f9c64b33935f93dd8958e0f3e",
+    ".github/workflows/release-970-critical.yml": "c1907610a4d593c6729d86dd5c2ce4232b17c5b970926f0e3e67c5926b3fe904",
+    ".github/release970_plan.json": "57a40ba4e302180b81a1469f98fdf191955b16e1d624ae4356a3bb5721e1779d"
+  },
+  "first_target": {
+    "files": [
+      "tests/test_release970_gate.py",
+      "tests/test_release970_observer.py",
+      "tests/test_private_permissions.py"
+    ],
+    "passed": 59,
+    "failed": 1,
+    "seconds": 9.14,
+    "exit_code": 1,
+    "cause": "D01 detected planning-only manifest shape; canonical M/keys_sha256/by_path normalized afterwards",
+    "raw_log_sha256": "111894c6870d733e8bcb10004d22e8c5733fbb045c6a494aa242518378496c20"
+  },
+  "directed_D01_after": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 0.08,
+    "warnings": 8,
+    "scope": "Single check only; default pytest temp triggered unrelated shared-garbage cleanup warnings; final checks require own native basetemp"
+  },
+  "four_file_final_attempt": {
+    "executed": false,
+    "exit_code": 3,
+    "cause": "fresh quiet0, shared heavylock remained held for30s; no tests executed"
+  },
+  "static_AST": {
+    "files": [
+      "scripts/release970_gate.py",
+      "tests/test_release970_gate.py",
+      "tests/test_release970_observer.py",
+      "tests/test_private_permissions.py"
+    ],
+    "passed": true
+  },
+  "actual_mutations": 0,
+  "new_variant_preparations": 0,
+  "actual_workflow_runs": 0,
+  "new_release_or_install": 0,
+  "C12_final": "NOT RUN; requires committed final definition and accepted runtime plan",
+  "CI": "NOT RUN for this development snapshot",
+  "OUTPUT": "NOT READY; final candidate976 and remaining checks pending"
+}

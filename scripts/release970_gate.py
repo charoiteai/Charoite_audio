@@ -23,6 +23,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ".github/workflows/release-970-critical.yml"
 REPO = "charoiteai/Charoite_audio"
 RELEASE_BASE = "005832892bfb8b9d8cca9d90ed70537d69242d3a"
+SHARDS = 32
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 PAYLOAD = {"facts.json", "journal.jsonl", "report.txt", "environment.json", "provenance.json", "imports.json"}
@@ -119,14 +120,14 @@ def git(root, *args):
 def load_plan():
     raw = (ROOT / ".github/release970_plan.json").read_bytes()
     p = strict_json(raw)
-    require(type(p) is dict and p["shards"] == 16 and integer(p["shards"]), "plan N")
+    require(type(p) is dict and p["shards"] == SHARDS and integer(p["shards"]), "plan N")
     require(len(p["plan"]) == 682 and p["totals"]["critical_full"] == 682, "plan count")
     require(HEX40.fullmatch(p["candidate"]) and HEX40.fullmatch(p["baseline"]), "plan SHAs")
     keys = [x["key"] for x in p["plan"]]
     require(len(set(keys)) == 682, "plan unique keys")
     for i, row in enumerate(p["plan"]):
         require(integer(row["index"]) and row["index"] == i, "plan index")
-        require(integer(row["K"]) and row["K"] == i % 16 + 1 and integer(row["N"]) and row["N"] == 16, "plan modulo")
+        require(integer(row["K"]) and row["K"] == i % SHARDS + 1 and integer(row["N"]) and row["N"] == SHARDS, "plan modulo")
         require(row["critical"] is True and type(row["key"]) is str, "plan critical key")
     require(digest("\n".join(keys).encode()) == p["ordered_keys_sha256"], "plan ordered digest")
     return p, digest(raw)
@@ -182,7 +183,7 @@ def environment():
 
 
 def expected_keys(p, k):
-    require(integer(k) and 1 <= k <= 16, "K type/range")
+    require(integer(k) and 1 <= k <= SHARDS, "K type/range")
     return [r["key"] for r in p["plan"] if r["K"] == k]
 
 
@@ -217,7 +218,7 @@ def validate_facts(raw, p, k):
     require(all(integer(f[x]) for x in INT_FACTS | {"v"}), "Facts integer types")
     require(all(type(f[x]) is str for x in STR_FACTS) and type(f["survivors"]) is list, "Facts scalar types")
     n = len(expected_keys(p, k))
-    expected = {"v": 2, "K": k, "N": 16, "M": n, "P": 682, "full": p["totals"]["full"],
+    expected = {"v": 2, "K": k, "N": SHARDS, "M": n, "P": 682, "full": p["totals"]["full"],
                 "tested": n, "skipped": 0, "unread": 0, "nodes": p["totals"]["nodes"],
                 "lines_in": p["totals"]["lines_in"], "broken": "", "broken_rc": 0, "aborted": "",
                 "critical_full": 682, "critical_sampled": 682, "critical_M": n, "critical_tested": n,
@@ -347,7 +348,7 @@ def validate_payload(files, p, plan_sha, ctx, k, hashes=None, variants=None):
     prov = strict_json(files["provenance.json"])
     require(type(prov) is dict and set(prov) == {"context", "candidate", "tree", "plan_sha256", "K", "N", "mutator_rc", "hashes", "files"}, "provenance schema")
     require(validate_context(prov["context"]) == ctx, "payload run/attempt/definition")
-    require(integer(prov["K"]) and prov["K"] == k and integer(prov["N"]) and prov["N"] == 16, "payload K/N")
+    require(integer(prov["K"]) and prov["K"] == k and integer(prov["N"]) and prov["N"] == SHARDS, "payload K/N")
     require(integer(prov["mutator_rc"]) and prov["mutator_rc"] == 0, "mutator exit")
     require(prov["candidate"] == p["candidate"] and prov["tree"] == p["candidate_tree"], "payload checkout/tree")
     require(prov["plan_sha256"] == plan_sha and prov["hashes"] == p["hashes"], "payload source/config hashes")
@@ -386,7 +387,7 @@ def validate_platform(run, jobs, artifacts, ctx, external=False):
             and run["repository"]["id"] > 0, "API repo")
     if external:
         require(run.get("status") == "completed" and run.get("conclusion") == "success", "final run conclusion")
-    required = {"release970 plan+policy"} | {f"release970 critical {k}/16" for k in range(1, 17)}
+    required = {"release970 plan+policy"} | {f"release970 critical {k}/{SHARDS}" for k in range(1, SHARDS + 1)}
     names = [j.get("name") for j in jobs]
     require(len(names) == len(set(names)) and set(names) == required | {"release970 aggregate"}, "API exact job roles")
     require(len({j.get("id") for j in jobs}) == len(jobs), "API duplicate job IDs")
@@ -396,7 +397,7 @@ def validate_platform(run, jobs, artifacts, ctx, external=False):
         if job["name"] in required or external:
             require(job.get("status") == "completed" and job.get("conclusion") == "success", "API job conclusion")
     prefix = f"release970-{ctx['run_id']}-{ctx['attempt']}-"
-    expected = {prefix + "plan"} | {prefix + f"shard-{k}" for k in range(1, 17)}
+    expected = {prefix + "plan"} | {prefix + f"shard-{k}" for k in range(1, SHARDS + 1)}
     if external:
         expected.add(prefix + "final")
     cohort = [a for a in artifacts if type(a.get("name")) is str and a["name"].startswith(prefix)]
@@ -458,7 +459,7 @@ def canonical_command(source, p, k, report):
     expected_keys(p, k)
     return [sys.executable, str(source / "scripts/mutate_check.py"), "--range", p["range"],
             "--only-critical", "--max", "60", "--timeout", "120", "--budget-s", "3000",
-            "--shard", f"{k}/16", "--report", str(report)]
+            "--shard", f"{k}/{SHARDS}", "--report", str(report)]
 
 
 def collect(source, p, plan_sha, ctx, out, k):
@@ -499,7 +500,7 @@ def collect(source, p, plan_sha, ctx, out, k):
     report.with_name(report.name + ".json").replace(out / "facts.json")
     (out / "environment.json").write_text(json.dumps(environment()) + "\n")
     prov = {"context": ctx, "candidate": p["candidate"], "tree": p["candidate_tree"], "plan_sha256": plan_sha,
-            "K": k, "N": 16, "mutator_rc": rc, "hashes": p["hashes"],
+            "K": k, "N": SHARDS, "mutator_rc": rc, "hashes": p["hashes"],
             "files": {f.name: digest(f.read_bytes()) for f in out.iterdir()}}
     (out / "provenance.json").write_text(json.dumps(prov) + "\n")
     validate_imports((out / "imports.json").read_bytes(), p, ctx, k, hashes, variants)
@@ -531,7 +532,7 @@ def aggregate(source, p, plan_sha, ctx, out, external=False, trust=None):
     prefix = f"release970-{ctx['run_id']}-{ctx['attempt']}-"
     validate_plan_payload(download(cohort[prefix + "plan"], PLAN_PAYLOAD), p, plan_sha, ctx)
     artifact_facts = []
-    for k in range(1, 17):
+    for k in range(1, SHARDS + 1):
         a = cohort[prefix + f"shard-{k}"]
         files = download(a, PAYLOAD)
         hashes, variants = observation_policy(source, p, k)

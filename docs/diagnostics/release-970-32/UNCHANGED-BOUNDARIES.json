@@ -1,0 +1,16 @@
+{
+  "baseline": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+  "files": {
+    "scripts/release970_observer.py": "acc0bed68466481dfcb5aa695dd0805d292b182c513cbe784a1a9e227f19f14b",
+    "scripts/mutate_check.py": "fab0c075446eaf370e80172633ffc11d9dfd807411ff394e6afbe1f7a0891598",
+    "scripts/layout_map.py": "307a90f2ab6fd7f30dabc41f7a55260e83c496f2477474cd658db52938d903ba",
+    "src/exit_codes.py": "b7171ebaa1ad6d26ebc569a36b44a8c29b69db82f800591cb0db4699403a0c00",
+    "src/live_gate.py": "ae034650b67efa107e4908e3589c0682ab829161c3d2b6de49ea7d86a86e452c",
+    "src/machine_power.py": "10da6a2be86e4893cad4c35d2df52730456b5dc9e6d642d17e9fe77727992ab7",
+    "src/busy_signals.py": "f2504fe17a27501bc2940adb4121e552de794332b39b9557f90c101c0b9d14df",
+    "src/charoite_paths.py": "d8758d017e4e024de617824682265549804bd79e6bab9587718eada43b881ec5",
+    "src/file_locks.py": "228f693e0a2c15f308b377d867ac2fb95754c3130702247bd04bea202b439fed",
+    ".github/workflows/ci.yml": "6f045e5a973a8a69405da3d21fc473a6245954dd6693ceabe8d9481f5105f413"
+  },
+  "meaning": "Byte identity only; no claim of new execution or final runtime acceptance"
+}

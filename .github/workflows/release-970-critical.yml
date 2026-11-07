@@ -52,9 +52,29 @@ jobs:
         timeout-minutes: 6
         working-directory: runtime
         run: python -m pip -q install . "pytest==9.1.1" "pytest-timeout==2.4.0" "setuptools==83.0.0"
-      - name: synthetic policy controls
-        timeout-minutes: 6
-        run: python -m pytest policy/tests/test_release970_gate.py policy/tests/test_release970_observer.py -q
+      - name: shallow policy controls
+        timeout-minutes: 8
+        env:
+          DEFINITION_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+          clone="$RUNNER_TEMP/release970-shallow-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$clone"
+          git clone --quiet --no-local --no-hardlinks --depth 1 --single-branch --no-tags "file://$PWD/policy" "$clone"
+          test "$(git -C "$clone" rev-parse HEAD)" = "$DEFINITION_SHA"
+          test "$(git -C "$clone" rev-parse HEAD^{tree})" = "$(git -C policy rev-parse HEAD^{tree})"
+          test "$(git -C "$clone" rev-parse --is-shallow-repository)" = true
+          test "$(git -C "$clone" rev-list --count HEAD)" = 1
+          test ! -e "$clone/.git/objects/info/alternates"
+          for old in 79ea7fed419027c65f90f87d4c1d0d331a949544 50b0704fe280360b1d7f828fd601c6216959e55d; do
+            if git -C "$clone" cat-file -e "$old^{commit}" 2>/dev/null; then
+              echo "unexpected historical object in shallow policy checkout" >&2
+              exit 1
+            fi
+          done
+          cd "$clone"
+          python -m pytest tests/test_release970_gate.py tests/test_release970_observer.py tests/test_private_permissions.py -q
       - name: pinned plan preflight
         timeout-minutes: 6
         run: python policy/scripts/release970_gate.py preflight --source "$PWD/runtime" --out "$PWD/plan-evidence"
@@ -68,14 +88,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   critical:
-    name: release970 critical ${{ matrix.K }}/16
+    name: release970 critical ${{ matrix.K }}/32
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     strategy:
       fail-fast: false
+      max-parallel: 16
       matrix:
-        K: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        K: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
     steps:
       - name: definition checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
