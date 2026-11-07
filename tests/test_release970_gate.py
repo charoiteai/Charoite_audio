@@ -349,6 +349,7 @@ def test_s17_self_pass_is_insufficient():
 
 SHALLOW_POLICY_RUN = textwrap.dedent("""\
     set -euo pipefail
+    unset PYTEST_ADDOPTS
     unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
     clone="$RUNNER_TEMP/release970-shallow-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
     test ! -e "$clone"
@@ -397,6 +398,7 @@ def workflow_guard(w):
             assert shallow["timeout-minutes"] == 8
             assert shallow["env"] == {"DEFINITION_SHA": "${{ github.sha }}"}
             assert shallow["run"] == SHALLOW_POLICY_RUN
+            assert "unset PYTEST_ADDOPTS\n" in shallow["run"]
         if role == "critical":
             mutation = steps["fresh canonical shard"]
             assert mutation["timeout-minutes"] == 60
@@ -416,6 +418,7 @@ def test_s18_workflow_bounds_pins_and_directed_weakening():
         lambda x: x["jobs"]["plan"]["steps"][5].update(**{"timeout-minutes": 9}),
         lambda x: x["jobs"]["plan"]["steps"][5]["env"].update(DEFINITION_SHA="main"),
         lambda x: x["jobs"]["plan"]["steps"][5].update(run=SHALLOW_POLICY_RUN.replace("--no-local", "--shared")),
+        lambda x: x["jobs"]["plan"]["steps"][5].update(run=SHALLOW_POLICY_RUN.replace("unset PYTEST_ADDOPTS\n", "")),
         lambda x: x["jobs"]["plan"]["steps"][5].update(run=SHALLOW_POLICY_RUN.replace("cat-file -e", "rev-parse")),
         lambda x: x["jobs"]["critical"].update(**{"timeout-minutes": 92}),
         lambda x: x["jobs"]["critical"]["steps"][1]["with"].update(ref="main"),

@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         timeout-minutes: 2
         with:
-          ref: 80302199a6997ad2e884c521b4efad70156adc51
+          ref: 37c282c5aa45dd27b3ca7d38fe39b1141f36efc0
           path: runtime
           fetch-depth: 0
           persist-credentials: false
@@ -58,6 +58,7 @@ jobs:
           DEFINITION_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          unset PYTEST_ADDOPTS
           unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
           clone="$RUNNER_TEMP/release970-shallow-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$clone"
@@ -111,7 +112,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         timeout-minutes: 2
         with:
-          ref: 80302199a6997ad2e884c521b4efad70156adc51
+          ref: 37c282c5aa45dd27b3ca7d38fe39b1141f36efc0
           path: runtime
           fetch-depth: 0
           persist-credentials: false
@@ -171,7 +172,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         timeout-minutes: 2
         with:
-          ref: 80302199a6997ad2e884c521b4efad70156adc51
+          ref: 37c282c5aa45dd27b3ca7d38fe39b1141f36efc0
           path: runtime
           fetch-depth: 0
           persist-credentials: false

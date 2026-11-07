@@ -1,13 +1,13 @@
 {
   "baseline": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81",
-  "candidate": "80302199a6997ad2e884c521b4efad70156adc51",
-  "candidate_tree": "57a1cc361f84a6659d4e4fad717cecd3da535c70",
-  "range": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81..80302199a6997ad2e884c521b4efad70156adc51",
+  "candidate": "37c282c5aa45dd27b3ca7d38fe39b1141f36efc0",
+  "candidate_tree": "3be810df7b13fb711f5ffd4ebd379d9be6248a65",
+  "range": "bcfdbad0a1497a973b5d4fb65def8eb9e3df3c81..37c282c5aa45dd27b3ca7d38fe39b1141f36efc0",
   "max": 60,
   "timeout": 120,
   "budget_s": 3000,
   "shards": 32,
-  "canonical_run_key": "1f6244c83a833bed",
+  "canonical_run_key": "c947ee82bcbc6f7d",
   "caps": [
     960,
     480,

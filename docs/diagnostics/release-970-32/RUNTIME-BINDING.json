@@ -1,9 +1,9 @@
 {
-  "runtime_candidate": "80302199a6997ad2e884c521b4efad70156adc51",
-  "candidate_tree": "57a1cc361f84a6659d4e4fad717cecd3da535c70",
+  "runtime_candidate": "37c282c5aa45dd27b3ca7d38fe39b1141f36efc0",
+  "candidate_tree": "3be810df7b13fb711f5ffd4ebd379d9be6248a65",
   "candidate_acceptance": "PENDING coordinator976OUTPUT/CI; binding is not release approval",
   "definition_baseline": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
-  "previous_provisional_runtime": "376e594212c04160aa4921cf793e77e4354a7ef1",
+  "previous_provisional_runtime": "80302199a6997ad2e884c521b4efad70156adc51",
   "canonical_plan": {
     "count": 682,
     "same_ordered_keys": true,
@@ -44,8 +44,8 @@
       21,
       21
     ],
-    "plan_sha256": "7f4eca2835a36025c120ac4a3252cb8c1f88ff148a8318f98d676454b357aaab",
-    "run_key": "1f6244c83a833bed"
+    "plan_sha256": "367d8c0d174086ed63a37bab9c806599757b0bef2889eff7921aeec5562eaaa4",
+    "run_key": "c947ee82bcbc6f7d"
   },
   "selected_hashes": {
     "old": 99,

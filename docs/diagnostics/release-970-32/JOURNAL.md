@@ -15,3 +15,8 @@
 2026-11-07T18:06:07+00:00 — Bound exact8030candidate pending976acceptance; canonical file-only planning preserves682ordered keys/module shares. Selected hashes99→99 and incremental suite16→17; test/conftest changes explicit. No actual mutation/variant execution.
 
 2026-11-07T18:07:39+00:00 — Current8030binding plus C12CLIbasetempfix:119passed16.63s,9sourcehashes stable. Selected99/suites17 unchanged376, canonical682keys unchanged. Exact-head C12/publicCI/OUTPUT remain next, no verifybranch/fullmutants.
+
+2026-11-07T18:28:07+00:00 — Accepted bounded change before code: C12 explicitly clears PYTEST_ADDOPTS, structural removal must fail, and an injected harmless -k selector must not suppress any policy tests. Rebind only final37c metadata/refs with canonical derivation; helper/observer/canonical/ordinaryCI semantics unchanged.
+
+2026-11-07T18:28:23+00:00 — Bound exact37ccandidate pending976acceptance; canonical file-only planning preserves682ordered keys/module shares. Selected hashes99→99 and incremental suite16→17; test/conftest changes explicit. No actual mutation/variant execution.
+2026-11-07T18:29:16+00:00 — Addressed4 structural/partition tests passed; full plan differs2396 only candidate/tree/range/runkey, selected99/suites17/caps/682identities unchanged. Workflow differs only3runtime refs and explicit PYTEST_ADDOPTS clearing. Exact-head injected C12 still follows.
