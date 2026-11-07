@@ -1,0 +1,30 @@
+{"manifest": 2, "range": "2106ed52c9b3f70f5d0c8b6363e9e3171ae767be..a8bd701da249446752816b39ef3c7ea6598da7f2", "max": null, "timeout": 120, "sample": "21a147d68e21cbcf05d78461151cde7274d1c98789d2df6fab7ca214707efc36", "caps": [960, 480, 480, 480, 2400]}
+{"key": "src/process_lock_exec.py::locked_exec::return X → return None::a9d4e6cc31cf8ce8#0", "outcome": "killed", "s": 2.8}
+{"key": "src/process_lock_exec.py::locked_exec::not X → X::92506384df97f4f9#0", "outcome": "killed", "s": 21.7}
+{"key": "src/process_lock_exec.py::locked_exec::73 → 0::45bc5a4f0b6a0f3a#0", "outcome": "killed", "s": 2.7}
+{"key": "src/process_lock_exec.py::locked_exec::not X → X::52b1a2c02b600106#0", "outcome": "killed", "s": 21.6}
+{"key": "src/process_lock_exec.py::locked_exec::return X → return None::29df0f3703df4910#1", "outcome": "killed", "s": 2.5}
+{"key": "src/process_lock_exec.py::locked_exec::return X → return None::d849e96443ef8868#0", "outcome": "killed", "s": 7.1}
+{"key": "src/process_lock_exec.py::locked_exec::False → True::b2360c734f08a173#0", "outcome": "killed", "s": 2.5}
+{"key": "src/process_lock_exec.py::locked_exec::True → False::2202827bf79899cf#1", "outcome": "killed", "s": 7.4}
+{"key": "src/process_lock_exec.py::locked_exec::73 → 0::45bc5a4f0b6a0f3a#4", "outcome": "killed", "s": 2.7}
+{"key": "src/retry_wrapper_stage.py::digest::return X → return None::423bb6248b336dc8#0", "outcome": "killed", "s": 1.3}
+{"key": "src/retry_wrapper_stage.py::transform::NotEq → Eq::1ee4fa2dcce1b4b9#0", "outcome": "killed", "s": 1.3}
+{"key": "src/retry_wrapper_stage.py::transform::not X → X::d300fcb7907bf58b#0", "outcome": "killed", "s": 1.4}
+{"key": "src/retry_wrapper_stage.py::transform::NotEq → Eq::8faabb2c5430cb37#0", "outcome": "killed", "s": 1.4}
+{"key": "src/retry_wrapper_stage.py::transform::not X → X::0fc36138bc0a976f#0", "outcome": "killed", "s": 1.3}
+{"key": "src/retry_wrapper_stage.py::transform::not X → X::73e7eac17f3da349#0", "outcome": "killed", "s": 1.3}
+{"key": "src/retry_wrapper_stage.py::transform::NotEq → Eq::1dedbeea73c25674#0", "outcome": "killed", "s": 1.4}
+{"key": "src/retry_wrapper_stage.py::transform::LtE → Lt::e0f7f74617605b4c#0", "outcome": "killed", "s": 3.3}
+{"key": "src/retry_wrapper_stage.py::transform::197 → 0::5db6738fad12f38b#1", "outcome": "killed", "s": 3.4}
+{"key": "src/retry_wrapper_stage.py::transform::Eq → NotEq::296c6bd3c662f4f1#0", "outcome": "killed", "s": 10.6}
+{"key": "src/retry_wrapper_stage.py::transform::return X → return None::3668b6a78efa1d55#0", "outcome": "killed", "s": 1.5}
+{"key": "src/retry_wrapper_stage.py::outside_git::Div → Mult::d938d59be79a08ea#0", "outcome": "killed", "s": 6.0}
+{"key": "src/retry_wrapper_stage.py::outside_git::Div → Mult::6a36bf10a96d4ba6#0", "outcome": "killed", "s": 5.9}
+{"key": "src/retry_wrapper_stage.py::stage::True → False::2202827bf79899cf#0", "outcome": "killed", "s": 5.9}
+{"key": "src/retry_wrapper_stage.py::stage::not X → X::95f7f94d3738fc91#0", "outcome": "killed", "s": 5.9}
+{"key": "src/retry_wrapper_stage.py::stage::Div → Mult::437dce9c996e4007#0", "outcome": "killed", "s": 5.8}
+{"key": "src/retry_wrapper_stage.py::stage::Div → Mult::39c8a8390e09cb47#0", "outcome": "killed", "s": 5.8}
+{"key": "src/retry_wrapper_stage.py::stage::Add → Sub::d713bec7aa707783#0", "outcome": "killed", "s": 5.8}
+{"key": "src/retry_wrapper_stage.py::stage::Div → Mult::89f97a2ca5742155#0", "outcome": "killed", "s": 5.8}
+{"key": "src/retry_wrapper_stage.py::stage::Eq → NotEq::3c15e87d3d7cb336#0", "outcome": "killed", "s": 5.9}

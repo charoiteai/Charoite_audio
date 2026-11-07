@@ -1,0 +1,68 @@
+{
+  "original_source": "fdbf9166a7224e5fa36772fcf32fd1dfd51e45a4",
+  "candidate_head": "ebceb986944ae7706def43894dc1426242b2fb32",
+  "python": "3.12.13",
+  "platform": "darwin",
+  "test_sha256": {
+    "tests/test_process_lock.py": "ca4d777fe5e4e72b5601639b0f683e737c9ce2d2f8e6b65371d1fbdef12a38c5",
+    "tests/test_stage_retry_wrapper.py": "ebef032068b98087c7871c11db015f251bc5b0f34681fed0b06efc5e03c0c1af"
+  },
+  "scope": "18 exact original critical identities; original source with original/candidate tests",
+  "selected_identities": [
+    17,
+    18
+  ],
+  "consumer_only": true,
+  "full_ci": false,
+  "installed_chain": false,
+  "baselines": [
+    {
+      "mode": "candidate",
+      "test": "tests/test_stage_retry_wrapper.py::test_manifest_consumer_verifies_actual_bytes_and_executes_literal_argv",
+      "rc": 0,
+      "seconds": 1.126,
+      "failures": [],
+      "errors": 0,
+      "skipped": 0,
+      "tests": 1
+    }
+  ],
+  "mutants": [
+    {
+      "mode": "candidate",
+      "number": 17,
+      "path": "src/retry_wrapper_stage.py",
+      "line": 120,
+      "mutation": "True → False @51-55",
+      "key": "src/retry_wrapper_stage.py::stage::True → False::2202827bf79899cf#3",
+      "mutated_sha256": "6eb08e5041692af59163c0024f01dc14cc01cd9becff83f1612948e15f0d972e",
+      "observed": "survived",
+      "rc": 0,
+      "seconds": 1.198,
+      "failures": [],
+      "errors": 0,
+      "skipped": 0,
+      "tests": 1
+    },
+    {
+      "mode": "candidate",
+      "number": 18,
+      "path": "src/retry_wrapper_stage.py",
+      "line": 120,
+      "mutation": "2 → 0 @64-65",
+      "key": "src/retry_wrapper_stage.py::stage::2 → 0::2a18189745821f8e#0",
+      "mutated_sha256": "695ae13ec906e50a924457b9f841bde91b1654649464c319b5b8fe0cfa7c7615",
+      "observed": "survived",
+      "rc": 0,
+      "seconds": 1.179,
+      "failures": [],
+      "errors": 0,
+      "skipped": 0,
+      "tests": 1
+    }
+  ],
+  "addressed_controls_tested": 0,
+  "addressed_controls_passed": null,
+  "observations_match_expected": true,
+  "not_a_clean_critical_verdict": true
+}

@@ -1,0 +1,19 @@
+{
+  "head": "a8bd701da249446752816b39ef3c7ea6598da7f2",
+  "source_sha256": "c88f5d6f10ca458e17f7d5e0ab94da70899b2ce0e3d3621b67f05e9c823a5a1c",
+  "candidate_sha256": "13c1822c5760c74f14c981effeccc87a436bb22b4a2f392aed549d6fffacf179",
+  "manifest_sha256": "84a899287bea798f2bb4f904ff50ff3f2f6ee2b735bc2944fed8b8e021aa968e",
+  "ux_function_sha256": "e06da3f16b2afbf015f7cb56ad292b00ee6ded203686acffddfebc59c2126d7e",
+  "source_unchanged": true,
+  "ux_function_unchanged": true,
+  "source_bash_syntax_rc": 0,
+  "candidate_bash_syntax_rc": 0,
+  "candidate_directory_mode": 448,
+  "candidate_wrapper_mode": 384,
+  "runtime_module_sha256": "6e376f52765d5703e2cac3e18787e7dee6d9fecaa71cf01b16899da26b7d0d75",
+  "private_bytes_or_paths_exported": false,
+  "private_wrapper_executed": false,
+  "actual_UX_child_FD_proven": false,
+  "installation_ready": false,
+  "unclosed_boundary": "actual background UX/OS child lifetime and independent orphan exclusion"
+}

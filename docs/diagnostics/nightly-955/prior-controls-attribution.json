@@ -1,0 +1,14 @@
+{
+  "source_head": "fdbf9166a7224e5fa36772fcf32fd1dfd51e45a4",
+  "source_branch": "codex/n955-retry-adapter",
+  "source_worktree": "charoite-n955-retry-adapter-20261106",
+  "executor": "prior Codex executor; static continuation documented 2026-11-07",
+  "copy_method": "read-only git diff, file hashes unchanged before/after; reviewed by current executor",
+  "files": {
+    "tests/test_process_lock.py": "ca4d777fe5e4e72b5601639b0f683e737c9ce2d2f8e6b65371d1fbdef12a38c5",
+    "tests/test_stage_retry_wrapper.py": "34365edf48034300b0aa8324806d89bd14d6bd0a6a7130804bb06e13931b4566"
+  },
+  "patch_sha256": "2b2d0f004cd365b0318b8dc283b699d71162dd4557f2a6c9a575f2ce448f31ac",
+  "source_worktree_modified": false,
+  "patch_container": "prior-controls.patch.json"
+}
