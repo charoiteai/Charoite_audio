@@ -662,7 +662,7 @@ def test_mutation_range_starts_at_the_current_base_branch():
 #: Кто гоняет весь набор `tests/` в workflow и сколькими процессами (№453). Реестр
 #: сверяется с тем, что написано в `run:`, в обе стороны: новый job с полным
 #: прогоном без записи здесь краснеет, а не остаётся тихо последовательным.
-#: Числа — по ядрам раннера (ubuntu-latest — 4 vCPU, macos-15 — 3), приёмка —
+#: Числа — по ядрам раннера (ci.yml/tests: ubuntu-24.04 — 4 vCPU, macos-15 — 3), приёмка —
 #: первые прогоны; вне сторожа по замыслу — preflight (bash) и полный набор внутри
 #: `run_tests` мутатора (там xdist снят `-p no:xdist`).
 FULL_SUITE_JOBS = {("ci.yml", "tests"): 4, ("ci.yml", "tests-macos"): 3, ("nightly.yml", "pytest"): 3}
@@ -697,6 +697,16 @@ def _jobs() -> dict[tuple[str, str], tuple[list[list[str]], str]]:
             runs = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
             out[(path.name, name)] = ([c for c in _pytest_calls(runs)], runs)
     return out
+
+
+def test_linux_pytest_uses_explicit_runner_and_complete_command():
+    """The native-audio CI baseline is explicit and still runs the whole suite."""
+    job = _load("ci.yml")["jobs"]["tests"]
+    assert job["runs-on"] == "ubuntu-24.04", "Linux pytest must use the explicit ubuntu-24.04 runner"
+    steps = [step for step in job["steps"] if step.get("name") == "pytest"]
+    assert len(steps) == 1, "Linux pytest must have exactly one pytest step"
+    assert steps[0]["run"] == "python -m pytest tests/ -q -n 4 --dist loadgroup", (
+        "Linux pytest must run the complete unchanged command")
 
 
 def test_full_suite_runs_in_parallel_by_the_registry():
