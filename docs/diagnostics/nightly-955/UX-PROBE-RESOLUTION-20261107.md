@@ -45,3 +45,47 @@ executors; critical work waits while their model/runtime window owns the machine
 Targeted shell-string mutation controls, final critical evidence and the exact
 CI publication route are recorded after execution. No install or real night is
 implied by these source checks.
+
+## Private projection and remaining delivery boundary
+
+The allowlisted sealed private source copy matched its expected c88f5d6f hash.
+A real gated staging call using only synthetic data/command inputs generated a
+new private candidate with hash13c1822c and mode0600 in a mode0700 directory.
+Both original and candidate passed native bash syntax checks; the source and
+the entire UX function remained byte-identical (UX hash e06da3f1). The public
+proof contains only hashes, modes and fixed results; private source/paths and
+the manifest argv were not exported, and the private wrapper was never executed.
+
+The structural UX projection identifies a background speech/kill/wait branch.
+The current public runtime tests replace UX with a synthetic action; they do
+not exercise that actual OS child/service lifetime. Executing a faithful private
+UX branch can invoke real user-facing operations, while substituting stubs would
+remove the very descendant boundary that needs attestation. No independently
+proved orphan exclusion exists for a non-retaining branch. This is the concrete
+remaining delivery limitation, not a missing-resource-gate claim; source staging,
+synthetic FD-retaining/close_fds counterexamples and syntax checks do not close it.
+
+## Final addressed verification
+
+Code commit: `a8bd701da249446752816b39ef3c7ea6598da7f2`, normal hooks passed.
+Three shell-string mutations were each killed by their expected integration
+assertions after a clean baseline: admit an arbitrary defer prefix; discard
+extra record newlines; mask a failed probe's process status. No generic error,
+skip or timeout is counted as an addressed kill. The helper and JSON receipt
+are retained for repetition in isolated tracked-source clones.
+
+The standard final critical run on base2106ed52..a8bd701d used `--only-critical
+--max all --jobs 4` under fresh installed quiet/heavy gates. All four shards
+judged29/29 and returned0:116/116 critical judged, survivors0/skipped0/unread0/
+capped0, unchanged zones hash5cee37846e66. All116 journal keys are unique.
+The11 noncritical identities of the127-total plan were not selected. Public
+facts and journals are `probe-final-critical-shard-*-20261107.*`; the combined
+official summary and source/test/environment binding are
+`probe-final-critical-20261107.md` and `probe-final-proof-20261107.json`.
+
+The historical original-identity replay now explicitly freezes compatible
+candidate tests at ebceb986. Its focused consumer repeat passed with both
+original formatting mutations still labelled survived; later probe expectations
+do not contaminate the old baseline. No new independent review round is claimed:
+the Important code finding was resolved with addressed evidence as requested.
+Fresh same-SHA CI and actual private UX/child lifetime acceptance remain open.

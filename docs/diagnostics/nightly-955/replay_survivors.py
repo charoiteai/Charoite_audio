@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = 'fdbf9166a7224e5fa36772fcf32fd1dfd51e45a4'
+ORIGINAL_CONTROLS = 'ebceb986944ae7706def43894dc1426242b2fb32'
 TESTS = ('tests/test_process_lock.py', 'tests/test_stage_retry_wrapper.py')
 IDENTITIES = [
     ('process_lock_exec', 26, 'True → False @44-48', 'test_missing_parent_component_before_dotdot'),
@@ -52,6 +53,8 @@ def main():
     parser.add_argument('--mode', choices=('original', 'candidate', 'both'), default='both')
     parser.add_argument('--identities', default=','.join(map(str, range(1, 19))))
     parser.add_argument('--consumer-only', action='store_true')
+    parser.add_argument('--candidate-tests-ref', default=ORIGINAL_CONTROLS,
+                        help='frozen test snapshot compatible with original runtime identities')
     args = parser.parse_args()
     selected = {int(value) for value in args.identities.split(',')}
     if not selected or not selected <= set(range(1, 19)):
@@ -62,11 +65,15 @@ def main():
     output = args.output.resolve()
     sys.path.insert(0, str(ROOT / 'scripts'))
     import mutate_check as mutator
-    candidate_tests = {p: (ROOT / p).read_bytes() for p in TESTS}
+    test_ref = subprocess.check_output(
+        ['git', 'rev-parse', '--verify', args.candidate_tests_ref + '^{commit}'], cwd=ROOT, text=True).strip()
+    candidate_tests = {p: subprocess.check_output(['git', 'show', f'{test_ref}:{p}'], cwd=ROOT)
+                       for p in TESTS}
 
     report = {
         'original_source': SOURCE,
         'candidate_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+        'candidate_tests_ref': test_ref,
         'python': sys.version.split()[0], 'platform': sys.platform,
         'test_sha256': {p: sha(data) for p, data in candidate_tests.items()},
         'scope': '18 exact original critical identities; original source with original/candidate tests',

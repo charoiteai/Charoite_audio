@@ -60,6 +60,10 @@ Python for all original identities and both test snapshots. For the focused
 consumer experiment also pass `--mode candidate --identities 17,18 --consumer-only`.
 The replay intentionally uses original runtime bytes so original identities
 remain reproducible after removing the unnecessary formatting arguments.
+Its candidate test ref is also frozen at `ebceb986944ae7706def43894dc1426242b2fb32`
+by default (`--candidate-tests-ref`): later advisory-probe changes legitimately
+change the transform expectation and must not contaminate an original-identity
+baseline. Each new replay records the resolved test SHA and actual test hashes.
 
 ## Acceptance boundaries
 

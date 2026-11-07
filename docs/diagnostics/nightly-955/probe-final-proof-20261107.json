@@ -1,0 +1,43 @@
+{
+  "head": "a8bd701da249446752816b39ef3c7ea6598da7f2",
+  "base": "2106ed52c9b3f70f5d0c8b6363e9e3171ae767be",
+  "exit": 0,
+  "critical_planned": 116,
+  "critical_judged": 116,
+  "survivors": 0,
+  "skipped": 0,
+  "unread": 0,
+  "capped": 0,
+  "zones": "5cee37846e66",
+  "shards": 4,
+  "all_shard_exit_codes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "noncritical_not_selected": 11,
+  "full_plan": 127,
+  "source_tests_sha256": {
+    "src/process_lock_exec.py": "ea3519897a1697e6f0d1ec5543d2069bdb6cc27432b2e8a9fcebae184e831a68",
+    "src/retry_wrapper_stage.py": "6e376f52765d5703e2cac3e18787e7dee6d9fecaa71cf01b16899da26b7d0d75",
+    "tests/test_process_lock.py": "ca4d777fe5e4e72b5601639b0f683e737c9ce2d2f8e6b65371d1fbdef12a38c5",
+    "tests/test_retry_wrapper_integration.py": "93e4a5ccfde522bcf4ee308abd9158f1b768d95a2f8a7f141f288d7fbd4d828d",
+    "tests/test_stage_retry_wrapper.py": "4faa35e5625a69b3e8fc4b2ffc1dac63b652683cb221048598c94fd89d4bfdad",
+    "tests/fixtures/nightly_955/fake_nightly.py": "02b027171a3bd6657b9b593f9a786d53cd7189b3ecd8e3e8b9f1c9c9643b6596",
+    "scripts/night_gate.py": "3d8cf77b4532a287aeaf48342b4db9621fd506a8a37eddd86d60555a94fb7d0c"
+  },
+  "environment": {
+    "python": "3.12.13",
+    "pytest": "9.1.1",
+    "pytest-timeout": "2.4.0"
+  },
+  "before_after": "probe-before-after-20261107.json",
+  "addressed_shell_mutants": "probe-mutation-controls-20261107.json",
+  "private_transform": "private-transform-proof-20261107.json",
+  "actual_private_UX_FD_proof": false,
+  "new_SHA_CI": "not_yet_published",
+  "install": false,
+  "real_night": false,
+  "model_calls": 0
+}

@@ -1,0 +1,61 @@
+{
+  "before": {
+    "errors": 0,
+    "skipped": 0,
+    "failed_cases": [
+      "test_invalid_successful_probe_keeps_ux_and_final_gate_authority"
+    ],
+    "suite_attributes": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "10",
+        "skipped": "0",
+        "tests": "37",
+        "time": "4.291"
+      }
+    ],
+    "failure_assertions": 10
+  },
+  "after_wrong_tmp": {
+    "errors": 62,
+    "skipped": 0,
+    "failed_cases": [],
+    "suite_attributes": [
+      {
+        "name": "pytest",
+        "errors": "62",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "89",
+        "time": "5.017"
+      }
+    ],
+    "failure_assertions": 0
+  },
+  "after_native_tmp": {
+    "errors": 0,
+    "skipped": 0,
+    "failed_cases": [],
+    "suite_attributes": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "89",
+        "time": "4.387"
+      }
+    ],
+    "failure_assertions": 0
+  },
+  "before_runtime": "fa9cba15a7d952056cf3e91405d2e6cd53b8db48",
+  "after_code": "a8bd701da249446752816b39ef3c7ea6598da7f2",
+  "source_tests_sha256": {
+    "src/retry_wrapper_stage.py": "6e376f52765d5703e2cac3e18787e7dee6d9fecaa71cf01b16899da26b7d0d75",
+    "tests/test_retry_wrapper_integration.py": "93e4a5ccfde522bcf4ee308abd9158f1b768d95a2f8a7f141f288d7fbd4d828d",
+    "tests/test_stage_retry_wrapper.py": "4faa35e5625a69b3e8fc4b2ffc1dac63b652683cb221048598c94fd89d4bfdad",
+    "tests/fixtures/nightly_955/fake_nightly.py": "02b027171a3bd6657b9b593f9a786d53cd7189b3ecd8e3e8b9f1c9c9643b6596",
+    "scripts/night_gate.py": "3d8cf77b4532a287aeaf48342b4db9621fd506a8a37eddd86d60555a94fb7d0c"
+  }
+}

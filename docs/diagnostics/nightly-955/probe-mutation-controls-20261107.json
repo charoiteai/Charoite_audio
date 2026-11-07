@@ -1,0 +1,49 @@
+{
+  "head": "a8bd701da249446752816b39ef3c7ea6598da7f2",
+  "suite": "tests/test_retry_wrapper_integration.py",
+  "module": "src/retry_wrapper_stage.py",
+  "mutants": [
+    {
+      "label": "accept_defer_prefix",
+      "mutated_sha256": "b18546752584065053c90d63d63c48882c4cd811157de22e4efcf2c8ca97afde",
+      "killed_by_expected_assertion": true,
+      "rc": 1,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "test_invalid_successful_probe_keeps_ux_and_final_gate_authority"
+      ]
+    },
+    {
+      "label": "strip_extra_record_newlines",
+      "mutated_sha256": "a90527b6250be07b132c1c2c1244d385fdc414c2709c6fb4207773291e969f49",
+      "killed_by_expected_assertion": true,
+      "rc": 1,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "test_invalid_successful_probe_keeps_ux_and_final_gate_authority"
+      ]
+    },
+    {
+      "label": "mask_failed_probe_status",
+      "mutated_sha256": "7192276e38cb79facdd0777319aeb33e0ff9a8318ae309dd43d8e5a97384fc95",
+      "killed_by_expected_assertion": true,
+      "rc": 1,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "test_probe_failure_is_advisory_and_final_gate_still_decides"
+      ]
+    }
+  ],
+  "source_sha256": "6e376f52765d5703e2cac3e18787e7dee6d9fecaa71cf01b16899da26b7d0d75",
+  "tests_sha256": "93e4a5ccfde522bcf4ee308abd9158f1b768d95a2f8a7f141f288d7fbd4d828d",
+  "baseline": {
+    "rc": 0,
+    "errors": 0,
+    "skipped": 0,
+    "failures": []
+  },
+  "all_expected_assertions_killed": true
+}

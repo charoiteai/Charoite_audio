@@ -1,0 +1,25 @@
+{
+  "source_sha256": "c88f5d6f10ca458e17f7d5e0ab94da70899b2ce0e3d3621b67f05e9c823a5a1c",
+  "private_source_copied_to_public_tree": false,
+  "projection_kind": "structural observations only; not a shell parser or runtime proof",
+  "ux_function_sha256": "e06da3f16b2afbf015f7cb56ad292b00ee6ded203686acffddfebc59c2126d7e",
+  "ux_line_start": 137,
+  "ux_line_end": 167,
+  "ux_known_command_mentions": {
+    "osascript": 0,
+    "say": 5,
+    "afplay": 0,
+    "open": 0,
+    "sleep": 1,
+    "python": 0,
+    "bash": 0,
+    "exec": 0,
+    "kill": 7,
+    "wait": 1,
+    "nohup": 0
+  },
+  "ux_background_operator_present": true,
+  "ux_descriptor_retention_runtime_proven": false,
+  "installed_or_owner_process_executed": false,
+  "boundary": "private UX body invokes actual OS/interactive descendants; structural mentions do not prove exec/subprocess FD retention, and replacing these descendants with stubs does not attest their actual behavior"
+}

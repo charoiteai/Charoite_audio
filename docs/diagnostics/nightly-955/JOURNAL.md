@@ -60,3 +60,26 @@ for the public synthetic tests only.
   independent OUTPUT/final-risk reviews remain pending. Focused consumer replay
   repeated after report-tool clarification; both original formatting mutations
   remain explicitly survived, not a clean critical verdict by themselves.
+
+## Important advisory-probe follow-up
+
+- Root supplied both independent OUTPUT/final-risk verdicts on fa9cba15:
+  Critical0/Important1/Minor0 each. Accepted Terra's invalid-success defer prefix
+  finding; Luna's actual private FD/CI delivery boundary remains open.
+- BEFORE on reviewed runtime produced10 expected subtest assertion failures,
+  errors0. The first AFTER had62 passing bodies but62 native-root guard teardown
+  errors from an unsuitable /tmp basetemp; corrected only the stand. Native-temp
+  repetition passed62tests/27subtests in4.39seconds, errors0/exit0.
+- Committed a8bd701d with normal hooks: exact producer-shaped line validation,
+  preserved record framing and probe exit status; final gate/resources unchanged.
+  Three addressed shell-string mutants failed the expected assertions.
+- After coordinated859 runtime cleanup, final critical --jobs4 passed every
+  shard:116/116 critical, survivors0/skipped0/capped0, unique116 keys, zones
+  unchanged. The complete source/test proof is retained separately from the
+  earlier ebceb986 verdict. All heavy work ended and the window was released.
+- Real hash-bound private staging/native bash syntax checks passed on the sealed
+  source copy; its entire UX function stayed identical. The private wrapper/UX
+  was not executed and actual FD/orphan exclusion remains unproved.
+- Configured Git transport dry-run confirmed the concrete same-SHA PR911 update
+  route without changing auth/config or publishing. Final publication still
+  requires the maintainer's acceptance; no merge/install or real night occurred.
