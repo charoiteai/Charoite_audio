@@ -16,6 +16,7 @@ usage: python -m unittest supervise [-h] --verifier-root VERIFIER_ROOT
 python -m unittest supervise: error: the following arguments are required: --verifier-root, --definition-root, --source, --context, --approval-record, --supplemental-approval-record, --delivery-parent, --supplemental-approval-record-sha256, --delivery-name, --acceptance-name, --invocation-id
 ok
 test_fake_success_noinvoke_and_wrong_modes_refused (test_release980_external.LaunchCoreControls.test_fake_success_noinvoke_and_wrong_modes_refused) ... ok
+test_forbidden_resources_are_lstat_only_never_opened_or_certified (test_release980_external.LaunchCoreControls.test_forbidden_resources_are_lstat_only_never_opened_or_certified) ... ok
 test_native_runtime_links_require_exact_pinned_covered_targets (test_release980_external.LaunchCoreControls.test_native_runtime_links_require_exact_pinned_covered_targets) ... ok
 test_original_main_aggregate_real_runtime_failure_no_guard_stubs (test_release980_external.LaunchCoreControls.test_original_main_aggregate_real_runtime_failure_no_guard_stubs) ... ok
 test_preimport_frozen_hash_rejection_without_exec (test_release980_external.LaunchCoreControls.test_preimport_frozen_hash_rejection_without_exec) ... ok
@@ -24,6 +25,7 @@ test_startup_attack_isolated_no_site_and_sanitized_environment (test_release980_
 test_tree_runtime_and_executable_changes_refused (test_release980_external.LaunchCoreControls.test_tree_runtime_and_executable_changes_refused) ... ok
 test_authenticated_push_pair_cannot_be_successful (test_release980_external.MetadataControls.test_authenticated_push_pair_cannot_be_successful) ... ok
 test_collector_independently_fetches_all_ci_runs_and_attempts (test_release980_external.MetadataControls.test_collector_independently_fetches_all_ci_runs_and_attempts) ... ok
+test_consistently_foreign_run_url_is_not_provenance (test_release980_external.MetadataControls.test_consistently_foreign_run_url_is_not_provenance) ... ok
 test_fresh_independent_registration_is_not_a_check_or_ci_pass (test_release980_external.MetadataControls.test_fresh_independent_registration_is_not_a_check_or_ci_pass) ... ok
 test_full_projection_detects_policy_fields (test_release980_external.MetadataControls.test_full_projection_detects_policy_fields) ... ok
 test_history_missing_earlier_attempt_refuses_even_with_green_rows (test_release980_external.MetadataControls.test_history_missing_earlier_attempt_refuses_even_with_green_rows) ... ok
@@ -41,10 +43,11 @@ test_helper_fresh_success_requires_concrete_consumer_record (test_release980_ext
 test_parent_fsync_failure_afterlink_does_not_make_acceptance (test_release980_external.PublicationConsumerControls.test_parent_fsync_failure_afterlink_does_not_make_acceptance) ... ok
 test_postlink_unknown_nonzero_stale_and_corruption_hold (test_release980_external.PublicationConsumerControls.test_postlink_unknown_nonzero_stale_and_corruption_hold) ... ok
 test_raw_strict_only_and_sidecar_only_never_accepted (test_release980_external.PublicationConsumerControls.test_raw_strict_only_and_sidecar_only_never_accepted) ... ok
+test_valid_bundle_on_alien_inode_with_two_foreign_aliases_is_refused (test_release980_external.PublicationConsumerControls.test_valid_bundle_on_alien_inode_with_two_foreign_aliases_is_refused) ... ok
 test_wrong_modes_symlinked_stage_and_cleanup_alias_safety (test_release980_external.PublicationConsumerControls.test_wrong_modes_symlinked_stage_and_cleanup_alias_safety) ... ok
-test_five_changed_guard_mutants_are_killed (test_release980_external.TargetedMutationControls.test_five_changed_guard_mutants_are_killed) ... ok
+test_nine_changed_guard_mutants_are_killed (test_release980_external.TargetedMutationControls.test_nine_changed_guard_mutants_are_killed) ... ok
 
 ----------------------------------------------------------------------
-Ran 30 tests in 0.740s
+Ran 33 tests in 0.822s
 
 OK

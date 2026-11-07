@@ -95,6 +95,20 @@ def positive(value):
     return type(value) is int and value > 0
 
 
+def forbidden_resource_name(path):
+    name = Path(path).name.casefold()
+    return name == ".env" or name.startswith(".env.") or name.endswith((".pem", ".key")) or name.startswith("credentials.")
+
+
+def unread_resource(path, st):
+    # Privacy takes precedence even if a forbidden name happens to be code.
+    need(Path(path).suffix.casefold() not in {".py", ".pyc", ".pyo", ".so", ".dylib", ".dll", ".pyd", ".pth", ".zip", ".whl"},
+         "forbidden code/startup resource required: refuse without reading")
+    need(stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode), "forbidden resource shape")
+    return {"kind": "forbidden_unread_unused_resource", "not_trusted_or_certified": True,
+            "mode": stat.S_IMODE(st.st_mode), "size": st.st_size, "device": st.st_dev, "inode": st.st_ino}
+
+
 def unique(rows, field):
     need(type(rows) is list and all(type(r) is dict for r in rows), "row collection")
     values = [r.get(field) for r in rows]
@@ -104,6 +118,7 @@ def unique(rows, field):
 
 def regular(path):
     path = Path(path)
+    need(not forbidden_resource_name(path), "forbidden resource bytes requested")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         st = os.fstat(fd)
@@ -352,6 +367,7 @@ def validate_snapshot(s):
         rid, attempt = key
         need(repo_identity(run["repository"]) == repo_id and repo_identity(run["head_repository"]) == repo_id
              and run.get("head_sha") == RUNTIME and run.get("status") == "completed" and run.get("conclusion") == "success"
+             and run.get("html_url") == f"https://github.com/{REPO}/actions/runs/{rid}"
              and run.get("id") == rid and run.get("run_attempt") == attempt and positive(run.get("workflow_id")), "run provenance/conclusion")
         sid = run.get("check_suite_id")
         need(sid in suites and suites[sid]["app"]["slug"] == "github-actions", "run/suite link")
@@ -481,10 +497,14 @@ def invoke_original(module, argv, evidence):
 def tree_hash(root):
     """Explicit trusted runtime closure, including bytecode and startup files."""
     root = Path(root)
+    need(not forbidden_resource_name(root), "forbidden runtime closure root")
     need(root.is_absolute() and root.resolve() == root and root.is_dir(), "runtime closure root")
     rows = []
     for path in sorted(root.rglob("*")):
         st = path.lstat()
+        if forbidden_resource_name(path):
+            rows.append([path.relative_to(root).as_posix(), unread_resource(path, st)])
+            continue  # lstat only: NO open, read, link resolution or byte hash
         if stat.S_ISLNK(st.st_mode):
             # Link text is hashed here; resolved targets must independently be
             # pinned AND covered by a declared real closure before execution.
@@ -505,16 +525,22 @@ def tree_hash(root):
 
 def verified_runtime_closure(pin):
     need(type(pin["closure"]) is dict and pin["closure"] and type(pin["search_paths"]) is list
-         and type(pin["links"]) is dict and type(pin["excluded_links"]) is dict and type(pin["files"]) is dict, "runtime closure/search paths/links")
+         and type(pin["links"]) is dict and type(pin["excluded_links"]) is dict and type(pin["files"]) is dict
+         and type(pin["forbidden_resources"]) is dict
+         and pin["unused_resources_contract"] == "fixed_release980_stdlib_merge_no_resource_reads", "runtime closure/search paths/links")
     roots = [Path(p) for p in pin["closure"]]
     for path, expected in pin["files"].items():
         raw, st = regular(path)
         need(str(Path(path).resolve()) == path and sha(raw) == expected and not st.st_mode & 0o022, "explicit runtime file pin")
     observed_links = {}
     observed_excluded = {}
+    observed_unread = {}
     for root in roots:
         need(tree_hash(root) == pin["closure"][str(root)], "managed runtime closure changed")
         for path in root.rglob("*"):
+            if forbidden_resource_name(path):
+                observed_unread[str(path)] = unread_resource(path, path.lstat())
+                continue
             if path.is_symlink():
                 target = path.resolve(strict=True)
                 if str(path) in pin["excluded_links"]:
@@ -524,10 +550,12 @@ def verified_runtime_closure(pin):
                          and exclusion["text"] == os.readlink(path) and exclusion["target"] == str(target), "excluded runtime link pin")
                     observed_excluded[str(path)] = exclusion
                     continue  # not traversed, imported or made trusted
+                need(not forbidden_resource_name(target), "required runtime link targets unread resource")
                 need(any(target == r or target.is_relative_to(r) for r in roots) or str(target) in pin["files"], "runtime link target outside approved closure")
                 observed_links[str(path)] = str(target)
     need(same(observed_links, pin["links"]), "runtime link target pins changed/incomplete")
     need(same(observed_excluded, pin["excluded_links"]), "excluded runtime link set")
+    need(same(observed_unread, pin["forbidden_resources"]), "unread resource lstat set changed/incomplete")
     for path in pin["search_paths"]:
         need(type(path) is str and Path(path) in roots, "unapproved package search path")
     reject_excluded_search_paths(pin["search_paths"], pin)
@@ -560,6 +588,7 @@ def executable_pin(pin):
     path = Path(pin["path"])
     need(path.is_absolute() and str(path.resolve()) == pin["realpath"], "executable realpath")
     resolved = path.resolve()
+    need(not forbidden_resource_name(path) and not forbidden_resource_name(resolved), "forbidden executable bytes")
     fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         st = os.fstat(fd)
@@ -573,7 +602,7 @@ def executable_pin(pin):
 
 
 def runtime_pin(pin, tools, *, probe=True):
-    need(type(pin) is dict and set(pin) == {"path", "realpath", "sha256", "version", "closure", "search_paths", "links", "excluded_links", "files", "venv_config", "canonical_search_path"}, "managed Python schema")
+    need(type(pin) is dict and set(pin) == {"path", "realpath", "sha256", "version", "closure", "search_paths", "links", "excluded_links", "files", "venv_config", "canonical_search_path", "forbidden_resources", "unused_resources_contract"}, "managed Python schema")
     executable_pin({k: pin[k] for k in ("path", "realpath", "sha256")})
     need(type(pin["version"]) is str and pin["version"].startswith("3.12."), "supported CPython version")
     roots = verified_runtime_closure(pin)
@@ -792,6 +821,16 @@ def accept_published(stage, stage_fd, parent_fd, delivery, acceptance, binding, 
         with os.fdopen(os.dup(fd), "rb") as stream:
             raw = stream.read()
         validate_bundle(raw, binding)
+        sealed_fd = os.open("bundle-sealed.zip", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
+        try:
+            staged = os.fstat(sealed_fd)
+            need(stat.S_ISREG(staged.st_mode) and staged.st_uid == os.getuid() and stat.S_IMODE(staged.st_mode) == 0o400
+                 and staged.st_nlink == 2 and staged.st_dev == st.st_dev and staged.st_ino == st.st_ino,
+                 "consumer staged/delivery alias identity")
+            with os.fdopen(os.dup(sealed_fd), "rb") as sealed:
+                need(sha(sealed.read()) == sha(raw), "consumer sealed alias bytes")
+        finally:
+            os.close(sealed_fd)
         need((st.st_dev, st.st_ino) == (os.stat(delivery, dir_fd=parent_fd, follow_symlinks=False).st_dev,
                                       os.stat(delivery, dir_fd=parent_fd, follow_symlinks=False).st_ino), "consumer path drift")
     finally:

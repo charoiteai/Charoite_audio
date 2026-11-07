@@ -188,6 +188,14 @@ class MetadataControls(unittest.TestCase):
                 next(row for row in s["pr"]["statusCheckRollup"] if row["detailsUrl"] == c["details_url"])["conclusion"] = "SUCCESS"
         with self.assertRaisesRegex(g.Refusal, "push skip pair/conclusion"):g.validate_snapshot(s)
 
+    def test_consistently_foreign_run_url_is_not_provenance(self):
+        s = snapshot();rid = 42403270503
+        g.validate_snapshot(s)  # both sides: reject-all is not a correct guard
+        s["runs"][(rid, 1)]["html_url"] = "https://foreign.invalid/run"
+        for run in s["independent_ci"]:
+            if run["id"] == rid:run["html_url"] = "https://foreign.invalid/run"
+        with self.assertRaisesRegex(g.Refusal, "run provenance/conclusion"):g.validate_snapshot(s)
+
     def test_mutated_metadata_negatives(self):
         def change(s, case):
             j = next(s["jobs"][i] for i in s["memberships"][(42403270503, 1)] if s["jobs"][i]["name"] in g.PAIR)
@@ -258,7 +266,7 @@ class PublicationConsumerControls(unittest.TestCase):
         os.close(self.stage_fd);os.close(self.parent_fd);self.temp.cleanup()
 
     def publish(self):
-        return g.link_sealed(self.stage, self.stage_fd, self.parent_fd, "bundle.zip", "delivery.zip", self.raw)
+        return g.link_sealed(self.stage, self.stage_fd, self.parent_fd, "bundle-sealed.zip", "delivery.zip", self.raw)
 
     def observed(self, rc=0):
         return g.ObservedExit(12345, rc, self.binding["invocation"], self.binding["command_sha256"])
@@ -315,6 +323,18 @@ class PublicationConsumerControls(unittest.TestCase):
         with self.assertRaises(zipfile.BadZipFile):g.accept_published(self.stage, self.stage_fd, self.parent_fd, "delivery.zip", "accepted.json", self.binding, self.observed())
         self.assertFalse((self.parent / "accepted.json").exists())
 
+    def test_valid_bundle_on_alien_inode_with_two_foreign_aliases_is_refused(self):
+        self.publish()
+        os.link(self.stage / "bundle-sealed.zip", self.stage / "old-extra-alias")
+        (self.parent / "delivery.zip").unlink()
+        foreign = self.parent / "foreign-alias";foreign.write_bytes(self.raw);foreign.chmod(0o400)
+        os.link(foreign, self.parent / "delivery.zip")
+        self.assertEqual(foreign.stat().st_nlink, 2)
+        self.assertEqual((self.stage / "bundle-sealed.zip").stat().st_nlink, 2)
+        with self.assertRaisesRegex(g.Refusal, "consumer staged/delivery alias identity"):
+            g.accept_published(self.stage, self.stage_fd, self.parent_fd, "delivery.zip", "accepted.json", self.binding, self.observed())
+        self.assertFalse((self.parent / "accepted.json").exists())
+
     def test_raw_strict_only_and_sidecar_only_never_accepted(self):
         for value in (b'{"strict":"PASS","external_completed_run_verified":true}', b'{"outcome":"PASS"}'):
             with self.assertRaises(zipfile.BadZipFile):g.validate_bundle(value, self.binding)
@@ -347,11 +367,11 @@ class PublicationConsumerControls(unittest.TestCase):
         self.parent.chmod(0o755)
         with self.assertRaises(g.Refusal):g.checked_directory(self.parent_fd)
         self.parent.chmod(0o700)
-        (self.stage / "bundle.zip").symlink_to(self.stage / "missing")
+        (self.stage / "bundle-sealed.zip").symlink_to(self.stage / "missing")
         with self.assertRaises(FileExistsError):self.publish()
-        (self.stage / "bundle.zip").unlink();self.publish()
+        (self.stage / "bundle-sealed.zip").unlink();self.publish()
         # No product cleanup exists. Removing only our test alias leaves published bytes.
-        (self.stage / "bundle.zip").unlink()
+        (self.stage / "bundle-sealed.zip").unlink()
         self.assertEqual((self.parent / "delivery.zip").read_bytes(), self.raw)
         self.assertEqual((self.parent / "delivery.zip").stat().st_nlink, 1)
 
@@ -380,7 +400,7 @@ class LaunchCoreControls(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="release980-closure-") as tmp:
             root = Path(tmp).resolve();a = root / "stdlib";b = root / "packages";a.mkdir();b.mkdir()
             target = b / "module.py";target.write_text("# approved fixture\n");link = a / "package-link";link.symlink_to(target)
-            pin = {"closure": {str(a): g.tree_hash(a), str(b): g.tree_hash(b)}, "search_paths": [str(b)], "links": {str(link): str(target)}, "excluded_links": {}, "files": {}}
+            pin = {"closure": {str(a): g.tree_hash(a), str(b): g.tree_hash(b)}, "search_paths": [str(b)], "links": {str(link): str(target)}, "excluded_links": {}, "files": {}, "forbidden_resources": {}, "unused_resources_contract": "fixed_release980_stdlib_merge_no_resource_reads"}
             self.assertEqual(g.verified_runtime_closure(pin), [a, b])
             for changed in ({**pin, "links": {}}, {**pin, "links": {str(link): str(a)}}):
                 with self.assertRaises(g.Refusal):g.verified_runtime_closure(changed)
@@ -398,6 +418,7 @@ class LaunchCoreControls(unittest.TestCase):
             unused = stdlib / "site-packages";unused.symlink_to(external)
             pin = {"closure": {str(stdlib): g.tree_hash(stdlib)}, "search_paths": [str(stdlib)], "links": {str(used): str(native)},
                    "files": {str(native): g.sha(native.read_bytes())},
+                   "forbidden_resources": {}, "unused_resources_contract": "fixed_release980_stdlib_merge_no_resource_reads",
                    "excluded_links": {str(unused): {"text": str(external), "target": str(external), "reason": "unused_global_site_packages"}}}
             self.assertEqual(g.verified_runtime_closure(pin), [stdlib])
             for path in (unused, external, external / "module.py"):
@@ -406,6 +427,23 @@ class LaunchCoreControls(unittest.TestCase):
             with self.assertRaises(g.Refusal):g.verified_runtime_closure(bad)
             used.unlink();used.symlink_to(used);pin["closure"][str(stdlib)] = g.tree_hash(stdlib)
             with self.assertRaises((RuntimeError, OSError)):g.verified_runtime_closure(pin)
+
+    def test_forbidden_resources_are_lstat_only_never_opened_or_certified(self):
+        with tempfile.TemporaryDirectory(prefix="release980-unread-") as tmp:
+            root = Path(tmp).resolve()
+            resources = [root / name for name in (".env", "fixture.pem", "fixture.key", "credentials.fixture")]
+            for path in resources:path.write_bytes(b"synthetic forbidden-name fixture; never read")
+            with mock.patch.object(Path, "open", side_effect=AssertionError("forbidden byte open attempted")):
+                digest = g.tree_hash(root)
+                metadata = {str(path): g.unread_resource(path, path.lstat()) for path in resources}
+                pin = {"closure": {str(root): digest}, "search_paths": [str(root)], "links": {}, "excluded_links": {}, "files": {},
+                       "forbidden_resources": metadata, "unused_resources_contract": "fixed_release980_stdlib_merge_no_resource_reads"}
+                self.assertEqual(g.verified_runtime_closure(pin), [root])
+            for path in resources:
+                with mock.patch.object(g.os, "open", side_effect=AssertionError("forbidden open")), self.assertRaises(g.Refusal):g.regular(path)
+            code = root / "credentials.py";code.write_bytes(b"# code must not be silently excluded")
+            with mock.patch.object(Path, "open", side_effect=AssertionError("code read attempted")), self.assertRaisesRegex(g.Refusal, "code/startup"):
+                g.tree_hash(root)
 
     def test_preimport_frozen_hash_rejection_without_exec(self):
         with tempfile.TemporaryDirectory(prefix="release980-loader-") as tmp:
@@ -482,14 +520,18 @@ class LaunchCoreControls(unittest.TestCase):
 
 
 class TargetedMutationControls(unittest.TestCase):
-    def test_five_changed_guard_mutants_are_killed(self):
+    def test_nine_changed_guard_mutants_are_killed(self):
         source = (ROOT / "scripts/release980_external.py").read_text()
         cases = [
             ("exit0", "and observed.returncode == 0", "and observed.returncode != 0", PublicationConsumerControls, "test_helper_fresh_success_requires_concrete_consumer_record"),
-            ("consumer-validation", "        validate_bundle(raw, binding)\n        need((st.st_dev", "        pass  # MUTANT: consumer skipped validation\n        need((st.st_dev", PublicationConsumerControls, "test_consumer_rejects_corrupt_published_bytes"),
+            ("consumer-validation", "        validate_bundle(raw, binding)\n        sealed_fd", "        pass  # MUTANT: consumer skipped validation\n        sealed_fd", PublicationConsumerControls, "test_consumer_rejects_corrupt_published_bytes"),
             ("push-pair", "need(all(j[\"conclusion\"] == (\"skipped\" if j[\"name\"] in PAIR else \"success\") for j in js),", "need(True,", MetadataControls, "test_authenticated_push_pair_cannot_be_successful"),
             ("gate-pin", "need(sha(raw) == GATE_HASH,", "need(sha(raw) != GATE_HASH,", LaunchCoreControls, "test_preimport_frozen_hash_rejection_without_exec"),
             ("startup-isolation", 'return [str(executable), "-I", "-S", "-B", *map(str, args)]', 'return [str(executable), "-S", "-B", *map(str, args)]', LaunchCoreControls, "test_startup_attack_isolated_no_site_and_sanitized_environment"),
+            ("run-url", 'and run.get("html_url") == f"https://github.com/{REPO}/actions/runs/{rid}"', 'and True', MetadataControls, "test_consistently_foreign_run_url_is_not_provenance"),
+            ("run-url-inverted", 'and run.get("html_url") == f"https://github.com/{REPO}/actions/runs/{rid}"', 'and run.get("html_url") != f"https://github.com/{REPO}/actions/runs/{rid}"', MetadataControls, "test_consistently_foreign_run_url_is_not_provenance"),
+            ("sealed-alias", 'and staged.st_ino == st.st_ino', 'and True', PublicationConsumerControls, "test_valid_bundle_on_alien_inode_with_two_foreign_aliases_is_refused"),
+            ("unread-resource", 'st = path.lstat()\n        if forbidden_resource_name(path):', 'st = path.lstat()\n        if False:', LaunchCoreControls, "test_forbidden_resources_are_lstat_only_never_opened_or_certified"),
         ]
         killed = []
         for label, old, new, cls, method in cases:
@@ -503,7 +545,7 @@ class TargetedMutationControls(unittest.TestCase):
                 self.assertFalse(result.wasSuccessful(), "surviving targeted guard mutant: " + label)
                 killed.append(label)
                 sys.modules.pop(name)
-        self.assertEqual(len(killed), 5)
+        self.assertEqual(len(killed), 9)
 
 
 if __name__ == "__main__":
