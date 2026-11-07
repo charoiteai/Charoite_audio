@@ -62,6 +62,7 @@
 
 - `scripts/layout_map.py`, форма «file»: сам гейт раскладки: строка вычисляет корень РЕПОЗИТОРИЯ — две ступени вверх от scripts/layout_map.py, из него берутся src/, docs/design/layout.json и карта; sys.path она не трогает. Канон в этот момент недостижим: чтобы импортировать src/charoite_paths.py, надо сперва тем же подъёмом от __file__ положить src/ в sys.path — эта строка и есть такой подъём, сделанный до всякого канона. Цепочка ведёт к корню КОДА (src/, docs/design/layout.json), данных он не касается (№338)
 - `scripts/release970_gate.py`, форма «file»: №970: isolated CI policy locates its reviewed definition checkout and immutable plan, never owner data. Importing the product path canon from the definition would contaminate the separate runtime-candidate import origin; canonical runtime is loaded only from explicit --source and verified independently.
+- `scripts/release970_observer.py`, форма «file»: №970: standalone passive sitecustomize copy uses its own file only to remove its isolated bootstrap directory from sys.path and measure the actually loaded observer bytes. Importing either product path canon would contaminate the independent canonical/pytest source roots. No owner-data root is inferred.
 - `src/deps.py`, форма «file»: рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
@@ -109,7 +110,7 @@
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
 - `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help+refuse
 - `scripts/install_engine.py` ← .github/workflows/swift-tests.yml, app/Sources/CharoiteApp/Models/ConfigEditCheck.swift, app/Sources/CharoiteApp/Services/NemotronEngineService.swift, scripts/lock_runtime_deps.py, src/diarize_nemotron.py; проба help+refuse
-- `scripts/layout_map.py` ← .github/workflows/ci.yml, scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
+- `scripts/layout_map.py` ← .github/workflows/ci.yml, scripts/preflight.sh, scripts/release970_gate.py; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh, scripts/install_engine.py; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; проба help
@@ -152,15 +153,20 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
+- `scripts/release970_observer.py` ← scripts/release970_gate.py
 - `src/brain.py` ← scripts/layout_map.py
+- `src/busy_signals.py` ← scripts/release970_gate.py
 - `src/charoite_graph/cli.py` ← scripts/layout_map.py
 - `src/charoite_graph/graph_names.py` ← scripts/check_private_markers.py
 - `src/charoite_graph/graph_search.py` ← scripts/layout_map.py, scripts/memory_bench.py
-- `src/charoite_paths.py` ← scripts/layout_map.py
+- `src/charoite_paths.py` ← scripts/layout_map.py, scripts/release970_gate.py
 - `src/charoite_schema.py` ← .github/workflows/swift-tests.yml
-- `src/exit_codes.py` ← scripts/preflight.sh
+- `src/exit_codes.py` ← scripts/preflight.sh, scripts/release970_gate.py
+- `src/file_locks.py` ← scripts/release970_gate.py
 - `src/graphs.py` ← scripts/layout_map.py
+- `src/live_gate.py` ← scripts/release970_gate.py
 - `src/llm_health.py` ← scripts/doctor.py
+- `src/machine_power.py` ← scripts/release970_gate.py
 - `src/privacy.py` ← scripts/doctor.py
 - `src/threads.py` ← scripts/layout_map.py
 
@@ -206,7 +212,7 @@
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
-- `scripts/release970_gate.py` ← docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md
+- `scripts/release970_gate.py` ← docs/diagnostics/release-970/STRICT-GATE-FOLLOWUP.md, docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md
 - `scripts/rename_meeting.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/retrieval_compare.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/RETRIEVAL_MODEL_EVALUATION.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `scripts/runtime_profile.py` ← docs/FEATURES.md, docs/design/RUNTIME_PROFILE.md

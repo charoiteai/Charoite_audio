@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -24,7 +25,10 @@ REPO = "charoiteai/Charoite_audio"
 RELEASE_BASE = "005832892bfb8b9d8cca9d90ed70537d69242d3a"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
-PAYLOAD = {"facts.json", "journal.jsonl", "report.txt", "environment.json", "provenance.json"}
+PAYLOAD = {"facts.json", "journal.jsonl", "report.txt", "environment.json", "provenance.json", "imports.json"}
+CANONICAL_PATHS = ("scripts/mutate_check.py", "scripts/layout_map.py", "src/exit_codes.py",
+                   "src/live_gate.py", "src/machine_power.py", "src/busy_signals.py",
+                   "src/charoite_paths.py", "src/file_locks.py")
 PLAN_PAYLOAD = {"plan.json", "provenance.json"}
 FINAL_PAYLOAD = {"strict.json", "canonical.txt"}
 INT_FACTS = {"K", "N", "M", "P", "full", "tested", "skipped", "unread", "nodes", "lines_in",
@@ -82,6 +86,20 @@ def validate_context(d):
     require(d["repo"] == REPO and type(d["definition_sha"]) is str and HEX40.fullmatch(d["definition_sha"]), "context repository/definition")
     require(type(d["branch"]) is str and d["branch"].startswith("verify/release970-") and d["workflow"] == WORKFLOW, "context workflow/branch")
     return d
+
+
+def validate_approval(ctx, p, plan_sha, expected_definition_sha, expected_branch,
+                      approval_record, approval_record_sha256):
+    require(type(expected_definition_sha) is str and HEX40.fullmatch(expected_definition_sha), "trusted expected definition required")
+    require(type(expected_branch) is str and expected_branch.startswith("verify/release970-"), "trusted expected exact branch required")
+    require(type(approval_record_sha256) is str and HEX64.fullmatch(approval_record_sha256), "trusted approval record hash required")
+    require(type(approval_record) is bytes and digest(approval_record) == approval_record_sha256, "root approval record bytes")
+    expected = {"definition_sha": expected_definition_sha, "branch": expected_branch,
+                "runtime_candidate": p["candidate"], "plan_sha256": plan_sha}
+    require(same_typed(strict_json(approval_record), expected), "root approval record pins")
+    require(ctx["definition_sha"] == expected_definition_sha and ctx["branch"] == expected_branch,
+            "context differs from trusted approved definition/branch")
+    return {**expected, "record_sha256": approval_record_sha256}
 
 
 def context():
@@ -228,7 +246,103 @@ def unzip(raw, expected):
     return files
 
 
-def validate_payload(files, p, plan_sha, ctx, k):
+def observation_policy(source, p, k):
+    m = engine(source)
+    planned, _ = m.plan_for(source, p["range"], max_n=60, only_critical=True)
+    keys = set(expected_keys(p, k))
+    variants = {}
+    with tempfile.TemporaryDirectory(prefix="release970-expected-") as directory:
+        own = pathlib.Path(directory) / "source.py"
+        for mut in planned:
+            if mut.key not in keys:
+                continue
+            own.write_bytes(mut.path.read_bytes())
+            text, why = m.applied(mut, own.read_text(encoding="utf-8"))
+            require(text is not None and not why, "legacy expected variant preparation")
+            path = mut.path.relative_to(source).as_posix()
+            variants[mut.key] = {"path": path, "sha256": digest(text.encode("utf-8"))}
+    require(set(variants) == keys and len({(v["path"], v["sha256"]) for v in variants.values()}) == len(keys), "unique legacy variant bytes")
+    hashes = dict(p["hashes"])
+    for path in CANONICAL_PATHS:
+        raw = (source / path).read_bytes()
+        blob = subprocess.check_output(["git", "-C", str(source), "show", f"{p['candidate']}:{path}"])
+        require(raw == blob, "actual canonical observer dependency")
+        hashes[path] = digest(raw)
+    return hashes, variants
+
+
+def validate_imports(raw, p, ctx, k, hashes, variants):
+    require(type(raw) is bytes and len(raw) <= 4_000_000, "observer payload bytes")
+    data = strict_json(raw)
+    require(type(data) is dict and set(data) == {"v", "canonical_pid", "policy_pid", "observer_sha256", "records"}, "import envelope schema")
+    require(data["v"] == 1 and integer(data["v"]) and all(integer(data[x]) and data[x] > 0 for x in ("canonical_pid", "policy_pid")), "observer numeric identities")
+    require(data["canonical_pid"] != data["policy_pid"], "observer parent differs from canonical PID")
+    observer_sha = digest((ROOT / "scripts/release970_observer.py").read_bytes())
+    require(data["observer_sha256"] == observer_sha and type(data["records"]) is list, "observer source/records")
+    records = data["records"]
+    wanted = expected_keys(p, k)
+    suites = {tuple(p["suites_by_path"][r["path"]]) for r in p["plan"] if r["K"] == k}
+    require(len(records) == 1 + len(wanted) + len(suites) <= 64, "observer process count")
+    fields = {"v", "pid", "parent", "role", "cwd", "argv", "executable", "head", "tree", "started_ns", "elapsed_ns", "key", "snapshot", "origins", "errors", "context", "K", "observer_sha256"}
+    seen_pids = set()
+    for record in records:
+        require(type(record) is dict and set(record) == fields, "process receipt schema")
+        require(len(json.dumps(record).encode()) + 1 <= 100_000, "process receipt bytes")
+        require(all(integer(record[x]) and record[x] > 0 for x in ("v", "pid", "parent", "started_ns", "elapsed_ns", "K")), "process receipt integer types")
+        require(record["v"] == 1 and record["K"] == k and record["elapsed_ns"] <= 3600*10**9, "process shard/elapsed")
+        require(record["pid"] not in seen_pids, "duplicate observed PID")
+        seen_pids.add(record["pid"])
+        require(validate_context(record["context"]) == ctx and record["observer_sha256"] == observer_sha, "process run/observer identity")
+        require(type(record["errors"]) is list and not record["errors"], "observer error/foreign source")
+        require(type(record["cwd"]) is str and pathlib.Path(record["cwd"]).is_absolute(), "process actual cwd")
+        require(record["head"] == p["candidate"] and record["tree"] == p["candidate_tree"], "observed checkout head/tree")
+        require(type(record["argv"]) is list and all(type(x) is str for x in record["argv"]) and len(record["argv"]) <= 128, "process actual argv")
+        require(type(record["executable"]) is str and pathlib.Path(record["executable"]).is_absolute(), "process executable")
+        require(type(record["snapshot"]) is dict and type(record["origins"]) is list and len(record["origins"]) <= 256, "observed source schema")
+    canonical = [r for r in records if r["role"] == "canonical"]
+    require(len(canonical) == 1, "one actual canonical process")
+    canonical = canonical[0]
+    require(canonical["pid"] == data["canonical_pid"] and canonical["parent"] == data["policy_pid"] and canonical["key"] is None, "canonical parent linkage")
+    require(canonical["snapshot"] == hashes, "actual canonical source hashes")
+    cwd = pathlib.Path(canonical["cwd"])
+    require(canonical["argv"][1:] == canonical_command(cwd, p, k, pathlib.Path(canonical["argv"][-1]))[1:], "observed canonical command")
+    children = sorted((r for r in records if r["role"] != "canonical"), key=lambda r: r["started_ns"])
+    base_suites, mutant_keys = [], []
+    for r in [canonical] + children:
+        expected = dict(hashes)
+        if r is not canonical:
+            require(r["role"] == "pytest" and r["parent"] == canonical["pid"], "direct pytest parent linkage")
+            require(r["executable"] == canonical["executable"], "actual interpreter linkage")
+            require(r["started_ns"] > canonical["started_ns"] and r["started_ns"] + r["elapsed_ns"] <= canonical["started_ns"] + canonical["elapsed_ns"], "observed child elapsed linkage")
+            require(r["argv"][:4] == [canonical["argv"][0], "-B", "-m", "pytest"] and r["argv"][-7:] == ["-q", "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", "120"], "observed pytest command")
+            suite = tuple(r["argv"][4:-7])
+            if r["key"] is None:
+                base_suites.append(suite)
+            else:
+                require(type(r["key"]) is str and r["key"] in variants, "observed approved mutant key")
+                variant = variants[r["key"]]
+                expected[variant["path"]] = variant["sha256"]
+                require(variant["sha256"] != hashes[variant["path"]], "mutant differs from baseline")
+                require(suite == tuple(p["suites_by_path"][variant["path"]]), "observed key/suite")
+                mutant_keys.append(r["key"])
+            require(r["snapshot"] == expected, "actual pytest mutated/baseline hashes")
+        origins = {}
+        for origin in r["origins"]:
+            require(type(origin) is dict and set(origin) == {"path", "relative", "sha256"}, "actual origin schema")
+            rel = origin["relative"]
+            require(type(rel) is str and rel in expected and origin["path"] == str(pathlib.Path(r["cwd"]) / rel)
+                    and origin["sha256"] == expected[rel], "actual origin/root/source hash")
+            require(rel not in origins, "duplicate executed source")
+            origins[rel] = origin["sha256"]
+        if r is canonical:
+            require(set(CANONICAL_PATHS) <= set(origins), "actual canonical imports missing")
+        elif r["key"] is not None:
+            require(variants[r["key"]]["path"] in origins, "actual mutant source execution missing")
+    require(collections.Counter(base_suites) == collections.Counter(suites) and mutant_keys == wanted, "exact baseline suites and ordered mutant children")
+    return data
+
+
+def validate_payload(files, p, plan_sha, ctx, k, hashes=None, variants=None):
     require(set(files) == PAYLOAD, "payload allowlist")
     prov = strict_json(files["provenance.json"])
     require(type(prov) is dict and set(prov) == {"context", "candidate", "tree", "plan_sha256", "K", "N", "mutator_rc", "hashes", "files"}, "provenance schema")
@@ -250,6 +364,8 @@ def validate_payload(files, p, plan_sha, ctx, k):
             and env["packages"]["setuptools"] == "83.0.0", "environment pinned tools")
     keys = validate_journal(files["journal.jsonl"], p, k)
     validate_facts(files["facts.json"], p, k)
+    require(hashes is not None and variants is not None, "independently derived observation policy required")
+    validate_imports(files["imports.json"], p, ctx, k, hashes, variants)
     return keys
 
 
@@ -352,22 +468,51 @@ def collect(source, p, plan_sha, ctx, out, k):
     out.mkdir(parents=True)
     report = out / "report.txt"
     cmd = canonical_command(source, p, k, report)
-    result = subprocess.run(cmd, cwd=source, env={**os.environ, "CHAROITE_ROOT": str(source), "PYTHONUNBUFFERED": "1"})
+    hashes, variants = observation_policy(source, p, k)
+    require(not os.environ.get("PYTHONPATH"), "observer requires empty inherited PYTHONPATH")
+    require(importlib.util.find_spec("sitecustomize") is None, "observer refuses to shadow an existing startup customizer")
+    observer = (ROOT / "scripts/release970_observer.py").read_bytes()
+    with tempfile.TemporaryDirectory(prefix="release970-observer-") as temp:
+        root = pathlib.Path(temp)
+        bootstrap, receipts = root / "bootstrap", root / "receipts"
+        bootstrap.mkdir(); receipts.mkdir()
+        (bootstrap / "sitecustomize.py").write_bytes(observer)
+        config = {"directory": str(receipts), "runtime_root": str(source.resolve()), "policy_pid": os.getpid(),
+                  "command": cmd, "hashes": hashes, "variants": variants, "context": ctx, "K": k,
+                  "observer_sha256": digest(observer)}
+        (root / "config.json").write_text(json.dumps(config) + "\n")
+        process = subprocess.Popen(cmd, cwd=source, env={**os.environ, "CHAROITE_ROOT": str(source),
+            "PYTHONUNBUFFERED": "1", "PYTHONPATH": str(bootstrap), "CHAROITE970_OBSERVER_CONFIG": str(root / "config.json")})
+        rc = process.wait()
+        paths = list(receipts.iterdir())
+        require(all(x.is_file() and not x.is_symlink() and (x.name == "canonical.pid" or re.fullmatch(r"process-[0-9]+\.json", x.name)) for x in paths), "observer file allowlist")
+        paths = [x for x in paths if x.name != "canonical.pid"]
+        require(len(paths) <= 64 and sum(x.stat().st_size for x in paths) <= 4_000_000, "observer byte/process limit")
+        observed = {"v": 1, "canonical_pid": process.pid, "policy_pid": os.getpid(), "observer_sha256": digest(observer),
+                    "records": [strict_json(x.read_bytes()) for x in paths]}
+        (out / "imports.json").write_text(json.dumps(observed) + "\n")
     journal = source / "logs" / f"mutation_run-{p['canonical_run_key']}-{k}.jsonl"
     require(set((source / "logs").glob("mutation_run-*.jsonl")) == {journal}, "exact fresh journal file")
     require(all(path.is_file() and not path.is_symlink() for path in
                 (journal, report, report.with_name(report.name + ".json"))), "canonical evidence regular files")
     shutil.copyfile(journal, out / "journal.jsonl")
-    shutil.copyfile(report.with_name(report.name + ".json"), out / "facts.json")
+    report.with_name(report.name + ".json").replace(out / "facts.json")
     (out / "environment.json").write_text(json.dumps(environment()) + "\n")
     prov = {"context": ctx, "candidate": p["candidate"], "tree": p["candidate_tree"], "plan_sha256": plan_sha,
-            "K": k, "N": 16, "mutator_rc": result.returncode, "hashes": p["hashes"],
+            "K": k, "N": 16, "mutator_rc": rc, "hashes": p["hashes"],
             "files": {f.name: digest(f.read_bytes()) for f in out.iterdir()}}
     (out / "provenance.json").write_text(json.dumps(prov) + "\n")
-    return result.returncode
+    validate_imports((out / "imports.json").read_bytes(), p, ctx, k, hashes, variants)
+    return rc
 
 
-def aggregate(source, p, plan_sha, ctx, out, external=False):
+def aggregate(source, p, plan_sha, ctx, out, external=False, trust=None):
+    approval = None
+    if external:
+        require(type(trust) is dict, "external trusted root approval required")
+        approval = validate_approval(ctx, p, plan_sha, **trust)
+        require(git(ROOT, "rev-parse", "HEAD") == approval["definition_sha"], "approved definition checkout")
+        require(not git(ROOT, "status", "--porcelain", "--untracked-files=no"), "approved definition tracked changes")
     preflight(source, p)
     if external:
         pr = subprocess.run(["gh", "pr", "view", "906", "--repo", REPO, "--json",
@@ -389,7 +534,8 @@ def aggregate(source, p, plan_sha, ctx, out, external=False):
     for k in range(1, 17):
         a = cohort[prefix + f"shard-{k}"]
         files = download(a, PAYLOAD)
-        all_keys.extend(validate_payload(files, p, plan_sha, ctx, k))
+        hashes, variants = observation_policy(source, p, k)
+        all_keys.extend(validate_payload(files, p, plan_sha, ctx, k, hashes, variants))
         target = out / "shards" / str(k)
         target.mkdir(parents=True)
         (target / "report.txt.json").write_bytes(files["facts.json"])
@@ -407,6 +553,7 @@ def aggregate(source, p, plan_sha, ctx, out, external=False):
         require(same_typed(receipt, result), "final receipt differs from independent replay")
         require(all(digest(final[name]) == result["canonical_files"][name] for name in result["canonical_files"]), "final canonical evidence")
         result["external_completed_run_verified"] = True
+        result["root_approval"] = approval
     excluded = [a["name"] for a in artifacts["artifacts"] if a["name"] not in cohort]
     print(json.dumps({"excluded_artifact_metadata_only": excluded}))
     (out / "strict.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -420,7 +567,12 @@ def main():
     ap.add_argument("--out", required=True, type=pathlib.Path)
     ap.add_argument("--K", type=int)
     ap.add_argument("--context", type=pathlib.Path)
+    ap.add_argument("--expected-definition-sha")
+    ap.add_argument("--expected-branch")
+    ap.add_argument("--approval-record", type=pathlib.Path)
+    ap.add_argument("--approval-record-sha256")
     args = ap.parse_args()
+    args.source, args.out = args.source.resolve(), args.out.resolve()
     p, plan_sha = load_plan()
     if args.mode == "preflight":
         preflight(args.source, p)
@@ -435,7 +587,14 @@ def main():
     if args.mode == "run":
         expected_keys(p, args.K)
         return collect(args.source, p, plan_sha, ctx, args.out, args.K)
-    return aggregate(args.source, p, plan_sha, ctx, args.out, args.mode == "external")
+    trust = None
+    if args.mode == "external":
+        require(args.approval_record is not None, "external root approval record required")
+        trust = {"expected_definition_sha": args.expected_definition_sha,
+                 "expected_branch": args.expected_branch,
+                 "approval_record": args.approval_record.read_bytes(),
+                 "approval_record_sha256": args.approval_record_sha256}
+    return aggregate(args.source, p, plan_sha, ctx, args.out, args.mode == "external", trust)
 
 
 if __name__ == "__main__":

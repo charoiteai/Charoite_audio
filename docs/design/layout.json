@@ -298,6 +298,9 @@
     },
     "scripts/release970_gate.py": {
       "file": "№970: isolated CI policy locates its reviewed definition checkout and immutable plan, never owner data. Importing the product path canon from the definition would contaminate the separate runtime-candidate import origin; canonical runtime is loaded only from explicit --source and verified independently."
+    },
+    "scripts/release970_observer.py": {
+      "file": "№970: standalone passive sitecustomize copy uses its own file only to remove its isolated bootstrap directory from sys.path and measure the actually loaded observer bytes. Importing either product path canon would contaminate the independent canonical/pytest source roots. No owner-data root is inferred."
     }
   },
   "run_contracts": {

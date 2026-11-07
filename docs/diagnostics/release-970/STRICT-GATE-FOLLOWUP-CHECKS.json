@@ -1,0 +1,176 @@
+{
+  "stage": "neutral addressed OUTPUT/final-risk; source not published",
+  "change_base": "79ea7fed419027c65f90f87d4c1d0d331a949544",
+  "runtime_candidate": "50b0704fe280360b1d7f828fd601c6216959e55d",
+  "branch": "verify/release970-50b-strict",
+  "plan_sha256": "30656652e03d97617fbd5b825d977e53061acb9e925d769822d5e34219742b99",
+  "local_python": "3.14.7",
+  "addressed_tests": {
+    "tests": 29,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 3.635,
+    "strict_groups": 19,
+    "observer_tests": 8,
+    "workflow_guards": 2,
+    "command": "python -m pytest tests/test_release970_gate.py tests/test_release970_observer.py tests/test_workflows.py::test_every_artifact_upload_overwrites tests/test_workflows.py::test_ceiled_jobs_fit_their_step_ceilings -q",
+    "resource_chain": "quiet_guard && heavy_run PASS"
+  },
+  "before_after": {
+    "old79_receipt_without_actual_import_proof": "ACCEPTED by actual old public validator, synthetic data",
+    "new_foreign_import_evidence": "REJECTED with coherent member hashes",
+    "native_valid_fixture_child_rc": [
+      0,
+      1
+    ],
+    "native_foreign_unmutated_fixture_child_rc": [
+      0,
+      0
+    ],
+    "native_callback_error_fixture_child_rc": [
+      0,
+      1
+    ],
+    "actual_synthetic_pytest_child_executions": 6,
+    "observer_errors_bounded_at": 16,
+    "canonical_and_child_rc_override": false
+  },
+  "legacy_expected_byte_preparation": {
+    "status": "PASS",
+    "kind": "legacy applied() expected-byte preparation in own temp files only; zero release mutant/pytest/model executions",
+    "runtime": "50b0704fe280360b1d7f828fd601c6216959e55d",
+    "plan_sha256": "30656652e03d97617fbd5b825d977e53061acb9e925d769822d5e34219742b99",
+    "shards": [
+      {
+        "K": 1,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 2,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 3,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 4,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 5,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 6,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 7,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 8,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 9,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 10,
+        "expected_variants": 43,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 11,
+        "expected_variants": 42,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 12,
+        "expected_variants": 42,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 13,
+        "expected_variants": 42,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 14,
+        "expected_variants": 42,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 15,
+        "expected_variants": 42,
+        "canonical_and_selected_hashes": 104
+      },
+      {
+        "K": 16,
+        "expected_variants": 42,
+        "canonical_and_selected_hashes": 104
+      }
+    ],
+    "seconds": 150.374
+  },
+  "budget_note": "150.374s for all16 preparations is a local measurement, not a worst-case CI guarantee. Fixed60min mutation/100min job ceilings and incomplete=>FAIL are unchanged.",
+  "scope": {
+    "observed_release_executions": 0,
+    "new_release_mutants": 0,
+    "new_model_calls": 0,
+    "new_workflow_publications": 0,
+    "owner_app_launch_or_restart": 0,
+    "canonical_paths": 8,
+    "selected_plus_canonical_paths": 104,
+    "actual_runtime_source_edit": false,
+    "legacy_policy_or_ordinary_CI_edit": false
+  },
+  "honest_intermediate_failures": [
+    {
+      "native_observer_fixture_first_run": "23PASS/3FAIL: startup observer did not match macOS framework orig_argv[0]; actual executable/argv fields fixed the binding without removing strict refusal"
+    },
+    {
+      "structural_test_edit": "25PASS/1FAIL and RuffF821: duplicate inserted guard referred to out-of-scope steps; removed only duplicate"
+    },
+    {
+      "static_checks": "initial Ruff unused fixture import fixed before source freeze"
+    },
+    {
+      "layout": "new observer file-root use required explicit standalone bootstrap/hash-measurement metadata; no critical-zone or source policy changes"
+    }
+  ],
+  "source_sha256": {
+    "scripts/release970_gate.py": "29169e4781402e5bebad47140e1c99078462b402b696b4114534887dbac8375e",
+    "scripts/release970_observer.py": "acc0bed68466481dfcb5aa695dd0805d292b182c513cbe784a1a9e227f19f14b",
+    "tests/test_release970_gate.py": "a6484f579670d20996ae2cadfcbe8adec3bfebacbc75bc2501cc72d69895133b",
+    "tests/test_release970_observer.py": "6281377efddf404f90a15b965ecea088f71f83c647c387d2e89a2dec59bbe605",
+    ".github/workflows/release-970-critical.yml": "cb9a17442ffd30561d72c28f7e05a9f8865c8c3d4496b9cb714d40bc5a58c539",
+    "docs/design/layout.json": "c77b754730b90afea00bdc06ab6858ee555be8949ab7449b10a096da59a84264",
+    "docs/design/layout.md": "da467f8d512466d0a93a14da540b466a921cd879ae562f47ab57069824f06ac8"
+  },
+  "receipt_transformation": "Only structured counters/measurements and public source hashes; no native temp/owner paths or raw local tracebacks exported.",
+  "additional_delivery_gate_fixes": [
+    "Resolve CLI source/output before subprocess cwd changes; addressed preflight fixture.",
+    "Rename own temporary report.txt.json to facts.json so exact artifact allowlist has no duplicate; real collect/fake canonical producer\u2192six files\u2192payload validator fixture."
+  ],
+  "checks": {
+    "ruff": "PASS",
+    "assertion_guard": "PASS2files",
+    "privacy": "PASS1054files",
+    "final_layout_check": "PASS",
+    "critical_zone_maps": "unchanged",
+    "legacy_engine_and_ordinary_CI_workflow": "unchanged"
+  }
+}

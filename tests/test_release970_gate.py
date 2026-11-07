@@ -23,6 +23,13 @@ def encode(obj):
     return (json.dumps(obj) + "\n").encode()
 
 
+def trust():
+    record = encode({"definition_sha": CTX["definition_sha"], "branch": CTX["branch"],
+                     "runtime_candidate": P["candidate"], "plan_sha256": SHA})
+    return {"expected_definition_sha": CTX["definition_sha"], "expected_branch": CTX["branch"],
+            "approval_record": record, "approval_record_sha256": g.digest(record)}
+
+
 def rows(k=1):
     return [{"manifest": 2, "range": P["range"], "max": 60, "timeout": 120,
              "sample": P["totals"]["sample"], "caps": list(P["caps"])}] + [
@@ -43,13 +50,49 @@ def facts(k=1):
             "head": P["candidate"], "run": P["canonical_run_key"], "survivors": [], "word": "ok"}
 
 
+def fake_observation_policy(k):
+    hashes = dict(P["hashes"])
+    hashes.update({p: g.digest((ROOT / p).read_bytes()) for p in g.CANONICAL_PATHS})
+    variants = {r["key"]: {"path": r["path"], "sha256": g.digest(r["key"].encode())}
+                for r in P["plan"] if r["K"] == k}
+    return hashes, variants
+
+
+def imports_evidence(k):
+    hashes, variants = fake_observation_policy(k)
+    observer_sha = g.digest((ROOT / "scripts/release970_observer.py").read_bytes())
+    def record(pid, key, suite=None):
+        canonical = pid == 10
+        cwd = Path("/synthetic/runtime" if canonical else "/synthetic/clone/tree")
+        snapshot = dict(hashes)
+        paths = list(g.CANONICAL_PATHS) if canonical else []
+        if key:
+            snapshot[variants[key]["path"]] = variants[key]["sha256"]
+            paths = [variants[key]["path"]]
+        argv = g.canonical_command(cwd, P, k, Path("/synthetic/report.txt")) if canonical else [
+            g.sys.executable, "-B", "-m", "pytest", *suite, "-q", "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", "120"]
+        return {"v": 1, "pid": pid, "parent": 9 if canonical else 10, "role": "canonical" if canonical else "pytest",
+                "cwd": str(cwd), "argv": argv, "executable": g.sys.executable, "head": P["candidate"], "tree": P["candidate_tree"],
+                "started_ns": pid, "elapsed_ns": 10**12 if canonical else 1, "key": key, "snapshot": snapshot,
+                "origins": [{"path": str(cwd/p), "relative": p, "sha256": snapshot[p]} for p in paths],
+                "errors": [], "context": CTX, "K": k, "observer_sha256": observer_sha}
+    suites = sorted({tuple(P["suites_by_path"][r["path"]]) for r in P["plan"] if r["K"] == k})
+    records = [record(10, None)]
+    for suite in suites:
+        records.append(record(10+len(records), None, suite))
+    for key in g.expected_keys(P, k):
+        records.append(record(10+len(records), key, P["suites_by_path"][variants[key]["path"]]))
+    return {"v": 1, "canonical_pid": 10, "policy_pid": 9, "observer_sha256": observer_sha, "records": records}
+
+
 def payload(k):
     env = {"python": "3.12.16", "packages": {n: "1.0" for n in
            ("pytest", "pytest-timeout", "PyYAML", "sounddevice", "numpy", "onnxruntime", "setuptools")},
            "native_portaudio": "19.6.0-1.2build3", "image_os": "ubuntu24", "image_version": "synthetic"}
     env["packages"].update({"pytest": "9.1.1", "pytest-timeout": "2.4.0", "setuptools": "83.0.0"})
     files = {"journal.jsonl": journal(rows(k)), "facts.json": encode(facts(k)),
-             "report.txt": b"synthetic evidence only\n", "environment.json": encode(env)}
+             "report.txt": b"synthetic evidence only\n", "environment.json": encode(env),
+             "imports.json": encode(imports_evidence(k))}
     files["provenance.json"] = encode({"context": CTX, "candidate": P["candidate"], "tree": P["candidate_tree"],
         "plan_sha256": SHA, "K": k, "N": 16, "mutator_rc": 0, "hashes": P["hashes"],
         "files": {name: g.digest(data) for name, data in files.items()}})
@@ -91,6 +134,8 @@ def assert_rejected(call, *args):
 def test_s01_valid_all_682_and_independent_final_replay(tmp_path, monkeypatch):
     run, jobs, artifacts, blobs = platform()
     monkeypatch.setattr(g, "preflight", lambda *args: None)
+    monkeypatch.setattr(g, "observation_policy", lambda source, p, k: fake_observation_policy(k))
+    monkeypatch.setattr(g, "git", lambda root, *args: CTX["definition_sha"] if args[:1] == ("rev-parse",) else "")
     original_run = g.subprocess.run
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
@@ -114,7 +159,7 @@ def test_s01_valid_all_682_and_independent_final_replay(tmp_path, monkeypatch):
     final.update(id=999, name="release970-700-1-final", size_in_bytes=len(blob), digest="sha256:"+g.digest(blob))
     artifacts.append(final)
     blobs[999] = blob
-    assert g.aggregate(ROOT, P, SHA, CTX, tmp_path / "external", True) == 0
+    assert g.aggregate(ROOT, P, SHA, CTX, tmp_path / "external", True, trust()) == 0
     assert json.loads((tmp_path / "external/strict.json").read_bytes())["external_completed_run_verified"] is True
 
 
@@ -241,7 +286,7 @@ def test_s14_artifact_metadata_and_download(monkeypatch):
     assert_rejected(g.download, arts[0], g.PLAN_PAYLOAD)
 
 
-def test_s15_attempt_mix_and_typed_context():
+def test_s15_attempt_mix_and_typed_context(monkeypatch, tmp_path):
     run, jobs, arts, _ = platform()
     arts[1]["name"] = arts[1]["name"].replace("700-1-", "700-2-")
     assert_rejected(g.validate_platform, run, jobs, arts, CTX)
@@ -251,6 +296,26 @@ def test_s15_attempt_mix_and_typed_context():
     files = payload(1); prov = json.loads(files["provenance.json"]); prov["context"]["attempt"] = True
     files["provenance.json"] = encode(prov)
     assert_rejected(g.validate_payload, files, P, SHA, CTX, 1)
+    assert g.validate_approval(CTX, P, SHA, **trust())["definition_sha"] == CTX["definition_sha"]
+    # Internally coherent alternate API/context still differs from root's pin.
+    for field, value in [("definition_sha", "e"*40), ("branch", "verify/release970-another-valid-branch")]:
+        other = dict(CTX); other[field] = value
+        assert_rejected(lambda: g.validate_approval(other, P, SHA, **trust()))
+        run, jobs, artifacts, _ = platform()
+        run.update(head_sha=other["definition_sha"], head_branch=other["branch"])
+        for job in jobs:
+            job["head_sha"] = other["definition_sha"]
+        for artifact in artifacts:
+            artifact["workflow_run"].update(head_sha=other["definition_sha"], head_branch=other["branch"])
+        final = copy.deepcopy(artifacts[0]); final.update(id=999, name="release970-700-1-final")
+        artifacts.append(final)
+        assert len(g.validate_platform(run, jobs, artifacts, other, True)) == 18
+        monkeypatch.setattr(g, "api", lambda *a, **k: pytest.fail("unapproved cohort must fail before API"))
+        assert_rejected(g.aggregate, ROOT, P, SHA, other, tmp_path / field, True, trust())
+    for field, value in [("expected_definition_sha", None), ("expected_branch", None),
+                         ("approval_record_sha256", "f"*64), ("approval_record", b"{}\n")]:
+        bad = trust(); bad[field] = value
+        assert_rejected(lambda: g.validate_approval(CTX, P, SHA, **bad))
 
 
 def test_s16_archive_allowlist_and_regular_files():
@@ -294,14 +359,16 @@ def workflow_guard(w):
         assert job["runs-on"] == "ubuntu-24.04"
         assert sum(s["timeout-minutes"] for s in job["steps"]) + 1 <= job["timeout-minutes"] <= 100
         steps = {s["name"]: s for s in job["steps"]}
-        assert steps["definition checkout"]["with"] == {"ref": "${{ github.sha }}", "path": "policy", "persist-credentials": False}
+        assert steps["definition checkout"]["with"] == {"ref": "${{ github.sha }}", "path": "policy", "fetch-depth": 0, "persist-credentials": False}
         assert steps["runtime checkout"]["with"] == {"ref": P["candidate"], "path": "runtime", "fetch-depth": 0, "persist-credentials": False}
         assert steps["Python"]["with"] == {"python-version": "3.12.16"}
         assert all(s["uses"] in allowed for s in job["steps"] if "uses" in s)
         upload = steps["evidence upload"]
-        assert upload["if"] == "${{ always() }}" and upload["with"]["if-no-files-found"] == "error"
+        assert upload["if"] == "${{ success() && !cancelled() }}" and upload["with"]["if-no-files-found"] == "error"
         assert "overwrite" not in upload["with"]
         assert upload["with"]["name"].startswith("release970-${{ github.run_id }}-${{ github.run_attempt }}-")
+        if role == "plan":
+            assert steps["synthetic policy controls"]["run"] == "python -m pytest policy/tests/test_release970_gate.py policy/tests/test_release970_observer.py -q"
         if role == "critical":
             mutation = steps["fresh canonical shard"]
             assert mutation["timeout-minutes"] == 60
@@ -320,6 +387,7 @@ def test_s18_workflow_bounds_pins_and_directed_weakening():
         lambda x: x["jobs"]["critical"].update(**{"timeout-minutes": 92}),
         lambda x: x["jobs"]["critical"]["steps"][1]["with"].update(ref="main"),
         lambda x: x["jobs"]["critical"]["steps"][-1]["with"].update(overwrite=True),
+        lambda x: x["jobs"]["critical"]["steps"][-1].update(**{"if": "${{ always() }}"}),
         lambda x: x["jobs"]["critical"]["steps"][-2].update(**{"timeout-minutes": 59}),
         lambda x: x["jobs"]["aggregate"].update(**{"if": "success()"}),
         lambda x: x["jobs"]["plan"]["steps"][0].update(uses="actions/checkout@main")]:
@@ -331,6 +399,12 @@ def test_s18_workflow_bounds_pins_and_directed_weakening():
     workflow_spec.loader.exec_module(guard)
     for role in ("plan", "critical", "aggregate"):
         opts = next(s for s in w["jobs"][role]["steps"] if s["name"] == "evidence upload")["with"]
+        condition = next(s for s in w["jobs"][role]["steps"] if s["name"] == "evidence upload")["if"]
+        # The exact structural expression has the required failure/cancel truth table.
+        assert condition == "${{ success() && !cancelled() }}"
+        for success, cancelled, allowed in [(True, False, True), (False, False, False),
+                                           (False, True, False), (True, True, False)]:
+            assert (success and not cancelled) is allowed
         guard.assert_attempt_scoped_release_artifact(opts, role)
         for field, value in [("overwrite", True), ("overwrite", 0), ("if-no-files-found", "ignore"),
             ("name", opts["name"].replace("${{ github.run_id }}", "old")),

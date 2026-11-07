@@ -24,6 +24,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: policy
+          fetch-depth: 0
           persist-credentials: false
       - name: runtime checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -53,12 +54,12 @@ jobs:
         run: python -m pip -q install . "pytest==9.1.1" "pytest-timeout==2.4.0" "setuptools==83.0.0"
       - name: synthetic policy controls
         timeout-minutes: 6
-        run: python -m pytest policy/tests/test_release970_gate.py -q
+        run: python -m pytest policy/tests/test_release970_gate.py policy/tests/test_release970_observer.py -q
       - name: pinned plan preflight
         timeout-minutes: 6
         run: python policy/scripts/release970_gate.py preflight --source "$PWD/runtime" --out "$PWD/plan-evidence"
       - name: evidence upload
-        if: ${{ always() }}
+        if: ${{ success() && !cancelled() }}
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -82,6 +83,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: policy
+          fetch-depth: 0
           persist-credentials: false
       - name: runtime checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -120,7 +122,7 @@ jobs:
           K: ${{ matrix.K }}
         run: python policy/scripts/release970_gate.py run --source "$PWD/runtime" --out "$PWD/shard-evidence" --K "$K"
       - name: evidence upload
-        if: ${{ always() }}
+        if: ${{ success() && !cancelled() }}
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -141,6 +143,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: policy
+          fetch-depth: 0
           persist-credentials: false
       - name: runtime checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -174,7 +177,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python policy/scripts/release970_gate.py aggregate --source "$PWD/runtime" --out "$PWD/final-evidence"
       - name: evidence upload
-        if: ${{ always() }}
+        if: ${{ success() && !cancelled() }}
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
