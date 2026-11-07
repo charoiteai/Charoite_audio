@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ def load(name, path):
 
 
 FIXTURE = load('contract_retry_fixture', ROOT / 'tests/fixtures/nightly_955/synthetic_wrapper.py')
+NIGHT_GATE = load('retry_contract_night_gate', ROOT / 'scripts/night_gate.py')
 
 
 class RetryContract(unittest.TestCase):
@@ -131,7 +133,7 @@ class RetryContract(unittest.TestCase):
 
     def test_probe_failure_is_advisory_and_final_gate_still_decides(self):
         self.status('ok')
-        result, receipt = self.run_night(FAKE_PROBE_FAILURE='yes')
+        result, receipt = self.run_night(FAKE_PROBE_FAILURE='yes', FAKE_PROBE_DECISION='defer battery 20%')
         self.assertEqual(result.returncode, 0)
         self.assertEqual(self.ux_count(), 1)  # Explicit fail-open matches the source fallback.
         self.assertEqual(receipt['decision'], 'skip')
@@ -144,6 +146,49 @@ class RetryContract(unittest.TestCase):
         self.assertEqual(self.ux_count(), 0)
         self.assertEqual(receipt['decision'], 'go')
         self.assertEqual(receipt['counts']['heavy'], 1)
+
+    def test_invalid_successful_probe_keeps_ux_and_final_gate_authority(self):
+        invalid = ('deferred error', 'defer', 'defer garbage',
+                   'defer battery twenty%', 'defer battery -1%',
+                   'defer battery 020%', 'defer battery 20% garbage',
+                   'defer battery 20%\nskip', 'defer battery 20%\n',
+                   'skip\n', 'skip\ngo', 'brief trailing', '', 'garbage')
+        for probe in invalid:
+            with self.subTest(probe=repr(probe)):
+                self.status('ok')
+                previous_ux = self.ux_count()
+                result, receipt = self.run_night(FAKE_PROBE_DECISION=probe)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(self.ux_count(), previous_ux + 1)
+                self.assertEqual(receipt, {'decision': 'skip', 'counts': {'heavy': 0, 'brief': 0}})
+                self.assertEqual(json.loads((self.root / 'nightly_gate.json').read_text())['decision'], 'skip')
+
+    def test_actual_gate_defer_format_omits_only_ux_and_final_gate_still_decides(self):
+        for percent in (0, 9, 20, NIGHT_GATE.LOW_BATTERY_PCT - 1):
+            with self.subTest(percent=percent):
+                probe = NIGHT_GATE.decide(dt.datetime(2026, 1, 2, 20), None, (True, percent))
+                self.assertEqual(probe, f'defer battery {percent}%')
+                self.status('failed')
+                previous_ux = self.ux_count()
+                result, receipt = self.run_night(FAKE_PROBE_DECISION=probe)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(self.ux_count(), previous_ux)
+                # The unchanged final gate sees AC power and still admits work.
+                self.assertEqual(receipt['decision'], 'go')
+                self.assertGreater(receipt['counts']['heavy'], 0)
+                self.assertEqual(json.loads((self.root / 'nightly_gate.json').read_text())['decision'], 'go')
+
+    def test_invalid_or_valid_defer_probe_cannot_bypass_existing_resource_guards(self):
+        valid = NIGHT_GATE.decide(dt.datetime(2026, 1, 2, 20), None, (True, 20))
+        for probe in ('deferred error', valid):
+            for guard, value in (('FAKE_RESOURCE', 'no'), ('FAKE_WINDOW', 'no'),
+                                 ('FAKE_OTHER_RUNNING', 'yes')):
+                with self.subTest(probe=probe, guard=guard):
+                    result, receipt = self.run_night(FAKE_PROBE_DECISION=probe, **{guard: value})
+                    self.assertEqual(result.returncode, 75)
+                    self.assertEqual(receipt, {})
+                    self.assertEqual(self.ux_count(), 0)
+                    self.assertFalse((self.root / 'counts.json').exists())
 
 
 if __name__ == '__main__':

@@ -21,10 +21,8 @@ def main() -> int:
     counts = json.loads(counts_path.read_text()) if counts_path.exists() else {'heavy': 0, 'brief': 0}
     decision = gate['decide'](dt.datetime.fromisoformat(clock), state, (False, 100))
     if mode == 'probe':
-        if os.environ.get('FAKE_PROBE_FAILURE') == 'yes':
-            return 2
         print(os.environ.get('FAKE_PROBE_DECISION', decision))
-        return 0
+        return 2 if os.environ.get('FAKE_PROBE_FAILURE') == 'yes' else 0
     if os.environ.get('CHAROITE_SLOT') != '1':
         decision = 'go'
     else:

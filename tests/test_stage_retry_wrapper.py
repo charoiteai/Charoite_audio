@@ -34,7 +34,7 @@ class RetryStaging(unittest.TestCase):
                     if not (74 <= n <= 77 or 197 <= n <= 199)]
         expected.insert(expected.index('mkdir -p "$STATE"\n') + 1, STAGE.UX_PROBE)
         expected[expected.index('ux_step\n')] = (
-            'case "$N955_UX_DECISION" in brief|skip|defer*) ;; *) ux_step ;; esac\n')
+            'case "$N955_UX_DECISION" in brief|skip|defer) ;; *) ux_step ;; esac\n')
         expected.insert(expected.index('exec /bin/bash "$NIGHTLY"\n'), 'export CHAROITE_SLOT=1\n')
         self.assertEqual(after, ''.join(expected).encode())
         self.assertNotIn(b': > "$MARK"', after)

@@ -16,10 +16,18 @@ import stat
 import subprocess
 
 EXPECTED = 'c88f5d6f10ca458e17f7d5e0ab94da70899b2ce0e3d3621b67f05e9c823a5a1c'
+# Keep record boundaries: command substitution otherwise strips extra newlines.
+# night_gate emits canonical integers in its sole "defer battery {pct}%" form.
 UX_PROBE = '''N955_UX_DECISION=go
-if N955_UX_PROBE=$("$N955_PYTHON" "$N955_GATE_SCRIPT" decide --root "$CHAROITE_ROOT" 2>/dev/null); then
+if N955_UX_PROBE=$("$N955_PYTHON" "$N955_GATE_SCRIPT" decide --root "$CHAROITE_ROOT" 2>/dev/null && printf .); then
+  N955_UX_PROBE=${N955_UX_PROBE%.}
+  N955_UX_PROBE=${N955_UX_PROBE%$'\\n'}
   case "$N955_UX_PROBE" in
-    go|brief|skip|defer*) N955_UX_DECISION="$N955_UX_PROBE" ;;
+    go|brief|skip) N955_UX_DECISION="$N955_UX_PROBE" ;;
+    *)
+      if [[ "$N955_UX_PROBE" =~ ^defer\\ battery\\ (0|[1-9][0-9]*)%$ ]]; then
+        N955_UX_DECISION=defer
+      fi ;;
   esac
 fi
 '''
@@ -52,7 +60,7 @@ def transform(data: bytes, expected: str = EXPECTED) -> bytes:
             result.append(UX_PROBE)
             continue
         if number == 209:
-            result.append('case "$N955_UX_DECISION" in brief|skip|defer*) ;; *) ux_step ;; esac\n')
+            result.append('case "$N955_UX_DECISION" in brief|skip|defer) ;; *) ux_step ;; esac\n')
             continue
         if number == 215:
             result.append('export CHAROITE_SLOT=1\n')
