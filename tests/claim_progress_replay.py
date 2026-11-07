@@ -1,6 +1,8 @@
 """Replay the finite baseline/whole-suite exact-mutant proof in owned copies.
 
 Run under the project's fresh quiet/heavy gates. Source tree is never mutated.
+Actual argv stays in the private receipt. Logs are decoded stdout + stderr,
+concatenated in that order and UTF-8 re-encoded, not original stream bytes.
 """
 import dataclasses
 import hashlib
@@ -93,15 +95,16 @@ def main():
             argv, raw = captured[0]
             assert argv == [sys.executable, "-B", "-m", "pytest", *phase_selected,
                             "-q", "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", "120"]
-            raw_bytes = raw.encode()
+            raw_bytes = raw.encode("utf-8")
             (log_dir / (phase + ".log")).write_bytes(raw_bytes)
             receipt["phases"][phase] = {**dataclasses.asdict(result), "elapsed_s": time.monotonic() - started}
             receipt["phases"][phase].update(
+                argv=argv,
                 raw_sha256=hashlib.sha256(raw_bytes).hexdigest(), raw_bytes=len(raw_bytes),
                 progress_assertions=raw.count("AssertionError: claim search did not advance"),
                 pytest_timeout_failures=raw.count("Failed: Timeout"),
                 summary=re.findall(r"^.*(?:[0-9]+ passed|[0-9]+ failed).* in [0-9.]+s.*$", raw, re.M)[-1:])
-            print(phase, receipt["phases"][phase], flush=True)
+            print(phase, {k: v for k, v in receipt["phases"][phase].items() if k != "argv"}, flush=True)
             output.write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             expected = mc.FAILED if phase == "exact_b9" else mc.PASSED
             assert result.status == expected and result.rc == (1 if phase == "exact_b9" else 0), result
