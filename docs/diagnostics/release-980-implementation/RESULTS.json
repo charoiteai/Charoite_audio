@@ -1,8 +1,8 @@
 {
   "v": 1,
   "kind": "bounded helper controls, not actual frozen external",
-  "tested_helper_sha256": "0d7994d3e7d177ff461829c1ed385388491197a5ae5334b68da045e406fb2847",
-  "tested_tests_sha256": "a51d9c7804b055fb8f03036375ee9e3a5d360e4314d1a909d9bd755f05b8059d",
+  "tested_helper_sha256": "ab4a70a5f8c4a23c65eb46528e290e5f3e025ab30a388670b02b2e9ca6e17f17",
+  "tested_tests_sha256": "d726114cb4abcd9811dc78c62b951ea7d5defdbcc86594ab90c7c36611cbd8bf",
   "managed_python_executable_sha256": "31b9c9a8d50289f3a13f014b3efd8ea3534fc3eea7ca7d9809e166139910b805",
   "managed_python_version_source": "ROOT specified existing managed CPython3.12.13; child startup isolation actually exercised",
   "resource_gate": "fresh existing quiet_guard && HEAVY_WAIT_MAX_S=30 heavy_run before every execution; native tempfile base; quiet logs private and never included",
@@ -88,6 +88,22 @@
         "survived": 0
       },
       "wrong_binary_executions": 0
+    },
+    {
+      "suite": "bounded CI integration affected suite (helper/cloud/private_permissions/import_boundaries/entrypoints)",
+      "tests": 297,
+      "subtests": 54,
+      "outcome": "PASS",
+      "elapsed_seconds": 123.5,
+      "all_helper_controls": 37,
+      "tested_helper_sha256": "ab4a70a5f8c4a23c65eb46528e290e5f3e025ab30a388670b02b2e9ca6e17f17",
+      "tested_tests_sha256": "d726114cb4abcd9811dc78c62b951ea7d5defdbcc86594ab90c7c36611cbd8bf",
+      "source_guard_mutants": {
+        "changed_guards": 12,
+        "killed": 12,
+        "survived": 0
+      },
+      "pure_classifier_ast_future_launch_controls": 8
     }
   ],
   "actual_supplemental_external_invocations": 0,
@@ -101,9 +117,9 @@
     "ROOT authorizing record/runtime closure and independent pre-exec gate",
     "ROOT native immutable-cohort supplemental replay and consumer acceptance"
   ],
-  "final_tests_sha256": "a51d9c7804b055fb8f03036375ee9e3a5d360e4314d1a909d9bd755f05b8059d",
+  "final_tests_sha256": "d726114cb4abcd9811dc78c62b951ea7d5defdbcc86594ab90c7c36611cbd8bf",
   "post_control_literal_cleanup": "Ordinary ruff hook found F541 constant f-string. Removed only redundant f prefix after final30 run; identical resulting string and input, tests not claimed rerun. Privacy/assertion hooks passed during first ordinary commit attempt.",
   "host_recursive_runtime_hash_executed": false,
   "forbidden_resource_bytes_read_or_hashed": false,
-  "current_summary": "Final36/11mutants are actual current helper source. Previous33/9 covered c494 helper. Earlier245/47 reused only for applicable unchanged original gate/observer/entrypoint areas, never changed helper/consumer/runtime/PATH behavior. Root native full success remains unexecuted."
+  "current_summary": "Final affected297/54 includes all37currenthelpercontrols and12guardmutants plus8never-executed future-launch AST controls. Original annotation AST equality was an earlier comment-only epoch; final standalone umask hardening is freshly tested. Current final CI remains required; no full11105/682/external replay claimed."
 }

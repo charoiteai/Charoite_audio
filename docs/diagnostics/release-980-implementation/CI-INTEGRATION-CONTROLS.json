@@ -1,0 +1,76 @@
+{
+  "v": 1,
+  "status": "PASS_affected_and_final_staged_layout_check",
+  "base_sha": "823b8b8c9a9e3f9eb5568de72bd75f299d4021d4",
+  "source_ci_head": "432e65c520addaab5190782e0f3abf9c3253607d",
+  "source_ci_run": 42420538017,
+  "helper_sha256": "ab4a70a5f8c4a23c65eb46528e290e5f3e025ab30a388670b02b2e9ca6e17f17",
+  "helper_tests_sha256": "d726114cb4abcd9811dc78c62b951ea7d5defdbcc86594ab90c7c36611cbd8bf",
+  "cloud_tests_sha256": "e8d1a3ed84989245908669c5f21ae6aa02436c67672e91e41d29a873808e46c6",
+  "affected_files": [
+    "tests/test_release980_external.py",
+    "tests/test_cloud_call_sites.py",
+    "tests/test_private_permissions.py",
+    "tests/test_import_boundaries.py",
+    "tests/test_entry_points_contract.py"
+  ],
+  "actual_affected_result": {
+    "tests": 297,
+    "subtests": 54,
+    "passed": true,
+    "elapsed_seconds": 123.5,
+    "all_helper_controls": 37,
+    "source_guard_mutants": 12,
+    "killed": 12,
+    "survived": 0,
+    "ast_future_launch_shapes": 8,
+    "ast_shape_execution": false
+  },
+  "log_copy": {
+    "path": "ci-integration-controls.txt",
+    "kind": "normalized/non-verbatim",
+    "raw_sha256": "0e7f6c944f0bca6d9fc7c7fd81e1794810f9362051a19a409b4cea15c166b799",
+    "raw_bytes": 398,
+    "raw_capture_preserved_privately": true
+  },
+  "network_registry_unchanged_ast": [
+    "EXITS",
+    "NETWORK_EXITS",
+    "SDK_EXITS"
+  ],
+  "umask_guard_and_forgiveness_table_unchanged_bytes": true,
+  "protected_source_git_paths": [
+    "src",
+    "scripts/release970_gate.py",
+    "scripts/release970_observer.py",
+    "scripts/mutate_check.py",
+    "scripts/layout_map.py",
+    ".github",
+    "pyproject.toml",
+    "tests/test_private_permissions.py"
+  ],
+  "repairs": [
+    "one exact literal-app classifier known exception with persistent exact-call purity contract",
+    "stdlib harden_umask077 is first executable before main try; effective mask077 and defaultfile600 controlled in own temp root with restoration",
+    "all code/tests/docs/evidence paths staged before normal final layout regeneration/check"
+  ],
+  "historical_annotation_ast_check": "SEMGREP-AST-CHECK.json proves only comment-only432-to823 epoch; final CLI hardening deliberately changes AST and is freshly checked here",
+  "semgrep_matching_version_local_scan": false,
+  "semgrep_final_ci_required_version": "1.173.0",
+  "actor_actual_external": 0,
+  "actor_authorizing_record_created": false,
+  "actor_host_recursive_hash": 0,
+  "independent_root_runtime_work": "root-reported e505 work is separate and private; not an actor operation",
+  "final_staged_layout_regeneration": {
+    "outcome": "PASS",
+    "raw_log_sha256": "fa9f001364ff38b8cf81e34ad35629e2f6e2bf8cc83713a95882afd6f83009d1",
+    "raw_bytes": 248,
+    "guard_relaxation": false
+  },
+  "final_staged_layout_check": {
+    "outcome": "PASS",
+    "raw_log_sha256": "8ab618e2fbb8d113d2c382d91ae382a210181e95bbe4006e0cddd1381e72da6a",
+    "raw_bytes": 52,
+    "normal_guard_unmodified": true
+  }
+}

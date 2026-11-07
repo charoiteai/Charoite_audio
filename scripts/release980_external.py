@@ -996,7 +996,13 @@ def main():
     return child_verify(args.launch) if args.mode == "_verify" else supervise(args)
 
 
+def harden_umask():
+    """Standalone stdlib-only equivalent: private defaults before CLI work."""
+    return os.umask(0o077)
+
+
 if __name__ == "__main__":
+    harden_umask()
     try:
         raise SystemExit(main())
     except (Refusal, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:

@@ -448,6 +448,48 @@ def test_the_guard_sees_the_resolver_call_style():
     assert _calls_claude_bin(parent.body[0])
 
 
+def _release980_metadata_impure_calls(fn):
+    """Exact metadata-only call surface for the one justified literal exception.
+
+    Unknown helpers, process launches, API clients and dynamic execution must
+    fail this contract before they can hide behind the known app-slug match.
+    """
+    pure = {
+        "OTHER_WORKFLOWS.get", "all", "any", "c.get", "c.get('app', {}).get",
+        "c.get('check_suite', {}).get", "checks.values", "j.get", "len",
+        "matched.add", "need", "observed_ci.add", "positive", "pr_ready",
+        "pr_runs.append", "push_groups.append", "r.get", "registrations.append",
+        "repo_identity", "row['conclusion'].lower", "row['status'].lower",
+        "run.get", "run['path'].startswith", "run_pr_association",
+        "s['jobs'].values", "s['runs'].items", "s['runs'].values",
+        "s['suite_memberships'].get", "set", "sorted", "successes.add",
+        "suite.get", "suite.get('app', {}).get", "suite.keys", "suite['app'].get",
+        "suites.values", "suites[sid].get", "suites[sid].get('app', {}).get",
+        "type", "unique",
+    }
+    return sorted({ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)} - pure)
+
+
+def test_release980_literal_exception_remains_metadata_only():
+    fn = _func(REPO / "scripts/release980_external.py", "validate_snapshot")
+    assert "claude" in _own_consts(fn), "keep the literal app slug visible"
+    assert _release980_metadata_impure_calls(fn) == []
+
+
+@pytest.mark.parametrize("statement", [
+    "subprocess.run(['claude'])", "subprocess.Popen(['claude'])",
+    "subprocess.check_call(['claude'])", "subprocess.check_output(['claude'])",
+    "subprocess.check_future(['claude'])", "command(['claude'])",
+    "GitHub(None)", "exec('untrusted')",
+])
+def test_release980_literal_exception_rejects_future_launch_ast(statement):
+    # AST weakness controls only: these inserted statements are NEVER executed.
+    fn = _func(REPO / "scripts/release980_external.py", "validate_snapshot")
+    changed = ast.parse(ast.unparse(fn)).body[0]
+    changed.body.insert(0, ast.parse(statement).body[0])
+    assert _release980_metadata_impure_calls(changed), statement
+
+
 def test_no_other_place_starts_claude():
     """Новый выход в сеть должен попасть в список выше, а не появиться тихо.
 
@@ -470,6 +512,9 @@ def test_no_other_place_starts_claude():
     # который владелец копирует в свой терминал; сервер его не запускает и
     # процессов не порождает, в сеть ничего не уходит.
     known.add("src/mcp_server.py:_registration")
+    # №980: literal app slug classifies an empty registration, not a model
+    # launch. The function's exact pure-call surface is guarded below.
+    known.add("scripts/release980_external.py:validate_snapshot")
     found = set()
     resolved = set()
     for root in (SRC, SRC.parent / "scripts"):

@@ -1,6 +1,6 @@
 # Release980 supplemental helper and ROOT consumer
 
-The standalone stdlib helper is `scripts/release980_external.py`. It preserves frozen definition74ad, runtime9486, run42405663537/attempt1, plan091c and root83724. Only original `validate_release_pr` is replaced; original main/aggregate/preflight/API/import/artifact/canonical/final-receipt functions execute unchanged. This is supplemental proof, never vanilla74ad external PASS.
+The standalone stdlib helper is `scripts/release980_external.py`. Its first executable __main__ action applies the stdlib-only private umask077 before parsing or any CLI work. It preserves frozen definition74ad, runtime9486, run42405663537/attempt1, plan091c and root83724. Only original `validate_release_pr` is replaced; original main/aggregate/preflight/API/import/artifact/canonical/final-receipt functions execute unchanged. This is supplemental proof, never vanilla74ad external PASS.
 
 ## Trust before any candidate Python execution
 
@@ -43,4 +43,6 @@ quiet_guard.sh && HEAVY_WAIT_MAX_S=30 heavy_run.sh "$PY" -I -S -B \
   -m unittest discover -s tests -p test_release980_external.py -v
 ```
 
-The tests cover metadata before/after, pair/cohort/history/provenance negatives, narrow capture helper stubs, real original main/aggregate to an intentional genuine runtime guard failure, startup isolation, private atomic publication and actual-child-wait consumer helper integration, plus eleven changed guard mutants. Synthetic publisher/consumer data and frame stubs are labelled helper boundaries, never full frozen success. A successful full frozen34-job integration and actual supplemental external/consumer acceptance remain ROOT native gates after both OUTPUT reviews and ordinary CI on this fix branch. No actual682 rerun, frozen CI write, release, signing or installation occurs here.
+The tests cover metadata before/after, pair/cohort/history/provenance negatives, narrow capture helper stubs, real original main/aggregate to an intentional genuine runtime guard failure, startup isolation, private atomic publication and actual-child-wait consumer helper integration, plus twelve changed guard mutants. Synthetic publisher/consumer data and frame stubs are labelled helper boundaries, never full frozen success. A successful full frozen34-job integration and actual supplemental external/consumer acceptance remain ROOT native gates after both OUTPUT reviews and ordinary CI on this fix branch. No actual682 rerun, frozen CI write, release, signing or installation occurs here.
+
+The literal app-registration classifier remains visible to the cloud call-site scanner through one justified function-specific known exception; a persistent exact-call AST contract forbids process/API/dynamic execution inside that classifier, including future inserted launch shapes. NETWORK_EXITS and privacy/model permissions are unchanged. The generated layout map must be rebuilt from all staged tracked paths before delivery.

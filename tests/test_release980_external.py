@@ -4,6 +4,7 @@ Publication/consumer tests are labelled helper integration. The original-core
 test really invokes unchanged main/aggregate and intentionally fails its real
 runtime preflight; it is not a successful full-34-job integration.
 """
+import ast
 import copy
 import dataclasses
 import importlib.util
@@ -377,6 +378,22 @@ class PublicationConsumerControls(unittest.TestCase):
 
 
 class LaunchCoreControls(unittest.TestCase):
+    def test_standalone_cli_hardens_umask_before_try_and_creates_private_files(self):
+        tree = ast.parse((ROOT / "scripts/release980_external.py").read_text())
+        guard = next(node for node in tree.body if isinstance(node, ast.If)
+                     and ast.unparse(node.test) == "__name__ == '__main__'")
+        self.assertEqual(ast.unparse(guard.body[0]), "harden_umask()")
+        with tempfile.TemporaryDirectory(prefix="release980-umask-") as tmp:
+            root = Path(tmp).resolve();previous = os.umask(0o022)
+            try:
+                self.assertEqual(g.harden_umask(), 0o022)
+                path = root / "private-default.json";path.write_bytes(b"synthetic private default")
+                effective = os.umask(0o077)
+                self.assertEqual(effective, 0o077)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            finally:
+                os.umask(previous)
+
     def test_actual_child_path_shadow_before_after_without_executing_tools(self):
         with tempfile.TemporaryDirectory(prefix="release980-path-") as tmp:
             root = Path(tmp).resolve();git_dir = root / "git-dir";gh_dir = root / "gh-dir";git_dir.mkdir();gh_dir.mkdir()
@@ -560,7 +577,7 @@ class LaunchCoreControls(unittest.TestCase):
 
 
 class TargetedMutationControls(unittest.TestCase):
-    def test_eleven_changed_guard_mutants_are_killed(self):
+    def test_twelve_changed_guard_mutants_are_killed(self):
         source = (ROOT / "scripts/release980_external.py").read_text()
         cases = [
             ("exit0", "and observed.returncode == 0", "and observed.returncode != 0", PublicationConsumerControls, "test_helper_fresh_success_requires_concrete_consumer_record"),
@@ -574,6 +591,7 @@ class TargetedMutationControls(unittest.TestCase):
             ("unread-resource", 'st = path.lstat()\n        if forbidden_resource_name(path):', 'st = path.lstat()\n        if False:', LaunchCoreControls, "test_forbidden_resources_are_lstat_only_never_opened_or_certified"),
             ("path-shadow", 'actual = shutil.which(name, path=path)', 'actual = pin["path"]', LaunchCoreControls, "test_actual_child_path_shadow_before_after_without_executing_tools"),
             ("tool-name", 'need(Path(pin["path"]).name == name,', 'need(True,', LaunchCoreControls, "test_tool_pins_require_exact_invoked_names"),
+            ("private-umask", 'return os.umask(0o077)', 'return os.umask(0o022)', LaunchCoreControls, "test_standalone_cli_hardens_umask_before_try_and_creates_private_files"),
         ]
         killed = []
         for label, old, new, cls, method in cases:
@@ -587,7 +605,7 @@ class TargetedMutationControls(unittest.TestCase):
                 self.assertFalse(result.wasSuccessful(), "surviving targeted guard mutant: " + label)
                 killed.append(label)
                 sys.modules.pop(name)
-        self.assertEqual(len(killed), 11)
+        self.assertEqual(len(killed), 12)
 
 
 if __name__ == "__main__":
