@@ -1,0 +1,16 @@
+{
+  "base": "2106ed52c9b3f70f5d0c8b6363e9e3171ae767be",
+  "tested_source_commit": "62a8f42d029387e5f6ecf9cd62f95ecdd68e1888",
+  "source_hashes": {
+    ".github/workflows/ci.yml": "6f045e5a973a8a69405da3d21fc473a6245954dd6693ceabe8d9481f5105f413",
+    "tests/test_workflows.py": "b26a80497580aef2f28cace2adc92c195f4ebc83f002286c94b15fed751a5394"
+  },
+  "original_patch_sha256": "9e08f67f7f2cacf1e864a04902455f8b94beb4e535729fe1fabdf6310ee36a26",
+  "base_blobs": {
+    ".github/workflows/ci.yml": "f6bbaf6d8788571fca03fe51ed9f2e3d81739522",
+    "tests/test_workflows.py": "695b05176c01bfc94682e75a338de652edd23790"
+  },
+  "production_yaml_exact_delta": "single jobs.tests.runs-on label; other YAML bytes/semantics unchanged",
+  "other_product_source_changes": false,
+  "test_evidence_reuse": "Final evidence commit adds only review documents; tested source/dependencies unchanged. Exact final head is pinned by the OUTPUT manifest, not claimed as a new test execution."
+}
