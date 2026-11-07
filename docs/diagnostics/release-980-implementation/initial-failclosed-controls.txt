@@ -1,0 +1,97 @@
+test_capture_callback_closure_controls_helper_only (test_release980_external.LaunchCoreControls.test_capture_callback_closure_controls_helper_only) ... ok
+test_cli_refused_modes_unknown_and_duplicate (test_release980_external.LaunchCoreControls.test_cli_refused_modes_unknown_and_duplicate) ... usage: python -m unittest [-h] {_verify,supervise} ...
+python -m unittest: error: argument mode: invalid choice: 'external' (choose from _verify, supervise)
+usage: python -m unittest supervise [-h] --verifier-root VERIFIER_ROOT
+                                    --definition-root DEFINITION_ROOT --source
+                                    SOURCE --context CONTEXT --approval-record
+                                    APPROVAL_RECORD
+                                    --supplemental-approval-record
+                                    SUPPLEMENTAL_APPROVAL_RECORD
+                                    --delivery-parent DELIVERY_PARENT
+                                    --supplemental-approval-record-sha256
+                                    SUPPLEMENTAL_APPROVAL_RECORD_SHA256
+                                    --delivery-name DELIVERY_NAME
+                                    --acceptance-name ACCEPTANCE_NAME
+                                    --invocation-id INVOCATION_ID
+python -m unittest supervise: error: the following arguments are required: --verifier-root, --definition-root, --source, --context, --approval-record, --supplemental-approval-record, --delivery-parent, --supplemental-approval-record-sha256, --delivery-name, --acceptance-name, --invocation-id
+ok
+test_fake_success_noinvoke_and_wrong_modes_refused (test_release980_external.LaunchCoreControls.test_fake_success_noinvoke_and_wrong_modes_refused) ... ok
+test_original_main_aggregate_real_runtime_failure_no_guard_stubs (test_release980_external.LaunchCoreControls.test_original_main_aggregate_real_runtime_failure_no_guard_stubs) ... ok
+test_preimport_frozen_hash_rejection_without_exec (test_release980_external.LaunchCoreControls.test_preimport_frozen_hash_rejection_without_exec) ... ok
+test_startup_attack_isolated_no_site_and_sanitized_environment (test_release980_external.LaunchCoreControls.test_startup_attack_isolated_no_site_and_sanitized_environment) ... ok
+test_tree_runtime_and_executable_changes_refused (test_release980_external.LaunchCoreControls.test_tree_runtime_and_executable_changes_refused) ... ok
+test_collector_independently_fetches_all_ci_runs_and_attempts (test_release980_external.MetadataControls.test_collector_independently_fetches_all_ci_runs_and_attempts) ... ok
+test_full_projection_detects_policy_fields (test_release980_external.MetadataControls.test_full_projection_detects_policy_fields) ... ERROR
+test_html_only_and_codeql_urls_not_suffix_inference (test_release980_external.MetadataControls.test_html_only_and_codeql_urls_not_suffix_inference) ... ERROR
+test_mutated_metadata_negatives (test_release980_external.MetadataControls.test_mutated_metadata_negatives) ... ok
+test_one_and_three_push_groups_no_literal_skip_count (test_release980_external.MetadataControls.test_one_and_three_push_groups_no_literal_skip_count) ... ERROR
+test_pagination_complete_and_truncated_controls (test_release980_external.MetadataControls.test_pagination_complete_and_truncated_controls) ... ok
+test_real_public_two_groups_union_and_original_before_false_gate (test_release980_external.MetadataControls.test_real_public_two_groups_union_and_original_before_false_gate) ... ERROR
+test_atomic_eexist_has_no_overwrite_even_without_precheck (test_release980_external.PublicationConsumerControls.test_atomic_eexist_has_no_overwrite_even_without_precheck) ... ok
+test_existing_stale_symlink_directory_and_hardlink_are_preserved (test_release980_external.PublicationConsumerControls.test_existing_stale_symlink_directory_and_hardlink_are_preserved) ... ok
+test_failures_preserve_private_evidence_no_destination (test_release980_external.PublicationConsumerControls.test_failures_preserve_private_evidence_no_destination) ... ok
+test_helper_actual_child_wait_nonzero_crash_and_success (test_release980_external.PublicationConsumerControls.test_helper_actual_child_wait_nonzero_crash_and_success) ... ok
+test_helper_fresh_success_requires_concrete_consumer_record (test_release980_external.PublicationConsumerControls.test_helper_fresh_success_requires_concrete_consumer_record) ... ok
+test_parent_fsync_failure_afterlink_does_not_make_acceptance (test_release980_external.PublicationConsumerControls.test_parent_fsync_failure_afterlink_does_not_make_acceptance) ... ok
+test_postlink_unknown_nonzero_stale_and_corruption_hold (test_release980_external.PublicationConsumerControls.test_postlink_unknown_nonzero_stale_and_corruption_hold) ... ok
+test_raw_strict_only_and_sidecar_only_never_accepted (test_release980_external.PublicationConsumerControls.test_raw_strict_only_and_sidecar_only_never_accepted) ... ok
+test_wrong_modes_symlinked_stage_and_cleanup_alias_safety (test_release980_external.PublicationConsumerControls.test_wrong_modes_symlinked_stage_and_cleanup_alias_safety) ... ok
+
+======================================================================
+ERROR: test_full_projection_detects_policy_fields (test_release980_external.MetadataControls.test_full_projection_detects_policy_fields)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/test_release980_external.py", line 189, in test_full_projection_detects_policy_fields
+    original = snapshot();expected = g.projection(original)
+                                     ^^^^^^^^^^^^^^^^^^^^^^
+  File "<worktree>/scripts/release980_external.py", line 383, in projection
+    "policy": validate_snapshot(s)}
+              ^^^^^^^^^^^^^^^^^^^^
+  File "<worktree>/scripts/release980_external.py", line 286, in validate_snapshot
+    need(repo_identity(suite["repository"]) == repo_id and suite.get("head_sha") == RUNTIME
+  File "<worktree>/scripts/release980_external.py", line 58, in need
+    raise Refusal(message)
+release980_under_test.Refusal: suite provenance/status
+
+======================================================================
+ERROR: test_html_only_and_codeql_urls_not_suffix_inference (test_release980_external.MetadataControls.test_html_only_and_codeql_urls_not_suffix_inference)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/test_release980_external.py", line 183, in test_html_only_and_codeql_urls_not_suffix_inference
+    g.validate_snapshot(g.collect(FixtureAPI(s), s["pr"]))
+  File "<worktree>/scripts/release980_external.py", line 286, in validate_snapshot
+    need(repo_identity(suite["repository"]) == repo_id and suite.get("head_sha") == RUNTIME
+  File "<worktree>/scripts/release980_external.py", line 58, in need
+    raise Refusal(message)
+release980_under_test.Refusal: suite provenance/status
+
+======================================================================
+ERROR: test_one_and_three_push_groups_no_literal_skip_count (test_release980_external.MetadataControls.test_one_and_three_push_groups_no_literal_skip_count)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/test_release980_external.py", line 138, in test_one_and_three_push_groups_no_literal_skip_count
+    self.assertEqual(len(g.validate_snapshot(s)["push_groups"]), 1)
+                         ^^^^^^^^^^^^^^^^^^^^^^
+  File "<worktree>/scripts/release980_external.py", line 286, in validate_snapshot
+    need(repo_identity(suite["repository"]) == repo_id and suite.get("head_sha") == RUNTIME
+  File "<worktree>/scripts/release980_external.py", line 58, in need
+    raise Refusal(message)
+release980_under_test.Refusal: suite provenance/status
+
+======================================================================
+ERROR: test_real_public_two_groups_union_and_original_before_false_gate (test_release980_external.MetadataControls.test_real_public_two_groups_union_and_original_before_false_gate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/test_release980_external.py", line 114, in test_real_public_two_groups_union_and_original_before_false_gate
+    actual = g.validate_snapshot(s)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "<worktree>/scripts/release980_external.py", line 286, in validate_snapshot
+    need(repo_identity(suite["repository"]) == repo_id and suite.get("head_sha") == RUNTIME
+  File "<worktree>/scripts/release980_external.py", line 58, in need
+    raise Refusal(message)
+release980_under_test.Refusal: suite provenance/status
+
+----------------------------------------------------------------------
+Ran 23 tests in 0.547s
+
+FAILED (errors=4)

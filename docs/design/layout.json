@@ -287,7 +287,8 @@
     "scripts/memory_case_suite.py": "валидация и экспорт учебных вопросов памяти, ручной прогон",
     "scripts/retrieval_compare.py": "сравнение результатов поиска по эталонным вопросам, ручной прогон",
     "scripts/decision_evidence_audit.py": "проверка цитат и истории решений в экспортированных записях, ручной прогон",
-    "scripts/runtime_profile.py": "замер локального потокового транспорта на заданных запросах, ручной прогон"
+    "scripts/runtime_profile.py": "замер локального потокового транспорта на заданных запросах, ручной прогон",
+    "scripts/release980_external.py": "№980: root-invoked pinned supplemental verifier and protected consumer; no background service or mutation execution."
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -301,6 +302,9 @@
     },
     "scripts/release970_observer.py": {
       "file": "№970: standalone passive sitecustomize copy uses its own file only to remove its isolated bootstrap directory from sys.path and measure the actually loaded observer bytes. Importing either product path canon would contaminate the independent canonical/pytest source roots. No owner-data root is inferred."
+    },
+    "scripts/release980_external.py": {
+      "file": "№980: __file__ is read only to authenticate the already ROOT-pinned supervisor/sealed helper bytes. Definition, runtime and delivery roots are explicit authenticated inputs; no owner-data root is inferred. Importing the product data-root canon would widen the standalone stdlib trust boundary."
     }
   },
   "run_contracts": {
@@ -482,6 +486,14 @@
       "mode": "help",
       "why": "по коду: argparse"
     },
+    "scripts/release970_gate.py": {
+      "mode": "help",
+      "why": "№970: argparse exits on --help before source loading, platform API or mutation execution; source/output paths are mandatory explicit arguments."
+    },
+    "scripts/release980_external.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
     "scripts/rename_meeting.py": {
       "mode": "help",
       "why": "приёмка №340: вход обязан отвечать на --help"
@@ -562,10 +574,6 @@
     "src/voice_memos_bridge.py": {
       "mode": "refuse",
       "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
-    },
-    "scripts/release970_gate.py": {
-      "mode": "help",
-      "why": "№970: argparse exits on --help before source loading, platform API or mutation execution; source/output paths are mandatory explicit arguments."
     }
   },
   "schema_module": "src/charoite_graph/graph_schema.py",

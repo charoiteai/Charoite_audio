@@ -1,0 +1,73 @@
+{
+  "v": 1,
+  "kind": "bounded helper controls, not actual frozen external",
+  "tested_helper_sha256": "892704da24471b346f89216e2f90ea8c9219a8c3e89ffce583e5cb30b94a914c",
+  "tested_tests_sha256": "18b7ed0486d458787e6bf87b77b3d967b452374768f31ef0e45e0cc2edfff429",
+  "managed_python_executable_sha256": "31b9c9a8d50289f3a13f014b3efd8ea3534fc3eea7ca7d9809e166139910b805",
+  "managed_python_version_source": "ROOT specified existing managed CPython3.12.13; child startup isolation actually exercised",
+  "resource_gate": "fresh existing quiet_guard && HEAVY_WAIT_MAX_S=30 heavy_run before every execution; native tempfile base; quiet logs private and never included",
+  "runs": [
+    {
+      "suite": "first standalone finite controls",
+      "tests": 23,
+      "passed": 19,
+      "errors": 4,
+      "outcome": "fail-closed discovery of independently listed empty non-Actions registration; evidence preserved; no executed check filtered"
+    },
+    {
+      "suite": "explicit original ten-suite baseline and unknown11 HOLD controls",
+      "tests": 24,
+      "outcome": "PASS before ROOT registration disposition"
+    },
+    {
+      "suite": "updated finite controls including exact empty-registration classification",
+      "tests": 28,
+      "outcome": "PASS",
+      "targeted_mutants": {
+        "changed_guards": 5,
+        "killed": 5,
+        "survived": 0
+      },
+      "elapsed_seconds": 0.759,
+      "tested_helper_sha256": "cf42a63f6962f6a2b6f92ba7ced06fd0b6e9e047694a92d5be86bf4249e2fd98"
+    },
+    {
+      "suite": "mandatory layout regeneration with new CLI declarations",
+      "outcome": "PASS"
+    },
+    {
+      "suite": "new helper, unchanged release970 gate/observer, import boundaries and entrypoint contracts",
+      "tests": 245,
+      "subtests": 47,
+      "outcome": "PASS",
+      "elapsed_seconds": 115.7,
+      "tested_helper_sha256": "cf42a63f6962f6a2b6f92ba7ced06fd0b6e9e047694a92d5be86bf4249e2fd98",
+      "reuse_boundary": "Actual earlier 245/47 run. Later only managed-runtime closure/link handling changed; unchanged metadata/core/publisher/consumer/original sources reused. All final helper controls rerun separately; this is not a new245-run."
+    },
+    {
+      "suite": "final helper/runtime-link/excluded-touch/loop controls and all five targeted guard mutations",
+      "tests": 30,
+      "outcome": "PASS",
+      "elapsed_seconds": 0.74,
+      "tested_helper_sha256": "892704da24471b346f89216e2f90ea8c9219a8c3e89ffce583e5cb30b94a914c",
+      "targeted_mutants": {
+        "changed_guards": 5,
+        "killed": 5,
+        "survived": 0
+      }
+    }
+  ],
+  "actual_supplemental_external_invocations": 0,
+  "actual_mutants_reexecuted": 0,
+  "authorizing_root_record_created": false,
+  "successful_full_frozen_integration": false,
+  "existing_delivery_automation_changed": false,
+  "remaining": [
+    "both independent OUTPUT/final-risk reviews",
+    "ordinary CI on fix980 code commit",
+    "ROOT authorizing record/runtime closure and independent pre-exec gate",
+    "ROOT native immutable-cohort supplemental replay and consumer acceptance"
+  ],
+  "final_tests_sha256": "22aa8d87109f67758f6bf38489b63e903e5c9a1fcf1bcf7353bb67824c150806",
+  "post_control_literal_cleanup": "Ordinary ruff hook found F541 constant f-string. Removed only redundant f prefix after final30 run; identical resulting string and input, tests not claimed rerun. Privacy/assertion hooks passed during first ordinary commit attempt."
+}

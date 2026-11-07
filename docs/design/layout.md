@@ -63,6 +63,7 @@
 - `scripts/layout_map.py`, форма «file»: сам гейт раскладки: строка вычисляет корень РЕПОЗИТОРИЯ — две ступени вверх от scripts/layout_map.py, из него берутся src/, docs/design/layout.json и карта; sys.path она не трогает. Канон в этот момент недостижим: чтобы импортировать src/charoite_paths.py, надо сперва тем же подъёмом от __file__ положить src/ в sys.path — эта строка и есть такой подъём, сделанный до всякого канона. Цепочка ведёт к корню КОДА (src/, docs/design/layout.json), данных он не касается (№338)
 - `scripts/release970_gate.py`, форма «file»: №970: isolated CI policy locates its reviewed definition checkout and immutable plan, never owner data. Importing the product path canon from the definition would contaminate the separate runtime-candidate import origin; canonical runtime is loaded only from explicit --source and verified independently.
 - `scripts/release970_observer.py`, форма «file»: №970: standalone passive sitecustomize copy uses its own file only to remove its isolated bootstrap directory from sys.path and measure the actually loaded observer bytes. Importing either product path canon would contaminate the independent canonical/pytest source roots. No owner-data root is inferred.
+- `scripts/release980_external.py`, форма «file»: №980: __file__ is read only to authenticate the already ROOT-pinned supervisor/sealed helper bytes. Definition, runtime and delivery roots are explicit authenticated inputs; no owner-data root is inferred. Importing the product data-root canon would widen the standalone stdlib trust boundary.
 - `src/deps.py`, форма «file»: рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
@@ -129,7 +130,8 @@
 - `scripts/notarize.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/protocol.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
-- `scripts/release970_gate.py` ← .github/workflows/release-970-critical.yml; проба help
+- `scripts/release970_gate.py` ← .github/workflows/release-970-critical.yml, scripts/release980_external.py; проба help
+- `scripts/release980_external.py` ← ручной запуск: №980: root-invoked pinned supplemental verifier and protected consumer; no background service or mutation execution.; проба help
 - `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; проба help
 - `scripts/retrieval_compare.py` ← ручной запуск: сравнение результатов поиска по эталонным вопросам, ручной прогон; проба help
 - `scripts/runtime_profile.py` ← ручной запуск: замер локального потокового транспорта на заданных запросах, ручной прогон; проба help
@@ -212,7 +214,8 @@
 - `scripts/notarize.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
-- `scripts/release970_gate.py` ← docs/diagnostics/release-970/STRICT-GATE-FOLLOWUP.md, docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md
+- `scripts/release970_gate.py` ← docs/diagnostics/release-970/STRICT-GATE-FOLLOWUP.md, docs/diagnostics/release-970/STRICT-GATE-OUTPUT.md, docs/diagnostics/release-980-input/PLAN.md, docs/diagnostics/release-980-input/THREE.md
+- `scripts/release980_external.py` ← docs/diagnostics/release-980-implementation/README.md, docs/diagnostics/release-980-implementation/README.ru.md, docs/diagnostics/release-980-input/PLAN.md
 - `scripts/rename_meeting.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/retrieval_compare.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/RETRIEVAL_MODEL_EVALUATION.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `scripts/runtime_profile.py` ← docs/FEATURES.md, docs/design/RUNTIME_PROFILE.md
@@ -270,8 +273,8 @@
 
 ## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
-- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
-- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `heavy_run.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, docs/diagnostics/release-980-implementation/README.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
+- `quiet_guard.sh` ← docs/design/818-policy-a-refresh-report.md, docs/diagnostics/nightly-954/JOURNAL.md, docs/diagnostics/release-980-implementation/README.md, reports/handoff/tasks/818_implementation_journal.md, reports/handoff/tasks/818_mutation_journal.md, reports/handoff/tasks/818_output_fixes_journal.md, reports/reviews/n818-mutation-resolution.md
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
 
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
