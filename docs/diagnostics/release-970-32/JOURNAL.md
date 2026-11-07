@@ -11,3 +11,7 @@
 2026-11-07T17:59:06+00:00 — New bound four-file target completed119PASS16.39s,9sourcehashes before/after equal; no release mutants or model. First rebind wrapper stopped on counting the historical C12negativeSHA as a runtime reference; corrected only the3explicit checkout refs, historical negatives preserved. Binding is pending coordinator976 acceptance, not publication approval.
 
 2026-11-07T18:02:37+00:00 — Exact2aa C12 identity/object controls passed, targets failed57PASS/3FAIL: localharness PYTEST_ADDOPTS basetemp inherited by nested pytest caused rc4. Preserve failedreceipt; move own native temporary base into the top-level workflow command argument and remove harness addopts injection. No production/observer/canonical/scoring change.
+
+2026-11-07T18:06:07+00:00 — Bound exact8030candidate pending976acceptance; canonical file-only planning preserves682ordered keys/module shares. Selected hashes99→99 and incremental suite16→17; test/conftest changes explicit. No actual mutation/variant execution.
+
+2026-11-07T18:07:39+00:00 — Current8030binding plus C12CLIbasetempfix:119passed16.63s,9sourcehashes stable. Selected99/suites17 unchanged376, canonical682keys unchanged. Exact-head C12/publicCI/OUTPUT remain next, no verifybranch/fullmutants.

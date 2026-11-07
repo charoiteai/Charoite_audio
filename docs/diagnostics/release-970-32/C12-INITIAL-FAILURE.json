@@ -1,0 +1,29 @@
+{
+  "source_sha": "2aa943a42d8e554b61c9d946ee75f89e846f74ce",
+  "exit_code": 1,
+  "elapsed_s": 11.420251291943714,
+  "step_sha256": "59b9e95e2fa7fbd4ad9b7beba662b9c4dbbeff56226001c914a2b2be645e84c5",
+  "actual_checkout": "2aa943a42d8e554b61c9d946ee75f89e846f74ce",
+  "actual_tree": "6fba3a3d7cd3a31a2507d0ccf9eab9df28b1e461",
+  "is_shallow": true,
+  "commit_count": 1,
+  "alternates": false,
+  "negative_objects": [
+    {
+      "commit": "79ea7fed419027c65f90f87d4c1d0d331a949544",
+      "returncode": 128,
+      "absent": true
+    },
+    {
+      "commit": "50b0704fe280360b1d7f828fd601c6216959e55d",
+      "returncode": 128,
+      "absent": true
+    }
+  ],
+  "raw_log_sha256": "ccf07ca48e2dbb30aae59aced9eadb83008e60b4613caec879b36daa00d9f8d7",
+  "execution": "Exact reviewed workflow shell under local native quiet&&heavy; synthetic run IDs are only temporary pathname labels, not a GitHub run",
+  "own_native_basetemp": true,
+  "test_result": "57passed/3failed9.76s",
+  "cause": "Localharness PYTEST_ADDOPTS sharedbasetemp inherited by nestedpytest produced usage rc4; never accepted as PASS",
+  "fix": "Workflow top-level pytest gets explicitnativebasetemp CLI; harnessaddopts injection removed"
+}
