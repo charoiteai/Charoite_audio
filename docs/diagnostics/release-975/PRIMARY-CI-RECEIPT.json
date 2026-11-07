@@ -1,0 +1,133 @@
+{
+  "schema": 1,
+  "stage": "975 INPUT preparation only; no new tests executed",
+  "observed_at_utc": "2026-11-07T16:26:00.399148+00:00",
+  "repository": "charoiteai/Charoite_audio",
+  "base_definition": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+  "ordinary_ci": [
+    {
+      "id": 128451970644,
+      "run_id": 42388856753,
+      "name": "pytest (src/)",
+      "head_sha": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-11-07T15:57:26Z",
+      "completed_at": "2026-11-07T16:02:40Z",
+      "html_url": "https://github.com/charoiteai/Charoite_audio/actions/runs/42388856753/job/128451970644",
+      "counts": {
+        "failed": 5,
+        "passed": 11128,
+        "skipped": 25,
+        "xfailed": 7
+      },
+      "seconds": 269.59,
+      "raw_log": {
+        "name": "linux-128451970644.log",
+        "bytes": 82236,
+        "sha256": "cdfbad585a9592e65d8ccdee0f01270282bd0a070cf0694128bd59f2907290f6"
+      },
+      "failed_test_names": [
+        "test_before_old_receipt_has_no_actual_import_proof_after_rejects",
+        "test_native_passive_observer_records_actual_sources",
+        "test_native_foreign_unmutated_import_is_rejected",
+        "test_native_callback_error_preserves_rc_but_refuses_evidence",
+        "test_каждая_точка_входа_закрывает_маску"
+      ],
+      "checkout_depth": 1,
+      "public_relative_failure_facts": [
+        {
+          "file": "tests/test_release970_observer.py",
+          "scenario": "historical79ea validator git-show",
+          "returncode": 128
+        },
+        {
+          "file": "tests/test_release970_observer.py",
+          "scenario": "three native synthetic fixtures checkout historical50b",
+          "returncode": 128
+        },
+        {
+          "file": "tests/test_private_permissions.py",
+          "scenario": "unclassified scripts/release970_gate.py entry point",
+          "entry_line": 601
+        }
+      ]
+    },
+    {
+      "id": 128451970411,
+      "run_id": 42388856753,
+      "name": "pytest macOS (src/)",
+      "head_sha": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-11-07T15:57:27Z",
+      "completed_at": "2026-11-07T16:04:12Z",
+      "html_url": "https://github.com/charoiteai/Charoite_audio/actions/runs/42388856753/job/128451970411",
+      "counts": {
+        "failed": 5,
+        "passed": 11140,
+        "skipped": 13,
+        "xfailed": 7
+      },
+      "seconds": 320.33,
+      "raw_log": {
+        "name": "macos-128451970411.log",
+        "bytes": 79097,
+        "sha256": "25beafb2808d65db74f2f3d660b78c5fbe851c214d88ae177c11cbb7b06df380"
+      },
+      "failed_test_names": [
+        "test_before_old_receipt_has_no_actual_import_proof_after_rejects",
+        "test_native_passive_observer_records_actual_sources",
+        "test_native_foreign_unmutated_import_is_rejected",
+        "test_native_callback_error_preserves_rc_but_refuses_evidence",
+        "test_каждая_точка_входа_закрывает_маску"
+      ],
+      "checkout_depth": 1,
+      "public_relative_failure_facts": [
+        {
+          "file": "tests/test_release970_observer.py",
+          "scenario": "historical79ea validator git-show",
+          "returncode": 128
+        },
+        {
+          "file": "tests/test_release970_observer.py",
+          "scenario": "three native synthetic fixtures checkout historical50b",
+          "returncode": 128
+        },
+        {
+          "file": "tests/test_private_permissions.py",
+          "scenario": "unclassified scripts/release970_gate.py entry point",
+          "entry_line": 601
+        }
+      ]
+    }
+  ],
+  "dedicated_policy": {
+    "run_id": 42388856807,
+    "attempt": 1,
+    "job_id": 128451970380,
+    "url": "https://github.com/charoiteai/Charoite_audio/actions/runs/42388856807/job/128451970380",
+    "conclusion": "success",
+    "full_history_fetch": true,
+    "passed": 27,
+    "seconds": 4.59,
+    "raw_log": {
+      "name": "plan-128451970380.log",
+      "bytes": 66578,
+      "sha256": "17badd2c7dff8f605fdfa56f7e6fd0115f523a9117b7fd6b4073c083eba2c9bf"
+    }
+  },
+  "existing_critical_run_snapshot": {
+    "conclusion": null,
+    "created_at": "2026-11-07T15:57:23Z",
+    "event": "push",
+    "head_branch": "verify/release970-50b-strict",
+    "head_sha": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+    "html_url": "https://github.com/charoiteai/Charoite_audio/actions/runs/42388856807",
+    "id": 42388856807,
+    "run_attempt": 1,
+    "status": "in_progress",
+    "updated_at": "2026-11-07T15:58:38Z"
+  },
+  "identity_note": "Existingbbe results remain attributed tobbe; no new682 run or repair-SHA result is claimed. Raw logs retained locally and excluded from public packet."
+}

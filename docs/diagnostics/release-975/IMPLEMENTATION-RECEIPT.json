@@ -1,0 +1,38 @@
+{
+  "stage": "bounded implementation before normal commit; exact-head C12 and ordinary CI pending",
+  "base": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+  "branch": "fix/release970-ci-shallow",
+  "timestamp_utc": "2026-11-07T17:23:01.987935+00:00",
+  "wip_attribution": "Inherited publisher proposal preserved and adopted after both INPUT/rootGO; this implementation only clarified its one exact UMASK_FORGIVEN reason.",
+  "native_targeted": {
+    "admission": "fresh canonical quiet_guard0; existing heavy_run performs its own guarded admission",
+    "command": "python -m pytest tests/test_release970_gate.py tests/test_release970_observer.py tests/test_private_permissions.py -q",
+    "passed": 57,
+    "warnings": 8,
+    "seconds": 9.53,
+    "exit_code": 0,
+    "warning_scope": "pytest cleanup warnings for unrelated prior temporary-directory garbage; no target test failed",
+    "raw_log_sha256": "e839463a7c5745fbc1bba4fe860db223256d8b69fc2db93acb95286e01fcb344",
+    "tested_working_source_sha256": {
+      "tests/test_release970_gate.py": "a6484f579670d20996ae2cadfcbe8adec3bfebacbc75bc2501cc72d69895133b",
+      "tests/test_release970_observer.py": "00aa16a4868744aba13a3b21c40898bc4883cf0ae032f40b16ccda0ad5aa7c0e",
+      "tests/test_private_permissions.py": "d990334e834c38eaca59af834ad8ddba754b299f9c64b33935f93dd8958e0f3e"
+    }
+  },
+  "frozen_files": {
+    "count": 109,
+    "canonical_selected_union": 104,
+    "equal_base": true
+  },
+  "C12": "pending separate isolated depth1 exact-finalSHA run, both historical-object negative checks and same three target files; C13 cannot substitute",
+  "C13": "pending exact repair SHA ordinary Linux/macOS and applicable mandatory CI",
+  "OUTPUT": "pending independent review and root acceptance",
+  "source_scope": [
+    "tests/test_release970_observer.py",
+    "tests/test_private_permissions.py"
+  ],
+  "runtime_helper_observer_workflows_plan_changed": false,
+  "new_actual_release_mutant_executions": 0,
+  "model_calls": 0,
+  "installation_or_restart": 0
+}

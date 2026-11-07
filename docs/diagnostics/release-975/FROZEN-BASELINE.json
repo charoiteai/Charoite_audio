@@ -1,0 +1,665 @@
+{
+  "base": "bbe5a6487cb016d3ef4529944b9e686a426354ca",
+  "runtime_candidate": "50b0704fe280360b1d7f828fd601c6216959e55d",
+  "plan_sha256": "30656652e03d97617fbd5b825d977e53061acb9e925d769822d5e34219742b99",
+  "canonical_selected_union_count": 104,
+  "frozen_count": 109,
+  "all_current_bytes_equal_base": true,
+  "note": "Static byte comparison only. Future repair must repeat against this base and keep runtime50b immutable.",
+  "files": [
+    {
+      "path": ".github/release970_plan.json",
+      "base_sha256": "30656652e03d97617fbd5b825d977e53061acb9e925d769822d5e34219742b99",
+      "bytes": 248173,
+      "canonical_or_selected_runtime_dependency": false
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "base_sha256": "6f045e5a973a8a69405da3d21fc473a6245954dd6693ceabe8d9481f5105f413",
+      "bytes": 23860,
+      "canonical_or_selected_runtime_dependency": false
+    },
+    {
+      "path": ".github/workflows/release-970-critical.yml",
+      "base_sha256": "cb9a17442ffd30561d72c28f7e05a9f8865c8c3d4496b9cb714d40bc5a58c539",
+      "bytes": 6885,
+      "canonical_or_selected_runtime_dependency": false
+    },
+    {
+      "path": "docs/design/layout.json",
+      "base_sha256": "c77b754730b90afea00bdc06ab6858ee555be8949ab7449b10a096da59a84264",
+      "bytes": 39717,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "pyproject.toml",
+      "base_sha256": "69b67aa1cc9ca2489378d03e901d51f873a8bc9f9eca35bd0206480f4898652f",
+      "bytes": 7649,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "scripts/forget_meeting.py",
+      "base_sha256": "af39998d245da7ff15bac9f7c1bc380fb132ff63a8eefc108af91ee36281e823",
+      "bytes": 124534,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "scripts/layout_map.py",
+      "base_sha256": "307a90f2ab6fd7f30dabc41f7a55260e83c496f2477474cd658db52938d903ba",
+      "bytes": 295802,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "scripts/mutate_check.py",
+      "base_sha256": "fab0c075446eaf370e80172633ffc11d9dfd807411ff394e6afbe1f7a0891598",
+      "bytes": 134869,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "scripts/nightly_dossier.py",
+      "base_sha256": "01311fab3e34ca6033ca95bf424665ba7610cc6a44fa96e44a217efb3d85dda9",
+      "bytes": 55579,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "scripts/nightly_dossier_review.py",
+      "base_sha256": "fd1ea57faa7a974ebdb8e2b4664fa4fa9ae2767d37bab44cf0783bf1ad657014",
+      "bytes": 48019,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "scripts/release970_gate.py",
+      "base_sha256": "29169e4781402e5bebad47140e1c99078462b402b696b4114534887dbac8375e",
+      "bytes": 36563,
+      "canonical_or_selected_runtime_dependency": false
+    },
+    {
+      "path": "scripts/release970_observer.py",
+      "base_sha256": "acc0bed68466481dfcb5aa695dd0805d292b182c513cbe784a1a9e227f19f14b",
+      "bytes": 4746,
+      "canonical_or_selected_runtime_dependency": false
+    },
+    {
+      "path": "src/busy_signals.py",
+      "base_sha256": "f2504fe17a27501bc2940adb4121e552de794332b39b9557f90c101c0b9d14df",
+      "bytes": 20235,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/charoite_graph/dossier.py",
+      "base_sha256": "de4ae30e15dc935a01e59718d55724fc964814dad555c1a5f28093748dc2f063",
+      "bytes": 83772,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/charoite_graph/frontmatter.py",
+      "base_sha256": "313164e3be7475f576e5dc132774a26167d4a034fee6ab667f9e886488eefc3c",
+      "bytes": 17394,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/charoite_paths.py",
+      "base_sha256": "d8758d017e4e024de617824682265549804bd79e6bab9587718eada43b881ec5",
+      "bytes": 60002,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/dossier_incremental.py",
+      "base_sha256": "c852dd1d9b75a92cc22587daf279a8b234c433d538e3546657b1b09f179921e5",
+      "bytes": 38635,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/dossier_telemetry.py",
+      "base_sha256": "0d4d9a191efa6f123a22ab6460be27ebeb6ce1b9f3e63ce6864f805b2439f299",
+      "bytes": 7568,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/exit_codes.py",
+      "base_sha256": "b7171ebaa1ad6d26ebc569a36b44a8c29b69db82f800591cb0db4699403a0c00",
+      "bytes": 12115,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/file_locks.py",
+      "base_sha256": "228f693e0a2c15f308b377d867ac2fb95754c3130702247bd04bea202b439fed",
+      "bytes": 12470,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/live_gate.py",
+      "base_sha256": "ae034650b67efa107e4908e3589c0682ab829161c3d2b6de49ea7d86a86e452c",
+      "bytes": 21091,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/llm.py",
+      "base_sha256": "453d790125a2269b7684338d4159f6cea4f833a971d91ccbce18bca41cd04199",
+      "bytes": 149096,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "src/machine_power.py",
+      "base_sha256": "10da6a2be86e4893cad4c35d2df52730456b5dc9e6d642d17e9fe77727992ab7",
+      "bytes": 7523,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/conftest.py",
+      "base_sha256": "e7c5112d6cffa26be1a877bd898727bff2298cdcdcdb279bfb12cede38aefbdd",
+      "bytes": 59920,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_action_items.py",
+      "base_sha256": "942a6b85b678ec28eeb55bb46375ff8d1493c68baf6c1399d4654b6b3fecbbb8",
+      "bytes": 38258,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_backup_offload.py",
+      "base_sha256": "7a65af1fb1f61329257e1f58986ba26ee91cbaf6fe489ee2bc9c62c7f9af2ffc",
+      "bytes": 48250,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_cloud_cli_probe.py",
+      "base_sha256": "0386f88970fffd43a78dd864ca6fc458a3bf2e1767a1000a1f2944c203a27cc5",
+      "bytes": 10338,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_cloud_engine.py",
+      "base_sha256": "d1da4c35ed8ddd95ade3a181383fe1084f0788deeab480053576ce1d6f54db6f",
+      "bytes": 17238,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_cloud_review_worker.py",
+      "base_sha256": "4cbdcce628b4e994e0ed87fb7e9c657e56197efed749f85f95a5593b8dd4ba53",
+      "bytes": 221565,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_deja_vu_warmup.py",
+      "base_sha256": "75a2aff5b35ba324d23511d41338dde498939011258f8e12cf75f6d01e79bb24",
+      "bytes": 4338,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_derivative_passport.py",
+      "base_sha256": "d513102f5d14a1d166bc4c0e1925b58373979832e11f6a8e341c7a710d68aa4e",
+      "bytes": 51039,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_doctor_runtime.py",
+      "base_sha256": "e91dbd1699b79091830355edb1869a95050e8a3fd92b43316a516b7c6d1d048c",
+      "bytes": 49007,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier.py",
+      "base_sha256": "a4c98a4785932f52f2f93d3fe3e636c15584f8802cb2b9a60069383994d68cec",
+      "bytes": 59020,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_audit_envelope.py",
+      "base_sha256": "b73b3fe2860306ebfe7e310cbda627ed1eb0c24f20e73e5993a94515c234f068",
+      "bytes": 4460,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_claim_audit_contract.py",
+      "base_sha256": "2ee8f238bb85b8c03fc202c349fdd4177acd531978c71c4727ca835194fd87f0",
+      "bytes": 20207,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_correction_placement.py",
+      "base_sha256": "8e0a4acbd6d4d873b7817956c45a270030b92039a3a783626986ec9ee6dc289a",
+      "bytes": 1965,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_encoding.py",
+      "base_sha256": "9424a47a30f6df3a774ca33d9227541ebc5a960588f793634907a188f473de76",
+      "bytes": 30301,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_full_source_audit.py",
+      "base_sha256": "36e6ca484cb13e6f905462de706793e4386651f43ec717673884a3eed7d6404a",
+      "bytes": 8357,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_incremental.py",
+      "base_sha256": "856d8d3f5b0d31442e327f58900069a52b9b11fd42f5afbdfcc5541743f26911",
+      "bytes": 21266,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_incremental_mutation_behaviors.py",
+      "base_sha256": "6350d63465a757195ecf3e7fde1108fc69564da5623daa7b924bd96e9a7dd074",
+      "bytes": 19354,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_membership_version_mutations.py",
+      "base_sha256": "de06f5f921b754ffa83060072b94793f6aa51e7f44caec6afdef44e711c31665",
+      "bytes": 16521,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_model_contract.py",
+      "base_sha256": "f7bfb685f8dc87a14f12019df71ed088b3d61ca520d9c7316aaa55811a54da83",
+      "bytes": 17510,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_mutation_843_incremental.py",
+      "base_sha256": "adfbd22140dd98c211b1c517999bb00534602bf721d8e04ac3b666ac2de78fae",
+      "bytes": 6273,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_mutation_843_nightly.py",
+      "base_sha256": "551a0ab66b4d6fa69a54d69dd1608adb1664e47952b9fafdc05bf2c9749d7f1a",
+      "bytes": 10024,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_mutation_843_scan.py",
+      "base_sha256": "3b6255f364cf33833f5679d98080a2e1252a8b0068051a59f97705c15db16add",
+      "bytes": 3099,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_mutation_contract.py",
+      "base_sha256": "8fc95774749dc8ca07b1b6ea011bb64a303f98f73d9b9808012d2c969ddefde7",
+      "bytes": 16457,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_ollama_contract.py",
+      "base_sha256": "2f9a9e5830db663c8e4d3b5cfd466cabebad7e837793b9cb6a934d86f3e2079c",
+      "bytes": 14615,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_parser_contract.py",
+      "base_sha256": "b4c4abc27b50cccc7a31375f98782b2af5e77ddb03c7caac49423545f0dfe632",
+      "bytes": 31490,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_plan.py",
+      "base_sha256": "25f303df17d99d12f582c11f41c04fc8e362916bf9ea2288b4d3ff6c62b5dcf3",
+      "bytes": 22316,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_queue.py",
+      "base_sha256": "e63a6c92385a43abd83ba2930165a8f3e47c7885bbb022346ab6e49285756ddc",
+      "bytes": 64333,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_retained_markup.py",
+      "base_sha256": "fc735b72f6a168a120fe343a6024abfe0264402ff3aa0da29ca86ecf34d25383",
+      "bytes": 9414,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_section_claim_coverage.py",
+      "base_sha256": "00ed41ed32ad9d7d2f0a4ca34506863c1d645d183a82d52ac423d863fbf2444e",
+      "bytes": 3532,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_telemetry_954.py",
+      "base_sha256": "0d83b0349d7c0532ed3f589d0b4c4fca263390c6b583c0ab4bef94ae77ea588e",
+      "bytes": 18903,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_transport_contract.py",
+      "base_sha256": "96191bd049d3ccc56256783548f58890e0772fa9f8e9b4bd8ddc662514dcc3f5",
+      "bytes": 20978,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_dossier_wiki_claim_coverage.py",
+      "base_sha256": "d42cf122bcac4507a8e2567f36c6547fe60aaa168195ca6f69c45d7ba7700ae8",
+      "bytes": 4121,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_failure_kind.py",
+      "base_sha256": "48ffa3f2c9d01a75737d264d95f2f76dbad6b03241bcbc4b8819b2165f954f6a",
+      "bytes": 20400,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_forget_index_capture.py",
+      "base_sha256": "f089ad588cb18d24cbb420b3e5b82977f7ecbfe74b2a79e4e2914b4337c991c5",
+      "bytes": 5214,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_forget_index_recovery.py",
+      "base_sha256": "54fc26b245a943c9b49b2dac867451458602f072b70ff0bfe0df4a1fc5cea787",
+      "bytes": 9971,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_forget_meeting.py",
+      "base_sha256": "7dde84e90a6a4c64970f7bee9d44f50a2fc2ce5064634bfa207aa998b8468f26",
+      "bytes": 197841,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_forget_membership.py",
+      "base_sha256": "d2b1b3c87345e1b5021eb9462834452d3f3d70bd35200939739dc8a330ac8465",
+      "bytes": 17767,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_forget_mutation_behaviors.py",
+      "base_sha256": "0903b4016e663e00352c7ed10d967b12f0121c4205d666723451f08520f4f90e",
+      "bytes": 12602,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_forget_night_processes.py",
+      "base_sha256": "b59e0a7f1962052ca29ca7863dece0a303e00ca24e6f4150c5e3efaff59cb8fc",
+      "bytes": 17195,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_frontmatter_bom.py",
+      "base_sha256": "ec75ab4052682ff62f332210250b02f2848d445ddad5c6f2d945f23cc2a147f8",
+      "bytes": 1169,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_audit_fixes.py",
+      "base_sha256": "a14709b79bebcdcf1e053c77011145257f8ac16d46a9307862505326ca77096c",
+      "bytes": 30585,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_capture_binding.py",
+      "base_sha256": "7999fef49aedd974bab369f0c853bfa53ec8da6af2c7f352fcec6003a90a9154",
+      "bytes": 8970,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_ci_regressions.py",
+      "base_sha256": "ec8f184940761611b1d5617990f381fc0b42f9931f9059fbbfebc544471baebf",
+      "bytes": 11001,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_collective_nodes.py",
+      "base_sha256": "0fb16cb1325ab5745d52a7130cf9da675e0c3a5648c02e110aba17d2c333759e",
+      "bytes": 33073,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_fragment_dates.py",
+      "base_sha256": "f2a7ce36754377f80c0d9f27796338e022a8015511447c04103eb6192d63e598",
+      "bytes": 32862,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_hygiene.py",
+      "base_sha256": "2344f539acb3ce7ef2f56aef29064ecd897f3e7c0ff310d174ce7d0798bb063a",
+      "bytes": 231611,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_identity_blackbox.py",
+      "base_sha256": "38730033945e1c0cae9b6236650c29caf825da6ce43937b0361ec39e1989bdee",
+      "bytes": 8867,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_lock_dir.py",
+      "base_sha256": "25d05206019dae2ce0409fe042212da8cd9e4586fac6a4e21cbfbec4f7b0cae5",
+      "bytes": 4184,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_mutation_contracts.py",
+      "base_sha256": "78654decbfc942e7f9f4bfa591ef10184ea194d2b74e62198908c17dd9e6e1e8",
+      "bytes": 6392,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_physical_identity.py",
+      "base_sha256": "afa2a2a2cf639e4fedbf587318faee04ecc350fd0aa95018fcd2d191c6514b95",
+      "bytes": 11050,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_risk_regressions.py",
+      "base_sha256": "820ad8e53d5052194320311555f053b8fb645413a06e2225380ff3348635e475",
+      "bytes": 13262,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_schema.py",
+      "base_sha256": "86751c4f8b84955cf7c18bce72cc99a9f207af05852893b925e95e20c9413c9c",
+      "bytes": 14929,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_schema_roles.py",
+      "base_sha256": "550f3588abe1747d9b208df761db125180826a159ed986ae699a68fc66baa972",
+      "bytes": 39178,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_search.py",
+      "base_sha256": "2bd41d5f9eb227995befef3e2a57e4df9adb3e2236d76c9bd1c88bf289ea3f7e",
+      "bytes": 160692,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_graph_test_isolation.py",
+      "base_sha256": "4f1b00c7db9c5f435cdcf8774e8ea8af2c53e349123ac524a84fa357bcdd607d",
+      "bytes": 5936,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_hint_format.py",
+      "base_sha256": "8b6c48ea56dcd94fc98b98768a0f44dcd382b2b95dd0ded4e06afdbe0d10b77e",
+      "bytes": 6684,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_lifecycle_consistency.py",
+      "base_sha256": "b5961abe0d0c9fd7d5a7a073aa73fab60a45ed139375d480d34a228f2a0df75e",
+      "bytes": 7920,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_llm_gateway.py",
+      "base_sha256": "d6a40cac899da669ebcbbb5c008291dd3697b17f9cd475b1b2930c6676e3e5ee",
+      "bytes": 99314,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_llm_strict_json.py",
+      "base_sha256": "5ba89bd55fcb89a206b36554ec4401a982ac3b4468382c62f78dbea8e03267b6",
+      "bytes": 30418,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_local_paths.py",
+      "base_sha256": "8ff4a9391330e003920e3c927309117fb6c72dfcf343cfe54bf61ca6817f21cf",
+      "bytes": 45172,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_log_kinds.py",
+      "base_sha256": "f78f88cc4cf84ac91297ad985076956d45319218320c2dd3432e53c1f3bb4ce1",
+      "bytes": 9996,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_loopback_direct.py",
+      "base_sha256": "f4613642511ed6790c2e04966278af89dfb07842bc853420d65f4cf43ac1d7bf",
+      "bytes": 28730,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_loopback_pins.py",
+      "base_sha256": "4b353594e8cb942d8bec72d4b4a7d47db63b579cf6f67fee1edc63167fe2cd1e",
+      "bytes": 8470,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_mcp_server.py",
+      "base_sha256": "65f3257e1e695bdad1ff71aafa1188def71887e2d75f3e8b9e235c4edfe97e8c",
+      "bytes": 53933,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_memory_case_suite.py",
+      "base_sha256": "e95dae08392375f6d9ca318375a5913d0d28905288ae00d227cc6e068e0e08f5",
+      "bytes": 2399,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_memory_profiles_characterization.py",
+      "base_sha256": "0c8052314e76761a23a0e925eaea96ec9fba3ca2c03710ff4522f792d7100001",
+      "bytes": 23803,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_merge_graphs.py",
+      "base_sha256": "1a0e652a15119312d5b4bd453189c489d8017eba0c3b6010a003a4b9ca3fe360",
+      "bytes": 13546,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_minutes_date.py",
+      "base_sha256": "34a05f7559358483fdf65ee7341350560dbd34fcfe152cf94641dd52f0883805",
+      "bytes": 2926,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_model_lease.py",
+      "base_sha256": "b6429fb5ba586899481e964f361b579eef99d7b925434f565bc2562b1ee437c3",
+      "bytes": 45377,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_model_ledger.py",
+      "base_sha256": "1d6a7cab3488c96fc96ab6461471f6eba9160bb25be95b4249d9bc846dceaaf2",
+      "bytes": 29904,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_night_cloud.py",
+      "base_sha256": "7ded5b492f68af7c12a128fdcfb9c76973b351ae0be8df18ab1af1e60d590113",
+      "bytes": 96880,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_nightly_cloud_reports.py",
+      "base_sha256": "2d2602dccd6ade52d57f225078826f402181fdf389a519ad1d68262e52040075",
+      "bytes": 67221,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_nightly_exit.py",
+      "base_sha256": "d289e2bf873511b0188518788d75e3766f78cf1e248ad80a9af27e621a5847e1",
+      "bytes": 30535,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_pii_mask.py",
+      "base_sha256": "4e7e284e769c9c017e4e7319b6e5e56ed1e532c5e1cec00d35f7c22d73efb5b7",
+      "bytes": 79331,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_plan_revalidation.py",
+      "base_sha256": "d0d604f14d3c7ff39dce39ec8554ae2e62ad3c27f1e60307b5526a597b2801e8",
+      "bytes": 11823,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_privacy_refused_on_start.py",
+      "base_sha256": "e224736ce893190dc6f5eceb936efea1913cd60bf7c6df0e36b2679117c6cbe0",
+      "bytes": 18603,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_rebuild_name_guards.py",
+      "base_sha256": "dc23cfc4fb1e567b931a7282f23c3fdd7704453234ed651713e652e571e76166",
+      "bytes": 9532,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_recording_note.py",
+      "base_sha256": "a1a8aa1648401a0af5de112819466b69d2f7d67d858c7e80c880392dfc22f074",
+      "bytes": 37836,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_rename_meeting.py",
+      "base_sha256": "58be93551b2f00df6d0afad61ba80b30c3e39aacbbe028af11eceed8d7734fb9",
+      "bytes": 38612,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_restamp_minutes.py",
+      "base_sha256": "4ab305234dd7d6f30aaa109677401516d778967d8d1d30aaa1a56ea7bb2ec0e8",
+      "bytes": 72285,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_same_minute_meetings.py",
+      "base_sha256": "1bb2d4c11ee94743baa34478d119ce2401fd6cf508fb78970522291db8519be4",
+      "bytes": 20288,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_script_paths_from_canon.py",
+      "base_sha256": "3f64a9dbce6e903f860c1bd8f5ef0edd2b5b8d15cfef12653ebf53c132b61c09",
+      "bytes": 4782,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_speaker_names_pending.py",
+      "base_sha256": "b27f074a96bc9002f9fbfba8ec0115f3fb4afc4e6039040d290aba2ef7c9bc46",
+      "bytes": 8360,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_summary_passport.py",
+      "base_sha256": "84492ca5fdad3793b778d39df7772963204c4b5b057412ea407df77432b2ccc7",
+      "bytes": 37781,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_tier3_safety.py",
+      "base_sha256": "99408c45da5ad894275fa8ba31b018da985722b8dfea798d691c2c1ce39a9138",
+      "bytes": 29153,
+      "canonical_or_selected_runtime_dependency": true
+    },
+    {
+      "path": "tests/test_wait_for_idle.py",
+      "base_sha256": "a12c38685321cf3067807585172bed478ce055ba3a371ecf188c972920d545e3",
+      "bytes": 6574,
+      "canonical_or_selected_runtime_dependency": true
+    }
+  ]
+}

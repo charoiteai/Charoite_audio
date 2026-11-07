@@ -56,6 +56,8 @@ UMASK_FORGIVEN = {
     "scripts/mutate_check.py": ("не пишет данных встреч и владельца: мутанты кода во временной копии, "
                                 "в названный корень — только logs/mutation.lock"),
     "scripts/night_gate.py": "не пишет данных встреч и владельца: читает logs/nightly.json и печатает решение",
+    "scripts/release970_gate.py": ("policy for authorized public CI: caller provides verified public source and explicit output, "
+                                   "isolates runtime and uses public/synthetic inputs; CLI does not enforce path isolation or private modes"),
     "scripts/sign_release_manifest.py": "не пишет данных встреч и владельца: подпись манифеста релиза",
     "scripts/stt_bench.py": "не пишет данных встреч и владельца: синтетические фразы голосом say",
     "scripts/wait_for_idle.py": "не пишет данных встреч и владельца: только ждёт освобождения машины",
