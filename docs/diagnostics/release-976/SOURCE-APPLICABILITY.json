@@ -1,0 +1,1480 @@
+{
+  "runtime_base": "50b0704fe280360b1d7f828fd601c6216959e55d",
+  "application_src_scripts_app_byte_identical": true,
+  "production_file_count": 362,
+  "production_inventory_sha256": "6fb79b5a618ffe49a5fca420a65b7e7bd2026abddbb123db1484de844ec7d377",
+  "production_blobs": {
+    "app/Package.swift": {
+      "git_blob": "3e66660598efd6c5066e8b73095073918adff576",
+      "sha256": "d9a8e288c22b50214e880f6ee869ea4342eede44b9bb474df3ef13f1c1f89d97"
+    },
+    "app/Probes/AnswerQualityProbe.swift": {
+      "git_blob": "c1acb022de6a73fe00d8febac1007d50e0a54042",
+      "sha256": "5c1db1debe65fb895e763dbb58481beae7dcd578f9773ad1c166ecca9f155a5a"
+    },
+    "app/Probes/BuildRealIndex.swift": {
+      "git_blob": "c8b6cfeb868ecf28ffe008b1f0a4d19ee053b2f0",
+      "sha256": "ada1bfd000b805c06752fab6dcc5636b60dd9aa39aa385a679a387be9763ab38"
+    },
+    "app/Probes/DictationPreviewProbe.swift": {
+      "git_blob": "46a4608fefa6e4b1e895b9079eeafbfcd431c8de",
+      "sha256": "0ca31fcd0c1310538318dac1fab6b6ccd40483d0602171360e31fc3aa9ab8295"
+    },
+    "app/Probes/LiveAnswerProbe.swift": {
+      "git_blob": "47b3c67f2423ef942308e81106501f93778e5127",
+      "sha256": "c06c75a198222b12e27aeab471cfd1a4ae9279d79ab475782bb46324bd987c4b"
+    },
+    "app/Probes/MemoryBench.swift": {
+      "git_blob": "28aec7293b6ace38272e0b3c2aab939eda9fd7e0",
+      "sha256": "cc97c292e20e6c4eedd58a139b90cd0910979ee3d6e790ed49db6b8fca0740f9"
+    },
+    "app/Probes/ProbeTurn.swift": {
+      "git_blob": "70e6641def034554bb607a1b6b2d4f6fb9dda281",
+      "sha256": "1715ff7581413faede1976e8477f42e944ab503cf6554e9b3fef5b9d1ee5d775"
+    },
+    "app/Probes/SearchPerfProbe.swift": {
+      "git_blob": "96e3daa2f8b35bee1c3e7cef0fb7afc3dc8fb5d7",
+      "sha256": "6982a8c5150ee5a73f796724bdcd7d49015d6fe1ae0527f5cb72240afc6d95aa"
+    },
+    "app/README.md": {
+      "git_blob": "32019eb1582103a04ce0509a086d20bb7175e7d4",
+      "sha256": "28074f86fa23b40bb5f08d403bbd16e2201971ea56b30beaf9812ff0b52c2296"
+    },
+    "app/Resources/AppIcon.icns": {
+      "git_blob": "5e4d9484d0a45c38511f5d1e78d46e5cac750079",
+      "sha256": "22e96d3a92ccc60d0d9983cae198cff1109e826c91825a9ad9ff275267fa4596"
+    },
+    "app/Resources/AppIcon.icon/Assets/owl.png": {
+      "git_blob": "231e3d706feabe4aaac36ae8b01c71e18ed77f19",
+      "sha256": "eb257094bd1705e49310ec239885f22773b9d5d1a3df460e0518b64ef5d764e8"
+    },
+    "app/Resources/AppIcon.icon/icon.json": {
+      "git_blob": "846d42c4c7add5403793a1f024439dd24196485b",
+      "sha256": "c201912163fd3fb4faff0b79ae4b7619b8bc93d2793d6439cee9c85bdb7c2a72"
+    },
+    "app/Resources/Assets.car": {
+      "git_blob": "f3348e61a5a9a2eb04dee8b1c1dee1630b785b9c",
+      "sha256": "ec05e51ce2b39d919339c8799317ffc62e26791a462e0bf0f9aec2064a65d097"
+    },
+    "app/Resources/entitlements/Charoite.entitlements": {
+      "git_blob": "383002d9d87090be2969153624ccf6123d41ab0f",
+      "sha256": "397ea03507b6af4479c2da6343431f4ebc97d4d42c213deffbda641034b5c0b8"
+    },
+    "app/Resources/entitlements/embedded-python.entitlements": {
+      "git_blob": "09b318c2fb2d6f819b20a1f3e21a0365eee12a47",
+      "sha256": "ad0186eeaed14696329cfb98ea7ce7c615b1c046dcbdf24cf1b4c5be35f4378f"
+    },
+    "app/Sources/CharoiteApp/App/CharoiteApp.swift": {
+      "git_blob": "0ccdedcc89dacc4214ad95f1cc255da0214c7aef",
+      "sha256": "df137ff0de8bb9078f84a4451d576f252cb753bcf6c800c5eddeceba8cee5786"
+    },
+    "app/Sources/CharoiteApp/App/WorkspaceNavigation.swift": {
+      "git_blob": "b9954083397d53f380be39fe98c4d491bcf2891d",
+      "sha256": "b44d352f0b6f449a1c38f40693038c912bb08e0c6b32022d66ef189b910ceb4a"
+    },
+    "app/Sources/CharoiteApp/CharoiteButton.swift": {
+      "git_blob": "aac00c50470bd03b49e5f4f4a94ac03708b3f2d5",
+      "sha256": "7ec7105c72b13364a324435d4fe87e803296b240f8af4586e18d1cd64e36c039"
+    },
+    "app/Sources/CharoiteApp/DesignKit.swift": {
+      "git_blob": "577ca021b95f68ff64fd8ac2fbb342645d100b30",
+      "sha256": "f051db102c440416bb3ebd66fdefda00f57eaa4e5a56cde3f1f25db04f718ebd"
+    },
+    "app/Sources/CharoiteApp/L10n.swift": {
+      "git_blob": "174d0652f4e2945f428065ea8d5c82f17b5fa086",
+      "sha256": "86002a3387a7651e952a90c0933d159ebe9c5661df2bad0aa93fd32b91b13fad"
+    },
+    "app/Sources/CharoiteApp/Models/AppSettings.swift": {
+      "git_blob": "e37c8c84235a20cf70064a9f2f7e9f105c23ed29",
+      "sha256": "2914b5b5de3d7123c7a2cfcb037587c61e87aaa332f7ac308ff6d4d2c4561482"
+    },
+    "app/Sources/CharoiteApp/Models/ColorHex.swift": {
+      "git_blob": "cc2c440515458a72bf3107e0258c13199195e99e",
+      "sha256": "a2473dabce5e29fa5a2e0a68169a894f47c69d51d52e35316ffaf755e6c20607"
+    },
+    "app/Sources/CharoiteApp/Models/ConfigEditCheck.swift": {
+      "git_blob": "bd71e2c9704d8ddb7717e13d9d742e99daef50ec",
+      "sha256": "9aa2092ac05350e29022cf920199803d50e303db2f2eff9c020b32e10d5acad7"
+    },
+    "app/Sources/CharoiteApp/Models/PrivateFiles.swift": {
+      "git_blob": "8b785fe5470d6e8090ff4943e67a90772e5684f2",
+      "sha256": "c1d7094e71b863393e942a1578bc8d347d6f582743378d10e0ed5aa526c80a76"
+    },
+    "app/Sources/CharoiteApp/Services/ArchiveLinks.swift": {
+      "git_blob": "9fb6d64c87afe737f80b93ee9dfc3cb5fb219627",
+      "sha256": "597859df64eb3b670403eee79c43f4486c38b8780b3ea588031bb8c08136eeb3"
+    },
+    "app/Sources/CharoiteApp/Services/ArchiveSearch.swift": {
+      "git_blob": "34fe932c4364a7f5ab8e6a4d80b11d5434f65616",
+      "sha256": "2a97bc7383e4ff1baba9d547cd33def0e3d5cf5a6613536c6e874570449fa8f3"
+    },
+    "app/Sources/CharoiteApp/Services/ArchiveWalkErrors.swift": {
+      "git_blob": "d6b91679681710b230998a22f2fd86fe55e80d71",
+      "sha256": "b968d3963f885b9055a201c665f261369ba368245c054048b330171d1b285393"
+    },
+    "app/Sources/CharoiteApp/Services/CalendarDayMatch.swift": {
+      "git_blob": "2ef860913cba21fcd49d367bac53fc1ed0fb7f20",
+      "sha256": "937df5c48feec4a83c90e38cf1e3131753504ea280919047750a935be0a0f63f"
+    },
+    "app/Sources/CharoiteApp/Services/CalendarService.swift": {
+      "git_blob": "5f9bf874311706bd8bd2bb54be780dfd20ce4573",
+      "sha256": "0dcaf3aa78977ee3fe9e91d505d7029a499ac6745202b817830b29ce1f76ab7a"
+    },
+    "app/Sources/CharoiteApp/Services/CaptureRestartPolicy.swift": {
+      "git_blob": "131545bca7038fb5ce93bc9fa6379554ba29571b",
+      "sha256": "80c06176ea242fc990277474cecdd2b537c9bb916f5a137cd0acd258b175d3c7"
+    },
+    "app/Sources/CharoiteApp/Services/ChannelAxis.swift": {
+      "git_blob": "e6d8fccf8be379a7598045662cbbf6bc744dd030",
+      "sha256": "51d2efcbba39ec9a60ad98d627c725106610bbdb01d034f5872a61c150bcb9ef"
+    },
+    "app/Sources/CharoiteApp/Services/ChatAnswerOutcome.swift": {
+      "git_blob": "7b2232635061d55750fb8b096e4240ab91bdfcff",
+      "sha256": "ba7d0080f2d8c70750ad1a7937fe171ca4eda86193bf93fe73706278be3e2d4a"
+    },
+    "app/Sources/CharoiteApp/Services/ChatContextWindow.swift": {
+      "git_blob": "6e98c8d34df7b21d7bbbb54b4ba46e572d511c2f",
+      "sha256": "89210faf1c0fbe3cda7972af1bc206cd675c9ea35eb6ce289cc5e3a403c4b3d1"
+    },
+    "app/Sources/CharoiteApp/Services/ChatRetrieval.swift": {
+      "git_blob": "6268967ecd63e72828b53ee8e535526b14ee241e",
+      "sha256": "dabcb1dc3b097dabfd344585a17e7fada3ac599b7a676607719305aac093aa56"
+    },
+    "app/Sources/CharoiteApp/Services/Chunker.swift": {
+      "git_blob": "ac292b95f0cae9e5414ab36dfea4171b4ab1ede9",
+      "sha256": "4b5f3a41f996ad58fbce3c977979f579f18e64ca1644125ef9550ee877b196e6"
+    },
+    "app/Sources/CharoiteApp/Services/DaemonLaunch.swift": {
+      "git_blob": "3a9b0f86a99be8a235c7d8cc0e2f47eeb28307ec",
+      "sha256": "ea764f78ba686aa7daf2ca01b534dbede31dd2b7fb03b2bb69ffebef55c9e931"
+    },
+    "app/Sources/CharoiteApp/Services/DictationService+Focus.swift": {
+      "git_blob": "dc407f3cea01f77d5bfdce625257c6182ce498c2",
+      "sha256": "385ec529b9546724f4bfe0bd78f00e29d48b7ce11e7db4292a41502dafc9a64a"
+    },
+    "app/Sources/CharoiteApp/Services/DictationService.swift": {
+      "git_blob": "763ddeb58f8b20bfffd9e5062a5a4b45883ff908",
+      "sha256": "aa42b406b43b82bd43881a339761f869db3b62720b29c7b1f9b72c93319c343a"
+    },
+    "app/Sources/CharoiteApp/Services/EngineInstallActivity.swift": {
+      "git_blob": "88197d882305db74eea685fdbe22e1aa18439285",
+      "sha256": "46b952284844dd90cdcf866624a4bd8a53b0fd533743b08e143852029040c0b4"
+    },
+    "app/Sources/CharoiteApp/Services/GraphCache.swift": {
+      "git_blob": "d6b4c340aeddc9f376f43d31697a6f2a9b37a5c2",
+      "sha256": "b0ce594bf7731927c625a0436a5ac8c3d64d0975d16bdc26a88a5192ecb4265d"
+    },
+    "app/Sources/CharoiteApp/Services/GraphFolders.swift": {
+      "git_blob": "0a9ec5a6748af920d244f57a0136bcb080bd0cc6",
+      "sha256": "95f63653e47bcb5b69dfdad2a6b38c8a40b12840c8e8b1a2752cbed57eb7f560"
+    },
+    "app/Sources/CharoiteApp/Services/GraphInventoryService.swift": {
+      "git_blob": "a3b26609b698470b983169cb11261fdf20d909a3",
+      "sha256": "3a4767e4ffefabab67fa32c812a789965abfc1c776ace54670948afc7e119dff"
+    },
+    "app/Sources/CharoiteApp/Services/HealthRollup.swift": {
+      "git_blob": "e204d1c561e0135e967953c3ce13f749221e0d3d",
+      "sha256": "dc0c7be2b7f2700732818555d4a11adaf546c8300c31b39b4d6726af883b5429"
+    },
+    "app/Sources/CharoiteApp/Services/ImportService.swift": {
+      "git_blob": "8e897844d76bf4482c9c94cb1875c0032d9331e5",
+      "sha256": "cb2739d8f43ca588a5d2e9fdf399138b5625fe917f088406202d425ac6c2a5e3"
+    },
+    "app/Sources/CharoiteApp/Services/LaunchAtLoginService.swift": {
+      "git_blob": "2024612270943a23ac636223db4ea9c466c7b424",
+      "sha256": "0a9b04dcd76c7461a35fe0204604ca9376da809dfaa3a622e07c0b22860637eb"
+    },
+    "app/Sources/CharoiteApp/Services/LiveDictationPreview.swift": {
+      "git_blob": "e2b2ca38586b9e034d8f502c5427112bf82e2d50",
+      "sha256": "16847d22a2ae5de66b347376fc5f57d6a19f37cb405d3fdea62bcaeb3dc58e88"
+    },
+    "app/Sources/CharoiteApp/Services/LocalChatService.swift": {
+      "git_blob": "7460424af5529abbb26f8e3500d7d23c0562a294",
+      "sha256": "d1b81cb8f93273a84bef805396305bc877be51a22c6e5814ff7825734d842ee0"
+    },
+    "app/Sources/CharoiteApp/Services/LongProcess.swift": {
+      "git_blob": "cd8ed016626da6d97893f04002f84e8b25fcb1d1",
+      "sha256": "18fdc0a42e878c21a4792677dd88e803b5a33d3afc06b340c6dcc25bee4fb76f"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingActionsService.swift": {
+      "git_blob": "12779c496b9bc60d1b8ee412d83a2ad862b097cf",
+      "sha256": "7ac172b4c8b9b5a366d924ed1182928d6621af5168e41e7aab88cd695a7cf2e1"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingCard.swift": {
+      "git_blob": "995b6d5512ca30e32ec6ce17a99b02c5d134017f",
+      "sha256": "ba57e646f1d63186d90c5594a79ac15b1eaad7847eaeb391bc42f7a579b80e1a"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingCue.swift": {
+      "git_blob": "2183c2ad7bbbc701264bc6cc2bd3217488fb6578",
+      "sha256": "398a6ce211f20fb22df26541f9a771f93b426d384795a281d48bf4969810e3cc"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingDurationCache.swift": {
+      "git_blob": "a9f121c40c2042f3fab7f0002bd08479782c579b",
+      "sha256": "2d3e056a60572fb8fcb3dd54ccfe5ed3f6645a82903ac44a94984db14e1071d2"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingMinutes.swift": {
+      "git_blob": "0214717486b09ade49fa42f5e848c3622b2b4453",
+      "sha256": "01356bbbbda7ebdb5a87bdaf45b6c5d26993d6ade69fd7cbff11a4de92e77fcb"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingNotificationService.swift": {
+      "git_blob": "edf4380882ed310400b14d18aaa0ac53b9f73b2c",
+      "sha256": "6dfb3798d5ee22c8547acf884abd83097f40cc3eb18e1ad0978f9c100c3cb7f6"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingProcessingService.swift": {
+      "git_blob": "ffd2e97790de6d2316523fb1efb83bf7adf78e5b",
+      "sha256": "fc45a793806943acc203c0476853c2b66d27c00f34d5a6f79ba6cf007d31337f"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingReadyNote.swift": {
+      "git_blob": "bb7abd29507ab1b239c2949910ec538719aedea4",
+      "sha256": "581f9e5dc65529e3678ed86c34516367a02290e154bdec7102db80294912481b"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingRepository.swift": {
+      "git_blob": "e8e01ab6d638a46c9e64069bd51f5dec8396461c",
+      "sha256": "63482b77554d4c69c51b4fbb57d4e37ba1b9075e28a4891f148e6697ae45e58c"
+    },
+    "app/Sources/CharoiteApp/Services/MeetingSearch.swift": {
+      "git_blob": "b51d364cff3eeac78e3f800bb2ca484311c30e61",
+      "sha256": "88c5d5562cd36db13cd1a8fb8f6262973ba512140d75655207d1e1dc5f9fe731"
+    },
+    "app/Sources/CharoiteApp/Services/ModelPresetPolicy.swift": {
+      "git_blob": "cfb164f13b69f636c1eee08c0a579db31534214e",
+      "sha256": "2ce8de93c81c49d20e82639c05b9854ae46a1c71be2998d21ed7a274e3c055ab"
+    },
+    "app/Sources/CharoiteApp/Services/ModelPullService.swift": {
+      "git_blob": "4e98a55211106247b81affbc92c2995293da0e14",
+      "sha256": "cc94e6cf1f71145cf73e18daaf731a2188dd6cb1809b128ea41818e7521529ce"
+    },
+    "app/Sources/CharoiteApp/Services/NemotronDecision.swift": {
+      "git_blob": "672a43d413b1935adcc7bc266a3d493ec18a6140",
+      "sha256": "faa8ca3b9adff305c86616a3c95fd4e9eaff013c9c6aa230f95fdb6cc0b1a3c0"
+    },
+    "app/Sources/CharoiteApp/Services/NemotronEngineService.swift": {
+      "git_blob": "53e6ba23740c335864bf50041080e8e98d66712d",
+      "sha256": "0d3104c060cf53d901d8734f386e6b428c2f0d601b360704565f4267a9538c07"
+    },
+    "app/Sources/CharoiteApp/Services/NemotronPlan.swift": {
+      "git_blob": "09033290bd365c8f0318229999fdfb07fbe2dd5c",
+      "sha256": "76b4dbb354180e53c3edd8bca8d9f23c994c62290b6eabcb3bfbccd4d275b9c4"
+    },
+    "app/Sources/CharoiteApp/Services/NightlyAgent.swift": {
+      "git_blob": "b02e0e0248ed9aa4d421e1fee4d2bc6d33ff4c08",
+      "sha256": "5877da7d6dc7ca17b2f11a75339e36908f19c31f51ebde2e0812dfda7e6c27ae"
+    },
+    "app/Sources/CharoiteApp/Services/NightlyStatusService.swift": {
+      "git_blob": "5e988695fb724a7f2a549d1c7872fe786c787465",
+      "sha256": "9774bfda74663bb5e1826766299c8460eb293964a9963f4ecb9de264b96ac366"
+    },
+    "app/Sources/CharoiteApp/Services/OllamaRuntimeService.swift": {
+      "git_blob": "833e8ec8d1bba32a761cf1125ca2911c9a1fd427",
+      "sha256": "0871d98542cd3873e83da0de0dca65c2c6b51fb0460137093b9d62191795e18e"
+    },
+    "app/Sources/CharoiteApp/Services/PipelineHealth.swift": {
+      "git_blob": "5c975a251ee2136ab5f1693b3413488cc1c5a5e0",
+      "sha256": "c5da04231b1aa9d40f36b16511b694e1d23fecdf918b145517103f22542810f0"
+    },
+    "app/Sources/CharoiteApp/Services/PipelineWatchdog.swift": {
+      "git_blob": "5a372c1be7768da0abb0c4e92e1c03b972776232",
+      "sha256": "be59e3ba182de1cd5de5875f7ead73a3b339200b99afa7a8f41556a26d6ca5c0"
+    },
+    "app/Sources/CharoiteApp/Services/PrepPolicy.swift": {
+      "git_blob": "c16785141148656f22c3d58bfdeb020ab8909357",
+      "sha256": "eee1e0762a4ba556b4f43ff8d65ccb02f7818fec8adc63019d0057b498d24090"
+    },
+    "app/Sources/CharoiteApp/Services/RecordingLifecycle.swift": {
+      "git_blob": "da96725290972869554add8e07081dea3d1abb4a",
+      "sha256": "ea474360e5cae4e566584aa638085e480907defd82b03488c7544b97e538e900"
+    },
+    "app/Sources/CharoiteApp/Services/SemanticIndex.swift": {
+      "git_blob": "ed16bdf4b9f1d196411737eb319b4f40933290fe",
+      "sha256": "cb1deb01fd615d2766fc705b333d35d3a202822d895d1923aaaf7563b0ecaa57"
+    },
+    "app/Sources/CharoiteApp/Services/SetupReadinessService.swift": {
+      "git_blob": "e0b5d225afaf416673217f5099c870371656f22d",
+      "sha256": "589d2e6b42aa79f25bd239524f769894538e32ce1166b845fc79103d877e26c7"
+    },
+    "app/Sources/CharoiteApp/Services/ShutdownMachine.swift": {
+      "git_blob": "ecbfc6be21b22cffeb84b7e5146c55fa8d0de57b",
+      "sha256": "69c6d52c5c61e4af0d2fdfb48a06bf50eb98437053cbc460d4ca8f9a8779b03b"
+    },
+    "app/Sources/CharoiteApp/Services/SpotlightIndexService.swift": {
+      "git_blob": "02a87f3fc5a5b55e148324c811ebc42122e84e5c",
+      "sha256": "f1aee08da4a5fb0f5503d1945339a8269c56cef307ffd12598ae0794cfc7aedc"
+    },
+    "app/Sources/CharoiteApp/Services/StreamThrottler.swift": {
+      "git_blob": "f96a2a008141fdc47bdcb8e5a90a3b42f409cb78",
+      "sha256": "12a514e9c33acc596577c9c0fc6ea6a4cf64fe5ec3a28eb668234335ffdcc574"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerCaptureLoss.swift": {
+      "git_blob": "ce4b21574b97fbd00632f97d668665d6651fe072",
+      "sha256": "f1ff3c605c7748a38845c8161367d89ed8bdba90b055c4360c6ed0b0e97877c4"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerEndOfRecording.swift": {
+      "git_blob": "9aeea8d818342576a415fe40533d54574abb00f0",
+      "sha256": "ccf2afcde3b6d42c6ca2f900088485885eabbc1dcc250f715eebdc63cc63f023"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerHintPolicy.swift": {
+      "git_blob": "de0d262983d8fe08a89c9cac69335d1dbafcf075",
+      "sha256": "4692b29c81ab86654f2b047c349c5cc60e3b58dfd1b48022b567b3cd6ce5ecaa"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerService+DaemonRefusal.swift": {
+      "git_blob": "3e908ee5ddd658ef91e065d8ca17cc7cb6017c5e",
+      "sha256": "7991e51b52f3b2c1fe1b4d6a9180504501b608f5b77e77f70afa0bb8505f1f28"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerService+Status.swift": {
+      "git_blob": "41e1ed0091eebe6a0f90f80d2da8cfd1dda8f952",
+      "sha256": "241fe37afad6a48f5aed4474c352922884de1a86d09223aac8bc9adfe6e8df4f"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerService+Sticky.swift": {
+      "git_blob": "5cc06a3da14e42df00756788e4de7a45b5439f1b",
+      "sha256": "eb1509d3de084ae1c20e74b924f7487d99d25bf524d6e0d9b2c39d10a3c2e688"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerService.swift": {
+      "git_blob": "992a88a3b33a3982737304a363925766ad188c85",
+      "sha256": "e8df8f239207a41104a5623cddd8f308baab97067466442701537135e2beb8e0"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerShutdown.swift": {
+      "git_blob": "509e0961e4803e09ffbf64c1d846f59ec7d9d953",
+      "sha256": "7a12284beffc3b406674838af03de902d6c41c6f43824f1508b3f40c5c2c108d"
+    },
+    "app/Sources/CharoiteApp/Services/SuflerTranscriptFeed.swift": {
+      "git_blob": "6c206a4e169d46724fa88b78fefe53e5d3cc66b7",
+      "sha256": "951ed0d8dabc0168f688c47b111129bc74d77c865bdc74cd3699834beb919d1c"
+    },
+    "app/Sources/CharoiteApp/Services/SystemAudioCapture.swift": {
+      "git_blob": "79b5b4bda23024adbf4ccf0667a01dba69f02ee7",
+      "sha256": "66c1a9ed21b08d56aabc7ec6431f6d3cdc9794168631d54e85ca66bee073aa1f"
+    },
+    "app/Sources/CharoiteApp/Services/TasksService.swift": {
+      "git_blob": "61360b9efef56d36e64cf584fb758418c1e6be23",
+      "sha256": "aaefd222ade442e08b8071f18af4164bb20f3051fd91ca6eb2d4009901cf0fa5"
+    },
+    "app/Sources/CharoiteApp/Services/TerminationCoordinator.swift": {
+      "git_blob": "c7c21f84e260eaf4361024d038482f1952b0e3a8",
+      "sha256": "d03d51e65d8fcfae683e41dc2400002340780a9950c4a1038eb0cd0fb0aa5fad"
+    },
+    "app/Sources/CharoiteApp/Services/UpdateAuthenticity.swift": {
+      "git_blob": "01dcc2f7ae31bfc5a7dec705fda70fcc8a880847",
+      "sha256": "028746b270f2baa96ff0d6b55258a0ec8798cf40016d1eef2ec02cf773f6f6bd"
+    },
+    "app/Sources/CharoiteApp/Services/UpdateService.swift": {
+      "git_blob": "d9ac31d7d53ac7db830b729b2fb2b85ce6e2ec72",
+      "sha256": "fca39a3cb061396d4d7bfd7b8c0f0a31de84c3adac5199aa491abcf90fd48c9f"
+    },
+    "app/Sources/CharoiteApp/Services/VersionStatusService.swift": {
+      "git_blob": "1ff8f4e6dac59b25e2d54764ccb994d7fa32313a",
+      "sha256": "1ad1814dcfeaea06eb91e27fd1b210096d9b113dac33c2a4244b6ded66e67223"
+    },
+    "app/Sources/CharoiteApp/Theme.swift": {
+      "git_blob": "8f8b2c17611dfe47b486399768e72e22cab49263",
+      "sha256": "de3ca607576ed84e16dcd2dc01d3d04ff61eeb9bbf3919de50de5ac279850c55"
+    },
+    "app/Sources/CharoiteApp/Views/Dictation/DictationPreviewPanel.swift": {
+      "git_blob": "ee274b5d7b8182098963bfc6e58f50ecce12856f",
+      "sha256": "52eb42f11f89b5b9f51bfab9957161f83929171fbc1fa7e842f29ae9a62382f7"
+    },
+    "app/Sources/CharoiteApp/Views/LocalChat/ChatScrollObserver.swift": {
+      "git_blob": "e5cab52b61b7aa5a3f2792ffd401548e511db9f9",
+      "sha256": "6a062acca6ff66d4f938be852af0c2630365ea9f8fcefc2cae3c41940209d317"
+    },
+    "app/Sources/CharoiteApp/Views/LocalChat/ChatScrollPolicy.swift": {
+      "git_blob": "7c8cabc5ecbc89136a1f2ac7a9fad1fcb6151fe7",
+      "sha256": "cf41c53a10ba05b6d28f01134f6159ee95d1ad28b2dd81e9062e970428713484"
+    },
+    "app/Sources/CharoiteApp/Views/LocalChat/LocalChatView.swift": {
+      "git_blob": "39cdc10e2f7c55b139348d4730f69532015c77cb",
+      "sha256": "eb34069b6c401ceb50317f563708f6b57fd7c6fefda99adc8e1fe16fbe8a0289"
+    },
+    "app/Sources/CharoiteApp/Views/LocalChat/MemoryInventoryColumn.swift": {
+      "git_blob": "b48a8d8557372bae948754f06e9f1b4a8b03da11",
+      "sha256": "797904b0634d389e04f6b57b7033c7f1dea20de9024eeca8bfc05195392bd884"
+    },
+    "app/Sources/CharoiteApp/Views/LocalChat/MemoryScreenPolicy.swift": {
+      "git_blob": "391979cfe1f9c14a1984843808b8a38f72c753a8",
+      "sha256": "d0871177fb8a048ff5accd547c49406986eb3ecd2deaac2a79bc70e67ac5f6a6"
+    },
+    "app/Sources/CharoiteApp/Views/LocalChat/SourceChipFlow.swift": {
+      "git_blob": "6f347e4e1cde2a2dc342bd85911a47322c64baba",
+      "sha256": "6759b7bdb14f568f0b28869a93477c87413b3403aecd8c4f6427fef1ec235a36"
+    },
+    "app/Sources/CharoiteApp/Views/LocalChat/SourceChipsRow.swift": {
+      "git_blob": "224496c58646be92da6aec19c7fa1d4d8408c119",
+      "sha256": "a688174c377aec6decfe3af49e8302dd4409e54815261960df50d99def2602d1"
+    },
+    "app/Sources/CharoiteApp/Views/MarkdownLine.swift": {
+      "git_blob": "3af0b77773c249df4893eb51361e67cb67cb47e5",
+      "sha256": "c721f251373acc74caab0168bbe7bf3a2130e85f4c7b7c2d5a0b7dccb5463c90"
+    },
+    "app/Sources/CharoiteApp/Views/Meetings/MeetingCardMinutes.swift": {
+      "git_blob": "dd4e7c44321b0553abd859e0f09a724c28c96dcd",
+      "sha256": "6b21c0d0d7f503a4b8c652fc3c6cfbaa7d9e812b79cbebd1c786c976e4c556bb"
+    },
+    "app/Sources/CharoiteApp/Views/Meetings/MeetingCardView.swift": {
+      "git_blob": "0391f2c29c2dcbab363fb951e1ea44564c155dab",
+      "sha256": "eea12a7b7292726abb46936df369d05cf0df9905a6575dde7dd903a573ad65ef"
+    },
+    "app/Sources/CharoiteApp/Views/MenuBar/MenuBarView.swift": {
+      "git_blob": "e7eec6ce3906f7132c40ab85720ab3427e1d3612",
+      "sha256": "2fb19076e753aa7ac0af89ae0e23c2bfd6a2b7673954c64ecb3cced005fa4980"
+    },
+    "app/Sources/CharoiteApp/Views/Prep/PrepView.swift": {
+      "git_blob": "58646bb938d6fe2fbed0d5d3fbbce2fca376a72f",
+      "sha256": "ad657d4b65f7c35975e5ec83805e6c28b6d5017cd753d1199c53ac50f23d4113"
+    },
+    "app/Sources/CharoiteApp/Views/Settings/NemotronEngineControl.swift": {
+      "git_blob": "1350ee8e5f6ce3c0a34d29ddd64d4b9256670928",
+      "sha256": "5d5cf41f35a9cb439d8994039b639c4f2572398b1283d5a0619baf0683cdb9f1"
+    },
+    "app/Sources/CharoiteApp/Views/Settings/SettingsView.swift": {
+      "git_blob": "09e5c806de5148aa507895973295f329649e6e57",
+      "sha256": "6cff861f69e8e37fe98d66b8899b9e3422e7d3be2c1b2a4ebf284cebb2be3c9c"
+    },
+    "app/Sources/CharoiteApp/Views/Sufler/FirstRunView.swift": {
+      "git_blob": "047b7aaee981ec581639e111937ce5b4b70347a3",
+      "sha256": "e77e81a814a5fb1d28816596d1cf2ce8bd8361fddb1d2b106b7acaa5b7ceb073"
+    },
+    "app/Sources/CharoiteApp/Views/Sufler/SuflerComponents.swift": {
+      "git_blob": "2e6cf4efc0094df35ebb746c22839a31710cd78b",
+      "sha256": "44ed4547d552485c759135d51b99c9bbf9cd5b6590dde3ce1dce2d44bec2205b"
+    },
+    "app/Sources/CharoiteApp/Views/Sufler/SuflerView.swift": {
+      "git_blob": "eaf47cf470690b4619d0ebcc924950d631c69791",
+      "sha256": "c80c861e2f012f7f6cd01577582efce42d88e719ead6bfa6c7ce031c58489faf"
+    },
+    "app/Sources/CharoiteApp/Views/Tasks/TasksScreenPolicy.swift": {
+      "git_blob": "c2b5a3f00a87103dcbbd7b076071d3f5c8d9ee7d",
+      "sha256": "2308c5c1a1b02aa71c3b816c2cb2e061769fd323b04b4dbf8a13e363fd3b17a1"
+    },
+    "app/Sources/CharoiteApp/Views/Tasks/TasksView.swift": {
+      "git_blob": "7de7997ad5ab2d5b9e6edff58df4751c4b77a0b8",
+      "sha256": "f916f60491edea0468b127d919922bb72b55ff7cb3872d819c34b5e620a01a3c"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/ExternalRecordingPolicy.swift": {
+      "git_blob": "ed8f2eb1d04f2fcef943d89d682094969df94cfd",
+      "sha256": "da0ba2dde8e183a1c4e5bd85c4ac4ff06552ee4553b4b6aabbe1c29272737088"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/ExternalRecordingView.swift": {
+      "git_blob": "59206c315580c4e945ed9105611737c9fa9bb94b",
+      "sha256": "f48c74db1bb4061016fe13262ad5e9365ac8f1e70809e3337c42a0ae2c4ed861"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/LibraryScreenPolicy.swift": {
+      "git_blob": "60caba0cfa1d107d9f2699972d724fb119bfb388",
+      "sha256": "6e2e8c2e68544e87e5630cbb6ea0f7e4bfa2ee4bc6b299a23950459f67ef438c"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/LibrarySearchReadiness.swift": {
+      "git_blob": "a2fb12c4fc8ed48648eed5b81a6b0a4b9d34da07",
+      "sha256": "a17d07fbe353f432f9240f25e5f3c66625aeed338dbdae477c776c7333ddd759"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/MeetingLibraryCard.swift": {
+      "git_blob": "784b9d3b6dd2609dbca44510e151e0da10ba789e",
+      "sha256": "9ba73a4b3b1937b31056036ac54fc0783d0f20a8f1b1724b927c523756e693be"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/MeetingLibraryView.swift": {
+      "git_blob": "aac321df246fbccd502794095dc63579b3089907",
+      "sha256": "236ac5b0dfd83c87be2fdd52243d38b24e612d2598f284e41925280ecf3274ed"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/TodayWorkspaceView.swift": {
+      "git_blob": "b347844d1e4affefcf9fef06e80683521b7992ab",
+      "sha256": "05df085a305fe232848cceccda73c6acc062ada216b2e104e89f884d8cda60b8"
+    },
+    "app/Sources/CharoiteApp/Views/Workspace/WorkspaceView.swift": {
+      "git_blob": "d11d1112c6eebd8c751f25acf23d62ddd4eff05f",
+      "sha256": "2e85d8983930a24a551842af533f8f2325b38b1a0f9174445d3b414218cc448c"
+    },
+    "app/Tests/ArchiveLinksTests.swift": {
+      "git_blob": "e2988220f285ced2d22956ff0ef459708ec70c4f",
+      "sha256": "f1994cae1a3f9120a412b71f7e127f095e64cda4b7581b607dbcc3a0208fcc0a"
+    },
+    "app/Tests/ByteCountingTests.swift": {
+      "git_blob": "045df1ddbef04cfe89bcd85ab3b5806d97a4bb68",
+      "sha256": "dedec1f3c40a606107ad973dae7ba3bad031c318deb89540d6a33297bd6c08b3"
+    },
+    "app/Tests/CalendarDayMatchTests.swift": {
+      "git_blob": "ccd51aac2b8118815c282b77b2430a70d08ade21",
+      "sha256": "69fc6bd192c234e00bea535e63a9d7d78cca1ef6568f876b7080aaa1c83fcf9c"
+    },
+    "app/Tests/CharoiteAppTests/ArchiveSearchDemoTests.swift": {
+      "git_blob": "91a7621a5cc974e010cb0e3bd1165672233ee855",
+      "sha256": "3079191dfb80819285983552a60dea8ad586f364024ea02c451ccd41cc9625f6"
+    },
+    "app/Tests/CharoiteAppTests/AutostopTests.swift": {
+      "git_blob": "966c4a9beb91adfd87dba8e8416bcbe42ba88414",
+      "sha256": "99cd3475f4b11e7529664753e38c8a2e5967ee7683ca8d254e03aaa7cc29a4b8"
+    },
+    "app/Tests/CharoiteAppTests/BundleSealTests.swift": {
+      "git_blob": "0b26f0efd0fb7cf82d8c2183ea31f14a1b81266f",
+      "sha256": "bc18d6ad917a11b214b0836a0b503f0e4437125069617acec8f117cbff0d0260"
+    },
+    "app/Tests/CharoiteAppTests/CaptureOwnershipTests.swift": {
+      "git_blob": "55ff368c34a0ee536fbad89961ec62fbf7c0ebe1",
+      "sha256": "42631b0dbaeab6537e6bded908a61042922cc1d9411213740d8022721a179692"
+    },
+    "app/Tests/CharoiteAppTests/CaptureRestartPolicyTests.swift": {
+      "git_blob": "8c900a651bec93e5209689783e61ae0f738238dc",
+      "sha256": "0c8913ab358d882d92f064e133c8eaecb44ac2080920b23cbc2ad63a2563cae6"
+    },
+    "app/Tests/CharoiteAppTests/ChannelAxisTests.swift": {
+      "git_blob": "563b226083561abfb3d5626895817d9cfc92996b",
+      "sha256": "0cfc08f1a49d71ad77660714dea292b96acfe8ecea2f4536d7eb5654ab0483f6"
+    },
+    "app/Tests/CharoiteAppTests/CodeRootPolicyTests.swift": {
+      "git_blob": "7dd551fed99c2296a3ae553045f0e24b56079bf9",
+      "sha256": "09c022f1d972a3ebe73d34e3a10ae30b21530e93de22762bf32e601c8ca6aae5"
+    },
+    "app/Tests/CharoiteAppTests/ConfigEditCheckSupport.swift": {
+      "git_blob": "82684c5700921c1a9f850a8c7550d0dd57efd8ed",
+      "sha256": "f5e1b2dfcf287c6f7b24381af1046246580886df886c8b93e0fd753b35ccb2f5"
+    },
+    "app/Tests/CharoiteAppTests/ConfigFlagTests.swift": {
+      "git_blob": "6dd516a50d663d2a241efd808c3e7e9baa5f15bd",
+      "sha256": "6355d17f792365ebc7249fa4377a1f1c0f338f33b12faedb0a707339a096a53c"
+    },
+    "app/Tests/CharoiteAppTests/ConfigSectionTests.swift": {
+      "git_blob": "f77dabd405b819b78726b34df7756fcc4ec2d42b",
+      "sha256": "2d77efd0c2185f7793d7ee6c3b7324a0978f28879c833479fe9a4863de8a12f7"
+    },
+    "app/Tests/CharoiteAppTests/ConfigWriteTests.swift": {
+      "git_blob": "041f36808d58cd5965ba2755f04f055c411a570f",
+      "sha256": "9c61ecc8227d1e526e855cff4365c7ae8e5cc79b3e79ea50306da5520d769a80"
+    },
+    "app/Tests/CharoiteAppTests/DaemonLaunchTests.swift": {
+      "git_blob": "9e218c7670957fc8704320ead8e9a7d81305d92c",
+      "sha256": "13e1d0e3fe0a2b831147519e7c57eaf6dc81b4052b25eb67f0780d862b17f9b0"
+    },
+    "app/Tests/CharoiteAppTests/DaemonRefusalTests.swift": {
+      "git_blob": "b471f5a7be47ced34df3caa89b0129d484cdcd04",
+      "sha256": "dd917a8ae1344038abd0cfd24f910e6c6818483aac5defd4339366e8efe56edd"
+    },
+    "app/Tests/CharoiteAppTests/DataRootPolicyTests.swift": {
+      "git_blob": "c2e3be11ab9d61823b98103f112227ae19e7f157",
+      "sha256": "7fe6a6bb6107dc17a8acfbfc62e2edc4e5eb4dbb3812334a62eec5c6085b79d0"
+    },
+    "app/Tests/CharoiteAppTests/EngineInstallActivityTests.swift": {
+      "git_blob": "4608e5daf7bb290993662429c99467c537769e4f",
+      "sha256": "85e339682d64d4f3da1c43d2098a8ba09b43ac14f5659b583d6ae0cbb7d0051f"
+    },
+    "app/Tests/CharoiteAppTests/ExternalRecordingPolicyTests.swift": {
+      "git_blob": "1c66055200364954cb82d62c11f637add183ff98",
+      "sha256": "c48a64e86971d87c6fc5f25e045ee2ca4145656a1f19a9005cc8bf210d8cba24"
+    },
+    "app/Tests/CharoiteAppTests/FirstRunConfigTests.swift": {
+      "git_blob": "9c6f0535610796de772c7640f4bb4fab237b05bd",
+      "sha256": "0da0894c68b2d7f7a513513329e91ab0cfaaef591e2aea7a38960501139297b7"
+    },
+    "app/Tests/CharoiteAppTests/LogTrimTests.swift": {
+      "git_blob": "1f1376a92e98fbdd6eb37d8a533bda0bcd1835e7",
+      "sha256": "53821d352154a2829ec487b0ef0e3a3cfd54fd0f14ae0073db0ef130cebef1cc"
+    },
+    "app/Tests/CharoiteAppTests/LongProcessTests.swift": {
+      "git_blob": "a4e0c135c2c1591196f0b59942dbd0f694412518",
+      "sha256": "7832bd2ab80f27cce36aa82c198c56d8e9a9ed1f624d2ac1baa86080c602d710"
+    },
+    "app/Tests/CharoiteAppTests/MeetingCardArchiveTests.swift": {
+      "git_blob": "8bed410a1f1ba66f9e2038dded14ada886cb42ca",
+      "sha256": "e8cda5629a3a662a781db4d6d9497fc25c12b4efe03334924cca965941446b4a"
+    },
+    "app/Tests/CharoiteAppTests/ModelPresetTests.swift": {
+      "git_blob": "85d091c959d44969dd023c1cab462ed1b7d41f3c",
+      "sha256": "d354806ab72e5d2b2caf1c1978a1e2a1621a7b1c8356846a3ad3be098e4befd3"
+    },
+    "app/Tests/CharoiteAppTests/NemotronDecisionTests.swift": {
+      "git_blob": "cf7527ff668e772234fddc6f5a959497370287c9",
+      "sha256": "9686616b40e891958b88a7429198003545c492003c367feb91f2996e257d1fe5"
+    },
+    "app/Tests/CharoiteAppTests/NemotronEngineServiceTests.swift": {
+      "git_blob": "dfbc5a607d65665ce20e8b8c628fd0c6c1d861de",
+      "sha256": "1b771a09e21af1376f8cca2a7fc2daba86ba22921af72993293b49dd5ed219dc"
+    },
+    "app/Tests/CharoiteAppTests/NemotronFix7Tests.swift": {
+      "git_blob": "b2a2e800bf9910916cfb8af7f24b4a6db6f44d4f",
+      "sha256": "ed778b87090ac1071d5270b545e8c6400c316f27010bce1415836bb5d8900e74"
+    },
+    "app/Tests/CharoiteAppTests/NemotronFix8Tests.swift": {
+      "git_blob": "cd2804b7ae5be7c49d8ae36c96c1a399a87866bc",
+      "sha256": "37d4683a563c91bd6c58ec99390c5e22a5d8fdabd40869956081b8c7f767b60f"
+    },
+    "app/Tests/CharoiteAppTests/NemotronPlanFixture.swift": {
+      "git_blob": "7ec3dc990bd6a9d323559ebf649e380bef546b7e",
+      "sha256": "2fe4c306271ea7d085cca52f371168ed92b02f307975175e237dc2f652918c6b"
+    },
+    "app/Tests/CharoiteAppTests/NemotronPlanTests.swift": {
+      "git_blob": "ed48e11d3da41f2ab2f47a4c3acb70cf66249ca5",
+      "sha256": "d6400365b82ebbb6165525b029558d78c6d55659f1435629e90978a60e839c93"
+    },
+    "app/Tests/CharoiteAppTests/NightlyStatusTests.swift": {
+      "git_blob": "782a65fc828b642b1df33b67429e73f07d847efd",
+      "sha256": "1b95115226b6b4c3849d1cb294392fbd69bb6203f6d9aa5eab0505f359473188"
+    },
+    "app/Tests/CharoiteAppTests/PanePersistenceTests.swift": {
+      "git_blob": "ac9ad289adc2e97585bd3eac46408489cad5829f",
+      "sha256": "6b8644c2cb9e65b80b42f7d091a1c05beef9ba9efb6283c775b6c34463165897"
+    },
+    "app/Tests/CharoiteAppTests/PrivateFilesTests.swift": {
+      "git_blob": "9fca7cbd4576c9c51c68c171487f36e206036881",
+      "sha256": "2e7cb7609dcda78b6b47a49d63f209b062d8a96200f855735ee82ec0c2fe70d3"
+    },
+    "app/Tests/CharoiteAppTests/RecordingLifecycleTests.swift": {
+      "git_blob": "e630ad178f73a38c9ba8e815cc0abaef6cea1d24",
+      "sha256": "05066ea076c6f9a1b5b9b93a8da49c0e1e059c8a44bf0ffb22b03a8e1635fe47"
+    },
+    "app/Tests/CharoiteAppTests/RemoteHostPolicyTests.swift": {
+      "git_blob": "f56e1604ff21c00b0131353647797bc9f9d82469",
+      "sha256": "6083515d8c0352420e7b32c6050ad3525b3df69fe556b9f5f53a894b7ef525ad"
+    },
+    "app/Tests/CharoiteAppTests/ScreenCaptureReadinessTests.swift": {
+      "git_blob": "93baae327c09edf248c197eb46628f78c8cbfece",
+      "sha256": "4b5782a9771c98f947b27f586a6db37508e3362b7caa9e5c8fef89646ceabd55"
+    },
+    "app/Tests/CharoiteAppTests/ShutdownMachineTests.swift": {
+      "git_blob": "bf58ca6751ad5f199a014ad2888f222dba97a868",
+      "sha256": "846d2ac81ee7dc8910cfe7ed57d67853fa7fd7384083c048d7f70c2232a346c8"
+    },
+    "app/Tests/CharoiteAppTests/StickyStatusTests.swift": {
+      "git_blob": "c457e1ed6119fe07a67b3127461d9c7656a06e1d",
+      "sha256": "a0e0e517e7b65db884d62ce24a52bbc7088ed106a7dda855b305cc57a9e39c19"
+    },
+    "app/Tests/CharoiteAppTests/TerminationCoordinatorTests.swift": {
+      "git_blob": "b3abc81fcd9c94b63437ac043eb38909bcf23b7b",
+      "sha256": "f47bce139e87e0ccf4eb18d5ef2a10833263d540b183be73edffa2a2dd5fe759"
+    },
+    "app/Tests/CharoiteAppTests/UpdateServiceTests.swift": {
+      "git_blob": "ee15f6f5da3a13188384f28ec5965d370732ce79",
+      "sha256": "6f75ed2c3391c957151591928ebd33ac7f13d891e146cca9576b3d7edbc4c391"
+    },
+    "app/Tests/CharoiteAppTests/VersionStatusTests.swift": {
+      "git_blob": "ec8dcbb6ba88b0bfee0e8e3f39bf1c2da7c20596",
+      "sha256": "47f09a077cae31f09592fb6d641ae2a95371de4da0d16b6a9d6e08c377d13489"
+    },
+    "app/Tests/ChatAnswerOutcomeTests.swift": {
+      "git_blob": "c13664bd61ca64fff07ab2541a52a74a7a10d9e8",
+      "sha256": "17c7ec88473626783d8c84c4238ee2b69d70f432e6019e63ae9d923aab1a48ab"
+    },
+    "app/Tests/ChatContextWindowTests.swift": {
+      "git_blob": "cea14d13a4f555021f54bab6ad6cfc7e7c239b39",
+      "sha256": "539dc0c735ef5e29cb3005522191935fe5bf48db85a0439ce56ec46b90ed78ca"
+    },
+    "app/Tests/ChatRetrievalTests.swift": {
+      "git_blob": "42771c1557414d314f7241970af2a8d198c53ffe",
+      "sha256": "3fd8733d60813bf6dcb1df26315f91e3bd9fed6f98132d982a6ccb2ea99ed649"
+    },
+    "app/Tests/ChatScrollPolicyTests.swift": {
+      "git_blob": "f7a1ed4926875d0b39f0d28652399664cb43adcb",
+      "sha256": "ea1208d44ec1d8ab9491067cb366ef8a1de22638ee97a16565f9a4618e54dcda"
+    },
+    "app/Tests/ChatTurnWindowTests.swift": {
+      "git_blob": "4e467c581872b4001ea12bb1a8530605ca3d833a",
+      "sha256": "76773bcdb6166e8429d70128d52757fd9f4e656c2c337ae4f5b6ad261946edbf"
+    },
+    "app/Tests/ChunkerTests.swift": {
+      "git_blob": "7bad8ac63a577ed27965d92d7c8590c9ad636e5a",
+      "sha256": "c56d662b45d7a34cec1fbcaed4cb05e730ffc284b6703207a5b6103b3e4d8c51"
+    },
+    "app/Tests/ContextBudgetTests.swift": {
+      "git_blob": "bb4980a4ee03c5e6e56983314af14f01cb6bac3d",
+      "sha256": "6b4fca2ed5f3749645c70679dc3fb765014dc6bbd4d055732a553718e6624cb3"
+    },
+    "app/Tests/DegradationTests.swift": {
+      "git_blob": "612e18b12948d7d52fe51a3caa6398f2de35f9ac",
+      "sha256": "3a5065f5ff32a04e2612b6e5c064516ee21dfc61065dfa07e0288a6dd6218673"
+    },
+    "app/Tests/DesignKitTests.swift": {
+      "git_blob": "acccb1921daa9c14f95263b47d786726398aa38e",
+      "sha256": "7319f347184060cab967d86040331262c70d70d8c05ac830b1f96c59e700d3cf"
+    },
+    "app/Tests/DictationAwaitDraftTests.swift": {
+      "git_blob": "12bb964454623f8f376e9d71e929a1f9919505ae",
+      "sha256": "11ec0e4ad94e614d7351a0a90c17bf96de6c33fd3da8648ac5972c5e3853779a"
+    },
+    "app/Tests/DictationDraftTests.swift": {
+      "git_blob": "c5665e8fabde71dbd4aa07ded2532c271f926810",
+      "sha256": "cd5fc0e0a0ec50cc6fcfd6a169a3c62490a6c122ecd0c68416f09bc4d314c7ab"
+    },
+    "app/Tests/DictationPasteTargetTests.swift": {
+      "git_blob": "97ba1a60ccade7e7f6bbfee888668cfed614fc7f",
+      "sha256": "97bcbfc831c0cd9fad89cc5df796f02a2d9555a88072c2f658e7b3d5d2d209a2"
+    },
+    "app/Tests/GraphInventoryTests.swift": {
+      "git_blob": "0ef0149bac0a31d10ef03037869fadb2eef0ffce",
+      "sha256": "a97e69cae942df8ae8850af68206850b55e466ea42c16a721cf9d0c781be2073"
+    },
+    "app/Tests/HealthRollupTests.swift": {
+      "git_blob": "bbb83b48be34e6bee52cff8f35a171384994ebff",
+      "sha256": "f9755de87abfb47665677c5745aa06e6de4f49c0612c5be798594af6e9ad9fa8"
+    },
+    "app/Tests/IndexPruneTests.swift": {
+      "git_blob": "49b665f6445e52ac0a9d6e7ea9ef3ea6890f8212",
+      "sha256": "6b2358e3f7a15e1936c2864e74eb7d699ef10be74221af03e5cd3b9eb3ac294f"
+    },
+    "app/Tests/LibraryScreenPolicyTests.swift": {
+      "git_blob": "421ffaaeb79aadc5656e45707de2fcebfc0ae02b",
+      "sha256": "e6b9af7d6a2382531cdb933ad31eb530e96128a3cbd11436a8a9e3cc561430a7"
+    },
+    "app/Tests/LibrarySearchReadinessTests.swift": {
+      "git_blob": "e5f4ba4be0aa709387fdd47e468b7ce83c4a76c5",
+      "sha256": "ffac367a63e61918c6f1618fbfcfc7005a9f38752ad36b4a52f7e484b5beb516"
+    },
+    "app/Tests/LibrarySelectionTests.swift": {
+      "git_blob": "0919fe3c3bc607e8cd9d89d948d7eb0b5508612b",
+      "sha256": "179a619eaf3ce66184a0e4b3ec3e16e19ac65c028c4d5ae142814f2b71a638d2"
+    },
+    "app/Tests/LocalChatSubmissionTests.swift": {
+      "git_blob": "818edefd9e17b2abb29bb01d6adf9917dc1b596e",
+      "sha256": "fa514b8aa3120f37b6d69e0e957982ad9c49732c54a203ff2859747963e0e5d9"
+    },
+    "app/Tests/LocalizationTests.swift": {
+      "git_blob": "aac14dd3abf49b30e7d8e71a7a5675a8dc39d8d5",
+      "sha256": "30d8ca64cfc4e3fb67c45072071bca9ce141d14d21b9a4c8e350689bcacaf22f"
+    },
+    "app/Tests/MeetingActionsTests.swift": {
+      "git_blob": "398388878e5f401b94070f24cc37a6f98fac76b3",
+      "sha256": "a41ff19ba1c68e17f17ab11d7105a37857e8434e47891297f31d91de1bafa4c1"
+    },
+    "app/Tests/MeetingCardDepthTests.swift": {
+      "git_blob": "64d3d78798d7285a828919b9231deb38ac490865",
+      "sha256": "0a8239ebc85b873ac1dacf419aa358d6b32d3be8ce0ea4cf5d305b5cc64578e0"
+    },
+    "app/Tests/MeetingCardLanguagesTests.swift": {
+      "git_blob": "d7fd575b2f3c14e06b11ded580b285d29dee4767",
+      "sha256": "06ba56f004729172458cfe7c140270dde9981c2c3473536e76a8c06f7f1835a7"
+    },
+    "app/Tests/MeetingCardTests.swift": {
+      "git_blob": "ad30b13b21d37b02f5dbb8ceab612c442794256a",
+      "sha256": "ececeee9e648ca0659c00163bffded928de780f2a94ee21d19772585a44f5727"
+    },
+    "app/Tests/MeetingCueTests.swift": {
+      "git_blob": "43eca37090febd0077582cc4159b6f78afd0e05d",
+      "sha256": "0642c87d9aec424261be17775b68c8f9ebc9f250e06f0171bc2e32246d560a02"
+    },
+    "app/Tests/MeetingHistoryPolicyTests.swift": {
+      "git_blob": "5ea081400af96ea042fcec90586f9bff1adfe564",
+      "sha256": "1febe97b867e58958d1cdcdccbcb207ec9279f7a248fc80b3ebde63e2e73f45a"
+    },
+    "app/Tests/MeetingMinutesTests.swift": {
+      "git_blob": "ca7e98a7d32c97cfad15336c63c59a5cd8d62916",
+      "sha256": "029f41b8ff3964d05af1470ae56772a200f335a62ed225ff90598f7fa6a473ee"
+    },
+    "app/Tests/MeetingNotificationTests.swift": {
+      "git_blob": "ef9524d7e8f4958f1c53f577b8c2991c682b33c3",
+      "sha256": "ca85fda1ca559f3b84bc7f5f9c637e9bec8ab4ada27915a639f981ccf297860a"
+    },
+    "app/Tests/MeetingProcessingTests.swift": {
+      "git_blob": "c5ef32463ecdd77882b28e0849ea34a9502f74ef",
+      "sha256": "2f4bd42556c6b7911c39f3a564e4d9cba5a57c33ea0268075db2c99e24bbc82c"
+    },
+    "app/Tests/MeetingRetryExpectationTests.swift": {
+      "git_blob": "ce5dee1c00ecb718ea703e772fec2fa4aebfd410",
+      "sha256": "f57e5f5fcc089486b6effc32463da0517426d0c6cab65d64c0fa0c2b199063ed"
+    },
+    "app/Tests/MeetingSearchTests.swift": {
+      "git_blob": "99f652ec0aaa6b86083aaac7345ba5f47d9d4709",
+      "sha256": "a967f5ece76f3cd21507eb22ac29ee377eee93f086ec55da673ba5bb31193b0f"
+    },
+    "app/Tests/MemoryScreenPolicyTests.swift": {
+      "git_blob": "e6451635a9dea4b45c4e763c80cf076f6de42128",
+      "sha256": "43ee4453cc776bc54ae4ac22c10f286f6c907b426ba8618e9e43c823a7be5471"
+    },
+    "app/Tests/NightlyScheduleTests.swift": {
+      "git_blob": "5fef6e4c8334bdf5e794e7b85ed632fadbc7f5d1",
+      "sha256": "8c504074c248f51385dd97e53cb6250c5cf91d87d37fe2bbc27dbf72c2417577"
+    },
+    "app/Tests/OllamaRuntimeTests.swift": {
+      "git_blob": "dfb5999a1899997ca4237fe8d2ccd42c207462a5",
+      "sha256": "3aaef1dbe9942e61ff645fad9270aefdb38077e066b138dd9f5a003949ed083e"
+    },
+    "app/Tests/PipelineHealthTests.swift": {
+      "git_blob": "0d692768b37dc85bfe948dac51bbc6b277b32878",
+      "sha256": "f9d1c0562229e4a675d5c8f4aa82912404e0e088dd343e37794b24a0a3081d94"
+    },
+    "app/Tests/PrepDebtsTests.swift": {
+      "git_blob": "b4770417c89b0c17bffa65823e897830a80b9ff4",
+      "sha256": "44b56501e895776940e7733255465c2c5de835f3ee8f3100e32b7fd5a4b7e64d"
+    },
+    "app/Tests/PrepPolicyTests.swift": {
+      "git_blob": "9f50085f1625c96604d0f3e4f03a105226199b49",
+      "sha256": "bd86ff9a07534a7500ea6bb9da49beba62d2b53b2d7c18bbfdb8d617b3a72ec7"
+    },
+    "app/Tests/PrepTopicQueryTests.swift": {
+      "git_blob": "8e5e244b4b40ffe93afc61ff7609bb3eab2fd3b6",
+      "sha256": "884a69387ded3e87c0a126f97a585e95aebc4a12955d412514dc749d97a2329b"
+    },
+    "app/Tests/RecordingClockTests.swift": {
+      "git_blob": "57fb567c572994e9d5f5f918879920b9a670e7f4",
+      "sha256": "106e952f44e71de529f3d3ea5cde83dc2a530142fd09777fa5060cedbc551b0a"
+    },
+    "app/Tests/STTWatchdogTests.swift": {
+      "git_blob": "e540ed91b25a1044e202837bc6502844685cd259",
+      "sha256": "e72e7ae76e80155fd89891b8b3723e2bb6ff47c59933ec2d26b5898e8da8eb14"
+    },
+    "app/Tests/SearchRankingTests.swift": {
+      "git_blob": "8b77e447a5b1ffecc8db209868278cb0e3921567",
+      "sha256": "4f5c6da42a3deb0e2e597230f47faeaee43b34c02a53293cdbd4925bbf1fd631"
+    },
+    "app/Tests/SearchRecallTests.swift": {
+      "git_blob": "e8c459acd754ee9db24291c82d7c40c64a0a7fff",
+      "sha256": "f2f48ec990943f6c7411756345510631a8dd34c7b211d2d9a7e632307d22a400"
+    },
+    "app/Tests/SemanticChunkTests.swift": {
+      "git_blob": "216d58d1396dc66b4336de83d35c007f3a0cf3ba",
+      "sha256": "3f7324cca258b0a1994767d6babe54c6e4df7e30f21575b718112119e05f55f6"
+    },
+    "app/Tests/ServiceFilesTests.swift": {
+      "git_blob": "1aeb6922f6b865e804661b4b8bee12fab9e0a4d6",
+      "sha256": "a4c59394d2c06a48657b87b8dadc138ebdc8bc9f73df95369798563b93e24764"
+    },
+    "app/Tests/SetupReadinessTests.swift": {
+      "git_blob": "d84e12f6083b9ca79c55defed27c9cfdc1c45315",
+      "sha256": "b6167e2820e9ddea7221c40288a3b4d8d61de7bf0ea87c598eee20e811537bb1"
+    },
+    "app/Tests/SourceChipFlowTests.swift": {
+      "git_blob": "f9be3a4c29e4709348c5b76717302eb4219533e7",
+      "sha256": "515e96979bbe746f6fc5b1cb7d00ac953e71fe0095c186b07d46f6d00ab984b6"
+    },
+    "app/Tests/StemGoldenTests.swift": {
+      "git_blob": "ae7192e1cb51daba7336774c1bb2f63e6962629a",
+      "sha256": "931a55d16c4bbd2276676e16729f6087113e2595605d30c2b309d08f96dc3239"
+    },
+    "app/Tests/TasksBadgeTests.swift": {
+      "git_blob": "44da5c526202e52002fa0ebc57f7344c9f3ad2f2",
+      "sha256": "d45756afba349d2581b3409635964e40d2092dc3a73add8a27814887dafe5761"
+    },
+    "app/Tests/TasksCanonTests.swift": {
+      "git_blob": "ed0c9119102f6a21010cf31dc6a3d7809e297774",
+      "sha256": "857e4d215c156a734c3d3aa2b3cfbe2dbf8fc6ff93ae634f54068ee761f3634f"
+    },
+    "app/Tests/TasksScreenPolicyTests.swift": {
+      "git_blob": "24b063bb2f298a03cda4c2eb16237edcbf4bd873",
+      "sha256": "ddc817b536602f6f72ca257f9dc9a2fbbbe94490ec2ae3a7f8857138c6e71fa5"
+    },
+    "app/Tests/TasksSearchTests.swift": {
+      "git_blob": "dcacce60cb121b223d6634bbe3ad53248d60c520",
+      "sha256": "de39c8785089a27681a08642316986e39d549b4317f817f30e8cb1aed6c82a0c"
+    },
+    "app/Tests/TasksUndoTests.swift": {
+      "git_blob": "d28900c2acee477cdda2abb6b53ca282cc3fcc62",
+      "sha256": "0faa7aa1d16de30e0c3081e5d250cc1d90ea27d3935545cbe34f4e7e34790c28"
+    },
+    "app/Tests/TodayLifecycleTests.swift": {
+      "git_blob": "69f36e4aafe07a55f85faf27eef694a8763b7b8d",
+      "sha256": "4d1bb049314050b97e33ba4ea538058dc073af7d798740b10fca5d5803d97dc3"
+    },
+    "app/Tests/UpdateAuthenticityTests.swift": {
+      "git_blob": "25916caddc50a8c635ca17eab2ceaea323640db1",
+      "sha256": "8e5f00c19060020a3ac10d0fbfdbb448bde17630b99a990e7ea5c871fb7bcf40"
+    },
+    "app/Tests/UpdateProgressTests.swift": {
+      "git_blob": "a8f8ee6b35f7537e5d01d7011318aba552478117",
+      "sha256": "52021471326be6493b520788d1e4277ec9632b3fe6b44b2d9f4c402a77923a90"
+    },
+    "app/make_app.sh": {
+      "git_blob": "63a17f04ffeeff113b63c8134e0f5de1152fa6a6",
+      "sha256": "f02ded63dd54f1175acf9f166b4fb76ce41d36cd4cd9a24e390868f18171e298"
+    },
+    "app/stage_code.sh": {
+      "git_blob": "2427d49abb2aab952b5f16ab7cd5ac1c1f28aea6",
+      "sha256": "e179e0c35d0f166921361113695dc0fc740bcf9cbd50dc6f3e9cf95201b72d2d"
+    },
+    "scripts/README.md": {
+      "git_blob": "ff37378c9999e4ccfb8acf34a6a49f48fe8bf913",
+      "sha256": "22073471f1cfbc89643c0b1e8567e3a08de5a2068653fd5273bdd68d90652207"
+    },
+    "scripts/bench_extract.py": {
+      "git_blob": "12c68fa44fd8aa3e8a99c1df5732744ad3e03cda",
+      "sha256": "fb3c68823e359b62bc37dfd49ee9f8cfb2bd3c4a1e2f3530fd2ee15605b02d01"
+    },
+    "scripts/bench_models.py": {
+      "git_blob": "eb311fcb8cc93a54dc8f4e12288fcdea5e809b1f",
+      "sha256": "58fa4d0ca4742636823d72c3e75210e262a95bbb3d60664750c445224a956614"
+    },
+    "scripts/build_app_icon.sh": {
+      "git_blob": "1427015575929e6ae0189bb268d20592c310e0fa",
+      "sha256": "efaa92873e7b40ca99eee29b7f4e3fbf3fbe642936289e80871899fc81d5b536"
+    },
+    "scripts/build_embedded_python.sh": {
+      "git_blob": "59783c3591a82f53f7b5ba4c8dbcd32c543cc0b6",
+      "sha256": "f0dae5b095b592cd827fe806b9d622680d5542a0d23fb2a752865ac5cde072fe"
+    },
+    "scripts/build_fake_pool.py": {
+      "git_blob": "f42e617e3ff34e9609a73f02e199eb5a81f32fb9",
+      "sha256": "818521e92aef5bc6b63d579f9ed77970a6a0840277d6ba2394cae23321fd9f40"
+    },
+    "scripts/check_private_markers.py": {
+      "git_blob": "8fef6e9f3a7810e4293b1172524af942b240aaa9",
+      "sha256": "e1dd26b405dd90e162a5bfff154a6b137b7fe876e3bd324a24953a13b14b1fd5"
+    },
+    "scripts/check_test_assertions.py": {
+      "git_blob": "7c2fb3495326a30d07a39c0d453ac4b82ef8f927",
+      "sha256": "26654056cf7c0ff0b41e7909c9b5b23a0e39b24a853edaea4f3ded53af5ace8d"
+    },
+    "scripts/cloud_review.py": {
+      "git_blob": "c892975bff5d10f4456ba0d34b3a9b7fe9d2a329",
+      "sha256": "a251e35d4a7b0b93b1d0a9f1b1962ae18b0de7c89319a61a2ac7ad04660aa2b3"
+    },
+    "scripts/decision_evidence_audit.py": {
+      "git_blob": "5bd2965b7772decf81b505f6d42307a43bfd0352",
+      "sha256": "335b4b64dd78a0b307fa2a323f4ac35a65f8d795ba7bac690a2c4fc18bc9abc9"
+    },
+    "scripts/dedup_archive.py": {
+      "git_blob": "4287e269797f6992ecd0abfd4dbd0b532dc68a6e",
+      "sha256": "7ab93c7a38f7f2ae583ee2a3f3cdd809a34da21b653cb9450a5cf220101a8301"
+    },
+    "scripts/dedup_graph.py": {
+      "git_blob": "d680d5c3362c0eab623f999df1448d01e0254932",
+      "sha256": "572c69f0873a50bc379db43bdd3380381113ebe6c170f3b168f130f23b7a0fca"
+    },
+    "scripts/diar_bench.py": {
+      "git_blob": "ca7c131a156f5a71fc6a85985ee8f55ea26b5554",
+      "sha256": "2ab34f301008d19639e86a65a7bf3cfc06b2e4e4ec59d7a75e3bb2cbb1064fc7"
+    },
+    "scripts/doctor.py": {
+      "git_blob": "3ab8896a07b9de233844b08b3e007055592cb39f",
+      "sha256": "66c52c910d36ba04b4a4de118ee8e549086aa234892ee28d7838ac25f0446def"
+    },
+    "scripts/fix_action_items.py": {
+      "git_blob": "51525a662fbb8f81ff847e390009bf469af6bdb1",
+      "sha256": "6e2223e98dca9f2990c09e7f5811192a525cff61758047283d6e98894144bae8"
+    },
+    "scripts/forget_meeting.py": {
+      "git_blob": "6887138b95003c3c4e74f748efa68ad8fff6f263",
+      "sha256": "af39998d245da7ff15bac9f7c1bc380fb132ff63a8eefc108af91ee36281e823"
+    },
+    "scripts/gate_bench.py": {
+      "git_blob": "2038f8b8ce115100f75ad6e166ece62b3398514e",
+      "sha256": "2d776c4eae815ea7d167c3cf9ae48653f20f760a0e9f710cfd9aceb2890f5345"
+    },
+    "scripts/get_models.py": {
+      "git_blob": "9699b1f495b6cf30e046dac7179ee38463d132d3",
+      "sha256": "b507b4dcc8073b79e57c289b80cda1475ab44629f7f3feedb6ba1fd51de87ede"
+    },
+    "scripts/graph_doctor.py": {
+      "git_blob": "cd91c24ca4c642999869757e46e24ac07a82f5dc",
+      "sha256": "b688ade2b4a02640cdb50b9576df42cac065fb61c1c68cc6080e844a0026003a"
+    },
+    "scripts/graph_search_index.py": {
+      "git_blob": "92a0726cd1fc152afa388612123525c6a0a227c9",
+      "sha256": "4adb4d465c9c1cda3c2abe4c6746ba4ee478fa6ae12b1a80c25bc67d637e4f8f"
+    },
+    "scripts/import_meeting.py": {
+      "git_blob": "ec4e7ef4da2d5712b3d84292254c51dda9aeb707",
+      "sha256": "4ee8890b5d610cddc6c146b7893ff8b28091e288fba6b946350f2e1ce6de2f6c"
+    },
+    "scripts/install_engine.py": {
+      "git_blob": "ad05174be69305a35770434c7651d36c13f17d7f",
+      "sha256": "1a39d385accd8f1d6388c4c0fa97decb537d26ffb6dcc6f7f0741bb66baaa29e"
+    },
+    "scripts/layout_map.py": {
+      "git_blob": "d82674b4f3bb124895c39d131c17b8bb4a2a0613",
+      "sha256": "307a90f2ab6fd7f30dabc41f7a55260e83c496f2477474cd658db52938d903ba"
+    },
+    "scripts/lock_runtime_deps.py": {
+      "git_blob": "af31368b251bbef59c6512fd6c8175b8bc40f1a6",
+      "sha256": "8832280046100c9504076df680ee03a8c484eb37dfc365d5b2b701dac3792dad"
+    },
+    "scripts/make_dmg.sh": {
+      "git_blob": "5addd865fa4b2bee889e25ffe893d3f3be848e5e",
+      "sha256": "42d2a578b7d3c82b7fc58769e33c75b1729a9576a73ab00b0c05c014eb5b7fd0"
+    },
+    "scripts/memory_bench.py": {
+      "git_blob": "8bde247121317d4b6969b0e8bea2ecb7f9f90eab",
+      "sha256": "3adcda9d9550fe486fca5cd6c86f61d3a4a16a4411b541c2ffc48cebe526de10"
+    },
+    "scripts/memory_case_suite.py": {
+      "git_blob": "a776d109d0b4ce80f581fd7ce77a2979944e3f6b",
+      "sha256": "0ba1907e5a1a9aa8fbb372e6b9f5c0f95399015d424073898426bea2b4f389b0"
+    },
+    "scripts/merge_graphs.py": {
+      "git_blob": "99fb22e8bf8a04d9acdfd67ae9bdd37fab2e6a02",
+      "sha256": "728cc696666d945fbaa338506ec43be872774dab94e0d20e746a1d81f93de709"
+    },
+    "scripts/migrate_placeholders.py": {
+      "git_blob": "1dc5c68831a318806ee8a635bf7a9b0be4be7746",
+      "sha256": "223244d0d7b26be3a89cf92428f1be9a1f767392e147c6179b8778169383101e"
+    },
+    "scripts/morning_brief.py": {
+      "git_blob": "24fb63f891ad21ce6a37f98112183f9f00400450",
+      "sha256": "9189552caca393be24c51ee3f02dac935cd3a2afdd317aab1ebdfb2e769fea9c"
+    },
+    "scripts/mutate_check.py": {
+      "git_blob": "7a06f7eca0911bba2fd9351523dd4947048342b2",
+      "sha256": "fab0c075446eaf370e80172633ffc11d9dfd807411ff394e6afbe1f7a0891598"
+    },
+    "scripts/nemotron_shadow_check.py": {
+      "git_blob": "b89fcad9ac3a618d8e13cef71fd0fc26de0a98d6",
+      "sha256": "78fc282201d0fdd5929c1e5147b369a5fdd658c5ce48870fc2a04d2e035150b0"
+    },
+    "scripts/nemotron_shadow_replay.py": {
+      "git_blob": "766bff09d0ff918d1a8be8a742ec4da56cc41ed5",
+      "sha256": "c23e3e07cb259f1191c30b9c785a9dbad3dab66c6d0b415830f56e95bf5e57aa"
+    },
+    "scripts/night_gate.py": {
+      "git_blob": "a1c75cb15ebcca938a5150ca546b3214ec0e5fee",
+      "sha256": "3d8cf77b4532a287aeaf48342b4db9621fd506a8a37eddd86d60555a94fb7d0c"
+    },
+    "scripts/nightly.sh": {
+      "git_blob": "c5101b5c079b72994cd2019fae24a2d9fd55b652",
+      "sha256": "b3183917940a76308a247f86a551c3bf8d98f79639110e6632ff5c130111ffcf"
+    },
+    "scripts/nightly_claude_cores.py": {
+      "git_blob": "f69f711cbb8df7331b1f6fa635a09b8ba4ebf35b",
+      "sha256": "20a9748479f14747efa79a7f19d30c60ef2b8bbf1f70eedcbebdaaffa818bb17"
+    },
+    "scripts/nightly_dossier.py": {
+      "git_blob": "7dcf1f1614a9a88b4d8f1794ded7ac60247b6e03",
+      "sha256": "01311fab3e34ca6033ca95bf424665ba7610cc6a44fa96e44a217efb3d85dda9"
+    },
+    "scripts/nightly_dossier_review.py": {
+      "git_blob": "f8353a3d80081bc6b588d8726c3cc01d3f1ba8f5",
+      "sha256": "fd1ea57faa7a974ebdb8e2b4664fa4fa9ae2767d37bab44cf0783bf1ad657014"
+    },
+    "scripts/notarize.sh": {
+      "git_blob": "dd7f53e85f674a1e2c91af0b61c7ef6b9651db79",
+      "sha256": "9c5fb281bd737dd0213f3294e3041f2fd174f49637b3b94d97b169e94142323f"
+    },
+    "scripts/preflight.sh": {
+      "git_blob": "3a26c0fa03afcc6bd5ea02733e87ab829835317c",
+      "sha256": "db3a7f98f519114dfcf315aa9957af9365aad5a47fefb2cb8fdc859c90fd271a"
+    },
+    "scripts/protocol.py": {
+      "git_blob": "47a3f9fea4210b3b6b6323d3100cd094d004c884",
+      "sha256": "76f649beecb4c2aacfe3b417310e1330edf28e23aec02a7e560b13a0ebf2c6e0"
+    },
+    "scripts/rename_meeting.py": {
+      "git_blob": "1bec31d270221489d1a5b595b302005234044109",
+      "sha256": "fa4765323389e4a309f8821dd495aaa01d09914843b3590fc2c998d3802a2332"
+    },
+    "scripts/retrieval_compare.py": {
+      "git_blob": "9a04bbc7f0a0e3e747646e9ae75924c8049593bb",
+      "sha256": "5c37bec75b9969eff3434b395425ef02c3f490d361a91dd9e70e58ced5ab1975"
+    },
+    "scripts/runtime_profile.py": {
+      "git_blob": "8fa035fbd5efaa8b69070141f9d562acf4cbd390",
+      "sha256": "0bd0035266ea28079fefeae361881099d3a3d4e90e10e4d6112213de493b3457"
+    },
+    "scripts/sign_release_manifest.py": {
+      "git_blob": "93f508eaf6a01f5cd3c9958eac9688c78002167e",
+      "sha256": "0a1b68bf73af7e4e75d39258f067c9ee1c1eac5e4a5489a9bbbbc2c3f25aeb70"
+    },
+    "scripts/stt_bench.py": {
+      "git_blob": "855f6d65ebd991d798df883e6de8aae1d7d824ec",
+      "sha256": "26e992879967311df276b784d1975b4175ec379f4bac340fc01771d22fb8d1d2"
+    },
+    "scripts/tier3_cores.py": {
+      "git_blob": "d7b5fc1b7ea84b97468c3b04467d57a132fe2a08",
+      "sha256": "8a4908c406f6fd07c7379a3f08c34b135e8da6ea4eca31437caa646204a5d406"
+    },
+    "scripts/wait_for_idle.py": {
+      "git_blob": "7f3c1360c7e39c20bd41b9b0d9317c502dcca2fd",
+      "sha256": "65e72a63ac228e720db90da1d327dc2100708e1a0ed49a37384c682ba3aff0ad"
+    },
+    "src/action_items.py": {
+      "git_blob": "25acbd50b03c4d7ddf80479970070e5b181df99c",
+      "sha256": "4e11997ebf65958cb70a878fb220a56e266ea6d636e10455b6bbfd0d38c28b3d"
+    },
+    "src/audio.py": {
+      "git_blob": "c4af85bb36a47651ce665d02245ca2bfd00b163e",
+      "sha256": "f6b28eb9102f02aebfdf767302296749fb0a2abae3a9c99af43ad01075c7e2e4"
+    },
+    "src/autostop.py": {
+      "git_blob": "517c84a4872549b6b0cece70074c05e8ceb4f463",
+      "sha256": "332a2d27df0d328ef8c5495f4b61bd5078d18618b6ab5fe3fb36313789441c1d"
+    },
+    "src/brain.py": {
+      "git_blob": "7e4303b9b84a65ca2c0215642c63054b82230972",
+      "sha256": "f064c3aee7ff60574744fbd1ed6daf8b9beea7398afee895bc91e04c01f6a2aa"
+    },
+    "src/busy_signals.py": {
+      "git_blob": "48225d1c3ed7ce4ec5aa92fc58e9bbc58dd3903c",
+      "sha256": "f2504fe17a27501bc2940adb4121e552de794332b39b9557f90c101c0b9d14df"
+    },
+    "src/channel_labels.py": {
+      "git_blob": "b08fd4be71bb547922d3a9d12afe3f0819c3b58c",
+      "sha256": "e2add51c93d54b1b2b09b67e2c11c68fb3d8a882801ada38baa756d301142aa6"
+    },
+    "src/channel_trace.py": {
+      "git_blob": "787a39627613b076313950bf99939e71b72a7ddf",
+      "sha256": "d75af661655f0e79f10610d6f2bb03ead8733780363265436a628b0dc0e51281"
+    },
+    "src/charoite_graph/__init__.py": {
+      "git_blob": "96cfec2cf2ad3bcb2b21b4cc3f1dfa9574222e6f",
+      "sha256": "8e7abb17883a04d8342f796e4275e3f47f9b9ce258193e2066bf5679107d7900"
+    },
+    "src/charoite_graph/address_policy.py": {
+      "git_blob": "4e372aec141f36fcbd1058ed6d1232c673db18f4",
+      "sha256": "90198aa95ebbe39f740a2404484a22bc51ca85c5b0b72d3bab4c1ce88205cb3e"
+    },
+    "src/charoite_graph/cli.py": {
+      "git_blob": "ca46598dd7f53226f073cf7ad9b7e4aa7b11d46e",
+      "sha256": "2fd430427952dac6329b1593b896af329b2b6b0245048579fc256019bf377c23"
+    },
+    "src/charoite_graph/dossier.py": {
+      "git_blob": "2d6d87231a2fcc32c323ba9769d6f278cbdfd7f9",
+      "sha256": "de4ae30e15dc935a01e59718d55724fc964814dad555c1a5f28093748dc2f063"
+    },
+    "src/charoite_graph/embed_door.py": {
+      "git_blob": "f0584f61e71db1bc1b12a60a35735c5a3a0a1c3a",
+      "sha256": "291ba8aa9017da15e6cb2065bb82cfb57bb3b6944c7b915d02437aaabd0aabab"
+    },
+    "src/charoite_graph/frontmatter.py": {
+      "git_blob": "6bb6cecc0910bb7eed531c7b5759c7e46213ecbd",
+      "sha256": "313164e3be7475f576e5dc132774a26167d4a034fee6ab667f9e886488eefc3c"
+    },
+    "src/charoite_graph/graph_names.py": {
+      "git_blob": "82e4debe59dc7de42478f9828047c105f0505993",
+      "sha256": "985047d9340d2bd79db08884d7b8d3a791e2da71d3d80c670adecae3520f1e45"
+    },
+    "src/charoite_graph/graph_nodes.py": {
+      "git_blob": "29eccc36dab60b1d26d923e55d07d3bbd9932205",
+      "sha256": "b386f4f1b837afb61b728b255c99a6f41facaa3de9ed324a545142b9f21713f9"
+    },
+    "src/charoite_graph/graph_schema.py": {
+      "git_blob": "b189c21a9e3a8d2367d14993a16036c855d838cc",
+      "sha256": "53f4aa0c7e4cc94d9a72ba6fc0190e6c721f5c438d2963269a814a501d2b1a7d"
+    },
+    "src/charoite_graph/graph_search.py": {
+      "git_blob": "41a7edd8876f2af8ca355899e0663cfd3d65ca9e",
+      "sha256": "6d0e41962f746c26184104236fc9843eb94fa472687676eff6e1a447422508cd"
+    },
+    "src/charoite_graph/model_seam.py": {
+      "git_blob": "be1820a8d3bbeb61edf01bae3ee14885404c6db1",
+      "sha256": "c4451373191ec51637954a88f97f99ea95af7dea0c1d9ea4f7cc7055d8725181"
+    },
+    "src/charoite_graph/net.py": {
+      "git_blob": "b0140cbfcdcd72fd0c03d6a0863aa2d98571d880",
+      "sha256": "004d7279d259ae1da6fa48795f3b6dd88b96605b436dbc79c724142f016b7b4f"
+    },
+    "src/charoite_graph/notices.py": {
+      "git_blob": "f300fec273906647eeadd2cfb2fd1728685ec3e4",
+      "sha256": "2ec7163b0e31f904127dba6e91065dd999588ec6e598e6d3c825953c9666dd15"
+    },
+    "src/charoite_graph/own_network.py": {
+      "git_blob": "bae81e8dbc632c4084a36177a8ca80edafcb726b",
+      "sha256": "a5d770ea39db6d5b9fe725520d3407538bd4546e401aea63c18bed635718ccae"
+    },
+    "src/charoite_graph/redirects.py": {
+      "git_blob": "80ebaebb162bb7e3142b5ffc9fd3d85bdebfeded",
+      "sha256": "f0c09e4d407b607d21eaf446052eb553dde222fb164f664a91cb85510301c0e9"
+    },
+    "src/charoite_graph/safe_write.py": {
+      "git_blob": "2edc980c9526a594be660ddcd4892421eedc46cb",
+      "sha256": "2c5c444767189e59ea006db41823f8b460ea8e1bb4088a1130ce37371c9325ac"
+    },
+    "src/charoite_graph/text_norm.py": {
+      "git_blob": "4f892d8505a79ef6fbe86f12abdb38b0a09140ba",
+      "sha256": "be853f9087be64a75cf761b578b0ff3d9c093982d5161eaa7527c8793d40b023"
+    },
+    "src/charoite_paths.py": {
+      "git_blob": "356ff31b53b2567604ab2ae286161f3ce7e57bf6",
+      "sha256": "d8758d017e4e024de617824682265549804bd79e6bab9587718eada43b881ec5"
+    },
+    "src/charoite_schema.py": {
+      "git_blob": "44abcf570fc662dfac33daca20694a0902dcdd49",
+      "sha256": "91fc3b91217477e124941537e355c1886ed926012c74e224b7d425f6b3333c8f"
+    },
+    "src/cloud.py": {
+      "git_blob": "b34adf0a8b3b9f4f73a46a881d84fa73b8287a0a",
+      "sha256": "b7ebfe7d88b2c1b38762c3655a0ca24fd59a5fe779a6b585d3345ced17567449"
+    },
+    "src/cloud_door.py": {
+      "git_blob": "fd5ba7b4f010f52081bac5fa7d9dddb615b350d4",
+      "sha256": "c577706e75670d2d07934676e834d2e8b6175d7a029bc17b88108a6aeaa55727"
+    },
+    "src/config_loader.py": {
+      "git_blob": "43981e49645c386ec0c51fbda57da02927fec8d7",
+      "sha256": "7ee1c249eeaeec764a4059ddbf55bcbed661580107716aeb6145d78f0887d28b"
+    },
+    "src/daemon.py": {
+      "git_blob": "e49c3629b17d2057eb47dd694ea0d4f76e36b8aa",
+      "sha256": "c9b0ebcbafd238836d9bec2340ee9ce37a67acfb5304ecabc93e0907ba07fd01"
+    },
+    "src/decision_gate.py": {
+      "git_blob": "7bbdf6ae5767b6f21188062be85f75e3366dbcd4",
+      "sha256": "1111ec64eb8338dce14b3c35d312afd1260ba751f577729f6937029f9a58508e"
+    },
+    "src/deps.py": {
+      "git_blob": "8973370211a96ff736309b7433bb6ca786a33079",
+      "sha256": "39f60b2c9f50e11bea8e90989cb7236e0da339e8c5b0897ccd8f0d28ec6facdc"
+    },
+    "src/diarize.py": {
+      "git_blob": "af6c960f7d88352305458e56a4d3a4060bbfaa35",
+      "sha256": "e4639d2a89fd5f9f2a933842e104c3fa21a1eac7864da0d3642fbf8a5e237b86"
+    },
+    "src/diarize_live.py": {
+      "git_blob": "4f52e335c227dc25ecb3b90f6bfacc38c5d78148",
+      "sha256": "d5ce0decda9f2e48c21c78af518ac6f5c3d5b068cfdad74d284271afad4fc05e"
+    },
+    "src/diarize_nemotron.py": {
+      "git_blob": "da6dce36e981e4e3484c0a292e4a6291106e125c",
+      "sha256": "d6ecf8bd7354f7a58eba23280dd1059170dd0d4803d42536f55a4e5debb4232a"
+    },
+    "src/dictate.py": {
+      "git_blob": "ed261d43b15d3e598f0138bce59c536825536851",
+      "sha256": "f4c8780d7e809e75f40120063d0f5b257dfb96fd153e4527e00a67eba77583d6"
+    },
+    "src/dictate_note.py": {
+      "git_blob": "ecdf49e05d85549dbb3f057cce5e9ac3c543a70e",
+      "sha256": "5acbbea9cd099ba7e07a717a3bad5cc668c9f1fc976cf882c14ebf35ae126e1e"
+    },
+    "src/dossier_incremental.py": {
+      "git_blob": "8b05f2722c4a8f17b993e72f4fa4fa9c8cf1984f",
+      "sha256": "c852dd1d9b75a92cc22587daf279a8b234c433d538e3546657b1b09f179921e5"
+    },
+    "src/dossier_telemetry.py": {
+      "git_blob": "894ffc9cfaacd3e8497fde1ed2c7cb9c61ce4019",
+      "sha256": "0d4d9a191efa6f123a22ab6460be27ebeb6ce1b9f3e63ce6864f805b2439f299"
+    },
+    "src/exit_codes.py": {
+      "git_blob": "8c8beef7933ca4b184ab042f2c6a6b2ff120ef35",
+      "sha256": "b7171ebaa1ad6d26ebc569a36b44a8c29b69db82f800591cb0db4699403a0c00"
+    },
+    "src/fact_check.py": {
+      "git_blob": "2bf227962b72e304a9f7ad696ee4e1d2641be66f",
+      "sha256": "d59c7f92f5c0a7489c5dd71d6512b0aaa355ac1e06d26957fbec7e7f73c38682"
+    },
+    "src/file_locks.py": {
+      "git_blob": "88b8ea196d48e54df6e115ec9f3a7864f4a3d8dd",
+      "sha256": "228f693e0a2c15f308b377d867ac2fb95754c3130702247bd04bea202b439fed"
+    },
+    "src/foreign_python.py": {
+      "git_blob": "eef37161f7564c0543f22765a18e3231a8fad09a",
+      "sha256": "98c13bce630d412d018c7ac1d440bcca1c8113208d19d8d209de8653e3e8d6fa"
+    },
+    "src/frame_drops.py": {
+      "git_blob": "5fee58f79856d5236b07818f8caace995c55e9ed",
+      "sha256": "f1c4ae97442119ab2fc363ee1d0cda10702f246816df1f1a3371606f9d5d1b16"
+    },
+    "src/graph_links.py": {
+      "git_blob": "60d2e3854cb5b89d8c16cadc2a0a366f5d9d3b2b",
+      "sha256": "aa01e7dc88e6c8a57410f7f873a726b3ede93309a25bcafc862c1678470161c5"
+    },
+    "src/graph_updater.py": {
+      "git_blob": "4f285a618d2ad35cfc503c187689998c720f31c3",
+      "sha256": "c73f3ad91e52611efeb3bac10c86e9b8fc031ac2d83a0d356a4ad02828e6bb8f"
+    },
+    "src/graphs.py": {
+      "git_blob": "81b1e09e0af334b0e1e12b66b5be2eb668066cf5",
+      "sha256": "cc4b6201e23528d24af024308b887d99e6ab820e9801e2575565c700f695ea38"
+    },
+    "src/hint_guard.py": {
+      "git_blob": "c0b4588df253fa8217b0f58dc9f2a42a8eb7e22d",
+      "sha256": "ea4f2dec40fe63f44d9017b3f6d68e01977eddab3ba0ccd8d70745f029fd988e"
+    },
+    "src/install_profile.py": {
+      "git_blob": "b10990f3ce8a066af7e5015b79d330eb8238eacf",
+      "sha256": "9569a7f96103d52b84ebd891d8f3d2aa94c4ef64f1736b0208e280e4f741bf30"
+    },
+    "src/jsonl_log.py": {
+      "git_blob": "f12ecd4bb452bca690f2192e0cbc658a88656ba1",
+      "sha256": "6ef6978572589066b3896325626365d068a2d2dae9d6a20f36e41342d85e8234"
+    },
+    "src/lexicon.py": {
+      "git_blob": "d4641d439690d06b9984fa2085911450a56e37b9",
+      "sha256": "c7bc96bf1312cb40fa8c9e06fe5a46d51208ca1247975de52af41e06d6ed41c1"
+    },
+    "src/live_gate.py": {
+      "git_blob": "cac3440bc1c5427ea15cdf45e5856e4e97ce9fc5",
+      "sha256": "ae034650b67efa107e4908e3589c0682ab829161c3d2b6de49ea7d86a86e452c"
+    },
+    "src/live_nemotron.py": {
+      "git_blob": "61ab6932d4881e7b8d4d0ec00cbcea1fe9929bcf",
+      "sha256": "48f4ddbe2f000676d80497f63b244dd5528fcc7e1adfad5440226d23438ea7dc"
+    },
+    "src/live_sidecar.py": {
+      "git_blob": "7d14745e67afcf6e13bc7ef2e627d410fe7da78f",
+      "sha256": "22f1b76c2ccc38463b09b5405a03d6847b884050c92f065facfb28ea78ab44a5"
+    },
+    "src/llm.py": {
+      "git_blob": "57666709d87e8029b1307ad2b5976f2e743afa36",
+      "sha256": "453d790125a2269b7684338d4159f6cea4f833a971d91ccbce18bca41cd04199"
+    },
+    "src/llm_health.py": {
+      "git_blob": "1917803c39571a4bff0ed38fc6c9596d97211e58",
+      "sha256": "4323d63c32cd2de88103bd0e3e28f68be7b26f4c082a8a5a8a0c15c71b2bfea1"
+    },
+    "src/machine_power.py": {
+      "git_blob": "20b61495678803bd8c3e79ed73b953bd975ce29a",
+      "sha256": "10da6a2be86e4893cad4c35d2df52730456b5dc9e6d642d17e9fe77727992ab7"
+    },
+    "src/main.py": {
+      "git_blob": "beceb152f97f41af27337814113354b22ba5fd0a",
+      "sha256": "15b457c04d564e6273042ec75d1b72e5d6e2552cf8bed2df570f337f8a482715"
+    },
+    "src/mcp_server.py": {
+      "git_blob": "19378302c908ee5b09a3b72cbbfe71c93c9ee54f",
+      "sha256": "39890df740972e62989c24246b67bbaed5aaf1d68a94fea8943d2e2a1b924b37"
+    },
+    "src/media_meta.py": {
+      "git_blob": "5bf6c70ab14f251d3b865768cce831ed3219e5d9",
+      "sha256": "a02d233b64fd566eb4a3ea39f13967b3969caa80f118260970cc099c17952ea2"
+    },
+    "src/meeting_archive.py": {
+      "git_blob": "0525b034da5bfb6145e01fbdcc6913b88546a023",
+      "sha256": "bab742377ca423f89a39498de38a2a9788cf4063e0ece89b48f67e4e35f58ab5"
+    },
+    "src/meeting_processing.py": {
+      "git_blob": "c52f0412b09b10ad7bfaca57b05e20c0112ac7ea",
+      "sha256": "63896a3c8567addfb5690aab2447965a8519d4506ea0fe1930d831e9b47419f4"
+    },
+    "src/meeting_source.py": {
+      "git_blob": "45564f4421f9b7613996724eab1df872bd080295",
+      "sha256": "25539208de9683d3b6ad4bdf1f2a083d9d1210b1d8e81338d2d8297621eafb8d"
+    },
+    "src/meeting_stamp.py": {
+      "git_blob": "d5697e31c0d2c14e269e5225acd1d9628ae00b84",
+      "sha256": "c9865ba9ecb5dd49471e7114b2b1857c8726b914b6a0200b9b6c5bff6e532105"
+    },
+    "src/meeting_tail.py": {
+      "git_blob": "e97702df663a429d55c517c1c364dec736572df4",
+      "sha256": "f20b04fc01e8ebfd210b5215cf25f8812cadee54633de9f4e7016209d6ff70ea"
+    },
+    "src/meeting_thread.py": {
+      "git_blob": "3c97ca05254a060586d2106f25060702641fcd16",
+      "sha256": "f346d97c0af8703c6811cdb80a4c45b1c90e9de51bab1a70fd646ad4f30bcab1"
+    },
+    "src/model_lease.py": {
+      "git_blob": "08663f38614689080160a6df68a2d259a3f3bed6",
+      "sha256": "73f1059a88a61514b0a8e214bd8aa7ec77e3b8290b1bf941b6b51167d3186cd0"
+    },
+    "src/model_ledger.py": {
+      "git_blob": "72f83cfc5343d27bbbb826af1a58a4255bb29f00",
+      "sha256": "8b32a0eb5fc9af15aafd2faaabebc9feec7de640af89ff7a81bc7ec0120b4bcb"
+    },
+    "src/name_fixes.py": {
+      "git_blob": "166dce76b2cbc312da6f9c17d59499e859ec4bc3",
+      "sha256": "e64737581758faddf37abe4bbd0edbd31ec90f82ea0d66c484ef21eef6593384"
+    },
+    "src/night_cloud.py": {
+      "git_blob": "309666cb690689f9d6c7a3ba52fd70aab235d8d9",
+      "sha256": "7517b9694b5fd78a4a6a0832c9c82cb7582fd364ca1e1e42c4d4722759d46131"
+    },
+    "src/nli.py": {
+      "git_blob": "884edc8f4f27615329cff06af185f3863071795a",
+      "sha256": "88110585423d61c5f9fcd3a8aef003e411bd4babe20ab99dd4293a05d2c0e539"
+    },
+    "src/once.py": {
+      "git_blob": "280e0a1fb1d5c3bb2b9875afa08a10f501bf9931",
+      "sha256": "b457c31b47f6cc51a6f00346365bffe199c7092ff7f013701d6811db7dd469c6"
+    },
+    "src/owner_voice.py": {
+      "git_blob": "16f80199c1a584655977545730d49822b5b8acaf",
+      "sha256": "7692f799b75855a64fbfac73b2da4d6f088d0a3fd39408f585b12500c07875e3"
+    },
+    "src/pii_fake.py": {
+      "git_blob": "3e0676469e59d61d131d597595ff122120da3fd1",
+      "sha256": "d430488d4cae3be7ad26d03d834a26e7d08577726bf9c0b6c51d433e212d07f6"
+    },
+    "src/pii_fake_pool.py": {
+      "git_blob": "3b16b10aa64b16eb06d791ecc4c194ad965b4897",
+      "sha256": "2c2ed977f88f3fe215c9f5701386c6de5227ec3004a8183e311f2783f9441b30"
+    },
+    "src/pii_mask.py": {
+      "git_blob": "d30fe6031735be7489bc0aad51b0e583fbd56aad",
+      "sha256": "08857c8f868506a741e47fb870162bdec472e4fb9a6fd82b4ac78538a57ff301"
+    },
+    "src/pii_ner.py": {
+      "git_blob": "9eb15071fd1e832db89858e7619e4abe0d7bbbf0",
+      "sha256": "bb4b241f82effd66c12bbd31c9a7cc4f792523287d2fab67c1e8045bad4c75d4"
+    },
+    "src/privacy.py": {
+      "git_blob": "4ea86ff698057e14e8630733780a02cbbd2b5408",
+      "sha256": "baee524ea8ee360a497efa29eaca47fb60453666b5889cc63bdd98aa703cb500"
+    },
+    "src/question_filter.py": {
+      "git_blob": "0a781efa7c1e593cc3d683be0769214da3c5e53c",
+      "sha256": "a239f1b6e67153abe9d5edcca89bfbc9923a9fb9c23548fff7e334921b8325a0"
+    },
+    "src/rebuild_transcript.py": {
+      "git_blob": "cd65932b6beba2d4a16de3c30acb0612cb904198",
+      "sha256": "4f8c6a68dcf07dfc75db4d8271230a8cd14e83159e6913832c737fd1418ab010"
+    },
+    "src/retro_fill.py": {
+      "git_blob": "11529e8126f7469af8f9c893dbac33b4c53f8d8d",
+      "sha256": "caced9a346608a5c6272d3121ac0874ddd548caad3697eef525487cf04563c7d"
+    },
+    "src/review_bridge.py": {
+      "git_blob": "810c9156f9aa2c9427174193570d23d133e4da6b",
+      "sha256": "e7516da1e3cfc7e4d0600882a83f8c56fbd3a552b1a81b5a207ceb8a85a35757"
+    },
+    "src/sherpa_config.py": {
+      "git_blob": "05330abcc5fd0dd2671b8cbe8f257fe8cb85120f",
+      "sha256": "2fc6846b97898386d72b9be9fcbe9da02711bf8d434a54169565dc0233bc51cf"
+    },
+    "src/speaker_names.py": {
+      "git_blob": "97ed448ea7f7bc37f071c4dfe36558853bee9a0c",
+      "sha256": "bb10a758071695e2f9ba92cfc62964dd938baaea956444c78d06d280494186bc"
+    },
+    "src/speech_gate.py": {
+      "git_blob": "9a9a1355eb24353fe39bd5fc185e504c452b79c7",
+      "sha256": "ff67712abdbf95d0eb4a4af8d5d995ed2de1ec25fce55ade30fb69bf2e4e0b67"
+    },
+    "src/stt.py": {
+      "git_blob": "1e9bdf36f469663a998974cc675c23601b7f35c8",
+      "sha256": "d3857982f5e73c1e78cfeee940e724fbb77ba3e0761acb72d563f07b7a557620"
+    },
+    "src/stt_runtime.py": {
+      "git_blob": "fc42938e75c5f43117ac1055d72e2bd352c44c36",
+      "sha256": "444d686e8a3686926b6be6e37d765ff65853d50a19862eed96527950c7af9f2d"
+    },
+    "src/task_line.py": {
+      "git_blob": "f5a7b230c6288c386d9d5e851b4b210924be8045",
+      "sha256": "f27fb83d2d548368c59b32e26092a912b2c0a660d4bd138514a5ea9b40077654"
+    },
+    "src/thesis_rules.py": {
+      "git_blob": "c344ffe7165addcfb9341595f17b43057d3b76c8",
+      "sha256": "428ae017fb1d2c001523c7aaf4f8ae4eba6c52d22d08d5692c0f61653eb15637"
+    },
+    "src/threads.py": {
+      "git_blob": "f57a8a45c3acf97c42d98572d744dcf4e2426263",
+      "sha256": "10d187d9f93665481d66cb3cb227b79f9ea0f65ebf81c0efb6c570820ba7ece8"
+    },
+    "src/tier3.py": {
+      "git_blob": "70a1bba543ceb5ddaefd69490e801c088759b27c",
+      "sha256": "e21c04cff635b14f1b64f6dfd095d302948df3fbef08288ff099ee8a94c1460a"
+    },
+    "src/transcribe_file.py": {
+      "git_blob": "299579b8f5214ac6401b403818000951f11b851a",
+      "sha256": "1727c33ebd1b838ef3c9425444a540f15c914e6f56638cca5fa07a9e99d364e6"
+    },
+    "src/transcript.py": {
+      "git_blob": "f63cbe6f75a1a2fb5be01fa2d18b7034dbc5afee",
+      "sha256": "1550cdfbff9aa7d85240cba94b9fd2556a779a99ad8aff6db513fc93e0baad51"
+    },
+    "src/transcript_origin.py": {
+      "git_blob": "c736077e64a7546c88b3fb5d8b0fb0f924b71245",
+      "sha256": "3576db6224b190d910d40189cbcd33d628d0e696cfa29762bededa413f23bf03"
+    },
+    "src/vocabulary.py": {
+      "git_blob": "84461b1fb803133a3b971c092314fb1eaea9d4d6",
+      "sha256": "a46e0ee901f7afd27f2e554d0e2495333c3b858c08e8a510320649e80d6176d8"
+    },
+    "src/voice_memos_bridge.py": {
+      "git_blob": "a02217dc94ba710e0dede39ab02ce155b72befe0",
+      "sha256": "9fb038202af4d420781f426f5434a7a7509a7f844e71210846f8f9e3e943a4c8"
+    },
+    "src/voice_pitch.py": {
+      "git_blob": "e2eb5288a67b55fa14ce2dc603ec78c7751cb6a3",
+      "sha256": "a501e82c6b91133a8fdbab7f6db1f4147a9e6a6c18051fcdc1b46ac31df6822b"
+    }
+  },
+  "selected_tests": {
+    "tests/test_claim_progress_oracle.py": "c4c2e06b956fbae8f94ff27ba26ec350a8c903ee0bda2ec3bbfe71706efd4218",
+    "tests/test_dossier_audit_envelope.py": "b73b3fe2860306ebfe7e310cbda627ed1eb0c24f20e73e5993a94515c234f068",
+    "tests/test_dossier_claim_audit_contract.py": "2ee8f238bb85b8c03fc202c349fdd4177acd531978c71c4727ca835194fd87f0",
+    "tests/test_dossier_correction_placement.py": "8e0a4acbd6d4d873b7817956c45a270030b92039a3a783626986ec9ee6dc289a",
+    "tests/test_dossier_full_source_audit.py": "36e6ca484cb13e6f905462de706793e4386651f43ec717673884a3eed7d6404a",
+    "tests/test_dossier_incremental.py": "856d8d3f5b0d31442e327f58900069a52b9b11fd42f5afbdfcc5541743f26911",
+    "tests/test_dossier_incremental_mutation_behaviors.py": "6350d63465a757195ecf3e7fde1108fc69564da5623daa7b924bd96e9a7dd074",
+    "tests/test_dossier_membership_version_mutations.py": "de06f5f921b754ffa83060072b94793f6aa51e7f44caec6afdef44e711c31665",
+    "tests/test_dossier_model_contract.py": "f7bfb685f8dc87a14f12019df71ed088b3d61ca520d9c7316aaa55811a54da83",
+    "tests/test_dossier_mutation_843_incremental.py": "adfbd22140dd98c211b1c517999bb00534602bf721d8e04ac3b666ac2de78fae",
+    "tests/test_dossier_mutation_843_nightly.py": "551a0ab66b4d6fa69a54d69dd1608adb1664e47952b9fafdc05bf2c9749d7f1a",
+    "tests/test_dossier_ollama_contract.py": "2f9a9e5830db663c8e4d3b5cfd466cabebad7e837793b9cb6a934d86f3e2079c",
+    "tests/test_dossier_retained_markup.py": "fc735b72f6a168a120fe343a6024abfe0264402ff3aa0da29ca86ecf34d25383",
+    "tests/test_dossier_section_claim_coverage.py": "992c528d892bdc33f338b5edf44a30601a25cee9b7fb55115e5ae722d6d1ece3",
+    "tests/test_dossier_telemetry_954.py": "0d83b0349d7c0532ed3f589d0b4c4fca263390c6b583c0ab4bef94ae77ea588e",
+    "tests/test_dossier_transport_contract.py": "96191bd049d3ccc56256783548f58890e0772fa9f8e9b4bd8ddc662514dcc3f5",
+    "tests/test_dossier_wiki_claim_coverage.py": "d42cf122bcac4507a8e2567f36c6547fe60aaa168195ca6f69c45d7ba7700ae8"
+  },
+  "selected_dependency_overrides": {
+    "tests/conftest.py": "439aecbedccf229a109ed005ddefd53910bc35df7b85650815e9e95c21c4eaab",
+    "pyproject.toml": "69b67aa1cc9ca2489378d03e901d51f873a8bc9f9eca35bd0206480f4898652f"
+  },
+  "prior_proof_applicability": "Application bytes match 50b; test candidate and selected dependencies changed. Old failed proof is not a new PASS. All critical keys still require a fresh full approved run."
+}

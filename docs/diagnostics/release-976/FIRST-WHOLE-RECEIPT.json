@@ -1,0 +1,74 @@
+{
+  "base_head": "50b0704fe280360b1d7f828fd601c6216959e55d",
+  "key": "src/dossier_incremental.py::_check_claims::Add → Sub::b9a810e9dcc6a998#1",
+  "selected": [
+    "tests/test_claim_progress_oracle.py",
+    "tests/test_dossier_audit_envelope.py",
+    "tests/test_dossier_claim_audit_contract.py",
+    "tests/test_dossier_correction_placement.py",
+    "tests/test_dossier_full_source_audit.py",
+    "tests/test_dossier_incremental.py",
+    "tests/test_dossier_incremental_mutation_behaviors.py",
+    "tests/test_dossier_membership_version_mutations.py",
+    "tests/test_dossier_model_contract.py",
+    "tests/test_dossier_mutation_843_incremental.py",
+    "tests/test_dossier_mutation_843_nightly.py",
+    "tests/test_dossier_ollama_contract.py",
+    "tests/test_dossier_retained_markup.py",
+    "tests/test_dossier_section_claim_coverage.py",
+    "tests/test_dossier_telemetry_954.py",
+    "tests/test_dossier_transport_contract.py",
+    "tests/test_dossier_wiki_claim_coverage.py"
+  ],
+  "source_sha256": "c852dd1d9b75a92cc22587daf279a8b234c433d538e3546657b1b09f179921e5",
+  "mutant_sha256": "7983b7da6074d593e340cf151f6701794e3f87766f1f9348136a951a8015fb67",
+  "changed_tests": {
+    "tests/conftest.py": "439aecbedccf229a109ed005ddefd53910bc35df7b85650815e9e95c21c4eaab",
+    "tests/test_dossier_section_claim_coverage.py": "992c528d892bdc33f338b5edf44a30601a25cee9b7fb55115e5ae722d6d1ece3",
+    "tests/test_claim_progress_oracle.py": "c4c2e06b956fbae8f94ff27ba26ec350a8c903ee0bda2ec3bbfe71706efd4218"
+  },
+  "canonical_timeout_s": 120,
+  "outer_cap_s": 480,
+  "no_x": true,
+  "phases": {
+    "before_baseline": {
+      "status": "passed",
+      "rc": 0,
+      "seconds": 0.0,
+      "tail": "",
+      "elapsed_s": 15.162039832910523
+    },
+    "after_baseline": {
+      "status": "passed",
+      "rc": 0,
+      "seconds": 0.0,
+      "tail": "",
+      "elapsed_s": 19.957068082876503
+    },
+    "exact_b9": {
+      "status": "failed",
+      "rc": 1,
+      "seconds": 0.0,
+      "tail": "FAILED tests/test_dossier_transport_contract.py::test_guard_and_factory_share_effective_context_without_mutating_caller[0]\nFAILED tests/test_dossier_transport_contract.py::test_guard_and_factory_share_effective_context_without_mutating_caller[16384]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[reject-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[reject-topic]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[uncertain-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[uncertain-topic]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[coerced-true-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[coerced-true-topic]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[combined-schema-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[combined-schema-topic]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[duplicate-key-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[duplicate-key-topic]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[malformed-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[malformed-topic]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[truncated-output-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[truncated-output-topic]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[timeout-support]\nFAILED tests/test_dossier_transport_contract.py::test_real_transport_and_strict_stage_parser_stop_on_either_failure[timeout-topic]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_unclaimed_link_assertion_is_refused_before_any_independent_audit[[[SensorGuide|sensor is verified]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_unclaimed_link_assertion_is_refused_before_any_independent_audit[[[2099-01-02_100000|sensor is verified]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_unclaimed_link_assertion_is_refused_before_any_independent_audit[[[All sensors verified]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_unclaimed_link_assertion_is_refused_before_any_independent_audit[[[SensorGuide#sensor is verified]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_unclaimed_link_assertion_is_refused_before_any_independent_audit[[[2099-01-02_100000|2099-01-02_100000|sensor is verified]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_plain_known_provenance_identifier_needs_a_fact_but_no_extra_claim[[[2099-01-02_100000]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_plain_known_provenance_identifier_needs_a_fact_but_no_extra_claim[[[Meetings/2099-01-02_100000]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_plain_known_provenance_identifier_needs_a_fact_but_no_extra_claim[[[2099-01-02_100000|2099-01-02_100000]]]\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_explicitly_claimed_new_visible_alias_reaches_independent_audit\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_unchanged_prior_alias_is_preserved_without_revalidating_old_evidence\nFAILED tests/test_dossier_wiki_claim_coverage.py::test_identifier_only_alias_cannot_fake_new_source_contribution\n193 failed, 431 passed, 8 warnings in 21.96s",
+      "elapsed_s": 22.922878832789138
+    }
+  },
+  "before_selected": [
+    "tests/test_dossier_audit_envelope.py",
+    "tests/test_dossier_claim_audit_contract.py",
+    "tests/test_dossier_correction_placement.py",
+    "tests/test_dossier_full_source_audit.py",
+    "tests/test_dossier_incremental.py",
+    "tests/test_dossier_incremental_mutation_behaviors.py",
+    "tests/test_dossier_membership_version_mutations.py",
+    "tests/test_dossier_model_contract.py",
+    "tests/test_dossier_mutation_843_incremental.py",
+    "tests/test_dossier_mutation_843_nightly.py",
+    "tests/test_dossier_ollama_contract.py",
+    "tests/test_dossier_retained_markup.py",
+    "tests/test_dossier_section_claim_coverage.py",
+    "tests/test_dossier_telemetry_954.py",
+    "tests/test_dossier_transport_contract.py",
+    "tests/test_dossier_wiki_claim_coverage.py"
+  ]
+}
