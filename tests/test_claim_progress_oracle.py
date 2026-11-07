@@ -71,16 +71,25 @@ def _probe(tmp_path, source, data, *, oracle, expected_hash=None):
     proc = subprocess.Popen([sys.executable, "-B", "-c", CHILD, str(source_path), str(payload),
                              digest, "on" if oracle else "off"], cwd=tmp_path, env=env,
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, start_new_session=True)
+                            text=False, bufsize=0, start_new_session=True)
     killed = False
     started = time.monotonic()
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stdout, selectors.EVENT_READ)
-            assert selector.select(15), "owned checker did not announce readiness"
-            ready_line = proc.stdout.readline()
-        assert ready_line, "owned checker exited before source binding"
-        ready = json.loads(ready_line)
+            deadline = time.monotonic() + 15
+            ready_bytes = bytearray()
+            while not ready_bytes.endswith(b"\n"):
+                remaining = deadline - time.monotonic()
+                assert remaining > 0 and selector.select(remaining), "owned checker did not announce readiness"
+                chunk = proc.stdout.read(1)  # unbuffered: never prefetch result bytes
+                if not chunk:
+                    break
+                ready_bytes.extend(chunk)
+                assert len(ready_bytes) <= 4096, "owned checker readiness exceeded bound"
+        assert ready_bytes, "owned checker exited before source binding"
+        ready = json.loads(ready_bytes.decode("utf-8", errors="strict"))
+        assert type(ready) is dict and type(ready.get("pid")) is int and type(ready.get("oracle")) is bool
         assert ready == {"pid": proc.pid, "source_sha256": digest, "oracle": oracle}
         try:
             out, err = proc.communicate(timeout=2)
@@ -88,6 +97,7 @@ def _probe(tmp_path, source, data, *, oracle, expected_hash=None):
             killed = True
             proc.kill()
             out, err = proc.communicate(timeout=5)
+        out, err = out.decode("utf-8", errors="strict"), err.decode("utf-8", errors="strict")
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -168,3 +178,21 @@ def test_invalid_child_receipt_still_reaps_owned_process_and_closes_pipes(tmp_pa
     assert child.returncode is not None and child.stdout.closed and child.stderr.closed
     with pytest.raises(ProcessLookupError):
         os.kill(child.pid, 0)
+
+
+def test_coalesced_readiness_and_result_preserve_complete_owned_child_output(tmp_path, monkeypatch):
+    """One pipe write must not strand result bytes in a separate text buffer."""
+    coalesced = r'''
+import hashlib, json, os, pathlib, sys
+actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()
+assert actual == sys.argv[3]
+ready = {"pid": os.getpid(), "source_sha256": actual, "oracle": sys.argv[4] == "on"}
+result = {"refused": "synthetic refusal", "detail": "finite café"}
+os.write(1, (json.dumps(ready) + "\n" + json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
+'''
+    monkeypatch.setitem(globals(), "CHILD", coalesced)
+    result = _probe(tmp_path, "pass\n", {}, oracle=True)
+    assert result["returncode"] == 0 and not result["killed"]
+    assert json.loads(result["stdout"]) == {"refused": "synthetic refusal", "detail": "finite café"}
+    assert result["stderr"] == "" and result["ready"]["oracle"] is True
+    assert result["reaped"] and result["pipes_closed"]

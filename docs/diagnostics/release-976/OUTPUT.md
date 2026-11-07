@@ -4,7 +4,7 @@ Base: `50b0704fe280360b1d7f828fd601c6216959e55d`. This is a new test candidate, 
 
 A checker-specific shared test fixture now asserts forward progress of continued claim searches. Real matching, checker coverage, refusals, production code, canonical mutation engine and timeout/scoring policy remain unchanged. New scans reset the oracle, including identical claim text supported by two sources. All 16 original selected files still run; canonical conservative selection additionally includes the new calibration file (17 total). No selector exclusions or `-x` were introduced.
 
-## Actual acceptance
+## Initial acceptance evidence (historical)
 
 - Focused fixture/checker/calibration tests: **27 PASS, 4.87 s**. Same baseline accepted/refused results with oracle disabled/enabled. Exact legacy `scan`/`applied` b9 mutant: ordinary child AssertionError/exit 1. Explicit synthetic disabled-oracle control: child does not finish, then owned PID is killed/reaped, both pipes closed; wrong key/hash and invalid/missing receipt controls pass. No global oracle bypass exists.
 - Unchanged canonical `copy_tree` and `run_tests`, timeout 120 s, outer cap 480 s, no `-x`: original 16 baseline **604 PASS, 14.65 s**; new 17 baseline **624 PASS, 19.90 s**; exact b9 new whole 17 **193 FAIL + 431 PASS, 22.54 s**, normal exit 1. Full stdout contains **192 progress AssertionError**, zero pytest timeout failures. All 624 collected cases finish. This is an uncapped ordinary failure, not an expected-timeout kill.
@@ -26,3 +26,12 @@ Layout map regenerated without policy changes; full import-boundary/layout targe
 Addressed replay defect: cloning the already committed17-file candidate while asserting before16 made the earlier public repeat command invalid. The correction affects only the manual replay driver/documentation; checker/oracle and selected test bytes remain unchanged. The oracle is scoped to the current b9 continuation defect; future repeated initial unbounded searches are not claimed covered.
 
 Addressed command receipt: actual per-phase argv is now persisted in the private receipt, in addition to the existing exact-command assertion. Public/neutral copies must sanitize private paths, explicitly record the transformation and mapping, and retain the original private receipt hash; they must not claim to be an unchanged original. Console summaries omit argv. Historical receipts remain unchanged and are not claimed to contain this new field.
+
+
+## Current IPC calibration correction
+
+Actual37c ordinary CI42400725079 failed only Mac calibration `test_oracle_keeps_baseline_acceptance_and_refusals[claims1]`; Linux/lint succeeded. Both children exited0, but a result line disappeared after buffered `readline()` followed by `communicate()` FD reads. Primary Mac log45473bytes/SHA089596ea165fb9681f2fb85525ec74098c0e856b8a67f3616bec167c15a4673f remains FAIL, with no rerun/cancellation or relabel.
+
+A controlled owned child sends typed readiness and a Unicode refusal result in one `os.write`; old helper deterministically loses the body and fails JSON decoding (0.20s). Fixed helper uses unbuffered binary pipes, reads only readiness bytes within a shared15s/4096-byte bound, then `communicate()` bytes and strict UTF-8 decoding. PID/hash/oracle binding, child kill/wait and IPC closure remain required; no retry, sleep or weakened output comparison. AFTER: **28 focused PASS,5.05s**, including same coalesced control and existing baseline/refusal/exactb9/cleanup negatives.
+
+Only the calibration test file changes among the selected test/core dependencies; its approved hash is updated in existing SOURCE-APPLICABILITY. Oracle and production362 source/script/app files remain frozen. Selected-file count stays17; selected case count increases624→625 by one meaningful regression. A new exact committed-candidate replay and fresh same-SHA ordinary CI are required; earlier604/624/b9 quantities above remain historical, not new-candidate proof. No new full critical32/682 run or release installation is claimed.

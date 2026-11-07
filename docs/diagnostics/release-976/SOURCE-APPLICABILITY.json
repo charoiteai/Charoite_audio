@@ -1454,7 +1454,7 @@
     }
   },
   "selected_tests": {
-    "tests/test_claim_progress_oracle.py": "c4c2e06b956fbae8f94ff27ba26ec350a8c903ee0bda2ec3bbfe71706efd4218",
+    "tests/test_claim_progress_oracle.py": "07ce4cea6e7034f9b3778903c36f78a72466df3bd3c067dedf5c90d709561147",
     "tests/test_dossier_audit_envelope.py": "b73b3fe2860306ebfe7e310cbda627ed1eb0c24f20e73e5993a94515c234f068",
     "tests/test_dossier_claim_audit_contract.py": "2ee8f238bb85b8c03fc202c349fdd4177acd531978c71c4727ca835194fd87f0",
     "tests/test_dossier_correction_placement.py": "8e0a4acbd6d4d873b7817956c45a270030b92039a3a783626986ec9ee6dc289a",
