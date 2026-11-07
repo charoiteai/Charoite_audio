@@ -74,3 +74,34 @@ or has independent orphan-work exclusion before installation/task closure.
 Full current-source critical mutation verdict, exact-snapshot independent
 Terra/Luna OUTPUT/final-risk reviews and applicable CI are recorded separately
 when executed. Prior CI/reviews are not reused as current acceptance.
+
+## Current-source execution result
+
+On code snapshot `ebceb986944ae7706def43894dc1426242b2fb32`, the post-change
+regression passed188tests/5subtests in79.30seconds. The standard project mutator
+then judged all116/116 current critical mutations on the exact range from the
+original PR base: survivors0, skipped0, unreadable0, capped0, exit0. Its facts,
+full per-identity journal and summary are retained as
+`critical-mutation-20261107.json`, `.jsonl` and `.md`. The plan has127 total
+mutations; this run selects every critical identity and does not claim the
+11 noncritical identities were judged. The original118 critical points became
+116 solely because the two optional JSON-format arguments were removed after
+the separate original-identity consumer experiment. The zones hash is unchanged.
+
+```sh
+~/.config/charoite/quiet_guard.sh && HEAVY_WAIT_MAX_S=60 \
+  ~/.config/charoite/heavy_run.sh env CHAROITE_ROOT="$N955_TEST_DATA" \
+  "$CHAROITE_PYTHON" scripts/mutate_check.py \
+  --range 2106ed52c9b3f70f5d0c8b6363e9e3171ae767be..ebceb986944ae7706def43894dc1426242b2fb32 \
+  --only-critical --max all --report "$N955_REPORT"
+```
+
+Use a new synthetic data directory and report path. No gate environment is
+overridden: CHAROITE_ROOT above belongs only to the command already admitted by
+the installed gates. `execution-proof-20261107.json` records the environment,
+gate hashes and tested source/test hashes. The following evidence-only commit
+does not change the tested runtime, tests or their dependencies; no new test
+execution is claimed for those unchanged bytes.
+
+Independent current OUTPUT/final-risk reviews and new-SHA CI are still pending.
+This local critical verdict does not remove the private installed-chain blocker.

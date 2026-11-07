@@ -1,0 +1,72 @@
+{
+  "tested_code_snapshot": "ebceb986944ae7706def43894dc1426242b2fb32",
+  "base": "2106ed52c9b3f70f5d0c8b6363e9e3171ae767be",
+  "original_source": "fdbf9166a7224e5fa36772fcf32fd1dfd51e45a4",
+  "source_and_tests_sha256": {
+    "src/process_lock_exec.py": "ea3519897a1697e6f0d1ec5543d2069bdb6cc27432b2e8a9fcebae184e831a68",
+    "src/retry_wrapper_stage.py": "87cdf9e9ebe6f626cf223a3f03a658f7eac239594d6dd74023ec7a8af46899be",
+    "tests/test_process_lock.py": "ca4d777fe5e4e72b5601639b0f683e737c9ce2d2f8e6b65371d1fbdef12a38c5",
+    "tests/test_stage_retry_wrapper.py": "ebef032068b98087c7871c11db015f251bc5b0f34681fed0b06efc5e03c0c1af",
+    "tests/test_retry_wrapper_integration.py": "93e91cdb1dee9fc397061c08789eca266267266cbb0d771a37fd17b1da701b62",
+    "tests/test_night_gate.py": "0fa6d509e3a010e24483749194535b541435c63243839501f027c3a8ebfcc840",
+    "tests/test_import_boundaries.py": "9dc12366cc62dd76ecd20e4a2911821c5ae3f33c200519256b855b2aa8dc0309",
+    "tests/test_private_permissions.py": "e2cfb7547027257b1adddefb2f42674a64097b02eba39268cc46601265774f1e"
+  },
+  "environment": {
+    "python": "3.12.13",
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "pytest": "9.1.1",
+    "pytest-timeout": "2.4.0"
+  },
+  "gates": {
+    "quiet_guard.sh": {
+      "path": "~/.config/charoite/quiet_guard.sh",
+      "sha256": "9a698533d61fd7ed4b259f7e0a2487b58e3b06a9b94c91c820e78af2069f568a"
+    },
+    "heavy_run.sh": {
+      "path": "~/.config/charoite/heavy_run.sh",
+      "sha256": "9070eaedd54956ee5c417d34b8fe868575692a8f826098d5899c79dc490fef2a"
+    }
+  },
+  "gate_contract": "fresh quiet_guard && HEAVY_WAIT_MAX_S=60 heavy_run; no gate root overrides; synthetic data root only passed to admitted command",
+  "baseline_original": {
+    "passed": 54,
+    "subtests_passed": 5,
+    "seconds": 3.11
+  },
+  "baseline_preserved_controls": {
+    "passed": 73,
+    "subtests_passed": 5,
+    "seconds": 3.22
+  },
+  "post_change_regression": {
+    "passed": 188,
+    "subtests_passed": 5,
+    "seconds": 79.3
+  },
+  "privacy": {
+    "commit_range": 0,
+    "public_only": 0,
+    "packet_private_hits": 0,
+    "packet_public_hits": 0,
+    "packet_lossy": 0
+  },
+  "critical_mutation": {
+    "exit_code": 0,
+    "planned_critical": 116,
+    "judged_critical": 116,
+    "survivors": 0,
+    "capped": 0,
+    "skipped": 0,
+    "base": "2106ed52c9b3f70f5d0c8b6363e9e3171ae767be",
+    "head": "ebceb986944ae7706def43894dc1426242b2fb32",
+    "report_sha256": "76c2fea839ebb75bbf081f14d5f3673052ad5da8d8fbe3001da1e723e523b973",
+    "journal_sha256": "6782cba0bb3a650cb030870783a32366d4b8fddde06a08f55fe888ce2ab7571f"
+  },
+  "ci_new_snapshot": "not_run_no_push_authorized",
+  "independent_output_final_risk": "pending_root",
+  "installed_wrapper_and_actual_child_boundaries": "unproved_explicit_INPUT_blocker",
+  "real_night": false,
+  "installation_changed": false,
+  "model_calls": 0
+}

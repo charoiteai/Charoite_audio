@@ -34,3 +34,29 @@ the new commit and PR-event critical mutations remain pending; branch-push CI
 skips mutation jobs. Installation/private full-wrapper/FD-chain proof is still
 not complete. These new results supersede the earlier local-NOTRUN statement
 for the public synthetic tests only.
+
+## Survivor follow-up, 2026-11-07
+
+- Read the saved source INPUT/OUTPUT and exact failing PR-event verdict.
+  Created a separate worktree at immutable fdbf9166; the prior writer's
+  uncommitted tests were preserved with a read-only hash-checked patch copy.
+- Installed quiet/heavy gates were available and admitted execution. Original
+  baseline:54tests/5subtests; preserved controls:73tests/5subtests. Historical
+  missing-gate statements do not describe this environment.
+- Replayed all18 original survivors with original tests. Controls1–16 then
+  failed their intended assertions;17/18 survived, explicitly not killed.
+  A real parsed-manifest consumer also passed both formatting-only mutations,
+  including actual-byte hash checking, literal argv execution and final FD inode.
+- Removed only optional JSON ordering/indentation kwargs after that experiment.
+  No critical-zone or mutator policy changed. New regression:188tests/5subtests.
+  Code snapshot ebceb986944ae7706def43894dc1426242b2fb32 committed with all hooks;
+  source-range and public-only privacy checks passed.
+- Full critical mutation and current independent review receipts are separate.
+  Actual private wrapper/UX-child retention or orphan exclusion remains the
+  existing installation blocker; no installed-system acceptance is implied.
+
+- Full critical verdict on exactebceb:116/116 judged, survivors0/skipped0/capped0,
+  exit0; unchanged critical-zone hash5cee37846e66. Current-source CI and both
+  independent OUTPUT/final-risk reviews remain pending. Focused consumer replay
+  repeated after report-tool clarification; both original formatting mutations
+  remain explicitly survived, not a clean critical verdict by themselves.

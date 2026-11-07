@@ -152,9 +152,16 @@ def main():
         for name, source in sources.items():
             assert (work / f'src/{name}.py').read_text() == source
     expected = [row for row in report['mutants'] if row['mode'] == 'candidate' and row['number'] <= 16]
-    report['addressed_controls_passed'] = all(row['observed'] == 'killed_by_expected_assertion' for row in expected)
+    report['addressed_controls_tested'] = len(expected)
+    report['addressed_controls_passed'] = (
+        all(row['observed'] == 'killed_by_expected_assertion' for row in expected) if expected else None)
+    report['observations_match_expected'] = all(
+        row['observed'] == ('killed_by_expected_assertion'
+                            if row['mode'] == 'candidate' and row['number'] <= 16 else 'survived')
+        for row in report['mutants'])
+    report['not_a_clean_critical_verdict'] = True
     save()
-    return 0 if report['addressed_controls_passed'] else 1
+    return 0 if report['observations_match_expected'] else 1
 
 
 if __name__ == '__main__':
