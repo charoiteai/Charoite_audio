@@ -1,13 +1,12 @@
 ---
 layout: post
 title: "0.103.0: add to a dossier without losing its history"
-date: 2026-11-08 02:00:00 +0300
-published: false
+date: 2026-11-08 02:50:00 +0300
 ---
 
 A new meeting should add to a topic's dossier without turning its earlier
-history into a fresh summary. The changes prepared for Charoite 0.103.0 make
-that distinction explicit.
+history into a fresh summary. [Charoite 0.103.0](https://github.com/charoiteai/Charoite_audio/releases/tag/v0.103.0)
+is now available and makes that distinction explicit.
 
 The incremental path gives the local model the existing dossier and the
 complete texts of new relevant meetings. Accepted additions retain earlier
@@ -54,8 +53,8 @@ for the Linux runner.
 
 ## По-русски
 
-Новая встреча должна дополнять досье темы, сохраняя его историю. Изменения,
-подготовленные для Charoite 0.103.0, передают локальной модели прежнее досье
+Новая встреча должна дополнять досье темы, сохраняя его историю. Выпуск
+Charoite 0.103.0 уже опубликован: локальная модель получает прежнее досье
 и полные тексты новых релевантных встреч. Принятая добавка сохраняет прежние
 утверждения, ссылки, нерешённые предупреждения и точный текст правок автора.
 Если новый источник явно исправляет факт, прежнее утверждение остаётся
