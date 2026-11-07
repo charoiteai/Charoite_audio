@@ -1,8 +1,8 @@
 {
   "v": 1,
   "kind": "bounded helper controls, not actual frozen external",
-  "tested_helper_sha256": "847523c87276a76dd7c5529589f812aecac53fe3db3cdf34d6c848ab21411abd",
-  "tested_tests_sha256": "628efcab6a4f578bf5c070f263e9cec5de8ebc6fcddac49d9d540f891dab66c3",
+  "tested_helper_sha256": "0d7994d3e7d177ff461829c1ed385388491197a5ae5334b68da045e406fb2847",
+  "tested_tests_sha256": "a51d9c7804b055fb8f03036375ee9e3a5d360e4314d1a909d9bd755f05b8059d",
   "managed_python_executable_sha256": "31b9c9a8d50289f3a13f014b3efd8ea3534fc3eea7ca7d9809e166139910b805",
   "managed_python_version_source": "ROOT specified existing managed CPython3.12.13; child startup isolation actually exercised",
   "resource_gate": "fresh existing quiet_guard && HEAVY_WAIT_MAX_S=30 heavy_run before every execution; native tempfile base; quiet logs private and never included",
@@ -42,7 +42,7 @@
       "outcome": "PASS",
       "elapsed_seconds": 115.7,
       "tested_helper_sha256": "cf42a63f6962f6a2b6f92ba7ced06fd0b6e9e047694a92d5be86bf4249e2fd98",
-      "reuse_boundary": "Actual earlier 245/47 run. Later only managed-runtime closure/link handling changed; unchanged metadata/core/publisher/consumer/original sources reused. All final helper controls rerun separately; this is not a new245-run."
+      "reuse_boundary": "Actual earlier245/47 run. Reuse applies only to applicable unchanged original release970 gate/observer and entrypoint/inventory areas. Later runURL, producer-alias consumer, runtime/privacy and PATH changes are not covered by that old helper run; final33 covered the prior helper, and current PATH controls cover the new helper separately. This is not a new245-run."
     },
     {
       "suite": "final helper/runtime-link/excluded-touch/loop controls and all five targeted guard mutations",
@@ -74,6 +74,20 @@
         "killed": 9,
         "survived": 0
       }
+    },
+    {
+      "suite": "actual sanitized inherited PATH names/which/bytes and all helper controls",
+      "tests": 36,
+      "outcome": "PASS",
+      "elapsed_seconds": 0.84,
+      "tested_helper_sha256": "0d7994d3e7d177ff461829c1ed385388491197a5ae5334b68da045e406fb2847",
+      "tested_tests_sha256": "a51d9c7804b055fb8f03036375ee9e3a5d360e4314d1a909d9bd755f05b8059d",
+      "targeted_mutants": {
+        "changed_guards": 11,
+        "killed": 11,
+        "survived": 0
+      },
+      "wrong_binary_executions": 0
     }
   ],
   "actual_supplemental_external_invocations": 0,
@@ -87,9 +101,9 @@
     "ROOT authorizing record/runtime closure and independent pre-exec gate",
     "ROOT native immutable-cohort supplemental replay and consumer acceptance"
   ],
-  "final_tests_sha256": "628efcab6a4f578bf5c070f263e9cec5de8ebc6fcddac49d9d540f891dab66c3",
+  "final_tests_sha256": "a51d9c7804b055fb8f03036375ee9e3a5d360e4314d1a909d9bd755f05b8059d",
   "post_control_literal_cleanup": "Ordinary ruff hook found F541 constant f-string. Removed only redundant f prefix after final30 run; identical resulting string and input, tests not claimed rerun. Privacy/assertion hooks passed during first ordinary commit attempt.",
   "host_recursive_runtime_hash_executed": false,
   "forbidden_resource_bytes_read_or_hashed": false,
-  "current_summary": "Final33/9mutants are actual final source; previous245/47 is reused only for unchanged areas, not a new full run. Root native full success remains unexecuted."
+  "current_summary": "Final36/11mutants are actual current helper source. Previous33/9 covered c494 helper. Earlier245/47 reused only for applicable unchanged original gate/observer/entrypoint areas, never changed helper/consumer/runtime/PATH behavior. Root native full success remains unexecuted."
 }

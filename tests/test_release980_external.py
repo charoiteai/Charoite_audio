@@ -377,6 +377,46 @@ class PublicationConsumerControls(unittest.TestCase):
 
 
 class LaunchCoreControls(unittest.TestCase):
+    def test_actual_child_path_shadow_before_after_without_executing_tools(self):
+        with tempfile.TemporaryDirectory(prefix="release980-path-") as tmp:
+            root = Path(tmp).resolve();git_dir = root / "git-dir";gh_dir = root / "gh-dir";git_dir.mkdir();gh_dir.mkdir()
+            tools = {}
+            for name, directory in (("git", git_dir), ("gh", gh_dir)):
+                path = directory / name;path.write_bytes(b"#!/bin/sh\nexit 99\n");path.chmod(0o700)
+                tools[name] = {"path": str(path), "realpath": str(path), "sha256": g.sha(path.read_bytes())}
+            env = g.sanitized_environment(tools)
+            with mock.patch.object(g, "command", side_effect=AssertionError("tools must never execute in this control")):
+                normal = g.verified_tool_resolution(tools, env["PATH"])
+                self.assertEqual(normal["tools"]["gh"]["realpath"], tools["gh"]["realpath"])
+                shadow = git_dir / "gh";shadow.write_bytes(b"#!/bin/sh\nexit 98\n");shadow.chmod(0o700)
+                # BEFORE: exact unchanged c494 authorization pin loop succeeds,
+                # although its constructed PATH selects a different gh. This is
+                # a bounded legacy-contract reproduction, not a frozen replay.
+                for pin in tools.values():g.executable_pin(pin)
+                self.assertEqual(shutil.which("gh", path=env["PATH"]), str(shadow))
+                self.assertNotEqual(str(shadow), tools["gh"]["path"])
+                with self.assertRaisesRegex(g.Refusal, "child PATH tool resolution"):
+                    g.verified_tool_resolution(tools, env["PATH"])
+
+    def test_tool_pins_require_exact_invoked_names(self):
+        with tempfile.TemporaryDirectory(prefix="release980-names-") as tmp:
+            root = Path(tmp).resolve();git_path = root / "git";alias = root / "approved-gh-alias"
+            for path in (git_path, alias):path.write_bytes(b"#!/bin/sh\nexit 99\n");path.chmod(0o700)
+            (root / "gh").symlink_to(alias)
+            tools = {name: {"path": str(path), "realpath": str(path), "sha256": g.sha(path.read_bytes())} for name, path in (("git", git_path), ("gh", alias))}
+            for pin in tools.values():g.executable_pin(pin)  # BEFORE accepted.
+            with mock.patch.object(g, "command", side_effect=AssertionError("no tool execution")), self.assertRaisesRegex(g.Refusal, "tool pin command name"):
+                g.verified_tool_resolution(tools, g.sanitized_environment(tools)["PATH"])
+
+    def test_child_path_refusal_precedes_frozen_loading(self):
+        with tempfile.TemporaryDirectory(prefix="release980-child-path-") as tmp:
+            root = Path(tmp).resolve();config = root / "launch.json"
+            config.write_bytes(g.encoded({"supplemental_record": "unused", "supplemental_record_hash": "0" * 64}))
+            tools = {name: {"path": str(root / name)} for name in ("git", "gh")}
+            with mock.patch.object(g, "authorization", return_value={"managed_tools": tools}), mock.patch.dict(g.os.environ, {"PATH": "/unexpected-path"}), mock.patch.object(g, "load_frozen") as load, mock.patch.object(g, "runtime_pin") as runtime:
+                with self.assertRaisesRegex(g.Refusal, "inherited child PATH changed"):g.child_verify(config)
+                load.assert_not_called();runtime.assert_not_called()
+
     def test_startup_attack_isolated_no_site_and_sanitized_environment(self):
         with tempfile.TemporaryDirectory(prefix="release980-startup-") as tmp:
             root = Path(tmp);marker = root / "executed"
@@ -520,7 +560,7 @@ class LaunchCoreControls(unittest.TestCase):
 
 
 class TargetedMutationControls(unittest.TestCase):
-    def test_nine_changed_guard_mutants_are_killed(self):
+    def test_eleven_changed_guard_mutants_are_killed(self):
         source = (ROOT / "scripts/release980_external.py").read_text()
         cases = [
             ("exit0", "and observed.returncode == 0", "and observed.returncode != 0", PublicationConsumerControls, "test_helper_fresh_success_requires_concrete_consumer_record"),
@@ -532,6 +572,8 @@ class TargetedMutationControls(unittest.TestCase):
             ("run-url-inverted", 'and run.get("html_url") == f"https://github.com/{REPO}/actions/runs/{rid}"', 'and run.get("html_url") != f"https://github.com/{REPO}/actions/runs/{rid}"', MetadataControls, "test_consistently_foreign_run_url_is_not_provenance"),
             ("sealed-alias", 'and staged.st_ino == st.st_ino', 'and True', PublicationConsumerControls, "test_valid_bundle_on_alien_inode_with_two_foreign_aliases_is_refused"),
             ("unread-resource", 'st = path.lstat()\n        if forbidden_resource_name(path):', 'st = path.lstat()\n        if False:', LaunchCoreControls, "test_forbidden_resources_are_lstat_only_never_opened_or_certified"),
+            ("path-shadow", 'actual = shutil.which(name, path=path)', 'actual = pin["path"]', LaunchCoreControls, "test_actual_child_path_shadow_before_after_without_executing_tools"),
+            ("tool-name", 'need(Path(pin["path"]).name == name,', 'need(True,', LaunchCoreControls, "test_tool_pins_require_exact_invoked_names"),
         ]
         killed = []
         for label, old, new, cls, method in cases:
@@ -545,7 +587,7 @@ class TargetedMutationControls(unittest.TestCase):
                 self.assertFalse(result.wasSuccessful(), "surviving targeted guard mutant: " + label)
                 killed.append(label)
                 sys.modules.pop(name)
-        self.assertEqual(len(killed), 9)
+        self.assertEqual(len(killed), 11)
 
 
 if __name__ == "__main__":

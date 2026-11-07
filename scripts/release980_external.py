@@ -4,6 +4,8 @@
 ROOT must authenticate this file/runtime BEFORE invoking ``supervise``. The
 supervisor seals the verified bytes, observes its child, and alone consumes the
 published bundle. There is deliberately no CLI that accepts a supplied exit code.
+The trusted-supervisor boundary excludes concurrent hostile same-UID/root
+mutation; acceptance records bind a digest for later readback, not that threat.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -583,6 +586,20 @@ def sanitized_environment(tools):
     return env
 
 
+def verified_tool_resolution(tools, path):
+    """Prove actual unqualified names select approved bytes, without execution."""
+    need(type(path) is str and path, "child PATH missing")
+    resolved = {}
+    for name in ("git", "gh"):
+        pin = tools[name]
+        need(Path(pin["path"]).name == name, "tool pin command name")
+        actual = shutil.which(name, path=path)
+        need(actual is not None and str(Path(actual).resolve()) == pin["realpath"], "child PATH tool resolution")
+        executable_pin({"path": actual, "realpath": pin["realpath"], "sha256": pin["sha256"]})
+        resolved[name] = {"path": actual, "realpath": pin["realpath"], "sha256": pin["sha256"]}
+    return {"PATH": path, "tools": resolved}
+
+
 def executable_pin(pin):
     need(type(pin) is dict and set(pin) == {"path", "realpath", "sha256"}, "executable pin schema")
     path = Path(pin["path"])
@@ -851,6 +868,9 @@ def core_arguments(config, stage):
 def child_verify(config_path):
     config = parsed(regular(config_path)[0])
     record = authorization(config["supplemental_record"], config["supplemental_record_hash"])
+    expected_env = sanitized_environment(record["managed_tools"])
+    need(os.environ.get("PATH") == expected_env["PATH"], "inherited child PATH changed")
+    verified_tool_resolution(record["managed_tools"], os.environ["PATH"])
     need(sha(regular(Path(__file__))[0]) == record["verifier_sha256"], "sealed verified code bytes")
     runtime_pin(record["managed_python"], record["managed_tools"], probe=False)
     # Restore ONLY explicit cryptographically pinned package paths, no .pth/site.
@@ -889,6 +909,8 @@ def supervise(args):
     need(sys.flags.isolated and sys.flags.no_site and sys.implementation.name == "cpython", "ROOT must launch supervisor with -I -S")
     record = authorization(args.supplemental_approval_record, args.supplemental_approval_record_sha256)
     tools = record["managed_tools"]
+    env = sanitized_environment(tools)
+    resolution = verified_tool_resolution(tools, env["PATH"])
     clean_at(args.verifier_root, record["verifier_sha"], executable=tools["git"]["path"])
     helper, _ = regular(Path(args.verifier_root) / "scripts/release980_external.py")
     need(sha(helper) == record["verifier_sha256"] == sha(regular(__file__)[0]), "pre-exec verified helper bytes")
@@ -933,8 +955,8 @@ def supervise(args):
                   "supplemental_record": str(stage / "supplemental-record.json"), "supplemental_record_hash": args.supplemental_approval_record_sha256,
                   "delivery": args.delivery_name, "binding": binding}
         write_new(launch, encoded(config), 0o400)
-        write_new(stage / "trusted-preexec.json", encoded({"v": 1, "binding": binding, "launch_sha256": sha(encoded(config)), "startup": "isolated-no-site; pinned package paths explicitly restored without .pth"}), 0o400)
-        env = sanitized_environment(tools)
+        write_new(stage / "trusted-preexec.json", encoded({"v": 1, "binding": binding, "launch_sha256": sha(encoded(config)), "startup": "isolated-no-site; pinned package paths explicitly restored without .pth", "tool_resolution": resolution}), 0o400)
+        need(same(verified_tool_resolution(tools, env["PATH"]), resolution), "pre-exec tool resolution changed")
         # The observed result comes only from THIS Popen/wait, never a CLI flag.
         with (stage / "child.log").open("xb") as log:
             process = subprocess.Popen(cmd, cwd=stage, env=env, pass_fds=(parent_fd,), stdout=log, stderr=subprocess.STDOUT)

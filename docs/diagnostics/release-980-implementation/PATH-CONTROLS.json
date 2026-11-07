@@ -1,0 +1,29 @@
+{
+  "v": 1,
+  "base_sha": "c4949858283a1368275aa37f48db324be221b2dc",
+  "helper_sha256": "0d7994d3e7d177ff461829c1ed385388491197a5ae5334b68da045e406fb2847",
+  "tests_sha256": "a51d9c7804b055fb8f03036375ee9e3a5d360e4314d1a909d9bd755f05b8059d",
+  "change": "actual exact git/gh resolution matches approved pins in exact inherited sanitized PATH; no private-bin or frozen-core patch",
+  "before": "unchanged c494 authorization executable-pin loop accepts synthetic shadowed-gh and mismatched-name inputs; the exact old sanitized PATH resolves the wrong gh in the shadow case",
+  "after": "normal pair accepted; both shadow and mismatched name refused; inherited child PATH drift refused before runtime/frozen loading",
+  "wrong_binary_executions": 0,
+  "controls": {
+    "tests": 36,
+    "passed": 36,
+    "elapsed_seconds": 0.84,
+    "targeted_guard_mutants": 11,
+    "killed": 11,
+    "survived": 0
+  },
+  "log_copy": {
+    "path": "path-controls.txt",
+    "kind": "normalized/non-verbatim",
+    "raw_capture_sha256": "467755d2541ffe2d2430c61c588f062563287ab7e636162f0d90bbccab12d366",
+    "raw_bytes": 7365,
+    "raw_preserved_privately": true
+  },
+  "actual_external": 0,
+  "host_recursive_hash": 0,
+  "root_authorizing_record_created": false,
+  "threat_boundary": "concurrent hostile same-UID/root mutation remains outside the approved trusted-supervisor boundary; later readback must verify protected acceptance digest"
+}
