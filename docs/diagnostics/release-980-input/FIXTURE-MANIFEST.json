@@ -1,0 +1,245 @@
+{
+  "v": 1,
+  "created_at_utc": "2026-11-07T20:52:54.804868+00:00",
+  "timestamp_semantics": "local UTC file-write completion, not HTTP server Date; copied context uses packet write time",
+  "files": [
+    {
+      "path": "fixtures/check-suite-114879230001.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114879230001",
+      "observed_at_utc": "2026-11-07T20:49:29.197455+00:00",
+      "bytes": 7776,
+      "sha256": "2b1fcd0d47f253f2d6e0c27d56bd240dfeccb4d069e8f3d212d3aa66708c891c"
+    },
+    {
+      "path": "fixtures/check-suite-114884740608.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884740608",
+      "observed_at_utc": "2026-11-07T20:49:29.256670+00:00",
+      "bytes": 8272,
+      "sha256": "adbe439c1aa3e1000f059eff4dccbf4667be56e76297ed10bbb5fb1d8a99edb6"
+    },
+    {
+      "path": "fixtures/check-suite-114884753408.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884753408",
+      "observed_at_utc": "2026-11-07T20:49:29.283154+00:00",
+      "bytes": 8272,
+      "sha256": "9fca21e2c88fe36634cae5e8e3324b4fd31fea97729b1b89134abd5a1e05ccf8"
+    },
+    {
+      "path": "fixtures/check-suite-114884753467.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884753467",
+      "observed_at_utc": "2026-11-07T20:49:29.210547+00:00",
+      "bytes": 8272,
+      "sha256": "42510034ea090a40f2f3ab744e39b6318388f9e0f106e821c92599d92b357d22"
+    },
+    {
+      "path": "fixtures/check-suite-114884753517.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884753517",
+      "observed_at_utc": "2026-11-07T20:49:29.610843+00:00",
+      "bytes": 8272,
+      "sha256": "2af855f1e3e1b3e31dcb483ec16a7c0e92e22968fb5e9316b2d30342dfae86af"
+    },
+    {
+      "path": "fixtures/check-suite-114884753539.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884753539",
+      "observed_at_utc": "2026-11-07T20:49:29.686008+00:00",
+      "bytes": 8272,
+      "sha256": "4dbec05b2895da7db3b0cba1423b614bb5e911678517f63f7ac91447defe74e2"
+    },
+    {
+      "path": "fixtures/check-suite-114884753552.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884753552",
+      "observed_at_utc": "2026-11-07T20:49:29.728028+00:00",
+      "bytes": 8272,
+      "sha256": "11bb44cedde66b35305aa09e39c5bf2b2354a0aaebd6cd8c2a42b189eef333de"
+    },
+    {
+      "path": "fixtures/check-suite-114884753611.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884753611",
+      "observed_at_utc": "2026-11-07T20:49:29.715596+00:00",
+      "bytes": 8272,
+      "sha256": "596782b1023b8f4cfc4a65adc02f7d4aeefd8d5b678908958766e9adc03ac3b9"
+    },
+    {
+      "path": "fixtures/check-suite-114884774211.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884774211",
+      "observed_at_utc": "2026-11-07T20:49:30.125972+00:00",
+      "bytes": 8273,
+      "sha256": "54c811cf39bb186ecee68d1e6e8ec6193017b4052dddb4a5a0359caf96c3f2a7"
+    },
+    {
+      "path": "fixtures/check-suite-114884902297.json",
+      "source": "GET repos/charoiteai/Charoite_audio/check-suites/114884902297",
+      "observed_at_utc": "2026-11-07T20:49:30.129839+00:00",
+      "bytes": 6956,
+      "sha256": "b22fdbdfa69e736fa054244724ca4198ef5e030eec4b511ab9bc4ebeded5261f"
+    },
+    {
+      "path": "fixtures/critical-context.json",
+      "source": "root-supplied public critical-run context; copied verbatim",
+      "observed_at_utc": "2026-11-07T20:52:54.805262+00:00",
+      "bytes": 261,
+      "sha256": "6dd06be32fd30c178f66bc7786b371bf5cfdc80391b6acf8c32633bf539195df"
+    },
+    {
+      "path": "fixtures/jobs-42403270503-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42403270503/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:45.962132+00:00",
+      "bytes": 9931,
+      "sha256": "f0e605ac4b94865b8bae74d17eec3c3c09e34fcc296388ade87638c1dbada636"
+    },
+    {
+      "path": "fixtures/jobs-42405431329-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405431329/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:46.632201+00:00",
+      "bytes": 9936,
+      "sha256": "cafee330b125c344ac11135387a437c9c5a2da44745aefba12cc8b3558e8b5a8"
+    },
+    {
+      "path": "fixtures/jobs-42405436253-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436253/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:47.061884+00:00",
+      "bytes": 21459,
+      "sha256": "0c09e6b79ec8caef3344d94ddddb67db4c008c5ae8129d6d5fe322e09f8d0340"
+    },
+    {
+      "path": "fixtures/jobs-42405436283-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436283/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:47.462818+00:00",
+      "bytes": 1473,
+      "sha256": "3138830e1aec42db557f13f5dcd3cf532f7fc64c395579dcb8e438f50ae5896b"
+    },
+    {
+      "path": "fixtures/jobs-42405436305-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436305/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:46.903126+00:00",
+      "bytes": 2320,
+      "sha256": "ba7f8b31c5ce9e4299a58506c9923827f48d6e9a9cfdab07f6d56a6365fc8b09"
+    },
+    {
+      "path": "fixtures/jobs-42405436314-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436314/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:48.008430+00:00",
+      "bytes": 6244,
+      "sha256": "f3caa13d4d53427adc3738bd2e1655b2a05ed6d52ff5f1231adf9400d28cf09d"
+    },
+    {
+      "path": "fixtures/jobs-42405436315-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436315/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:48.123701+00:00",
+      "bytes": 5438,
+      "sha256": "24951569b4940c2ea78b59880fbb3346bb5249d883f24a710027d66eec4cdd77"
+    },
+    {
+      "path": "fixtures/jobs-42405436338-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436338/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:47.306993+00:00",
+      "bytes": 3611,
+      "sha256": "96211648c1d659ab2386ececb0b1b9ae6ec4ed2da6aa642d092dbdc5b6c60519"
+    },
+    {
+      "path": "fixtures/jobs-42405444700-attempt-1.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405444700/attempts/1/jobs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:50:13.996031+00:00",
+      "bytes": 5027,
+      "sha256": "31b1188a6e248cbf57395c896d2bbb4ef77e02500d95e32d8910beda6afc90f5"
+    },
+    {
+      "path": "fixtures/pr-906-rest.json",
+      "source": "GET repos/charoiteai/Charoite_audio/pulls/906",
+      "observed_at_utc": "2026-11-07T20:48:45.877204+00:00",
+      "bytes": 18851,
+      "sha256": "dc6d723e816013d41b756f2d995e974a8466b022fc8ae8c4d6abdacf652d53f5"
+    },
+    {
+      "path": "fixtures/pr-906-rollup.json",
+      "source": "gh pr view 906 --repo charoiteai/Charoite_audio --json headRefOid,baseRefOid,state,isDraft,mergeable,statusCheckRollup",
+      "observed_at_utc": "2026-11-07T20:48:33.420916+00:00",
+      "bytes": 8413,
+      "sha256": "a0161c754427658f4a5325db6ad98fc84d77cc65f2f5e453c2f19d3e652451dc"
+    },
+    {
+      "path": "fixtures/run-42403270503.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42403270503",
+      "observed_at_utc": "2026-11-07T20:48:45.609614+00:00",
+      "bytes": 12832,
+      "sha256": "b7b41892f0bb79b2d21b5997090b7b6a8eabcff6212a6a36efc509f2a1c82807"
+    },
+    {
+      "path": "fixtures/run-42405431329.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405431329",
+      "observed_at_utc": "2026-11-07T20:48:46.046612+00:00",
+      "bytes": 13328,
+      "sha256": "9478ccfea40af0c16cbc4d9248b616d03293d4e97c01ad8928b8014df38f0f0b"
+    },
+    {
+      "path": "fixtures/run-42405436253.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436253",
+      "observed_at_utc": "2026-11-07T20:48:46.326455+00:00",
+      "bytes": 13314,
+      "sha256": "5927dad5e14615b2d636e8f5e7416c8f2bcbdc96dfc3c2587465e3716408952b"
+    },
+    {
+      "path": "fixtures/run-42405436283.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436283",
+      "observed_at_utc": "2026-11-07T20:48:47.285454+00:00",
+      "bytes": 13326,
+      "sha256": "5dd3a8d7000eeb25757f4cf6c29d9cbae43211e54cf68d5ac428e6e47cb02ad8"
+    },
+    {
+      "path": "fixtures/run-42405436305.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436305",
+      "observed_at_utc": "2026-11-07T20:48:46.470558+00:00",
+      "bytes": 13322,
+      "sha256": "c86bb794705482fbaee7ff2b4a59b664f21c94b4afef22fbb33ad3ad4a3f3727"
+    },
+    {
+      "path": "fixtures/run-42405436314.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436314",
+      "observed_at_utc": "2026-11-07T20:48:47.498651+00:00",
+      "bytes": 13334,
+      "sha256": "e4749fe74d2207a96e4ef5de119c3dc8349c7a42778d9b2e0787b90fb31d0b90"
+    },
+    {
+      "path": "fixtures/run-42405436315.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436315",
+      "observed_at_utc": "2026-11-07T20:48:47.755371+00:00",
+      "bytes": 13332,
+      "sha256": "dc584f183508bcd04140a2bae09e598094f9f41e2156599e90ea3d1feea084df"
+    },
+    {
+      "path": "fixtures/run-42405436338.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405436338",
+      "observed_at_utc": "2026-11-07T20:48:46.881124+00:00",
+      "bytes": 13330,
+      "sha256": "9e038f4943cea602acd4eb769a49793683683cff251884817d040781c608a9d4"
+    },
+    {
+      "path": "fixtures/run-42405444700.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/runs/42405444700",
+      "observed_at_utc": "2026-11-07T20:50:13.383399+00:00",
+      "bytes": 13330,
+      "sha256": "49a81984506c57cf63a38de2d80d85070c34e67b747d357e4be3fc31a8ed518e"
+    },
+    {
+      "path": "fixtures/runtime-check-runs-all.json",
+      "source": "GET repos/charoiteai/Charoite_audio/commits/94867ecb54593018b0568a18fa9501770cdfb768/check-runs?filter=all&per_page=100",
+      "observed_at_utc": "2026-11-07T20:50:52.937454+00:00",
+      "bytes": 100264,
+      "sha256": "f335c98678baccbc0537b9348379f277ecdbb9030e8836732a50032cddcabab2"
+    },
+    {
+      "path": "fixtures/runtime-check-runs.json",
+      "source": "GET repos/charoiteai/Charoite_audio/commits/94867ecb54593018b0568a18fa9501770cdfb768/check-runs?per_page=100",
+      "observed_at_utc": "2026-11-07T20:48:45.910794+00:00",
+      "bytes": 100264,
+      "sha256": "f335c98678baccbc0537b9348379f277ecdbb9030e8836732a50032cddcabab2"
+    },
+    {
+      "path": "fixtures/workflow-ci.json",
+      "source": "GET repos/charoiteai/Charoite_audio/actions/workflows/317312253",
+      "observed_at_utc": "2026-11-07T20:49:30.143811+00:00",
+      "bytes": 466,
+      "sha256": "05fca15bd3df097e2d78906f27f3e4d62e95be8a8848737746c12d45c4f42dc3"
+    }
+  ]
+}

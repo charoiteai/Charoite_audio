@@ -1,0 +1,8 @@
+{
+  "run_id": 42405663537,
+  "attempt": 1,
+  "definition_sha": "74ad984b3b9d4be17586d607b27cd3f44924c459",
+  "repo": "charoiteai/Charoite_audio",
+  "branch": "verify/release970-32-94867ecb-74ad984b",
+  "workflow": ".github/workflows/release-970-critical.yml"
+}

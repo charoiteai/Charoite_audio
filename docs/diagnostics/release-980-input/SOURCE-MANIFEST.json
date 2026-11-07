@@ -1,0 +1,107 @@
+{
+  "v": 1,
+  "base_sha": "74ad984b3b9d4be17586d607b27cd3f44924c459",
+  "source_tree": "9b75940c8b9d6fdd0b43f247014d15719edcc830",
+  "selected_public_tracked_source": [
+    {
+      "path": "scripts/release970_gate.py",
+      "bytes": 36639,
+      "sha256": "efbb97708d07e1a0654155516711f7c303154c6a22a1976d8fef196b81bcc4bf"
+    },
+    {
+      "path": "scripts/release970_observer.py",
+      "bytes": 4746,
+      "sha256": "acc0bed68466481dfcb5aa695dd0805d292b182c513cbe784a1a9e227f19f14b"
+    },
+    {
+      "path": "scripts/mutate_check.py",
+      "bytes": 134869,
+      "sha256": "fab0c075446eaf370e80172633ffc11d9dfd807411ff394e6afbe1f7a0891598"
+    },
+    {
+      "path": "scripts/layout_map.py",
+      "bytes": 295802,
+      "sha256": "307a90f2ab6fd7f30dabc41f7a55260e83c496f2477474cd658db52938d903ba"
+    },
+    {
+      "path": "src/exit_codes.py",
+      "bytes": 12115,
+      "sha256": "b7171ebaa1ad6d26ebc569a36b44a8c29b69db82f800591cb0db4699403a0c00"
+    },
+    {
+      "path": "src/live_gate.py",
+      "bytes": 21091,
+      "sha256": "ae034650b67efa107e4908e3589c0682ab829161c3d2b6de49ea7d86a86e452c"
+    },
+    {
+      "path": "src/machine_power.py",
+      "bytes": 7523,
+      "sha256": "10da6a2be86e4893cad4c35d2df52730456b5dc9e6d642d17e9fe77727992ab7"
+    },
+    {
+      "path": "src/busy_signals.py",
+      "bytes": 20235,
+      "sha256": "f2504fe17a27501bc2940adb4121e552de794332b39b9557f90c101c0b9d14df"
+    },
+    {
+      "path": "src/charoite_paths.py",
+      "bytes": 60002,
+      "sha256": "d8758d017e4e024de617824682265549804bd79e6bab9587718eada43b881ec5"
+    },
+    {
+      "path": "src/file_locks.py",
+      "bytes": 12470,
+      "sha256": "228f693e0a2c15f308b377d867ac2fb95754c3130702247bd04bea202b439fed"
+    },
+    {
+      "path": ".github/release970_plan.json",
+      "bytes": 255387,
+      "sha256": "091c9596f348066b323d22c6888872625c8c9d92f635dd7f8d382958f3bc3717"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "bytes": 23860,
+      "sha256": "6f045e5a973a8a69405da3d21fc473a6245954dd6693ceabe8d9481f5105f413"
+    },
+    {
+      "path": ".github/workflows/release-970-critical.yml",
+      "bytes": 8327,
+      "sha256": "7497106c7d89431f55ff55c69ea8e9dc4f9c538d242720058c47813cf52d413a"
+    },
+    {
+      "path": ".github/workflows/codeql.yml",
+      "bytes": 449,
+      "sha256": "b3d9c7aeef4492b27b245314e54af04fbb2013fe548ae9e978eefd53ce77719d"
+    },
+    {
+      "path": ".github/workflows/docs-guard.yml",
+      "bytes": 10729,
+      "sha256": "630da58a7796a8117c0f442eef697b52a39fed9b160fc429a0fea0904eb80bac"
+    },
+    {
+      "path": ".github/workflows/pr-title.yml",
+      "bytes": 2598,
+      "sha256": "c03e7f709fe4ad9dfff549ff21cdc684b4959d73aa9bf12f18b2416a9a66cb19"
+    },
+    {
+      "path": ".github/workflows/supply-chain.yml",
+      "bytes": 4617,
+      "sha256": "8ab0e82ec60cfb33d0ba79a6fdcdaa8cbac7155e2c1d148c508d53860ebef3ed"
+    },
+    {
+      "path": ".github/workflows/swift-tests.yml",
+      "bytes": 9017,
+      "sha256": "1f22f2241390c75d95ff97ddaee0b151d448e015aaf621e3654dca6f3c128ec0"
+    },
+    {
+      "path": "tests/test_release970_gate.py",
+      "bytes": 29264,
+      "sha256": "226cd39df4bba3294d924661c2119b4a93164c825769fe4c9c096c1fd4dfee22"
+    },
+    {
+      "path": "tests/test_release970_observer.py",
+      "bytes": 11915,
+      "sha256": "ec0a2c54ec34f2a28817bb3eed7eabc8cc807cc3ba3202e504e0493317b1078f"
+    }
+  ]
+}
