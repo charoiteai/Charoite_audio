@@ -1,0 +1,76 @@
+# Addressed survivor replay, 2026-11-07
+
+Original source: `fdbf9166a7224e5fa36772fcf32fd1dfd51e45a4`.
+Original PR base: `2106ed52c9b3f70f5d0c8b6363e9e3171ae767be`.
+Scope: source candidate and synthetic evidence only. No installation, real night,
+model, private wrapper execution or owner data access is claimed.
+
+## Preserved work and baseline
+
+The previous executor's uncommitted test patch was read without modifying that
+worktree. Both file hashes matched before and after reading. The original patch
+and its attribution/hashes are retained as `prior-controls.patch.json` and
+`prior-controls-attribution.json`. The current executor reviewed the patch and
+verified it through real filesystem, kernel-lock and subprocess controls.
+
+The immutable source baseline passed 54 tests and 5 subtests in 3.11 seconds.
+With the preserved patch, the same four files passed 73 tests and 5 subtests in
+3.22 seconds. Those commands ran through fresh installed quiet/heavy gates.
+Two invalid test selections returned pytest code4 without executing tests; they
+are not passing checks. The historical missing adapter-test filename was not
+recreated merely to satisfy the old review text.
+
+## Exact replay
+
+`original-controls-replay.json` records the 18 original AST identities, mutation
+keys, mutated-source hashes, original/candidate test hashes, four passing
+unmutated suite baselines, outcomes and exact failing test names. The script
+uses the existing mutator's scan/application functions in an isolated clone of
+the immutable original SHA, overlays only the recorded candidate tests, disables
+bytecode and requires pytest rc1, no errors/skips, and the expected behavioral
+assertion before accepting a kill. Logs/XML remain in the local experiment
+directory; the public JSON receipt contains no private source.
+
+All 18 original survivors reproduced with original tests. Candidate controls
+kill identities1–16 through the expected assertions. Identities6/7 deliberately
+exercise the existing defensive returning-exec seam; real successful OS exec
+does not return. This is explicitly mock-branch coverage, not real exec success.
+
+Identities17/18 (JSON key ordering and indentation) still survive. They are not
+reported as killed. `format-consumer-replay.json` separately records a passing
+real consumer baseline and both original formatting mutations against a control
+that reads the actual JSON bytes, checks receipt and bound-file hashes, executes
+the parsed literal argv through the real process-lock helper and transformed
+public shell fixture, and observes the same held inode in the final command.
+The consumer does not assert a golden whitespace/key-order representation.
+
+The sole runtime change removes the two optional formatting kwargs from JSON
+serialization. Semantic fields, argv, permissions and actual-byte hash binding
+remain unchanged. This removes unnecessary configuration choices, not critical
+coverage or a required wire/signature contract. No zone, threshold or mutation
+exemption changed. Both OUTPUT reviewers must inspect this disposition and the
+remaining source risk; these observations alone do not approve an equivalent.
+
+## Repeat
+
+Use the installed quiet_guard and heavy_run with `HEAVY_WAIT_MAX_S=60`; keep the
+gate and heavy command in one `&&` chain. Do not override gate data roots.
+Run `replay_survivors.py --output NEW_PRIVATE_TEMP_DIRECTORY` with the project's
+Python for all original identities and both test snapshots. For the focused
+consumer experiment also pass `--mode candidate --identities 17,18 --consumer-only`.
+The replay intentionally uses original runtime bytes so original identities
+remain reproducible after removing the unnecessary formatting arguments.
+
+## Acceptance boundaries
+
+The synthetic wrapper executes before/after the same transform with unchanged
+marker, artifact and fake commands. Actual process tests demonstrate contention,
+exec failure, retained-descriptor orphan exclusion, immediate FD closure and the
+unprotected close_fds counterexample. These are real synthetic observations.
+They do not attest the actual private wrapper's UX/child boundaries. The existing
+INPUT installation blocker remains: prove every actual boundary retains the FD
+or has independent orphan-work exclusion before installation/task closure.
+
+Full current-source critical mutation verdict, exact-snapshot independent
+Terra/Luna OUTPUT/final-risk reviews and applicable CI are recorded separately
+when executed. Prior CI/reviews are not reused as current acceptance.

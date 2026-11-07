@@ -1,6 +1,7 @@
 """Synthetic POSIX exec-lock contract, including its unprotected boundaries."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -10,12 +11,119 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/with_process_lock.py'
 sys.path.insert(0, str(ROOT / 'src'))
 import process_lock_exec  # noqa: E402
+from file_locks import NO_FLOCK, TAKEN  # noqa: E402
+
+
+class ProcessLockRefusals(unittest.TestCase):
+    """In-process refusal controls; no command execution or process signals."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='exec-lock-refusal-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.lock = self.root / 'run.lock'
+        self.lock.write_bytes(b'preserve-lock-bytes')
+
+    def assert_released(self, path):
+        # A separate open must acquire the real kernel lock after refusal.
+        with path.open('r+b') as handle:
+            self.assertEqual(process_lock_exec.acquire_outcome(handle, attempts=1, pause=0), TAKEN)
+
+    def test_missing_parent_component_before_dotdot_is_refused_before_locking(self):
+        missing = self.root / 'absent-parent'
+        invalid_lock = missing / '..' / self.lock.name
+        # Non-strict resolution can erase the missing component and reach the
+        # existing self.lock; stat of that normalized parent is not equivalent.
+        with patch.object(process_lock_exec, 'acquire_outcome',
+                          wraps=process_lock_exec.acquire_outcome) as acquire, \
+                patch.object(process_lock_exec.os, 'execvpe', side_effect=FileNotFoundError) as execute:
+            result = process_lock_exec.locked_exec(invalid_lock, ['synthetic-command'])
+            self.assertEqual(result, 73)
+            acquire.assert_not_called()
+            execute.assert_not_called()
+        self.assertFalse(missing.exists())
+        self.assertEqual(self.lock.read_bytes(), b'preserve-lock-bytes')
+
+    def test_no_flock_refuses_with_73_without_exec_and_closes_descriptor(self):
+        with patch.object(process_lock_exec, 'acquire_outcome', return_value=NO_FLOCK), \
+                patch.object(process_lock_exec.os, 'execvpe', side_effect=FileNotFoundError) as execute, \
+                patch.object(process_lock_exec.os, 'close', wraps=os.close) as close:
+            result = process_lock_exec.locked_exec(self.lock, ['synthetic-command'])
+            self.assertEqual(result, 73)
+            execute.assert_not_called()
+            close.assert_called_once()
+            with self.assertRaises(OSError) as closed:
+                os.fstat(close.call_args.args[0])
+            self.assertEqual(closed.exception.errno, errno.EBADF)
+        self.assertEqual(self.lock.read_bytes(), b'preserve-lock-bytes')
+        self.assert_released(self.lock)
+
+    def test_returning_exec_seam_refuses_with_126_and_releases_lock(self):
+        # Real successful exec never returns. Exercise only the existing
+        # defensive fallback with an explicitly returning synthetic seam.
+        argv = ['synthetic-command', 'literal argument']
+        with patch.object(process_lock_exec.os, 'execvpe', return_value=None) as execute:
+            result = process_lock_exec.locked_exec(self.lock, argv)
+            self.assertEqual(result, 126)
+            execute.assert_called_once()
+            command, passed_argv, environment = execute.call_args.args
+            self.assertEqual(command, argv[0])
+            self.assertEqual(passed_argv, argv)
+            descriptor = int(environment['CHAROITE_PROCESS_LOCK_FD'])
+            with self.assertRaises(OSError) as closed:
+                os.fstat(descriptor)
+            self.assertEqual(closed.exception.errno, errno.EBADF)
+        self.assertEqual(self.lock.read_bytes(), b'preserve-lock-bytes')
+        self.assert_released(self.lock)
+
+    def test_replaced_inode_refuses_with_73_without_exec_and_releases_original(self):
+        held = self.root / 'held.lock'
+        acquire = process_lock_exec.acquire_outcome
+
+        def replace_after_acquisition(fd, **kwargs):
+            result = acquire(fd, **kwargs)
+            self.assertEqual(result, TAKEN)
+            self.lock.rename(held)
+            self.lock.write_bytes(b'replacement-bytes')
+            return result
+
+        with patch.object(process_lock_exec, 'acquire_outcome', side_effect=replace_after_acquisition), \
+                patch.object(process_lock_exec.os, 'execvpe', side_effect=FileNotFoundError) as execute:
+            result = process_lock_exec.locked_exec(self.lock, ['synthetic-command'])
+            self.assertEqual(result, 73)
+            execute.assert_not_called()
+        self.assertEqual(held.read_bytes(), b'preserve-lock-bytes')
+        self.assertEqual(self.lock.read_bytes(), b'replacement-bytes')
+        self.assert_released(held)
+
+    def test_replacement_symlink_to_held_inode_is_refused_without_exec(self):
+        held = self.root / 'held.lock'
+        acquire = process_lock_exec.acquire_outcome
+
+        def symlink_after_acquisition(fd, **kwargs):
+            result = acquire(fd, **kwargs)
+            self.assertEqual(result, TAKEN)
+            self.lock.rename(held)
+            # Following this link sees the *same* dev/inode as the open FD.
+            # Only the non-following path check can detect the substitution.
+            self.lock.symlink_to(held)
+            return result
+
+        with patch.object(process_lock_exec, 'acquire_outcome', side_effect=symlink_after_acquisition), \
+                patch.object(process_lock_exec.os, 'execvpe', side_effect=FileNotFoundError) as execute:
+            result = process_lock_exec.locked_exec(self.lock, ['synthetic-command'])
+            self.assertEqual(result, 73)
+            execute.assert_not_called()
+        self.assertTrue(self.lock.is_symlink())
+        self.assertEqual(held.read_bytes(), b'preserve-lock-bytes')
+        self.assert_released(held)
 
 
 class ProcessLock(unittest.TestCase):

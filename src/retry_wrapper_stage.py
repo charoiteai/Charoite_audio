@@ -117,7 +117,8 @@ def stage(source: Path, output: Path, python: Path, helper: Path,
                     'enable_existing_final_status_gate', 'outer_process_lock'],
     }
     path = output / 'manifest.json'
-    path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
+    # The receipt binds the actual bytes; readers consume the JSON fields.
+    path.write_text(json.dumps(manifest) + '\n')
     path.chmod(0o600)
     assert read_source(source) == data
     assert wrapper.read_bytes() == candidate
