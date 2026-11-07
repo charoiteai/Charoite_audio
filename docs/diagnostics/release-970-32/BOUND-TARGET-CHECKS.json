@@ -1,0 +1,48 @@
+{
+  "exit_code": 0,
+  "source_before": {
+    ".github/release970_plan.json": "02ce5ff55536c2e4f0ca482bcf673e9151cab528af4e3ee9ae6f7616eb1fc475",
+    ".github/workflows/release-970-critical.yml": "e6bc5fe35ce048c5d564682018a6000f36eb85744fcc75ce11c034ef927baf46",
+    "scripts/release970_gate.py": "efbb97708d07e1a0654155516711f7c303154c6a22a1976d8fef196b81bcc4bf",
+    "scripts/release970_observer.py": "acc0bed68466481dfcb5aa695dd0805d292b182c513cbe784a1a9e227f19f14b",
+    "tests/conftest.py": "e7c5112d6cffa26be1a877bd898727bff2298cdcdcdb279bfb12cede38aefbdd",
+    "tests/test_private_permissions.py": "d990334e834c38eaca59af834ad8ddba754b299f9c64b33935f93dd8958e0f3e",
+    "tests/test_release970_gate.py": "a975ccc8abf1bcbe979862beee92593383c2c49fd77659a5a40db6683c74fa25",
+    "tests/test_release970_observer.py": "ec0a2c54ec34f2a28817bb3eed7eabc8cc807cc3ba3202e504e0493317b1078f",
+    "tests/test_workflows.py": "2a6d83e38e3ac43a66984971d8768b15331cf291061c089fa999dabc56006909"
+  },
+  "source_after": {
+    ".github/release970_plan.json": "02ce5ff55536c2e4f0ca482bcf673e9151cab528af4e3ee9ae6f7616eb1fc475",
+    ".github/workflows/release-970-critical.yml": "e6bc5fe35ce048c5d564682018a6000f36eb85744fcc75ce11c034ef927baf46",
+    "scripts/release970_gate.py": "efbb97708d07e1a0654155516711f7c303154c6a22a1976d8fef196b81bcc4bf",
+    "scripts/release970_observer.py": "acc0bed68466481dfcb5aa695dd0805d292b182c513cbe784a1a9e227f19f14b",
+    "tests/conftest.py": "e7c5112d6cffa26be1a877bd898727bff2298cdcdcdb279bfb12cede38aefbdd",
+    "tests/test_private_permissions.py": "d990334e834c38eaca59af834ad8ddba754b299f9c64b33935f93dd8958e0f3e",
+    "tests/test_release970_gate.py": "a975ccc8abf1bcbe979862beee92593383c2c49fd77659a5a40db6683c74fa25",
+    "tests/test_release970_observer.py": "ec0a2c54ec34f2a28817bb3eed7eabc8cc807cc3ba3202e504e0493317b1078f",
+    "tests/test_workflows.py": "2a6d83e38e3ac43a66984971d8768b15331cf291061c089fa999dabc56006909"
+  },
+  "same_source": true,
+  "runtime_candidate": "376e594212c04160aa4921cf793e77e4354a7ef1",
+  "plan_sha256": "02ce5ff55536c2e4f0ca482bcf673e9151cab528af4e3ee9ae6f7616eb1fc475",
+  "python": "3.12.13 (main, Mar  3 2026, 12:39:30) [Clang 17.0.0 (clang-1700.6.3.2)]",
+  "python_sha256": "31b9c9a8d50289f3a13f014b3efd8ea3534fc3eea7ca7d9809e166139910b805",
+  "packages": {
+    "pytest": "9.1.1",
+    "pytest-timeout": "2.4.0",
+    "pytest-xdist": "3.8.0",
+    "PyYAML": "6.0.3"
+  },
+  "raw_log_sha256": "7079032cbec8422ebd4c119a6a6e31dc36dab38c342cca4c58cd827b309a7c72",
+  "test_result": "119 passed in 16.39s",
+  "test_files": [
+    "tests/test_release970_gate.py",
+    "tests/test_release970_observer.py",
+    "tests/test_private_permissions.py",
+    "tests/test_workflows.py"
+  ],
+  "admission": "fresh canonical quiet_guard0 && unchanged global heavy_run",
+  "release_mutations": 0,
+  "workflow_runs": 0,
+  "stage": "Code bytes before immutable Git commit; exact-head C12 follows separately"
+}

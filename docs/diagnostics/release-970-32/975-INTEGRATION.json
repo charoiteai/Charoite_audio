@@ -1,0 +1,13 @@
+{
+  "accepted_repair": "f62febd220a58f14c8f9038600273c4cb8c674a4",
+  "original_scoped_patch": "7f3f072f700a602305fea7ddd70332c5b19a082d",
+  "paths": [
+    "tests/test_release970_observer.py",
+    "tests/test_private_permissions.py"
+  ],
+  "same_scoped_patch": true,
+  "patch_sha256": "8cf00e5098d6d87fdf13e264e7ed30560927d10e52e9ed20d149e0aa9cae098a",
+  "reports_or_layout_copied": false,
+  "definition32_observer_test_delta": "Only topology assertion43to22 on top of975source; observer implementation unchanged",
+  "acceptance_source": "Coordinator975OUTPUT/CI acceptance reported; this receipt independently compares the two-file deltas"
+}

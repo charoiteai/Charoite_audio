@@ -1,3 +1,6 @@
+> Historical development checkpoint4af9810c; current runtime binding is376e5942.
+> Read RUNTIME-BINDING.json and BOUND-TARGET-CHECKS.json for current results.
+
 # Definition32 development checkpoint — partial
 
 Helper, plan serialization, Facts/command/job/artifact loops, workflow32 matrix
