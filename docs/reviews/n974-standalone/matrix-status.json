@@ -1,0 +1,20 @@
+{
+  "M01": "PASS actual guard rejected exact base YAML; direct call, not a new pytest-red-run claim",
+  "M02": "PASS candidate guard before/after directed mutations",
+  "M03": "PASS runner_latest KILLED",
+  "M04": "PASS26.04/expression/list KILLED",
+  "M05": "PASS seven narrowed/masked/changed command vectors KILLED; duplicate KILLED",
+  "M06": "PASS exact unchanged Python/PortAudio/dependency commands; actual Linux result pending",
+  "M07": "PASS exact unchanged safety fields/steps",
+  "M08": "PASS exact unchanged other jobs and nightly workflow",
+  "M09": "PASS60/60 addressed tests",
+  "M10": "PASS no product/dependency/critical-zone changes",
+  "M11": "PASS standalone layout CLI and actual matches test; map unchanged",
+  "M12": "PASS ordinary hooks/privacy at implementation commit; final hooks/readback required",
+  "M13": "PENDING root OUTPUT then separate draft PR/current exact head and CI tree",
+  "M14": "NOT_RUN full Linux24.04 native audio",
+  "M15": "NOT_RUN full macOS",
+  "M16": "NOT_RUN full remote aggregate critical verdict",
+  "M17": "NOT_RUN remaining remote checks",
+  "M18": "ACTIVE acceptance rule; incomplete/red/different tree leaves open"
+}

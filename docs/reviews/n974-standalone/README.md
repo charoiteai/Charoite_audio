@@ -24,3 +24,17 @@ Publication route: independent OUTPUT on this standalone snapshot, ordinary
 push and draft PR to main, full Linux/macOS/lint/critical and all mandatory
 checks on the actual PR checkout/tree, then normal expected-head acceptance.
 No admin bypass or green claim from push-only mutation skips is allowed.
+
+Standalone local acceptance: 60/60 addressed workflow/layout tests passed with
+no skips/errors/failures; normal layout CLI passed and its generated map was
+unchanged. Twelve original directed parsed-YAML mutations were rejected at
+the actual focused guard's expected assertion; the good candidate passed before
+and after. Exact base YAML was refused by the same new guard in a direct call.
+
+The first standalone replay harness stopped on an unhandled original vector
+operation after four runner cases; it is not counted complete. The corrected
+explicit adapter for append/replace/duplicate completed all12. This was a
+proof-driver correction; product sources remained unchanged. Fresh execution
+is recorded at implementation62a8f42d. The final evidence-only commit is bound
+by the two unchanged source hashes, not represented as another test run.
+No Linux/macOS full CI, native audio, model or retry-FD result is inferred.

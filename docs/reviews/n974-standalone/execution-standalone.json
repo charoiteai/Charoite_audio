@@ -1,0 +1,188 @@
+{
+  "candidate_tested": "62a8f42d029387e5f6ecf9cd62f95ecdd68e1888",
+  "base": "2106ed52c9b3f70f5d0c8b6363e9e3171ae767be",
+  "two_source_hashes": {
+    ".github/workflows/ci.yml": "6f045e5a973a8a69405da3d21fc473a6245954dd6693ceabe8d9481f5105f413",
+    "tests/test_workflows.py": "b26a80497580aef2f28cace2adc92c195f4ebc83f002286c94b15fed751a5394"
+  },
+  "addressed_pytest": {
+    "returncode": 0,
+    "elapsed_s": 12.372,
+    "stdout_sha256": "5b94871a749dff30a00a91d4a9fd453fb8d1e5679626221b68174d6ca033cac3",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests": 60,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0
+  },
+  "layout": {
+    "returncode": 0,
+    "elapsed_s": 5.478,
+    "stdout_sha256": "8ab618e2fbb8d113d2c382d91ae382a210181e95bbe4006e0cddd1381e72da6a",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "map_sha256": "0ef736365a01bbb8d98c3832d780838773b0ad214387df0ba64870282f32491d",
+  "map_unchanged": true,
+  "baseline_direct_guard": {
+    "actual_guard_refused": true,
+    "expected_assertion": "Linux pytest must use the explicit ubuntu-24.04 runner"
+  },
+  "candidate_control_before_after": "PASS",
+  "mutants": [
+    {
+      "name": "runner_latest",
+      "mutation": {
+        "expected_assertion_contains": "explicit ubuntu-24.04",
+        "operation": "runner",
+        "value": "ubuntu-latest"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must use the explicit ubuntu-24.04 runner",
+      "line": 705,
+      "yaml_sha256": "2303d763e61ed92ec1735a6234d4b4ea1172366109a057e06d44cc905f1dff85"
+    },
+    {
+      "name": "runner_26",
+      "mutation": {
+        "expected_assertion_contains": "explicit ubuntu-24.04",
+        "operation": "runner",
+        "value": "ubuntu-26.04"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must use the explicit ubuntu-24.04 runner",
+      "line": 705,
+      "yaml_sha256": "b03d159ac89707f487ac4680fb11ac0f04360cbad91b5fd4caf8d132a8698999"
+    },
+    {
+      "name": "runner_expression",
+      "mutation": {
+        "expected_assertion_contains": "explicit ubuntu-24.04",
+        "operation": "runner",
+        "value": "${{ matrix.os }}"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must use the explicit ubuntu-24.04 runner",
+      "line": 705,
+      "yaml_sha256": "3fbdb203dd182688612feae8db51e2b8c952bf408c8485631c3d335d424742b0"
+    },
+    {
+      "name": "runner_list",
+      "mutation": {
+        "expected_assertion_contains": "explicit ubuntu-24.04",
+        "operation": "runner",
+        "value": [
+          "ubuntu-24.04"
+        ]
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must use the explicit ubuntu-24.04 runner",
+      "line": 705,
+      "yaml_sha256": "b5ef2c59b7cfd083ead7590f921eed20a1ad8aa37db19beaa0a32d045ec3e26f"
+    },
+    {
+      "name": "filter_k",
+      "mutation": {
+        "expected_assertion_contains": "complete unchanged",
+        "operation": "append",
+        "value": " -k selected"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must run the complete unchanged command",
+      "line": 708,
+      "yaml_sha256": "8038f069bb6b05de0b63d26aaebffd810a250f4e64a47f0db4d2654827574771"
+    },
+    {
+      "name": "ignore",
+      "mutation": {
+        "expected_assertion_contains": "complete unchanged",
+        "operation": "append",
+        "value": " --ignore=tests/test_audio.py"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must run the complete unchanged command",
+      "line": 708,
+      "yaml_sha256": "4c3a091d2bf65806ab72d936f4a3e9af11f0d4a20796bf2b54090e75b3a58016"
+    },
+    {
+      "name": "removed_suite",
+      "mutation": {
+        "expected_assertion_contains": "complete unchanged",
+        "operation": "replace",
+        "value": "python -m pytest -q -n 4 --dist loadgroup"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must run the complete unchanged command",
+      "line": 708,
+      "yaml_sha256": "a92937478a87fae069ab7385909a8f131a7ae199a56d57825244cdef4747be17"
+    },
+    {
+      "name": "changed_workers",
+      "mutation": {
+        "expected_assertion_contains": "complete unchanged",
+        "operation": "replace",
+        "value": "python -m pytest tests/ -q -n 1 --dist loadgroup"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must run the complete unchanged command",
+      "line": 708,
+      "yaml_sha256": "d2644bb1b4638bfe039f6c94018f5fcc821598763b52a7f67b5a777032a40219"
+    },
+    {
+      "name": "selected_file",
+      "mutation": {
+        "expected_assertion_contains": "complete unchanged",
+        "operation": "append",
+        "value": " tests/test_one.py"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must run the complete unchanged command",
+      "line": 708,
+      "yaml_sha256": "709cae0474146c98de6db2339bd70e1ea5c27aa0e9eab92d9aaad3252356e3b9"
+    },
+    {
+      "name": "masked_exit",
+      "mutation": {
+        "expected_assertion_contains": "complete unchanged",
+        "operation": "append",
+        "value": " || true"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must run the complete unchanged command",
+      "line": 708,
+      "yaml_sha256": "9d081a50e97d3d4c72fd52f067017639511a8397874d58825be773e3756d1a8d"
+    },
+    {
+      "name": "marker_filter",
+      "mutation": {
+        "expected_assertion_contains": "complete unchanged",
+        "operation": "append",
+        "value": " -m selected"
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must run the complete unchanged command",
+      "line": 708,
+      "yaml_sha256": "75550e90816c5e1b8af39fad2f188b05c281345d2b63d8593db7345738b633ce"
+    },
+    {
+      "name": "duplicate_pytest",
+      "mutation": {
+        "expected_assertion_contains": "exactly one pytest step",
+        "operation": "duplicate",
+        "value": null
+      },
+      "status": "KILLED",
+      "assertion": "Linux pytest must have exactly one pytest step",
+      "line": 707,
+      "yaml_sha256": "7f701c2f8272c222dd4597ad7b35db5c59e3ddc08852af2335c582665aad21ad"
+    }
+  ],
+  "real_model_calls": 0,
+  "full_linux_native_audio_ci": "NOT_RUN",
+  "full_macos_ci": "NOT_RUN",
+  "full_critical_remote": "NOT_RUN",
+  "first_harness_attempt": {
+    "complete": false,
+    "reason": "Original vector schema append/replace/duplicate required explicit adapter; first driver stopped after four runner cases. No product source changed."
+  },
+  "driver_sha256": "5fd6c3ccf01a06ee3483fa1421dadb25034dc8007280a2db8c58a8d73254fa3e"
+}
