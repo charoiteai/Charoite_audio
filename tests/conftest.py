@@ -6,6 +6,7 @@
 Корень данных для каждого теста — его tmp_path.
 """
 import importlib
+import functools
 import json
 import os
 import pathlib
@@ -69,6 +70,42 @@ import threads  # noqa: E402
     "audio", "daemon", "diarize", "dictate", "dictate_note", "graph_updater",
     "llm", "llm_health", "main", "mcp_server", "meeting_archive", "nli",     "rebuild_transcript", "retro_fill", "transcribe_file",
 )
+
+
+class ClaimProgressText(str):
+    """Test oracle: each continuing claim search must leave its previous match.
+
+    Matching and all other string operations retain their real semantics. A new
+    search (no explicit start) may revisit the same text for another claim.
+    """
+
+    def find(self, text, *bounds):
+        if bounds:
+            previous = getattr(self, "_claim_match", None)
+            assert previous is not None and previous[0] == text, "claim search has no initial match"
+            assert previous[1] >= 0 and bounds[0] > previous[1], "claim search did not advance"
+        found = super().find(text, *bounds)
+        self._claim_match = (text, found)
+        return found
+
+
+@pytest.fixture(autouse=True)
+def finite_claim_search(monkeypatch):
+    """Keep every selected scenario finite when the checker loses progress.
+
+    Only an already imported checker is wrapped. No import hook, production
+    replacement or timeout/scoring change is involved; its real body executes.
+    """
+    checker = sys.modules.get("dossier_incremental")
+    if checker is None:
+        return
+    original = checker._check_claims
+
+    @functools.wraps(original)
+    def checked(loaded, body, names, files, claims, changes):
+        return original(loaded, ClaimProgressText(body), names, files, claims, changes)
+
+    monkeypatch.setattr(checker, "_check_claims", checked)
 
 
 def отказ_под_зажимом(config) -> None:

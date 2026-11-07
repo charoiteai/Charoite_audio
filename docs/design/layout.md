@@ -230,7 +230,7 @@
 - `src/diarize.py` ← docs/DIARIZATION.md
 - `src/diarize_live.py` ← docs/DIARIZATION.md
 - `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/research/diarization-log.md, docs/ru/DIARIZATION.md, requirements-nemotron.in, scripts/README.md
-- `src/dossier_incremental.py` ← docs/diagnostics/nightly-947/TECHNICAL.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/reviews/output-luna.md, docs/diagnostics/nightly-954/INPUT-TERRA.md, docs/diagnostics/nightly-954/OUTPUT-TERRA.md
+- `src/dossier_incremental.py` ← docs/diagnostics/nightly-947/TECHNICAL.md, docs/diagnostics/nightly-947/input-plan.md, docs/diagnostics/nightly-947/reviews/output-luna.md, docs/diagnostics/nightly-954/INPUT-TERRA.md, docs/diagnostics/nightly-954/OUTPUT-TERRA.md, reports/handoff/tasks/976_three.md
 - `src/dossier_telemetry.py` ← docs/diagnostics/nightly-954/OUTPUT-TERRA.md
 - `src/exit_codes.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
 - `src/file_locks.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md

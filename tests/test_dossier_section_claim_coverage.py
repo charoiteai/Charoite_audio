@@ -65,3 +65,53 @@ def test_only_declared_current_correction_can_move_retained_line_to_history(monk
             inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": quote}}, {}, candidate, changes)
         assert audited == []
     assert OPEN not in candidate.split("## Как пришли")[0] and candidate.count(OPEN) == 1
+
+
+@pytest.mark.parametrize("copies", [1, 2, 3])
+def test_claim_search_covers_repeated_new_facts_without_revisiting_a_match(copies):
+    """Actual coverage must finish and cover every occurrence, not merely one."""
+    addition = (f"- {FACT} [[{B}]]\n" * copies)
+    candidate = BODY.replace("## Как пришли", addition + "## Как пришли")
+    assert inc._check_claims(_old(), candidate, [B], {B: {"text": FACT}}, [_claim()], []) is None
+
+
+@pytest.mark.parametrize("claims,reason", [
+    ([_claim("Missing span")], "not an exact candidate span"),
+    ([_claim(quote="Unquoted fact")], "lacks exact new-source evidence"),
+    ([_claim(), _claim()], "duplicate candidate claim"),
+    ([], "uncovered new significant text"),
+])
+def test_finite_search_keeps_existing_refusals(claims, reason):
+    candidate = BODY.replace("## Как пришли", f"- {FACT} [[{B}]]\n## Как пришли")
+    with pytest.raises(inc.Refused, match=reason):
+        inc._check_claims(_old(), candidate, [B], {B: {"text": FACT}}, claims, [])
+
+
+def test_claim_progress_oracle_allows_new_scans_and_real_matching():
+    from conftest import ClaimProgressText
+
+    body = ClaimProgressText("ab ab")
+    assert body.find("ab") == 0
+    assert body.find("ab", 2) == 3
+    assert body.find("ab", 5) == -1
+    assert body.find("ab") == 0  # independent claim may reuse the same text
+    assert body.find("missing") == -1
+
+
+@pytest.mark.parametrize("start", [-2, 0])
+def test_claim_progress_oracle_rejects_backward_or_repeated_search(start):
+    from conftest import ClaimProgressText
+
+    body = ClaimProgressText("ab ab")
+    assert body.find("ab") == 0
+    with pytest.raises(AssertionError, match="did not advance"):
+        body.find("ab", start)
+
+
+
+def test_identical_text_from_two_sources_starts_independent_claim_searches():
+    other = "2099-01-03_100000"
+    candidate = BODY.replace("## Как пришли", f"- {FACT} [[{B}]] [[{other}]]\n## Как пришли")
+    files = {name: {"text": FACT} for name in [B, other]}
+    assert inc._check_claims(_old(), candidate, [B, other], files,
+                             [_claim(), _claim(source=other)], []) is None
