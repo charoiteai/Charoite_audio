@@ -5,6 +5,21 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.103.0](https://github.com/charoiteai/Charoite_audio/compare/v0.102.0...v0.103.0) (2026-11-07)
+
+
+### Features
+
+* **dossier:** preserve history when adding new meeting facts ([#909](https://github.com/charoiteai/Charoite_audio/issues/909)) ([1ae08c2](https://github.com/charoiteai/Charoite_audio/commit/1ae08c23c74ee1b0a3799e137c27c1c1b24b7962))
+
+
+### Bug Fixes
+
+* bind release signing to reviewed archive and app anchor ([#908](https://github.com/charoiteai/Charoite_audio/issues/908)) ([ca7144d](https://github.com/charoiteai/Charoite_audio/commit/ca7144d9b46481c9572fa74f03a112b4207b7639))
+* **ci:** pin full Linux pytest to the explicit Ubuntu baseline ([#912](https://github.com/charoiteai/Charoite_audio/issues/912)) ([0058328](https://github.com/charoiteai/Charoite_audio/commit/005832892bfb8b9d8cca9d90ed70537d69242d3a))
+* **dossier:** share parsing and preserve author edits ([#902](https://github.com/charoiteai/Charoite_audio/issues/902)) ([f0a3ce5](https://github.com/charoiteai/Charoite_audio/commit/f0a3ce57568efb5e2246fd25e627fa76114e152f))
+* **nightly:** distinguish dossier refusal phases safely ([#910](https://github.com/charoiteai/Charoite_audio/issues/910)) ([2106ed5](https://github.com/charoiteai/Charoite_audio/commit/2106ed52c9b3f70f5d0c8b6363e9e3171ae767be))
+
 ## [0.102.0](https://github.com/charoiteai/Charoite_audio/compare/v0.101.0...v0.102.0) (2026-11-01)
 
 
