@@ -448,6 +448,23 @@ TOPIC_AUDIT_INSTRUCTION = (
 SUPPORT_AUDIT_SYSTEM = "You verify one claim against its complete source.\n\n" + SUPPORT_AUDIT_INSTRUCTION
 TOPIC_AUDIT_SYSTEM = "You judge one claim's topic relevance.\n\n" + TOPIC_AUDIT_INSTRUCTION
 
+# Bound the extra memory requested by a complete-source audit. The estimate is
+# only an admission heuristic; the Ollama request still forbids truncation.
+MAX_AUDIT_CONTEXT = 32_768
+
+
+def _audit_config(c: dict, prompt: str) -> dict:
+    configured = int((c.get("llm") or {}).get("num_ctx") or 8192)
+    needed = max((len(system) + len(prompt) + ADMISSION_CHARS_PER_TOKEN - 1)
+                 // ADMISSION_CHARS_PER_TOKEN + num_predict + 256
+                 for system, num_predict in ((SUPPORT_AUDIT_SYSTEM, 2000),
+                                             (TOPIC_AUDIT_SYSTEM, 350)))
+    target = max(configured, needed)
+    if target > MAX_AUDIT_CONTEXT:
+        raise Refused("complete claim audit exceeds the maximum context budget")
+    context = next(step for step in (8192, 16384, MAX_AUDIT_CONTEXT) if target <= step)
+    return {**c, "llm": {**(c.get("llm") or {}), "num_ctx": context}}
+
 
 def _quote_context(text: str, quote: str) -> str:
     """Validate the evidence anchor; retain every qualifier in the full source."""
@@ -468,10 +485,11 @@ def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *
                "source_context": quote_context,
                "source_quotation": claim["quote"],
                "candidate_text": claim["text"]}
+    prompt = json.dumps(payload, ensure_ascii=False)
+    audit_config = _audit_config(c, prompt)
     for field, system, think, num_predict in (("supported", SUPPORT_AUDIT_SYSTEM, True, 2000),
                                             ("relevant", TOPIC_AUDIT_SYSTEM, False, 350)):
-        prompt = json.dumps(payload, ensure_ascii=False)
-        verdict = _json(local_complete(prompt, c, system=system, num_predict=num_predict, think=think),
+        verdict = _json(local_complete(prompt, audit_config, system=system, num_predict=num_predict, think=think),
                         {"verdict", field, "reason"}, fenced=True)
         if (verdict["verdict"] != "accept" or verdict[field] is not True
                 or not isinstance(verdict["reason"], str) or not verdict["reason"].strip()):

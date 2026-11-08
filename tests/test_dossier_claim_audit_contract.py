@@ -30,9 +30,12 @@ GENERATE_SYSTEM = "You extend factual dossiers conservatively."
 CASES = json.loads((Path(__file__).parent / "fixtures/dossier_claim_audit_cases.json").read_text(encoding="utf-8"))["cases"]
 
 
-def _transport(monkeypatch, aggregate, *, support=SUPPORT_ACCEPT, topic=TOPIC_ACCEPT):
+def _transport(monkeypatch, aggregate, *, support=SUPPORT_ACCEPT, topic=TOPIC_ACCEPT,
+               configs=None):
     calls = []
     def complete(prompt, config, *, system, **kwargs):
+        if configs is not None:
+            configs.append(config)
         payload, _ = json.JSONDecoder().raw_decode(prompt)
         calls.append((system, payload, kwargs, prompt))
         if system == inc.SUPPORT_AUDIT_SYSTEM:
@@ -115,6 +118,35 @@ def test_missing_complete_context_cannot_fall_back_to_the_selected_quote(monkeyp
     calls = _transport(monkeypatch, _verdict())
     with pytest.raises(inc.Refused):
         inc.audit_claim("Glasshouse", _old(), _claim(), {}, quote_context=context)
+    assert calls == []
+
+
+def test_large_complete_source_audit_uses_bounded_context_without_losing_evidence(monkeypatch):
+    source = "Remote qualification. " * 1100 + FACT + "\nLater qualification remains in source."
+    configs = []
+    original_config = {}
+    calls = _transport(monkeypatch, _verdict(), configs=configs)
+    inc.audit_claim("Glasshouse", _old(), _claim(), original_config, quote_context=source)
+    audit_calls = [call for call in calls if call[0] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM)]
+    assert len(audit_calls) == 2
+    assert all(call[1]["source_context"] == source for call in audit_calls)
+    assert [config["llm"]["num_ctx"] for config in configs] == [32768, 32768]
+    assert original_config == {}
+
+
+def test_oversized_complete_audit_refuses_before_transport(monkeypatch):
+    calls = _transport(monkeypatch, _verdict())
+    with pytest.raises(inc.Refused, match="maximum context budget"):
+        inc.audit_claim("Glasshouse", _old(), _claim(), {},
+                        quote_context=FACT + "\n" + "Outside source. " * 5000)
+    assert calls == []
+
+
+def test_oversized_configured_audit_window_refuses_before_transport(monkeypatch):
+    calls = _transport(monkeypatch, _verdict())
+    with pytest.raises(inc.Refused, match="maximum context budget"):
+        inc.audit_claim("Glasshouse", _old(), _claim(), {"llm": {"num_ctx": 131072}},
+                        quote_context=FACT + "\nComplete source tail.")
     assert calls == []
 
 
