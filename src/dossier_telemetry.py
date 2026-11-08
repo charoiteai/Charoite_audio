@@ -163,9 +163,14 @@ def refusal(value: Reason):
 
 
 def request_refusal(default: Reason):
-    """Prefer the current request's closed failure over a generic outer catch."""
+    """Preserve an explicit refusal when no failed transport request exists."""
     topic = _topic.get()
-    refusal(topic.request_failure if topic and topic.request_failure is not None else default)
+    if topic and topic.request_failure is not None:
+        refusal(topic.request_failure)
+    elif topic and topic.reason != Reason.UNKNOWN:
+        refusal(topic.reason)
+    else:
+        refusal(default)
 
 
 def stream_entry():

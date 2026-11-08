@@ -19,6 +19,18 @@ class Refused(ValueError):
     """Retryable: no body or semantic membership may be committed."""
 
 
+#: Коэффициент допуска «знаков на токен» для полного входа досье (№947).
+#: Это согласованная эвристика, а не доказанная нижняя граница: точный
+#: токенизатор выбранной модели до запроса недоступен. Собственный контракт
+#: ёмкости продукта (`src/llm.py`, `_fit`) считает ~3 знака на токен; здесь
+#: берём строже — 2, поэтому типовой русский вход проходит, а плотный Unicode
+#: уходит на серверную защиту ниже.
+#: Для входа плотнее этой границы (редкий Unicode) остаётся серверная защита:
+#: запрос уходит с `truncate=False`/`shift=False`, и сервер обязан отказать, а
+#: не усечь вход; отказ учитывается PR910 явной причиной, а не как молчание.
+ADMISSION_CHARS_PER_TOKEN = 2
+
+
 def local_config(c: dict) -> dict:
     """Refuse cloud before constructing LLM (which could read cloud keys)."""
     if privacy.llm_engine(c) != "ollama":
@@ -37,11 +49,14 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     local = local_config(c)
     telemetry.phase(telemetry.Phase.ADMISSION)
     # Refuse the complete input rather than silently letting the backend trim it.
-    # UTF-8 bytes are a conservative token bound for supported byte tokenizers;
-    # reserve output and an early envelope estimate. The server-side controls
-    # below must reject template overflow rather than trim or shift any input.
+    # The window is counted in tokens, so the guard compares characters, not
+    # UTF-8 bytes: a byte bound was ~6 times stricter than the product's own
+    # capacity model and refused complete Russian dossiers that fit the window
+    # (№947). The estimate is deliberately conservative; see
+    # ADMISSION_CHARS_PER_TOKEN for the residual risk and the server-side guard.
     context = int((local.get("llm") or {}).get("num_ctx") or 8192)
-    if len((system + prompt).encode("utf-8")) + num_predict + 256 > context:
+    budget_chars = (context - num_predict - 256) * ADMISSION_CHARS_PER_TOKEN
+    if len(system) + len(prompt) > budget_chars:
         telemetry.refusal(telemetry.Reason.CONTEXT)
         raise Refused("complete dossier input exceeds the configured context budget")
     # The provider must use the same effective window as the complete-input guard.
@@ -433,6 +448,25 @@ TOPIC_AUDIT_INSTRUCTION = (
 SUPPORT_AUDIT_SYSTEM = "You verify one claim against its complete source.\n\n" + SUPPORT_AUDIT_INSTRUCTION
 TOPIC_AUDIT_SYSTEM = "You judge one claim's topic relevance.\n\n" + TOPIC_AUDIT_INSTRUCTION
 
+# Bound the extra memory requested by a complete-source audit. The estimate is
+# only an admission heuristic; the Ollama request still forbids truncation.
+MAX_AUDIT_CONTEXT = 32_768
+
+
+def _audit_config(c: dict, prompt: str) -> dict:
+    configured = (c.get("llm") or {}).get("num_ctx")
+    # Reserve the largest audit system and output for both requests so Ollama
+    # keeps one stable window through support and topic checks.
+    longest_system = max(len(SUPPORT_AUDIT_SYSTEM), len(TOPIC_AUDIT_SYSTEM))
+    needed = ((longest_system + len(prompt) + ADMISSION_CHARS_PER_TOKEN - 1)
+              // ADMISSION_CHARS_PER_TOKEN + 2000 + 256)
+    target = max(int(configured), needed) if configured else needed
+    if target > MAX_AUDIT_CONTEXT:
+        telemetry.refusal(telemetry.Reason.CONTEXT)
+        raise Refused("complete claim audit exceeds the maximum context budget")
+    context = next(step for step in (8192, 16384, MAX_AUDIT_CONTEXT) if target <= step)
+    return {**c, "llm": {**(c.get("llm") or {}), "num_ctx": context}}
+
 
 def _quote_context(text: str, quote: str) -> str:
     """Validate the evidence anchor; retain every qualifier in the full source."""
@@ -444,19 +478,24 @@ def _quote_context(text: str, quote: str) -> str:
     return text
 
 
+def _audit_prompt(theme: str, loaded: dossier.DossierLoad, claim: dict,
+                  quote_context: str) -> str:
+    return json.dumps({"topic": theme, "prior_dossier": loaded.parsed.body,
+                       "source_context": quote_context,
+                       "source_quotation": claim["quote"],
+                       "candidate_text": claim["text"]}, ensure_ascii=False)
+
+
 def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *,
                 quote_context: str) -> None:
     """Require separate source-support and topic verdicts for one claim."""
     if not isinstance(quote_context, str) or not quote_context.strip():
         raise Refused("complete source context is required for claim audits")
-    payload = {"topic": theme, "prior_dossier": loaded.parsed.body,
-               "source_context": quote_context,
-               "source_quotation": claim["quote"],
-               "candidate_text": claim["text"]}
+    prompt = _audit_prompt(theme, loaded, claim, quote_context)
+    audit_config = _audit_config(c, prompt)
     for field, system, think, num_predict in (("supported", SUPPORT_AUDIT_SYSTEM, True, 2000),
                                             ("relevant", TOPIC_AUDIT_SYSTEM, False, 350)):
-        prompt = json.dumps(payload, ensure_ascii=False)
-        verdict = _json(local_complete(prompt, c, system=system, num_predict=num_predict, think=think),
+        verdict = _json(local_complete(prompt, audit_config, system=system, num_predict=num_predict, think=think),
                         {"verdict", field, "reason"}, fenced=True)
         if (verdict["verdict"] != "accept" or verdict[field] is not True
                 or not isinstance(verdict["reason"], str) or not verdict["reason"].strip()):
@@ -544,8 +583,14 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
     _check_claims(loaded, body, names, files, verdict["claims"], changes)
     audits = [(claim, _quote_context(source_text(files[claim["source"]]), claim["quote"]))
               for claim in verdict["claims"]]
-    for claim, context in audits:
-        audit_claim(theme, loaded, claim, c, quote_context=context)
+    # Pin one bounded window across every claim in this candidate. Switching
+    # num_ctx between claims would repeatedly reload the resident Ollama model.
+    if audits:
+        audit_window = max(_audit_config(c, _audit_prompt(theme, loaded, claim, source))["llm"]["num_ctx"]
+                           for claim, source in audits)
+        c = {**c, "llm": {**(c.get("llm") or {}), "num_ctx": audit_window}}
+    for claim, source_context in audits:
+        audit_claim(theme, loaded, claim, c, quote_context=source_context)
 
 
 def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dict, c: dict) -> str:

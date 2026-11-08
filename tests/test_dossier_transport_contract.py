@@ -280,10 +280,13 @@ def test_no_room_for_message_envelope_refuses_before_the_factory(provider, role)
     assert inc.source_relevance(scenario.topic, scenario.old, B, scenario.files[B], config) is True
     assert inc.append(scenario.topic, scenario.old, [B], scenario.files, config) == scenario.candidate
     reference = next(call for call in provider.calls if call["options"]["system"] == role)
-    # One remaining byte cannot encode a system/user message envelope. This
-    # test deliberately does not assert the implementation's reserve constant.
-    payload_bytes = len((role + reference["prompt"]).encode())
-    config["llm"]["num_ctx"] = payload_bytes + reference["options"]["num_predict"] + 1
+    # The largest window whose character budget still cannot hold the message
+    # envelope (№947: the budget is counted in characters, not bytes). The
+    # reserve itself is not asserted here: one more character of budget would
+    # admit the input, which the exact-boundary test pins independently.
+    payload_chars = len(role + reference["prompt"])
+    config["llm"]["num_ctx"] = (reference["options"]["num_predict"] + 256
+                                + (payload_chars - 1) // inc.ADMISSION_CHARS_PER_TOKEN)
     provider.calls.clear()
     provider.constructors.clear()
     with pytest.raises(inc.Refused, match="context budget"):
@@ -324,7 +327,9 @@ def test_guard_and_factory_share_effective_context_without_mutating_caller(provi
     provider.constructors.clear()
     provider.calls.clear()
     with pytest.raises(inc.Refused, match="context budget"):
-        inc.local_complete(json.dumps({"request": "x" * (effective + 1)}), config, system=PROFILE, num_predict=96)
+        inc.local_complete(json.dumps({"request": "x" * ((effective - 96 - 256)
+                                                        * inc.ADMISSION_CHARS_PER_TOKEN + 1)}),
+                           config, system=PROFILE, num_predict=96)
     assert provider.constructors == [] and provider.calls == []
 
 

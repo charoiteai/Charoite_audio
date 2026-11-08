@@ -57,7 +57,7 @@ def _judges(monkeypatch, claims=None):
 
 def test_complete_utf8_input_at_the_exact_reserved_window_is_delivered_intact(provider):
     prompt, system, output = "é" * 7, "judge", 2
-    context = len((system + prompt).encode("utf-8")) + output + 256
+    context = len(system + prompt) // inc.ADMISSION_CHARS_PER_TOKEN + output + 256
     assert inc.local_complete(prompt, _config(model=MODEL, num_ctx=context),
                               system=system, num_predict=output) == "ok"
     assert provider["configs"][0]["llm"]["num_ctx"] == context

@@ -225,8 +225,9 @@ def test_nonlocal_transport_refused_before_llm_construction(config, monkeypatch)
 def test_complete_context_overflow_refuses_without_call(monkeypatch):
     import llm
     monkeypatch.setattr(llm, "LLM", lambda c: pytest.fail("oversized prompt reached LLM"))
+    budget = (8192 - 1800 - 256) * inc.ADMISSION_CHARS_PER_TOKEN
     with pytest.raises(inc.Refused, match="context budget"):
-        inc.local_complete("x" * 9000, LOCAL, system="judge")
+        inc.local_complete("x" * (budget + 1), LOCAL, system="judge")
 
 
 def test_unsupported_correction_ledger_refuses_before_judge(world, monkeypatch):

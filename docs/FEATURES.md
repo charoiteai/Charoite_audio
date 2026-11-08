@@ -340,7 +340,12 @@ New visible wiki-link labels require evidence just like ordinary prose.
 This generation path requires trusted local Ollama 0.34.4 or later, with an
 explicit local model selector and context window. A context overflow refuses
 the addition rather than silently trimming its input; an unsupported server
-version also leaves the dossier intact. Direct MLX requests are refused until their actual window can be
+version also leaves the dossier intact. Admission estimates the full input in
+characters. All complete-source claim audits in one candidate share a context step of at
+most 32,768 tokens; a larger input refuses before transport, and Ollama is
+always asked to reject truncation or context shifting. The character estimate
+does not prove that every input fits the model's tokenizer.
+Direct MLX requests are refused until their actual window can be
 verified. A failed index publication is reported and retried from disk on the next run,
 including a run without new meetings. Existing recovery backups retain their
 original bytes. To check what a query would
