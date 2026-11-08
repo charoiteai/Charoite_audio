@@ -150,6 +150,14 @@ def test_oversized_configured_audit_window_refuses_before_transport(monkeypatch)
     assert calls == []
 
 
+def test_audit_context_steps_cover_exact_char_and_output_reserves():
+    longest = max(len(inc.SUPPORT_AUDIT_SYSTEM), len(inc.TOPIC_AUDIT_SYSTEM))
+    assert inc._audit_config({}, "x")["llm"]["num_ctx"] == 8192
+    # 5936 input tokens + 2000 output + 256 envelope = exactly 8192.
+    assert inc._audit_config({}, "x" * (11872 - longest))["llm"]["num_ctx"] == 8192
+    assert inc._audit_config({}, "x" * (11874 - longest))["llm"]["num_ctx"] == 16384
+
+
 @pytest.mark.parametrize("stage", ["support", "topic"])
 def test_a_stage_cannot_substitute_the_other_roles_boolean(monkeypatch, stage):
     response = _stage_response(stage)
