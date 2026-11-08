@@ -53,6 +53,37 @@ The DMG metadata has SHA-256
 Both manifest assets are present. Metadata inspection does not itself repeat
 the separate archive, signature, notarization or installed-runtime acceptance.
 
+## Documentation CI integration correction
+
+At head `5384ad4a54cadec6b786e4a60fcd187ab5e4c36e`, the
+[PR CI run](https://github.com/charoiteai/Charoite_audio/actions/runs/42427489513)
+and [push CI run](https://github.com/charoiteai/Charoite_audio/actions/runs/42427469527)
+failed. Primary logs from all four failed pytest jobs show the same sole
+failure: `tests/test_import_boundaries.py::test_layout_matches_the_code`
+at line 70, with `layout.md` stale. PR Linux
+[job 128568791068](https://github.com/charoiteai/Charoite_audio/actions/runs/42427489513/job/128568791068)
+reported 1 failed / 11125 passed / 25 skipped / 7 xfailed; PR macOS
+[job 128568791089](https://github.com/charoiteai/Charoite_audio/actions/runs/42427489513/job/128568791089)
+reported 1 failed / 11137 passed / 13 skipped / 7 xfailed.
+The Linux layout step independently reported exactly one divergence.
+Push jobs `128568729034` and `128568728666` reported the same failure and
+platform totals. These failed runs remain part of the acceptance history.
+
+The unchanged failed head was reproduced locally with
+`python3 scripts/layout_map.py --check`: exit 1, one stale-map divergence.
+The added handoff report cites existing executable paths; those reverse
+references were absent from the generated inventory. The correction regenerates
+`docs/design/layout.md` with the ordinary no-argument
+`python3 scripts/layout_map.py`, after the complete documentation inventory
+is tracked. No allowlist, source logic, workflow or runtime file changes.
+After regeneration a separate `--check` exited 0 with no divergences. The
+generated delta is four reference rows, including the generator command
+documented in this correction.
+
+The earlier [devlog run](https://github.com/charoiteai/Charoite_audio/actions/runs/42427489611)
+passed on `5384ad4a`; it does not stand in for new-head CI. Every required
+check must be evaluated on the corrective commit's exact head.
+
 ## Documentation delivery
 
 The branch is rebased onto the exact release commit. Before handoff, run the
@@ -62,8 +93,8 @@ installed-runtime acceptance remain with the coordinating task. No such
 installation result is inferred from a public release or a successful build.
 
 Only public repository content, public release metadata and the repository's
-`AGENTS.md` were read.
-No owner data, credentials, keys, application, models or tests
-were accessed or run locally. The authorized delivery is a documentation
+`AGENTS.md` were read. No owner data, credentials or keys were read. No
+application, models or local pytest suite were run; the layout inventory
+command is a static check of public tracked files. The authorized delivery is a documentation
 branch and PR; merge, release mutation and site publication are outside this
 documentation task.
