@@ -339,8 +339,9 @@ def test_transport_respects_explicit_window_and_supplies_the_documented_default(
         assert seen == [False]
     else:
         config["llm"]["num_ctx"] = context
+        budget = (context - 100 - 256) * inc.ADMISSION_CHARS_PER_TOKEN
         with pytest.raises(inc.Refused, match="context budget"):
-            inc.local_complete("x" * 700, config, system="judge", num_predict=100)
+            inc.local_complete("x" * (budget + 1), config, system="judge", num_predict=100)
         assert calls == []
 
 

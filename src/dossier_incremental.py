@@ -19,6 +19,18 @@ class Refused(ValueError):
     """Retryable: no body or semantic membership may be committed."""
 
 
+#: Коэффициент допуска «знаков на токен» для полного входа досье (№947).
+#: Это согласованная эвристика, а не доказанная нижняя граница: точный
+#: токенизатор выбранной модели до запроса недоступен. Собственный контракт
+#: ёмкости продукта (`src/llm.py`, `_fit`) считает ~3 знака на токен; здесь
+#: берём строже — 2, поэтому типовой русский вход проходит, а плотный Unicode
+#: уходит на серверную защиту ниже.
+#: Для входа плотнее этой границы (редкий Unicode) остаётся серверная защита:
+#: запрос уходит с `truncate=False`/`shift=False`, и сервер обязан отказать, а
+#: не усечь вход; отказ учитывается PR910 явной причиной, а не как молчание.
+ADMISSION_CHARS_PER_TOKEN = 2
+
+
 def local_config(c: dict) -> dict:
     """Refuse cloud before constructing LLM (which could read cloud keys)."""
     if privacy.llm_engine(c) != "ollama":
@@ -37,11 +49,14 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     local = local_config(c)
     telemetry.phase(telemetry.Phase.ADMISSION)
     # Refuse the complete input rather than silently letting the backend trim it.
-    # UTF-8 bytes are a conservative token bound for supported byte tokenizers;
-    # reserve output and an early envelope estimate. The server-side controls
-    # below must reject template overflow rather than trim or shift any input.
+    # The window is counted in tokens, so the guard compares characters, not
+    # UTF-8 bytes: a byte bound was ~6 times stricter than the product's own
+    # capacity model and refused complete Russian dossiers that fit the window
+    # (№947). The estimate is deliberately conservative; see
+    # ADMISSION_CHARS_PER_TOKEN for the residual risk and the server-side guard.
     context = int((local.get("llm") or {}).get("num_ctx") or 8192)
-    if len((system + prompt).encode("utf-8")) + num_predict + 256 > context:
+    budget_chars = (context - num_predict - 256) * ADMISSION_CHARS_PER_TOKEN
+    if len(system) + len(prompt) > budget_chars:
         telemetry.refusal(telemetry.Reason.CONTEXT)
         raise Refused("complete dossier input exceeds the configured context budget")
     # The provider must use the same effective window as the complete-input guard.
