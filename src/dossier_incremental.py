@@ -478,16 +478,20 @@ def _quote_context(text: str, quote: str) -> str:
     return text
 
 
+def _audit_prompt(theme: str, loaded: dossier.DossierLoad, claim: dict,
+                  quote_context: str) -> str:
+    return json.dumps({"topic": theme, "prior_dossier": loaded.parsed.body,
+                       "source_context": quote_context,
+                       "source_quotation": claim["quote"],
+                       "candidate_text": claim["text"]}, ensure_ascii=False)
+
+
 def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *,
                 quote_context: str) -> None:
     """Require separate source-support and topic verdicts for one claim."""
     if not isinstance(quote_context, str) or not quote_context.strip():
         raise Refused("complete source context is required for claim audits")
-    payload = {"topic": theme, "prior_dossier": loaded.parsed.body,
-               "source_context": quote_context,
-               "source_quotation": claim["quote"],
-               "candidate_text": claim["text"]}
-    prompt = json.dumps(payload, ensure_ascii=False)
+    prompt = _audit_prompt(theme, loaded, claim, quote_context)
     audit_config = _audit_config(c, prompt)
     for field, system, think, num_predict in (("supported", SUPPORT_AUDIT_SYSTEM, True, 2000),
                                             ("relevant", TOPIC_AUDIT_SYSTEM, False, 350)):
@@ -579,8 +583,14 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
     _check_claims(loaded, body, names, files, verdict["claims"], changes)
     audits = [(claim, _quote_context(source_text(files[claim["source"]]), claim["quote"]))
               for claim in verdict["claims"]]
-    for claim, context in audits:
-        audit_claim(theme, loaded, claim, c, quote_context=context)
+    # Pin one bounded window across every claim in this candidate. Switching
+    # num_ctx between claims would repeatedly reload the resident Ollama model.
+    if audits:
+        audit_window = max(_audit_config(c, _audit_prompt(theme, loaded, claim, source))["llm"]["num_ctx"]
+                           for claim, source in audits)
+        c = {**c, "llm": {**(c.get("llm") or {}), "num_ctx": audit_window}}
+    for claim, source_context in audits:
+        audit_claim(theme, loaded, claim, c, quote_context=source_context)
 
 
 def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dict, c: dict) -> str:

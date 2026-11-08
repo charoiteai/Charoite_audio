@@ -341,7 +341,7 @@ This generation path requires trusted local Ollama 0.34.4 or later, with an
 explicit local model selector and context window. A context overflow refuses
 the addition rather than silently trimming its input; an unsupported server
 version also leaves the dossier intact. Admission estimates the full input in
-characters. The two complete-source claim audits share one context step of at
+characters. All complete-source claim audits in one candidate share a context step of at
 most 32,768 tokens; a larger input refuses before transport, and Ollama is
 always asked to reject truncation or context shifting. The character estimate
 does not prove that every input fits the model's tokenizer.

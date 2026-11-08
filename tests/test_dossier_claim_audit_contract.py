@@ -153,13 +153,16 @@ def test_oversized_configured_audit_window_refuses_before_transport(monkeypatch)
     assert calls == []
 
 
-def test_oversized_audit_survives_nightly_refusal_classification(monkeypatch):
+@pytest.mark.parametrize("config,source", [
+    ({}, FACT + "\n" + "Outside source. " * 5000),
+    ({"llm": {"num_ctx": 131072}}, FACT + "\nComplete source tail."),
+])
+def test_oversized_audit_survives_nightly_refusal_classification(monkeypatch, config, source):
     calls = _transport(monkeypatch, _verdict())
     collector = inc.telemetry.Collector()
     with collector.activate(), collector.topic():
         with pytest.raises(inc.Refused, match="maximum context budget"):
-            inc.audit_claim("Glasshouse", _old(), _claim(), {},
-                            quote_context=FACT + "\n" + "Outside source. " * 5000)
+            inc.audit_claim("Glasshouse", _old(), _claim(), config, quote_context=source)
         inc.telemetry.request_refusal(inc.telemetry.Reason.VALIDATION)
         collector.complete_topic(attempted=True, committed=0, refused=1)
     assert collector.snapshot()["final_reasons"] == {"context_budget": 1}
@@ -307,6 +310,19 @@ def test_two_new_sources_can_prove_the_same_new_claim_with_separate_quotes(monke
     assert [call[1]["source_quotation"] for call in calls[1:]] == [FACT, FACT, second_quote, second_quote]
     assert [call[0] for call in calls] == [MAIN_SYSTEM, inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM,
                                          inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM]
+
+
+def test_all_claim_audits_share_the_largest_required_window(monkeypatch):
+    second_quote = "A rain cover was fitted today."
+    candidate = ADDED.replace(f"[[{B}]]", f"[[{B}]] [[{C}]]")
+    claims = [_claim(), _claim(source=C, quote=second_quote)]
+    long_source = "Unrelated qualification. " * 900 + second_quote
+    configs = []
+    calls = _transport(monkeypatch, _verdict(claims), configs=configs)
+    inc.validate_candidate("Glasshouse", _old(), [B, C],
+                           {B: {"text": FACT}, C: {"text": long_source}}, {}, candidate, [])
+    assert [config["llm"]["num_ctx"] for config in configs[1:]] == [16384] * 4
+    assert [call[1]["source_context"] for call in calls[1:]] == [FACT, FACT, long_source, long_source]
 
 
 def test_repeating_a_text_source_pair_is_refused_even_with_a_different_quote(monkeypatch):
