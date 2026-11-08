@@ -153,6 +153,19 @@ def test_oversized_configured_audit_window_refuses_before_transport(monkeypatch)
     assert calls == []
 
 
+def test_oversized_audit_survives_nightly_refusal_classification(monkeypatch):
+    calls = _transport(monkeypatch, _verdict())
+    collector = inc.telemetry.Collector()
+    with collector.activate(), collector.topic():
+        with pytest.raises(inc.Refused, match="maximum context budget"):
+            inc.audit_claim("Glasshouse", _old(), _claim(), {},
+                            quote_context=FACT + "\n" + "Outside source. " * 5000)
+        inc.telemetry.request_refusal(inc.telemetry.Reason.VALIDATION)
+        collector.complete_topic(attempted=True, committed=0, refused=1)
+    assert collector.snapshot()["final_reasons"] == {"context_budget": 1}
+    assert calls == []
+
+
 def test_audit_context_steps_cover_exact_char_and_output_reserves():
     longest = max(len(inc.SUPPORT_AUDIT_SYSTEM), len(inc.TOPIC_AUDIT_SYSTEM))
     assert inc._audit_config({}, "x")["llm"]["num_ctx"] == 8192
