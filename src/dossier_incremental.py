@@ -454,13 +454,13 @@ MAX_AUDIT_CONTEXT = 32_768
 
 
 def _audit_config(c: dict, prompt: str) -> dict:
-    configured = int((c.get("llm") or {}).get("num_ctx") or 8192)
+    configured = (c.get("llm") or {}).get("num_ctx")
     # Reserve the largest audit system and output for both requests so Ollama
     # keeps one stable window through support and topic checks.
     longest_system = max(len(SUPPORT_AUDIT_SYSTEM), len(TOPIC_AUDIT_SYSTEM))
     needed = ((longest_system + len(prompt) + ADMISSION_CHARS_PER_TOKEN - 1)
               // ADMISSION_CHARS_PER_TOKEN + 2000 + 256)
-    target = max(configured, needed)
+    target = max(int(configured), needed) if configured else needed
     if target > MAX_AUDIT_CONTEXT:
         telemetry.refusal(telemetry.Reason.CONTEXT)
         raise Refused("complete claim audit exceeds the maximum context budget")
