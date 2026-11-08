@@ -136,10 +136,13 @@ def test_large_complete_source_audit_uses_bounded_context_without_losing_evidenc
 
 def test_oversized_complete_audit_refuses_before_transport(monkeypatch):
     calls = _transport(monkeypatch, _verdict())
+    reasons = []
+    monkeypatch.setattr(inc.telemetry, "refusal", reasons.append)
     with pytest.raises(inc.Refused, match="maximum context budget"):
         inc.audit_claim("Glasshouse", _old(), _claim(), {},
                         quote_context=FACT + "\n" + "Outside source. " * 5000)
     assert calls == []
+    assert reasons == [inc.telemetry.Reason.CONTEXT]
 
 
 def test_oversized_configured_audit_window_refuses_before_transport(monkeypatch):

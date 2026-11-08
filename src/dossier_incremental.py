@@ -462,6 +462,7 @@ def _audit_config(c: dict, prompt: str) -> dict:
               // ADMISSION_CHARS_PER_TOKEN + 2000 + 256)
     target = max(configured, needed)
     if target > MAX_AUDIT_CONTEXT:
+        telemetry.refusal(telemetry.Reason.CONTEXT)
         raise Refused("complete claim audit exceeds the maximum context budget")
     context = next(step for step in (8192, 16384, MAX_AUDIT_CONTEXT) if target <= step)
     return {**c, "llm": {**(c.get("llm") or {}), "num_ctx": context}}
