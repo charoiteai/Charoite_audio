@@ -339,3 +339,19 @@ def test_closed_duplicate_inserted_above_is_ambiguous(tmp_path: pathlib.Path) ->
     assert proc.returncode == 1, proc.stdout
     assert "неоднозначных записей" in proc.stdout, proc.stdout
     assert path.read_text(encoding="utf-8") == inserted, "ни одна из одинаковых закрытых строк не тронута"
+
+
+def test_manual_reopen_plus_foreign_closed_duplicate_is_ambiguous(tmp_path: pathlib.Path) -> None:
+    """Нашу строку вернули руками, сверху вставили чужой закрытый дубль: открывать нельзя."""
+    old = "- [ ] **Иван** — отправил отчёт"
+    new = "- [x] **Иван** — отправил отчёт"
+    other = "- [ ] **Анна** — отправила смету"
+    graph = meeting_graph(tmp_path, old + "\n" + other + "\n")
+    path = next(graph.rglob(tc.MINUTES))
+    _, _, backup = tc.apply(graph, {path: [(0, old, new, "done")]}, tmp_path / "data")
+    hand = new + "\n" + old + "\n" + other + "\n"
+    path.write_text(hand, encoding="utf-8")
+    proc = _restore_from_snapshot(backup, tmp_path)
+    assert proc.returncode == 1, proc.stdout
+    assert "неоднозначных записей" in proc.stdout, proc.stdout
+    assert path.read_text(encoding="utf-8") == hand, "ни открытая, ни закрытая одинаковые строки не тронуты"

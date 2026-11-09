@@ -357,6 +357,8 @@ def record_backup(backup: pathlib.Path | None, record) -> None:
     for raw in rows:
         try:
             row = json.loads(raw)
+            if row.get("state", "done") != "done":     # «намерение» могло не записаться — не врём в отчёте
+                continue
             old, new = str(row["old"]).strip(), str(row["new"]).strip()
         except (ValueError, KeyError, TypeError):
             continue

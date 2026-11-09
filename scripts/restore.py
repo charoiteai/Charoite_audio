@@ -119,6 +119,16 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                 if any(line == new for line in lines):
                     ambiguous += 1
                 continue
+            old_elsewhere = any(k != i and line == old for k, line in enumerate(lines))
+            if old_elsewhere:
+                # Рядом стоит открытая строка с тем же текстом: нашу уже вернули руками, а
+                # закрытая — чужая, либо это сдвиг после одинаковой строки. По тексту и номеру
+                # не доказать принадлежность — не угадываем и не трогаем.
+                if any(line == new for line in lines):
+                    ambiguous += 1
+                else:
+                    missing += 1
+                continue
             if i < len(lines) and lines[i] == new:
                 # Закрытых строк с этим текстом больше, чем правок прогона, — часть из них
                 # чужие (вставка дубля сверху). По тексту принадлежность не доказать: не угадываем.
