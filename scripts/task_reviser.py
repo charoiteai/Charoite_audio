@@ -694,11 +694,18 @@ def main() -> int:
             return watch()
         return run(args)
     except Exception as e:  # noqa: BLE001 — агент launchd без этого падает молча, без строки в логе
-        log = charoite_paths.secure_dir(tc.DATA / "logs") / LOG
-        with log.open("a", encoding="utf-8") as f:
-            f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M} ОШИБКА: {type(e).__name__}: {e}\n")
-        tc.notify(f"ревизор задач не отработал: {e}")
-        print(f"ошибка: {type(e).__name__}: {e}")
+        detail = f"{type(e).__name__}: {e}"
+        try:                                              # сам обработчик не должен падать на сбое диска
+            log = charoite_paths.secure_dir(tc.DATA / "logs") / LOG
+            with log.open("a", encoding="utf-8") as f:
+                f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M} ОШИБКА: {detail}\n")
+        except OSError:
+            print(f"ошибка: {detail} (и лог недоступен)", file=sys.stderr)
+        try:
+            tc.notify(f"ревизор задач не отработал: {e}")
+        except OSError:
+            pass
+        print(f"ошибка: {detail}")
         return tc.HANDLED
 
 

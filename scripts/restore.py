@@ -12,6 +12,7 @@
 возвращено всё.
 """
 import datetime as dt
+import collections
 import json
 import os
 import pathlib
@@ -107,15 +108,20 @@ def restore_file(rel: str, edits, back: list, when: str) -> int:
         missing = 0
         lines = before.split("\n")
         for i, old, new in edits:
-            j = i if i < len(lines) and lines[i] == new else None
+            # Сначала «уже возвращено»: открытая строка на своём месте — откат этой записи
+            # состоялся (возможно, прошлым запуском). Искать `new` раньше нельзя: при двух
+            # одинаковых поручениях откат открыл бы чужую закрытую строку с тем же текстом.
+            if i < len(lines) and lines[i] == old:
+                continue
+            if i < len(lines) and lines[i] == new:
+                lines[i] = old
+                back.append(old)
+                continue
+            new_hits = [k for k, line in enumerate(lines) if line == new]
+            j = new_hits[0] if len(new_hits) == 1 else None
             if j is None:
-                hits = [k for k, line in enumerate(lines) if line == new]
-                j = hits[0] if len(hits) == 1 else None
-            if j is None:
-                # Строка уже стоит открытой: прошлый откат её вернул — это не «не найдено».
-                back_hits = [k for k, line in enumerate(lines) if line == old]
-                if (i < len(lines) and lines[i] == old) or len(back_hits) == 1:
-                    continue
+                if len([k for k, line in enumerate(lines) if line == old]) == 1:
+                    continue                      # уже возвращено прошлым откатом, не «не найдено»
                 missing += 1
                 continue
             lines[j] = old
@@ -145,11 +151,13 @@ def walk() -> None:
     when = dt.datetime.now().isoformat(timespec="seconds")
     for rel, edits in by_file.items():
         done_rows = [(i, old, new) for i, old, new, state in edits if state == "done"]
-        confirmed = {(old, new) for _, old, new in done_rows}
         # «Намерение» без подтверждения — прогон прервали между журналом и записью файла:
         # откатывать его нельзя (могло не примениться), но и молчать нельзя — считаем вслух.
-        total_unconfirmed += sum(1 for _, old, new, state in edits
-                                 if state != "done" and (old, new) not in confirmed)
+        # Считаем кратности, а не множество пар: два одинаковых поручения, из которых
+        # записано одно, иначе выглядели бы полностью подтверждёнными.
+        intent = collections.Counter((old, new) for _, old, new, state in edits if state != "done")
+        confirmed = collections.Counter((old, new) for _, old, new in done_rows)
+        total_unconfirmed += sum(max(0, n - confirmed[pair]) for pair, n in intent.items())
         back: list[str] = []
         try:
             total_missing += restore_file(rel, done_rows, back, when)

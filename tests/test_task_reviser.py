@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
@@ -286,3 +288,37 @@ def test_interrupted_write_is_reported_not_reverted(tmp_path: pathlib.Path, monk
     assert "не подтверждено записей прерванного прогона: 1" in proc.stdout, proc.stdout
     path = next(graph.rglob(tc.MINUTES))
     assert path.read_text(encoding="utf-8") == body, "неприменённую правку откат открыть не может"
+
+
+def test_apply_refuses_to_write_without_rollback_snapshot(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Снимок хелперов — часть обещания отката: без него граф не трогаем вообще."""
+    body = "- [ ] **Иван** — отправил отчёт\n"
+    graph = meeting_graph(tmp_path, body)
+    path = next(graph.rglob(tc.MINUTES))
+    old, new = "- [ ] **Иван** — отправил отчёт", "- [x] **Иван** — отправил отчёт"
+    real_copy = tc.shutil.copy2
+
+    def no_space(src, dst, *args, **kwargs):
+        if pathlib.Path(dst).name == "file_locks.py":
+            raise OSError("нет места на диске")
+        return real_copy(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(tc.shutil, "copy2", no_space)
+    with pytest.raises(RuntimeError, match="снимок хелперов"):
+        tc.apply(graph, {path: [(0, old, new, "done")]}, tmp_path / "data")
+    assert path.read_text(encoding="utf-8") == body, "без снимка отката запись не начинается"
+
+
+def test_repeated_restore_does_not_touch_identical_closed_line(tmp_path: pathlib.Path) -> None:
+    """Повторный откат не открывает чужую закрытую строку с тем же текстом."""
+    old = "- [ ] **Иван** — отправил отчёт"
+    new = "- [x] **Иван** — отправил отчёт"
+    graph = meeting_graph(tmp_path, old + "\n" + old + "\n")
+    path = next(graph.rglob(tc.MINUTES))
+    _, _, backup = tc.apply(graph, {path: [(0, old, new, "done")]}, tmp_path / "data")
+    # кто-то после прогона вернул первую строку сам и закрыл вторую тем же текстом
+    path.write_text(old + "\n" + new + "\n", encoding="utf-8")
+    proc = _restore_from_snapshot(backup, tmp_path)
+    assert proc.returncode == 0, proc.stdout
+    assert "вернул: 0" in proc.stdout, proc.stdout
+    assert path.read_text(encoding="utf-8") == old + "\n" + new + "\n", "чужая закрытая строка не тронута"
