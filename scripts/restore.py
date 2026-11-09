@@ -107,6 +107,7 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
         back.clear()
         missing = ambiguous = 0
         lines = before.split("\n")
+        pair_total = collections.Counter((old, new) for _, old, new in edits)
         for i, old, new in edits:
             # Сначала «уже возвращено»: открытая строка на своём месте — откат этой записи
             # состоялся (возможно, прошлым запуском). Искать `new` раньше нельзя: при двух
@@ -119,18 +120,33 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                     ambiguous += 1
                 continue
             if i < len(lines) and lines[i] == new:
+                # Закрытых строк с этим текстом больше, чем правок прогона, — часть из них
+                # чужие (вставка дубля сверху). По тексту принадлежность не доказать: не угадываем.
+                occurrences = sum(1 for line in lines if line == new)
+                if occurrences > pair_total[(old, new)]:
+                    ambiguous += 1
+                    continue
                 lines[i] = old
                 back.append(old)
                 continue
             new_hits = [k for k, line in enumerate(lines) if line == new]
-            j = new_hits[0] if len(new_hits) == 1 else None
-            if j is None:
-                if len([k for k, line in enumerate(lines) if line == old]) == 1:
-                    continue                      # уже возвращено прошлым откатом, не «не найдено»
-                missing += 1
+            if len(new_hits) == 1:
+                lines[new_hits[0]] = old
+                back.append(old)
                 continue
-            lines[j] = old
-            back.append(old)
+            if len(new_hits) > 1:
+                # Ровно столько же закрытых строк, сколько правок прогона, — это правки прогона,
+                # сдвинутые вставкой другой строки; строки одинаковы, порядок открытия безопасен.
+                if len(new_hits) > pair_total[(old, new)]:
+                    ambiguous += 1
+                    continue
+                lines[new_hits[0]] = old
+                back.append(old)
+                continue
+            if len([k for k, line in enumerate(lines) if line == old]) == 1:
+                continue                          # уже возвращено прошлым откатом, не «не найдено»
+            missing += 1
+            continue
         if apply and back:
             append_registry(rel, back, when)
         return "\n".join(lines), len(back)

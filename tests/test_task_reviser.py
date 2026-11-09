@@ -324,3 +324,18 @@ def test_repeated_restore_reports_ambiguity_instead_of_guessing(tmp_path: pathli
     assert proc.returncode == 1, proc.stdout
     assert "неоднозначных записей" in proc.stdout, proc.stdout
     assert path.read_text(encoding="utf-8") == old + "\n" + new + "\n", "чужая закрытая строка не тронута"
+
+
+def test_closed_duplicate_inserted_above_is_ambiguous(tmp_path: pathlib.Path) -> None:
+    """Дубль закрытой строки сверху: закрытых строк больше, чем правок прогона — не открываем наугад."""
+    old = "- [ ] **Иван** — отправил отчёт"
+    new = "- [x] **Иван** — отправил отчёт"
+    graph = meeting_graph(tmp_path, old + "\n" + "- [ ] **Анна** — отправила смету\n")
+    path = next(graph.rglob(tc.MINUTES))
+    _, _, backup = tc.apply(graph, {path: [(0, old, new, "done")]}, tmp_path / "data")
+    inserted = new + "\n" + new + "\n- [ ] **Анна** — отправила смету\n"
+    path.write_text(inserted, encoding="utf-8")
+    proc = _restore_from_snapshot(backup, tmp_path)
+    assert proc.returncode == 1, proc.stdout
+    assert "неоднозначных записей" in proc.stdout, proc.stdout
+    assert path.read_text(encoding="utf-8") == inserted, "ни одна из одинаковых закрытых строк не тронута"
