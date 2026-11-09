@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Замер локальных моделей на синтетических поручениях (№998): вердикт и срок.
 
-    heavy_run.sh .venv/bin/python scripts/bench_task_reviser.py MODEL [MODEL ...]
+    heavy_run.sh .venv/bin/python scripts/bench_task_reviser.py [--reviser] MODEL [MODEL ...]
 
 Данные — только tests/fixtures/task_reviser_cases.jsonl (выдуманные строки).
 Ничего не пишет в граф; печатает точность и время на строку.
@@ -43,6 +43,37 @@ def ask(model: str, case: dict) -> tuple[dict | None, float]:
         return None, time.monotonic() - started
 
 
+def bench_reviser(models: list[str]) -> int:
+    """Вердикт ровно так, как его выносит ревизор (две формулировки, согласие): «просрочено» там считает код."""
+    sys.path.insert(0, str(pathlib.Path.home() / ".config/charoite/tasks_control"))
+    import datetime as dt
+
+    import reviser
+
+    cases = [json.loads(line) for line in CASES.read_text().splitlines()]
+    for model in models:
+        harmful = missed = fail = 0
+        seconds = []
+        for case in cases:
+            want = "open" if case["verdict"] == "stale" else case["verdict"]
+            started = time.monotonic()
+            got = reviser.judge(case["line"], dt.date.fromisoformat(case["meeting_date"]),
+                                dt.date.fromisoformat(case["today"]), model)
+            seconds.append(time.monotonic() - started)
+            if got is None:
+                fail += 1
+            elif got != want:
+                if got == "open":
+                    missed += 1
+                else:
+                    harmful += 1
+                    print("   вредная", case["id"], got, "вместо", want)
+        seconds.sort()
+        print(f"{model}: вредных {harmful}, пропущено {missed}, сбоев {fail}, "
+              f"median {seconds[len(cases) // 2]:.1f}s, max {seconds[-1]:.1f}s")
+    return 0
+
+
 def main(models: list[str]) -> int:
     cases = [json.loads(line) for line in CASES.read_text().splitlines()]
     for model in models:
@@ -70,4 +101,6 @@ def main(models: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--reviser"]:
+        sys.exit(bench_reviser(sys.argv[2:]))
     sys.exit(main(sys.argv[1:]) if len(sys.argv) > 1 else 2)
