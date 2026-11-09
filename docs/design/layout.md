@@ -159,9 +159,11 @@
 - `src/charoite_graph/cli.py` ← scripts/layout_map.py
 - `src/charoite_graph/graph_names.py` ← scripts/check_private_markers.py
 - `src/charoite_graph/graph_search.py` ← scripts/layout_map.py, scripts/memory_bench.py
+- `src/charoite_graph/safe_write.py` ← scripts/tasks_control.py
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/charoite_schema.py` ← .github/workflows/swift-tests.yml
 - `src/exit_codes.py` ← scripts/preflight.sh
+- `src/file_locks.py` ← scripts/tasks_control.py
 - `src/graphs.py` ← scripts/layout_map.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py

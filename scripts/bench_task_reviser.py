@@ -77,7 +77,7 @@ def main() -> int:
 
     CASES, DUE_CASES = load_cases(args.cases)
 
-    if not tr.model_alive():
+    if not tr.model_alive(args.model):
         print(f"модель {args.model} недоступна")
         return 2
     today = dt.date.today()

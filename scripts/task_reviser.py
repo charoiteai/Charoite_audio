@@ -51,8 +51,10 @@ _META = re.compile(
     r"игнорируй(?:те)?|проигнорируй(?:те)?|не\s+следуй(?:те)?|ignore\s+(?:all\s+)?(?:previous\s+)?instructions"
     r"|верни(?:те)?\s+[\{\"]?\s*\"?verdict|\"verdict\"\s*:|\bnot_task\b|\bверни(?:те)?\s+(?:done|not_task)"
     r"|(?:классифицируй|считай|помечай|отметь)(?:те)?\s+(?:строку|пункт|его|это)[^.]{0,40}"
-    r"(?:сделанн|выполненн|завершённ|не\s+поручени)|system\s+prompt|assistant\s*:",
-    re.IGNORECASE)
+    r"(?:сделанн|выполненн|завершённ|не\s+поручени)|system\s+prompt|assistant\s*:"
+    # служебные обёртки чат-протоколов: SYSTEM:, [INST], <<SYS>>, <|im_start|> — та же инъекция
+    r"|^\s*system\s*:|\[/?INST\]|<<\s*/?\s*SYS\s*>>|<\|[^|>\n]{1,24}\|>",
+    re.IGNORECASE | re.MULTILINE)
 STATE = "task_reviser_state.json"
 LOG = "task_reviser.log"
 
@@ -323,11 +325,11 @@ def quiet(gate=None) -> bool:
         return False
 
 
-def model_alive() -> bool:
+def model_alive(model: str = MODEL) -> bool:
     try:
         with urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=5) as response:
             models = json.loads(response.read()).get("models") or []
-        return any(isinstance(m, dict) and m.get("name") == MODEL for m in models)
+        return any(isinstance(m, dict) and m.get("name") == model for m in models)
     except (OSError, ValueError, AttributeError, TypeError, http.client.HTTPException):
         return False
 
@@ -643,7 +645,8 @@ def selftest() -> int:
         (graph / rel_x).write_text(hand, encoding="utf-8")
         out = subprocess.run([sys.executable, str(backup / "restore.py"), "--apply"], capture_output=True,
                              text=True, check=False)
-        if out.returncode != 0 or "правка руками" not in (graph / rel_x).read_text(encoding="utf-8"):
+        # Код 1 — часть строк правили руками, откат частичный; сама правка при этом цела.
+        if out.returncode != 1 or "правка руками" not in (graph / rel_x).read_text(encoding="utf-8"):
             bad.append(f"частичный откат: код {out.returncode}, правка руками не сохранена")
 
     # Инъекция в текст поручения: модель не спрашиваем, строка остаётся открытой, по сроку не снимается.

@@ -6,7 +6,9 @@
 единственная такая же по тексту. Возвращённое дописывается в реестр `returned.jsonl` (путь — в run.json): такие
 поручения контроль больше не снимает. Граф и замок — из run.json этого каталога; запись под тем же
 замком графа через `safe_write.rewrite_file`. Без --apply — только счёт, без замка.
-Стандартная библиотека и хелперы Чароита (тоже на ней): годится системный python3.
+Стандартная библиотека и хелперы Чароита (тоже на ней); прогон кладёт их снимок в `lib/` рядом,
+поэтому откат работает и после удаления checkout. Код 1 — часть строк не найдена (правили после
+прогона), 0 — возвращено всё.
 """
 import datetime as dt
 import json
@@ -16,9 +18,30 @@ import sys
 
 here = pathlib.Path(__file__).resolve().parent
 run = json.loads((here / "run.json").read_text(encoding="utf-8"))
-sys.path.insert(0, str(pathlib.Path(run["code"]) / "src"))
-import file_locks
-from charoite_graph import safe_write
+
+
+def _bind_helpers():
+    """Хелперы отката: из дерева кода прогона, а если его уже нет — из снимка lib/ рядом.
+
+    Снимок кладёт прогон (`tasks_control.apply`): откат обязан работать, даже когда
+    checkout, из которого писали, удалён или переехал."""
+    sys.path.insert(0, str(pathlib.Path(run["code"]) / "src"))
+    try:
+        import file_locks
+        from charoite_graph import safe_write
+        return file_locks, safe_write
+    except Exception:                           # noqa: BLE001 — чужое дерево не обязано импортироваться
+        pass
+    sys.path.insert(0, str(here / "lib"))
+    try:
+        import file_locks
+        import safe_write
+        return file_locks, safe_write
+    except Exception:                           # noqa: BLE001 — и снимка нет: откатывать нечем
+        sys.exit("откат: нет ни дерева кода из run.json, ни снимка хелперов lib/ рядом")
+
+
+file_locks, safe_write = _bind_helpers()
 
 graph = pathlib.Path(run["graph"])
 registry = pathlib.Path(run.get("returned") or here.parent / "returned.jsonl")
@@ -133,3 +156,7 @@ else:
     walk()
 print(f"{'вернул' if apply else 'можно вернуть'}: {total_back}; не найдено (правили после прогона): {total_missing}"
       + (f"; битых строк манифеста: {broken}" if broken else ""))
+# Частичный откат — не успех: автоматический вызов обязан отличить «вернул всё» от «часть
+# правок после прогона изменили руками». Битые строки манифеста код не меняют: они не
+# откатывались и файл не портят.
+sys.exit(1 if total_missing else 0)

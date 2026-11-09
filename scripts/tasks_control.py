@@ -25,7 +25,8 @@
 Гейты: самопроверка перед записью; живая встреча (лок демона или .pcm моложе 15 минут) — пропуск;
 запись под общим замком графа через `safe_write.rewrite_file` (снимок до чтения, гейт expect, две
 попытки); манифест JSON Lines дописывается до записи файла; в каталоге прогона — копии файлов,
-`run.json` и `restore.py`. Любая ошибка — строка в лог и уведомление, код 1.
+`run.json`, `restore.py` и снимок хелперов `lib/` (откат работает и без исходного checkout).
+Любая ошибка — строка в лог и уведомление, код 1.
 
 Известный предел: источник минуток — `<стем>_minutes.md` в каталоге стенограмм вне графа, его мы
 не трогаем. Повторная раскладка встречи конвейером возвращает строки в копиях графа, следующий
@@ -729,14 +730,23 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
     Под замком реестр возврата перечитывается: откат, прошедший между сканом и записью, выигрывает.
     Файл переписывает `safe_write.rewrite_file` (снимок до чтения, expect перед replace, две попытки);
     строка ищется по номеру, при сдвиге — единственная такая же вне код-блоков. Манифест пишется
-    после записи файла из последней попытки; на обрыв между ними есть копия файла в files/."""
+    до записи файла: обрыв на записи больше не оставляет правку без записи в откате; копия файла — в files/."""
     base = charoite_paths.graph_backups(graph, "tasks_control", root=data)
     lock_dir = charoite_paths.secure_dir(charoite_paths.graph_backups(graph, "cloud_backup", root=data).parent)
-    backup = charoite_paths.secure_dir(base / dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    # Микросекунды в имени: два прогона в одну секунду иначе делили бы каталог,
+    # манифест и копии файлов, и откат одного возвращал бы правки другого.
+    backup = charoite_paths.secure_dir(base / dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
     (backup / "run.json").write_text(json.dumps(
         {"graph": str(graph), "lock_dir": str(lock_dir), "code": str(CODE),
          "returned": str(base / "returned.jsonl")}, ensure_ascii=False), encoding="utf-8")
     shutil.copy2(CODE / "scripts" / "restore.py", backup / "restore.py")
+    try:                                          # хелперы рядом: откат переживёт удаление checkout
+        lib = backup / "lib"
+        lib.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(CODE / "src" / "file_locks.py", lib / "file_locks.py")
+        shutil.copy2(CODE / "src" / "charoite_graph" / "safe_write.py", lib / "safe_write.py")
+    except OSError as e:
+        note(f"снимок хелперов отката не скопирован: {type(e).__name__}: {e}")
     manifest = backup / "manifest.jsonl"
     manifest.touch()
     applied, skipped = [], 0
@@ -787,6 +797,13 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                         done.append((j, old, new, meta))
                 return "\n".join(lines), len(done)
 
+            # Манифест — ДО записи файла: обрыв между записью и манифестом оставлял правку
+            # без записи в откате. Запись «намерения» безвредна, если файл не изменился:
+            # restore.py ищет снятую строку по тексту и считает её ненайденной, не ломая файл.
+            with manifest.open("a", encoding="utf-8") as f:
+                for i, old, new, _ in edits:
+                    f.write(json.dumps({"file": rel, "line": i + 1, "old": old, "new": new},
+                                       ensure_ascii=False) + "\n")
             try:
                 n = safe_write.rewrite_file(path, transform, "снятие поручений")
             except (OSError, UnicodeDecodeError, safe_write.LostRace) as e:
@@ -794,10 +811,6 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                 skipped += len(edits)
                 continue
             if n:
-                with manifest.open("a", encoding="utf-8") as f:
-                    for j, old, new, _ in done:
-                        f.write(json.dumps({"file": rel, "line": j + 1, "old": old, "new": new},
-                                           ensure_ascii=False) + "\n")
                 applied.extend(meta for *_, meta in done)
             if n < len(edits):                            # строка успела измениться — не сбой записи, без тревоги
                 _note(f"пропуск {rel}: строки уже изменены или неоднозначны ({len(edits) - n})")
@@ -1192,7 +1205,8 @@ def _selftest_restore_race() -> list[str]:
         with (backup / "manifest.jsonl").open("ab") as f:
             f.write('{"file": "об'.encode("utf-8") + b"\xd0")
         out = subprocess.run([sys.executable, str(backup / "restore.py")], capture_output=True, text=True, check=False)
-        if out.returncode != 0 or "битых строк манифеста: 1" not in out.stdout:
+        # Код 1 — есть не найденные строки (их правили после прогона): откат частичный.
+        if out.returncode != 1 or "битых строк манифеста: 1" not in out.stdout:
             bad.append(f"манифест с оборванной строкой: код {out.returncode}, {out.stdout.strip()!r}")
     return bad
 
@@ -1273,7 +1287,8 @@ def _selftest_graph() -> list[str]:
         copy.write_text("# Сверху\n" + copy.read_text(encoding="utf-8"), encoding="utf-8")
         out = subprocess.run([sys.executable, str(backup / "restore.py"), "--apply"],
                              capture_output=True, text=True, check=False)
-        if out.returncode != 0 or "вернул: 6" not in out.stdout or "не найдено (правили после прогона): 1" not in out.stdout:
+        # Код 1 — часть строк правили после прогона: откат частичный, и это не «всё вернул».
+        if out.returncode != 1 or "вернул: 6" not in out.stdout or "не найдено (правили после прогона): 1" not in out.stdout:
             bad.append(f"откат: код {out.returncode}, вывод {out.stdout.strip()!r} {out.stderr.strip()[-300:]!r}")
         returned = load_returned(backup.parent)
         again = scan(graph, "Иван", today, returned)[0]
