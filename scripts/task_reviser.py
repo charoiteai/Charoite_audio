@@ -53,7 +53,7 @@ _META = re.compile(
     r"|(?:классифицируй|считай|помечай|отметь)(?:те)?\s+(?:строку|пункт|его|это)[^.]{0,40}"
     r"(?:сделанн|выполненн|завершённ|не\s+поручени)|system\s+prompt|assistant\s*:"
     # служебные обёртки чат-протоколов: SYSTEM:, [INST], <<SYS>>, <|im_start|> — та же инъекция
-    r"|^\s*system\s*:|\[/?INST\]|<<\s*/?\s*SYS\s*>>|<\|[^|>\n]{1,24}\|>",
+    r"|(?:^|[^\w])system\s*:|\[/?INST\]|<<\s*/?\s*SYS\s*>>|<\|[^|>\n]{1,24}\|>",
     re.IGNORECASE | re.MULTILINE)
 STATE = "task_reviser_state.json"
 LOG = "task_reviser.log"
@@ -689,9 +689,17 @@ def main() -> int:
     if args.selftest:
         return selftest()
     tc.DATA = charoite_paths.name_data_root_or_exit(__file__, guess_from_code=True)
-    if args.watch:
-        return watch()
-    return run(args)
+    try:
+        if args.watch:
+            return watch()
+        return run(args)
+    except Exception as e:  # noqa: BLE001 — агент launchd без этого падает молча, без строки в логе
+        log = charoite_paths.secure_dir(tc.DATA / "logs") / LOG
+        with log.open("a", encoding="utf-8") as f:
+            f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M} ОШИБКА: {type(e).__name__}: {e}\n")
+        tc.notify(f"ревизор задач не отработал: {e}")
+        print(f"ошибка: {type(e).__name__}: {e}")
+        return tc.HANDLED
 
 
 if __name__ == "__main__":

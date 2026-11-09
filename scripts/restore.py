@@ -8,7 +8,8 @@
 замком графа через `safe_write.rewrite_file`. Без --apply — только счёт, без замка.
 Стандартная библиотека и хелперы Чароита (тоже на ней); прогон кладёт их снимок в `lib/` рядом,
 поэтому откат работает и после удаления checkout. Код 1 — часть строк не найдена (правили после
-прогона), 0 — возвращено всё.
+прогона), есть записи прерванного прогона («не подтверждено») или битые строки манифеста; 0 —
+возвращено всё.
 """
 import datetime as dt
 import json
@@ -49,7 +50,7 @@ apply = "--apply" in sys.argv
 broken = 0                                            # оборванные строки манифеста (обрыв записи прогона)
 
 
-def rows_of_run() -> list[tuple[str, int, str, str]]:
+def rows_of_run() -> list[tuple[str, int, str, str, str]]:
     """Строки манифеста без повторов: JSON Lines, у прогонов до 23.09 — TSV. Оборванная строка
     (прогон убит посреди дозаписи, в том числе посреди буквы) пропускается со счётом, а не роняет
     откат всего прогона: байты режутся по строкам до декодирования. Тем же правилом читает реестр
@@ -62,14 +63,15 @@ def rows_of_run() -> list[tuple[str, int, str, str]]:
                 continue
             try:                                      # UnicodeDecodeError — тоже ValueError
                 r = json.loads(raw.decode("utf-8"))
-                rows.append((r["file"], r["line"] - 1, r["old"], r["new"]))
+                state = r.get("state", "done")        # прогоны до split-журнала состояния не знали
+                rows.append((r["file"], r["line"] - 1, r["old"], r["new"], state))
             except (ValueError, KeyError, TypeError):
                 broken += 1
     else:
         for line in (here / "manifest.tsv").read_text(encoding="utf-8").split("\n")[1:]:
             if line:
                 rel, n, old, new = line.split("\t", 3)
-                rows.append((rel, int(n) - 1, old, new))
+                rows.append((rel, int(n) - 1, old, new, "done"))
     return list(dict.fromkeys(rows))
 
 
@@ -110,6 +112,10 @@ def restore_file(rel: str, edits, back: list, when: str) -> int:
                 hits = [k for k, line in enumerate(lines) if line == new]
                 j = hits[0] if len(hits) == 1 else None
             if j is None:
+                # Строка уже стоит открытой: прошлый откат её вернул — это не «не найдено».
+                back_hits = [k for k, line in enumerate(lines) if line == old]
+                if (i < len(lines) and lines[i] == old) or len(back_hits) == 1:
+                    continue
                 missing += 1
                 continue
             lines[j] = old
@@ -125,24 +131,30 @@ def restore_file(rel: str, edits, back: list, when: str) -> int:
     return missing
 
 
-by_file: dict[str, list[tuple[int, str, str]]] = {}
-for rel, i, old, new in rows_of_run():
-    by_file.setdefault(rel, []).append((i, old, new))
-total_back = total_missing = 0
+by_file: dict[str, list[tuple[int, str, str, str]]] = {}
+for rel, i, old, new, state in rows_of_run():
+    by_file.setdefault(rel, []).append((i, old, new, state))
+total_back = total_missing = total_unconfirmed = 0
 
 
 def walk() -> None:
     """Вернуть файлы по одному, при --apply — под замком графа: прогон контроля, ждущий замка,
     увидит и возврат, и реестр. Файл, который не записался (исчез, нечитаем, дважды проиграл гонку),
     целиком идёт в «не найдено»."""
-    global total_back, total_missing
+    global total_back, total_missing, total_unconfirmed
     when = dt.datetime.now().isoformat(timespec="seconds")
     for rel, edits in by_file.items():
+        done_rows = [(i, old, new) for i, old, new, state in edits if state == "done"]
+        confirmed = {(old, new) for _, old, new in done_rows}
+        # «Намерение» без подтверждения — прогон прервали между журналом и записью файла:
+        # откатывать его нельзя (могло не примениться), но и молчать нельзя — считаем вслух.
+        total_unconfirmed += sum(1 for _, old, new, state in edits
+                                 if state != "done" and (old, new) not in confirmed)
         back: list[str] = []
         try:
-            total_missing += restore_file(rel, edits, back, when)
+            total_missing += restore_file(rel, done_rows, back, when)
         except (OSError, UnicodeDecodeError, safe_write.LostRace):
-            total_missing += len(edits)
+            total_missing += len(done_rows)
             continue
         total_back += len(back)
 
@@ -155,8 +167,10 @@ if apply:
 else:
     walk()
 print(f"{'вернул' if apply else 'можно вернуть'}: {total_back}; не найдено (правили после прогона): {total_missing}"
+      + (f"; не подтверждено записей прерванного прогона: {total_unconfirmed} (копии — в files/)"
+         if total_unconfirmed else "")
       + (f"; битых строк манифеста: {broken}" if broken else ""))
 # Частичный откат — не успех: автоматический вызов обязан отличить «вернул всё» от «часть
-# правок после прогона изменили руками». Битые строки манифеста код не меняют: они не
-# откатывались и файл не портят.
-sys.exit(1 if total_missing else 0)
+# правок после прогона изменили руками» или «прогон прерван, часть записей не подтверждена».
+# Битые строки манифеста тоже код 1: по ним неизвестно, была ли запись файла.
+sys.exit(1 if (total_missing or total_unconfirmed or broken) else 0)

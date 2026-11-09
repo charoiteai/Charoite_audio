@@ -730,12 +730,13 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
     Под замком реестр возврата перечитывается: откат, прошедший между сканом и записью, выигрывает.
     Файл переписывает `safe_write.rewrite_file` (снимок до чтения, expect перед replace, две попытки);
     строка ищется по номеру, при сдвиге — единственная такая же вне код-блоков. Манифест пишется
-    до записи файла: обрыв на записи больше не оставляет правку без записи в откате; копия файла — в files/."""
+    как журнал «намерение — сделано»: намерение пишется до файла, откат берёт только подтверждённое; копия файла — в files/."""
     base = charoite_paths.graph_backups(graph, "tasks_control", root=data)
     lock_dir = charoite_paths.secure_dir(charoite_paths.graph_backups(graph, "cloud_backup", root=data).parent)
-    # Микросекунды в имени: два прогона в одну секунду иначе делили бы каталог,
+    # Микросекунды и pid в имени: два прогона в одну секунду иначе делили бы каталог,
     # манифест и копии файлов, и откат одного возвращал бы правки другого.
-    backup = charoite_paths.secure_dir(base / dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+    backup = charoite_paths.secure_dir(
+        base / f"{dt.datetime.now():%Y%m%d-%H%M%S-%f}-{os.getpid()}")
     (backup / "run.json").write_text(json.dumps(
         {"graph": str(graph), "lock_dir": str(lock_dir), "code": str(CODE),
          "returned": str(base / "returned.jsonl")}, ensure_ascii=False), encoding="utf-8")
@@ -746,7 +747,9 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
         shutil.copy2(CODE / "src" / "file_locks.py", lib / "file_locks.py")
         shutil.copy2(CODE / "src" / "charoite_graph" / "safe_write.py", lib / "safe_write.py")
     except OSError as e:
-        note(f"снимок хелперов отката не скопирован: {type(e).__name__}: {e}")
+        # Снимок — часть гарантии отката: без него граф не трогаем (нельзя обещать откат,
+        # которого не будет, если checkout исчезнет).
+        raise RuntimeError(f"снимок хелперов отката не скопирован: {type(e).__name__}: {e} — не пишу") from e
     manifest = backup / "manifest.jsonl"
     manifest.touch()
     applied, skipped = [], 0
@@ -797,13 +800,16 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                         done.append((j, old, new, meta))
                 return "\n".join(lines), len(done)
 
-            # Манифест — ДО записи файла: обрыв между записью и манифестом оставлял правку
-            # без записи в откате. Запись «намерения» безвредна, если файл не изменился:
-            # restore.py ищет снятую строку по тексту и считает её ненайденной, не ломая файл.
+            # Журнал до записи, подтверждение — после. «Намерение» (state=intent) пишется ДО
+            # перезаписи файла: обрыв между записью и журналом иначе оставлял правку без следа
+            # в откате. Откатывается только подтверждённое (state=done): откат «намерения»
+            # мог бы вернуть чужую уже закрытую строку с тем же текстом, которая к прогону
+            # отношения не имеет. У прерванного прогона intent-записи остаются в отчёте
+            # («не подтверждено»), а копия файла лежит в files/ для ручной сверки.
             with manifest.open("a", encoding="utf-8") as f:
                 for i, old, new, _ in edits:
-                    f.write(json.dumps({"file": rel, "line": i + 1, "old": old, "new": new},
-                                       ensure_ascii=False) + "\n")
+                    f.write(json.dumps({"file": rel, "line": i + 1, "old": old, "new": new,
+                                        "state": "intent"}, ensure_ascii=False) + "\n")
             try:
                 n = safe_write.rewrite_file(path, transform, "снятие поручений")
             except (OSError, UnicodeDecodeError, safe_write.LostRace) as e:
@@ -811,6 +817,10 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                 skipped += len(edits)
                 continue
             if n:
+                with manifest.open("a", encoding="utf-8") as f:
+                    for j, old, new, _ in done:
+                        f.write(json.dumps({"file": rel, "line": j + 1, "old": old, "new": new,
+                                            "state": "done"}, ensure_ascii=False) + "\n")
                 applied.extend(meta for *_, meta in done)
             if n < len(edits):                            # строка успела измениться — не сбой записи, без тревоги
                 _note(f"пропуск {rel}: строки уже изменены или неоднозначны ({len(edits) - n})")
@@ -1274,9 +1284,14 @@ def _selftest_graph() -> list[str]:
             applied, skipped, backup = apply(graph, plan, data)
         finally:
             safe_write.write_text = real_write
-        manifest_rows = (backup / "manifest.jsonl").read_text(encoding="utf-8").count("\n")
-        if manifest_rows != 7:
-            bad.append(f"манифест после повторной попытки: строк {manifest_rows}, ждали 7")
+        # журнал двухфазный: «намерение» до записи файла + «сделано» после (7 + 7 строк)
+        rows = [json.loads(line) for line in (backup / "manifest.jsonl").read_text(encoding="utf-8").splitlines()]
+        states = collections.Counter(row.get("state") for row in rows)
+        intents = {(r["file"], r["old"], r["new"]) for r in rows if r.get("state") == "intent"}
+        dones = {(r["file"], r["old"], r["new"]) for r in rows if r.get("state") == "done"}
+        if states != {"intent": 7, "done": 7} or not dones <= intents:
+            bad.append(f"манифест после повторной попытки: {len(rows)} строк, состояния {dict(states)}, "
+                       f"подтверждено без намерения: {len(dones - intents)}")
         if len(applied) != 7 or skipped or scan(graph, "Иван", today)[0]:
             bad.append(f"запись: строк {len(applied)}, пропущено {skipped}, после записи план не пуст")
         # руками после прогона: одну снятую строку отметили, в другой файл вписали строку сверху
