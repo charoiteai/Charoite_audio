@@ -8,8 +8,8 @@
 замком графа через `safe_write.rewrite_file`. Без --apply — только счёт, без замка.
 Стандартная библиотека и хелперы Чароита (тоже на ней); прогон кладёт их снимок в `lib/` рядом,
 поэтому откат работает и после удаления checkout. Код 1 — часть строк не найдена (правили после
-прогона), есть записи прерванного прогона («не подтверждено») или битые строки манифеста; 0 —
-возвращено всё.
+прогона), есть записи прерванного прогона («не подтверждено»), неоднозначные записи (строку сдвинули
+вставкой сверху, а откат уже был — по тексту не отличить) или битые строки манифеста; 0 — возвращено всё.
 """
 import datetime as dt
 import collections
@@ -91,7 +91,7 @@ def append_registry(rel: str, olds: list[str], when: str) -> None:
         os.fsync(f.fileno())
 
 
-def restore_file(rel: str, edits, back: list, when: str) -> int:
+def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
     """Вернуть строки файла; в `back` — возвращённые. Число не найденных.
 
     При --apply возвращённое ложится в реестр внутри преобразования: `rewrite_file` зовёт его прямо
@@ -100,18 +100,23 @@ def restore_file(rel: str, edits, back: list, when: str) -> int:
     (`LostRace`) оставят в реестре строку, которая осталась снятой. Такая запись только освобождает
     поручение от автоснятия — задержка, а не потеря правки. Писать реестр после записи файла нельзя:
     обрыв между ними вернул бы строку без реестра, и следующий прогон снял бы её снова (круг 4)."""
-    missing = 0
+    missing = ambiguous = 0
 
     def transform(before: str):
-        nonlocal missing
+        nonlocal missing, ambiguous
         back.clear()
-        missing = 0
+        missing = ambiguous = 0
         lines = before.split("\n")
         for i, old, new in edits:
             # Сначала «уже возвращено»: открытая строка на своём месте — откат этой записи
             # состоялся (возможно, прошлым запуском). Искать `new` раньше нельзя: при двух
             # одинаковых поручениях откат открыл бы чужую закрытую строку с тем же текстом.
             if i < len(lines) and lines[i] == old:
+                # Но закрытая строка с тем же текстом ниже означает, что вставка сверху
+                # сдвинула строки и откат ещё не сделан. По тексту и номеру эти случаи
+                # неотличимы — не трогаем и зовём человека, а не выбираем наугад.
+                if any(line == new for line in lines):
+                    ambiguous += 1
                 continue
             if i < len(lines) and lines[i] == new:
                 lines[i] = old
@@ -134,20 +139,20 @@ def restore_file(rel: str, edits, back: list, when: str) -> int:
         safe_write.rewrite_file(graph / rel, transform, "откат снятия поручений")
     else:
         transform((graph / rel).read_text(encoding="utf-8"))
-    return missing
+    return missing, ambiguous
 
 
 by_file: dict[str, list[tuple[int, str, str, str]]] = {}
 for rel, i, old, new, state in rows_of_run():
     by_file.setdefault(rel, []).append((i, old, new, state))
-total_back = total_missing = total_unconfirmed = 0
+total_back = total_missing = total_unconfirmed = total_ambiguous = 0
 
 
 def walk() -> None:
     """Вернуть файлы по одному, при --apply — под замком графа: прогон контроля, ждущий замка,
     увидит и возврат, и реестр. Файл, который не записался (исчез, нечитаем, дважды проиграл гонку),
     целиком идёт в «не найдено»."""
-    global total_back, total_missing, total_unconfirmed
+    global total_back, total_missing, total_unconfirmed, total_ambiguous
     when = dt.datetime.now().isoformat(timespec="seconds")
     for rel, edits in by_file.items():
         done_rows = [(i, old, new) for i, old, new, state in edits if state == "done"]
@@ -160,10 +165,12 @@ def walk() -> None:
         total_unconfirmed += sum(max(0, n - confirmed[pair]) for pair, n in intent.items())
         back: list[str] = []
         try:
-            total_missing += restore_file(rel, done_rows, back, when)
+            missing, ambiguous = restore_file(rel, done_rows, back, when)
         except (OSError, UnicodeDecodeError, safe_write.LostRace):
             total_missing += len(done_rows)
             continue
+        total_missing += missing
+        total_ambiguous += ambiguous
         total_back += len(back)
 
 
@@ -177,8 +184,10 @@ else:
 print(f"{'вернул' if apply else 'можно вернуть'}: {total_back}; не найдено (правили после прогона): {total_missing}"
       + (f"; не подтверждено записей прерванного прогона: {total_unconfirmed} (копии — в files/)"
          if total_unconfirmed else "")
+      + (f"; неоднозначных записей (сдвиг или повторный откат): {total_ambiguous} — сверьте вручную"
+         if total_ambiguous else "")
       + (f"; битых строк манифеста: {broken}" if broken else ""))
 # Частичный откат — не успех: автоматический вызов обязан отличить «вернул всё» от «часть
 # правок после прогона изменили руками» или «прогон прерван, часть записей не подтверждена».
 # Битые строки манифеста тоже код 1: по ним неизвестно, была ли запись файла.
-sys.exit(1 if (total_missing or total_unconfirmed or broken) else 0)
+sys.exit(1 if (total_missing or total_unconfirmed or total_ambiguous or broken) else 0)
