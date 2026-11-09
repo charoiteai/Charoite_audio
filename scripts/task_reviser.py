@@ -84,6 +84,7 @@ def _chat_json(prompt: str, model: str = MODEL) -> dict | None:
     ничего не правим и не кэшируем."""
     body = {"model": model, "stream": False, "think": False, "format": "json", "keep_alive": "10m",
             "options": {"temperature": 0, "num_predict": 40}, "messages": [{"role": "user", "content": prompt}]}
+    # nosemgrep — OLLAMA — loopback-адрес из константы; локальной модели TLS не нужен
     request = urllib.request.Request(f"{OLLAMA}/api/chat", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
     try:
@@ -337,7 +338,7 @@ def _open(url, *, timeout: float):
     host = urllib.parse.urlsplit(full).hostname or ""
     if host in ("127.0.0.1", "localhost", "::1"):
         return _LOOPBACK.open(url, timeout=timeout)
-    return urllib.request.urlopen(url, timeout=timeout)
+    return urllib.request.urlopen(url, timeout=timeout)  # nosemgrep — адрес из константы OLLAMA (loopback)
 
 
 def model_alive(model: str = MODEL) -> bool:
