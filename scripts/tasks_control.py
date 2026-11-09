@@ -87,7 +87,7 @@ MARKERS = ("до ", "к ", "дедлайн ", "дедлайну ")          # Ta
 BOX = re.compile(r"^(\s*[-*] )\[ \] (.+)$")
 TODO = re.compile(r"^\s*[-*] \[( |x|X)\] +(.+)$")        # TasksService.todoRx
 ANY_BOX = re.compile(r"^(\s*)[-*] \[[ xX-]\] +(.+)$")    # дерево пунктов: родитель вложенного
-FENCE = re.compile(r"^\s*(```|~~~)")
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 HEADING = re.compile(r"^\s*#{1,6}\s")
 LEAD_BOLD = re.compile(r"^\s*\*\*([^*]+)\*\*")
 REASONS = {"срок": "снято по сроку", "ничьё": "снято: нет исполнителя", "давно": "снято: давно, срок не разобран",
@@ -252,7 +252,15 @@ def config(data: pathlib.Path) -> tuple[pathlib.Path, str]:
     import yaml
     cfg = yaml.safe_load((data / "config" / "config.yaml").read_text(encoding="utf-8")) or {}
     s = cfg.get("sufler") or {}
-    return pathlib.Path(s["graph_dir"]).expanduser(), str(s.get("user_name") or "")
+    # Переменные окружения важнее конфига: ими приложение и тесты направляют прогон в песочницу,
+    # а не в боевой граф. Относительный путь считается от корня данных, не от текущего каталога.
+    raw = os.environ.get("CHAROITE_GRAPH_DIR") or os.environ.get("SUFLER_GRAPH_DIR") or s.get("graph_dir")
+    if not raw:
+        raise SystemExit("граф не задан: нет sufler.graph_dir и переменных CHAROITE_GRAPH_DIR/SUFLER_GRAPH_DIR")
+    path = pathlib.Path(str(raw)).expanduser()
+    if not path.is_absolute():
+        path = data / path
+    return path, str(s.get("user_name") or "")
 
 
 def md_files(graph: pathlib.Path):
@@ -613,15 +621,21 @@ def tab_summary(items, known: list[tuple[str, str]], owner: str, today: dt.date)
 
 
 def _fence_map(lines: list[str]) -> list[bool]:
-    """Строка внутри код-блока (или сама его граница). Блок закрывает только тот же маркер: ``` внутри
-    ~~~ — текст, не конец блока."""
+    """Строка внутри код-блока (или сама его граница). Блок закрывает только тот же символ и не
+    короче открывающего: ``` внутри ````-блока — текст, а не конец блока."""
     inside, opener, out = False, "", []
     for line in lines:
         m = FENCE.match(line)
-        if m and (not inside or m.group(1) == opener):
-            inside, opener = not inside, (m.group(1) if not inside else "")
-            out.append(True)
-            continue
+        if m:
+            marker = m.group(1)
+            if not inside:
+                inside, opener = True, marker
+                out.append(True)
+                continue
+            if marker[0] == opener[0] and len(marker) >= len(opener):
+                inside, opener = False, ""
+                out.append(True)
+                continue
         out.append(inside)
     return out
 
@@ -731,6 +745,19 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
     Файл переписывает `safe_write.rewrite_file` (снимок до чтения, expect перед replace, две попытки);
     строка ищется по номеру, при сдвиге — единственная такая же вне код-блоков. Манифест пишется
     как журнал «намерение — сделано»: намерение пишется до файла, откат берёт только подтверждённое; копия файла — в files/."""
+    # Симлинк графа могут перецепить, пока ждём замок: пишем и откатываем ровно те пути,
+    # которые видели при планировании, а не то, куда теперь ведёт изменяемый псевдоним.
+    graph = pathlib.Path(graph).resolve()
+    resolved: dict[pathlib.Path, list] = {}
+    for planned, edits in plan.items():
+        real = pathlib.Path(planned).resolve()
+        try:
+            real.relative_to(graph)
+        except ValueError:
+            note(f"пропуск {planned}: путь вне графа после раскрытия ссылок")
+            continue
+        resolved[real] = edits
+    plan = resolved
     base = charoite_paths.graph_backups(graph, "tasks_control", root=data)
     lock_dir = charoite_paths.secure_dir(charoite_paths.graph_backups(graph, "cloud_backup", root=data).parent)
     # Микросекунды и pid в имени: два прогона в одну секунду иначе делили бы каталог,
@@ -1357,7 +1384,13 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
         record(summary_line(stats, tab, applied=True) + extra + "; строк 0")
         print("снимать нечего")
         return 0
-    applied, skipped, backup = apply(graph, plan, DATA, note=record)
+    def guard() -> bool:
+        try:
+            return not live_meeting(DATA)                 # встреча могла начаться, пока ждали замок
+        except Exception:                                 # noqa: BLE001 — нечитаемый сигнал = не пишем
+            return False
+
+    applied, skipped, backup = apply(graph, plan, DATA, note=record, guard=guard)
     done: collections.Counter = collections.Counter()
     for why, canonical, mine in applied:
         done[why] += canonical

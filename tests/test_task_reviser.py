@@ -30,9 +30,9 @@ NOT_TASK = "not_task"
 OPEN = "open"
 
 
-def meeting_graph(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
-    """Граф с одной свежей встречей: правила возраста строки не снимают."""
-    rel = pathlib.Path("Встречи-архив") / "2026-10-05 10-00 — Тест" / "Минутки.md"
+def meeting_graph(tmp_path: pathlib.Path, body: str, day: str = "2026-10-05") -> pathlib.Path:
+    """Граф с одной встречей; day — дата встречи в имени каталога (правила возраста)."""
+    rel = pathlib.Path("Встречи-архив") / f"{day} 10-00 — Тест" / "Минутки.md"
     path = tmp_path / "граф" / rel
     path.parent.mkdir(parents=True)
     path.write_text(body, encoding="utf-8", newline="")
@@ -129,20 +129,28 @@ def test_plan_edits_respects_edit_ceiling(tmp_path: pathlib.Path) -> None:
 
 
 def test_due_removal_needs_second_open_verdict(tmp_path: pathlib.Path) -> None:
+    """Встреча старше MINE_DAYS и срок просрочен: без согласия формулировок снятия нет."""
     body = "- [ ] **Иван** — отправить отчёт до дня рождения\n"
-    graph = meeting_graph(tmp_path, body)
-    terms = iter([OPEN, NOT_TASK])
+    old_day = TODAY - dt.timedelta(days=tc.MINE_DAYS + 5)
+    graph = meeting_graph(tmp_path, body, day=f"{old_day:%Y-%m-%d}")
+    asked: list[int] = []
 
     def asker(text, anchor, today, variant, model=tr.MODEL):
-        return next(terms)
+        asked.append(variant)
+        return (OPEN, NOT_TASK)[len(asked) - 1]
 
     def late_due(text, anchor, variant, model=tr.MODEL):
-        return dt.date(2026, 9, 1)                       # просрочен на 35 дней
+        return TODAY - dt.timedelta(days=35)               # просрочен больше двух недель
 
     plan, seen, _, failed = tr.plan_edits(graph, "Пётр", TODAY, set(), {}, asker=asker, due_asker=late_due)
+    assert asked == [0, 1], f"обе формулировки обязаны быть спрошены: {asked}"
     assert plan == {}, "снятие по сроку без второго «открыто» недопустимо"
     assert failed == 0
-    assert any("дня рождения" in item["text"] for item in seen.values())
+    assert seen == {}, "расхождение формулировок не кэшируется как вердикт"
+    # контроль: согласие обеих формулировок ту же строку снимает — тест не проходит «по пустоте»
+    again, _, _, _ = tr.plan_edits(graph, "Пётр", TODAY, set(), {},
+                                   asker=lambda *a, **k: OPEN, due_asker=late_due)
+    assert again, "при согласии «открыто» снятие по сроку обязано состояться"
 
 
 def test_apply_guard_stops_write_under_lock(tmp_path: pathlib.Path) -> None:
@@ -355,3 +363,33 @@ def test_manual_reopen_plus_foreign_closed_duplicate_is_ambiguous(tmp_path: path
     assert proc.returncode == 1, proc.stdout
     assert "неоднозначных записей" in proc.stdout, proc.stdout
     assert path.read_text(encoding="utf-8") == hand, "ни открытая, ни закрытая одинаковые строки не тронуты"
+
+
+def test_ask_due_requires_field_and_json_null(monkeypatch) -> None:
+    """Ответ без поля due — сбой, а не «срока нет»; null — честное «срока нет»."""
+    monkeypatch.setattr(tr, "_chat_json", lambda *a, **k: {})
+    with pytest.raises(tr._NoAnswer):
+        tr.ask_due("**Иван** — отправить отчёт", ANCHOR, 0)
+    monkeypatch.setattr(tr, "_chat_json", lambda *a, **k: {"due": 42})
+    with pytest.raises(tr._NoAnswer):
+        tr.ask_due("**Иван** — отправить отчёт", ANCHOR, 0)
+    monkeypatch.setattr(tr, "_chat_json", lambda *a, **k: {"due": "2026-13-01"})
+    with pytest.raises(tr._NoAnswer):
+        tr.ask_due("**Иван** — отправить отчёт", ANCHOR, 0)
+    monkeypatch.setattr(tr, "_chat_json", lambda *a, **k: {"due": None})
+    assert tr.ask_due("**Иван** — отправить отчёт", ANCHOR, 0) is None
+
+
+def test_two_identical_confirmed_edits_roll_back_both(tmp_path: pathlib.Path) -> None:
+    """Две одинаковые правки одного прогона — не «открытый дубль», откатываются обе."""
+    old = "- [ ] **Иван** — отправил отчёт"
+    new = "- [x] **Иван** — отправил отчёт"
+    graph = meeting_graph(tmp_path, old + "\n" + old + "\n")
+    path = next(graph.rglob(tc.MINUTES))
+    applied, _, backup = tc.apply(graph, {path: [(0, old, new, "первая"), (1, old, new, "вторая")]},
+                                  tmp_path / "data")
+    assert len(applied) == 2
+    proc = _restore_from_snapshot(backup, tmp_path)
+    assert proc.returncode == 0, proc.stdout
+    assert "вернул: 2" in proc.stdout, proc.stdout
+    assert path.read_text(encoding="utf-8") == old + "\n" + old + "\n"

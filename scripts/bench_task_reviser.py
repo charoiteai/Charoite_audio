@@ -115,16 +115,26 @@ def main() -> int:
     # не снимали строки). Вредной считается правка строки, которая должна остаться открытой.
     plan_harmful, plan_missed = [], []
     plan_rows: list[dict] = []
+    # MAX_EDITS ограничивает прогон: без батчей часть случаев не проверялась бы вовсе, и «чистый»
+    # результат полного пути молчал бы о непройденных строках.
+    asked_plan = failed_plan = 0
     with tempfile.TemporaryDirectory() as tmp:
-        graph = pathlib.Path(tmp) / "граф"
-        rel = f"Встречи-архив/{FIXED_ANCHOR:%Y-%m-%d} 10-00 — Бенч/{tr.tc.MINUTES}"
-        (graph / rel).parent.mkdir(parents=True)
-        texts = [re.sub(r"^(?:Коля|Оля|Иван|Саша|Пётр|Мария|Анна|Сергей) — ", "", text) for text, _ in CASES]
-        (graph / rel).write_text("\n".join(f"- [ ] **Коля** — {t}" for t in texts) + "\n", encoding="utf-8")
-        plan, seen, asked_plan, failed_plan = tr.plan_edits(
-            graph, "Пётр", FIXED_ANCHOR + dt.timedelta(days=1), set(), {},
-            asker=retrying_asker, due_asker=retrying_due, deadline=time.monotonic() + 900)
-        edits_by_index = {i: new for edits in plan.values() for i, _, new, _ in edits}
+        edits_by_index: dict[int, str] = {}
+        for start in range(0, len(CASES), tr.MAX_EDITS):
+            chunk = CASES[start:start + tr.MAX_EDITS]
+            graph = pathlib.Path(tmp) / f"граф{start}"
+            rel = f"Встречи-архив/{FIXED_ANCHOR:%Y-%m-%d} 10-00 — Бенч/{tr.tc.MINUTES}"
+            (graph / rel).parent.mkdir(parents=True)
+            texts = [re.sub(r"^(?:Коля|Оля|Иван|Саша|Пётр|Мария|Анна|Сергей) — ", "", text) for text, _ in chunk]
+            (graph / rel).write_text("\n".join(f"- [ ] **Коля** — {t}" for t in texts) + "\n", encoding="utf-8")
+            plan, _, asked_chunk, failed_chunk = tr.plan_edits(
+                graph, "Пётр", FIXED_ANCHOR + dt.timedelta(days=1), set(), {},
+                asker=lambda text, anchor, today, variant: retrying_asker(text, anchor, today, variant, args.model),
+                due_asker=lambda text, anchor, variant: retrying_due(text, anchor, variant, args.model),
+                deadline=time.monotonic() + 900)
+            asked_plan += asked_chunk
+            failed_plan += failed_chunk
+            edits_by_index.update({start + i: new for edits in plan.values() for i, _, new, _ in edits})
         plan_wrong = []
         for i, (text, want) in enumerate(CASES):
             new_line = edits_by_index.get(i)

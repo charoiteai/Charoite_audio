@@ -10,6 +10,9 @@
 поэтому откат работает и после удаления checkout. Код 1 — часть строк не найдена (правили после
 прогона), есть записи прерванного прогона («не подтверждено»), неоднозначные записи (строку сдвинули
 вставкой сверху, а откат уже был — по тексту не отличить) или битые строки манифеста; 0 — возвращено всё.
+Известный предел: если после прогона снятую строку изменили руками, а на её прежнее место вставили
+чужую с точно таким же текстом, принадлежность по тексту и номеру не доказывается — откат может
+принять чужую за свою. Поэтому после ручных правок прогон лучше откатывать вручную по files/.
 """
 import datetime as dt
 import collections
@@ -108,6 +111,7 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
         missing = ambiguous = 0
         lines = before.split("\n")
         pair_total = collections.Counter((old, new) for _, old, new in edits)
+        reverted: set[int] = set()                    # что открыли мы сами в этом преобразовании
         for i, old, new in edits:
             # Сначала «уже возвращено»: открытая строка на своём месте — откат этой записи
             # состоялся (возможно, прошлым запуском). Искать `new` раньше нельзя: при двух
@@ -119,7 +123,8 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                 if any(line == new for line in lines):
                     ambiguous += 1
                 continue
-            old_elsewhere = any(k != i and line == old for k, line in enumerate(lines))
+            old_elsewhere = any(k != i and k not in reverted and line == old
+                                for k, line in enumerate(lines))
             if old_elsewhere:
                 # Рядом стоит открытая строка с тем же текстом: нашу уже вернули руками, а
                 # закрытая — чужая, либо это сдвиг после одинаковой строки. По тексту и номеру
@@ -137,11 +142,13 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                     ambiguous += 1
                     continue
                 lines[i] = old
+                reverted.add(i)
                 back.append(old)
                 continue
             new_hits = [k for k, line in enumerate(lines) if line == new]
             if len(new_hits) == 1:
                 lines[new_hits[0]] = old
+                reverted.add(new_hits[0])
                 back.append(old)
                 continue
             if len(new_hits) > 1:
@@ -151,6 +158,7 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                     ambiguous += 1
                     continue
                 lines[new_hits[0]] = old
+                reverted.add(new_hits[0])
                 back.append(old)
                 continue
             if len([k for k, line in enumerate(lines) if line == old]) == 1:

@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 import tasks_control as tc
@@ -86,7 +87,7 @@ def _chat_json(prompt: str, model: str = MODEL) -> dict | None:
     request = urllib.request.Request(f"{OLLAMA}/api/chat", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        with _open(request, timeout=REQUEST_TIMEOUT) as response:
             envelope = json.loads(response.read())
         message = envelope.get("message") if isinstance(envelope, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
@@ -111,12 +112,14 @@ class _NoAnswer(Exception):
 def ask_due(text: str, anchor: dt.date, variant: int, model: str = MODEL) -> dt.date | None:
     prompt = DUE_PROMPTS[variant].format(meeting=anchor, text=text.replace("<<<", "").replace(">>>", ""))
     answer = _chat_json(prompt, model)
-    if answer is None:
+    if answer is None or "due" not in answer:
+        raise _NoAnswer                                  # ответ без поля due — не «срока нет», а сбой
+    raw = answer["due"]
+    if raw is not None and not isinstance(raw, str):
         raise _NoAnswer
-    raw = answer.get("due")
     try:
-        day = dt.date.fromisoformat(raw) if raw else None
-    except (ValueError, TypeError):
+        day = dt.date.fromisoformat(raw) if raw is not None else None
+    except ValueError:
         raise _NoAnswer from None
     if day and not (anchor - dt.timedelta(days=1) <= day <= anchor + dt.timedelta(days=tc.HORIZON_DAYS)):
         raise _NoAnswer                                   # дата вне окна срока — ответ негоден, не вердикт
@@ -325,9 +328,21 @@ def quiet(gate=None) -> bool:
         return False
 
 
+_LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _open(url, *, timeout: float):
+    """Ollama живёт на loopback: прокси из окружения к нему не применяем (403/таймаут)."""
+    full = url.full_url if isinstance(url, urllib.request.Request) else url
+    host = urllib.parse.urlsplit(full).hostname or ""
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return _LOOPBACK.open(url, timeout=timeout)
+    return urllib.request.urlopen(url, timeout=timeout)
+
+
 def model_alive(model: str = MODEL) -> bool:
     try:
-        with urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=5) as response:
+        with _open(f"{OLLAMA}/api/tags", timeout=5) as response:
             models = json.loads(response.read()).get("models") or []
         return any(isinstance(m, dict) and m.get("name") == model for m in models)
     except (OSError, ValueError, AttributeError, TypeError, http.client.HTTPException):
@@ -354,15 +369,17 @@ def record_backup(backup: pathlib.Path | None, record) -> None:
         rows = (backup / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
     except OSError:
         return
+    done = 0
     for raw in rows:
         try:
             row = json.loads(raw)
-            if row.get("state", "done") != "done":     # «намерение» могло не записаться — не врём в отчёте
-                continue
-            old, new = str(row["old"]).strip(), str(row["new"]).strip()
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, TypeError):
             continue
-        record(f"правка: {old} → {new}")
+        if isinstance(row, dict) and row.get("state", "done") == "done":
+            done += 1                                     # «намерение» могло не записаться — не врём
+    if done:
+        # Тела поручений в лог не копируем: общий журнал переживает уборку встреч (privacy).
+        record(f"правок записано: {done}; было → стало — в {backup / 'manifest.jsonl'}")
 
 
 def run(args) -> int:
