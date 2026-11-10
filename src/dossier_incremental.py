@@ -18,6 +18,10 @@ import dossier_telemetry as telemetry
 class Refused(ValueError):
     """Retryable: no body or semantic membership may be committed."""
 
+    def __init__(self, message: str, *, reason: telemetry.Reason | None = None):
+        super().__init__(message)
+        self.reason = reason
+
 
 #: Коэффициент допуска «знаков на токен» для полного входа досье (№947).
 #: Это согласованная эвристика, а не доказанная нижняя граница: точный
@@ -29,6 +33,18 @@ class Refused(ValueError):
 #: запрос уходит с `truncate=False`/`shift=False`, и сервер обязан отказать, а
 #: не усечь вход; отказ учитывается PR910 явной причиной, а не как молчание.
 ADMISSION_CHARS_PER_TOKEN = 2
+MIN_AUTO_CONTEXT = 8192
+MID_AUTO_CONTEXT = 16_384
+CONTEXT_RESERVE = 256
+SOURCE_RELEVANCE_SYSTEM = "You judge source relevance conservatively."
+GENERATE_SYSTEM = "You extend factual dossiers conservatively."
+MAIN_JUDGE_SYSTEM = "You are an independent conservative dossier judge."
+SOURCE_PREDICT = 350
+MAIN_JUDGE_PREDICT = 1200
+AUDIT_PREDICT = 2000
+_INLINE_WIKILINK = re.compile(
+    r"!?\[\[(?P<target>[^\[\]|#\r\n^]*)(?:[#^][^\[\]|\r\n]*)?(?:\|(?P<alias>[^\[\]\r\n]*))?\]\]"
+)
 
 
 def local_config(c: dict) -> dict:
@@ -54,11 +70,12 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     # capacity model and refused complete Russian dossiers that fit the window
     # (№947). The estimate is deliberately conservative; see
     # ADMISSION_CHARS_PER_TOKEN for the residual risk and the server-side guard.
-    context = int((local.get("llm") or {}).get("num_ctx") or 8192)
-    budget_chars = (context - num_predict - 256) * ADMISSION_CHARS_PER_TOKEN
+    context = int((local.get("llm") or {}).get("num_ctx") or MIN_AUTO_CONTEXT)
+    budget_chars = (context - num_predict - CONTEXT_RESERVE) * ADMISSION_CHARS_PER_TOKEN
     if len(system) + len(prompt) > budget_chars:
         telemetry.refusal(telemetry.Reason.CONTEXT)
-        raise Refused("complete dossier input exceeds the configured context budget")
+        raise Refused("complete dossier input exceeds the configured context budget",
+                      reason=telemetry.Reason.CONTEXT)
     # The provider must use the same effective window as the complete-input guard.
     local["llm"]["num_ctx"] = context
     telemetry.phase(telemetry.Phase.CONTRACT)
@@ -136,6 +153,21 @@ def source_text(meta: dict) -> str:
     return text
 
 
+def _wikilink_display(match: re.Match[str]) -> str:
+    alias = match.group("alias")
+    if alias is not None:
+        return alias.strip() or match.group(0)
+    return graph_names.link_target_stem(match.group("target")) or match.group(0)
+
+
+def _plain_wikilinks(text: str) -> str:
+    return _INLINE_WIKILINK.sub(_wikilink_display, text)
+
+
+def _has_source_quote(text: str, quote: str) -> bool:
+    return quote in text or quote in _plain_wikilinks(text)
+
+
 def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
                      meta: dict, c: dict) -> bool:
     text = source_text(meta)
@@ -147,18 +179,24 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
         "facts in the combined context of the topic, existing dossier and new source. A fact about "
         "the same objects, activities or purpose can be relevant without repeating the topic name. "
         "Use backlinks as context, while rejecting unrelated content merely carrying a backlink "
-        "or shared name. A source is relevant only if its actual content adds a supported fact "
-        "about the topic. Return ONLY JSON "
+        "or shared name. A source is relevant only if its actual content adds a supported fact, "
+        "decision or open risk about the topic. When a source merely asks a question, speculates "
+        "without an established topic fact, or mentions a name in passing, return verdict "
+        'irrelevant with quote "". Copy quote verbatim from source_text, including any [[...]] '
+        "and \\| Markdown link syntax. Return ONLY JSON "
         '{"verdict":"relevant|irrelevant|uncertain","reason":"nonempty reason",'
         '"quote":"exact source quotation supporting relevance, empty for irrelevant"}. '
-        "Use uncertain if relevance cannot be established. Do not judge a generated candidate.")
-    verdict = _json(local_complete(prompt, c, system="You judge source relevance conservatively.",
-                                   num_predict=350), {"verdict", "reason", "quote"})
+        "Use uncertain only when identity or topic connection is genuinely ambiguous. "
+        "Do not judge a generated candidate.")
+    stage_c = _stage_config(c, len(SOURCE_RELEVANCE_SYSTEM), prompt, SOURCE_PREDICT)
+    verdict = _json(local_complete(prompt, stage_c, system=SOURCE_RELEVANCE_SYSTEM,
+                                   num_predict=SOURCE_PREDICT), {"verdict", "reason", "quote"})
     if not isinstance(verdict["reason"], str) or not verdict["reason"].strip() or not isinstance(verdict["quote"], str):
         raise Refused("incomplete relevance verdict")
     if verdict["verdict"] == "irrelevant":
         return False
-    if verdict["verdict"] == "relevant" and verdict["quote"].strip() and verdict["quote"] in text:
+    quote = verdict["quote"]
+    if verdict["verdict"] == "relevant" and quote.strip() and _has_source_quote(text, quote):
         return True
     raise Refused("uncertain or unsupported relevance verdict")
 
@@ -222,7 +260,7 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
             raise Refused("unsupported correction: before must occur in both old and new body")
         if after not in body:
             raise Refused("unsupported correction: after must be an exact substring of the candidate body")
-        if name not in names or quote not in source_text(files[name]) or name not in _links(after):
+        if name not in names or not _has_source_quote(source_text(files[name]), quote) or name not in _links(after):
             raise Refused("unsupported or unattributed correction ledger")
         new_sections = {s.title: candidate.text[s.content:s.end] for s in parsed.sections}
         current = _current_line_before(loaded, before)
@@ -350,7 +388,7 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
         if (text, name) in seen:
             raise Refused("duplicate candidate claim")
         seen.add((text, name))
-        if name not in names or quote not in source_text(files[name]):
+        if name not in names or not _has_source_quote(source_text(files[name]), quote):
             raise Refused("candidate claim lacks exact new-source evidence")
         start = body.find(text)
         if start < 0:
@@ -453,27 +491,45 @@ TOPIC_AUDIT_SYSTEM = "You judge one claim's topic relevance.\n\n" + TOPIC_AUDIT_
 MAX_AUDIT_CONTEXT = 32_768
 
 
+def _stage_config(c: dict, system_len: int, prompt: str, num_predict: int) -> dict:
+    if privacy.llm_engine(c) != "ollama":
+        return c
+    llm_cfg = c.get("llm") or {}
+    configured = llm_cfg.get("num_ctx")
+    try:
+        if isinstance(configured, bool):
+            raise ValueError("boolean context window")
+        parsed = 0 if configured is None else int(configured)
+    except (TypeError, ValueError) as exc:
+        telemetry.refusal(telemetry.Reason.PREFLIGHT)
+        raise Refused("invalid configured context window", reason=telemetry.Reason.PREFLIGHT) from exc
+    if parsed and parsed < MIN_AUTO_CONTEXT:
+        return {**c, "llm": {**llm_cfg, "num_ctx": parsed}}
+    needed = ((system_len + len(prompt) + ADMISSION_CHARS_PER_TOKEN - 1)
+              // ADMISSION_CHARS_PER_TOKEN + num_predict + CONTEXT_RESERVE)
+    target = max(parsed, needed)
+    if target > MAX_AUDIT_CONTEXT:
+        telemetry.refusal(telemetry.Reason.CONTEXT)
+        raise Refused("complete dossier input exceeds the maximum context budget",
+                      reason=telemetry.Reason.CONTEXT)
+    context = next(step for step in (MIN_AUTO_CONTEXT, MID_AUTO_CONTEXT, MAX_AUDIT_CONTEXT) if target <= step)
+    return {**c, "llm": {**llm_cfg, "num_ctx": context}}
+
+
 def _audit_config(c: dict, prompt: str) -> dict:
-    configured = (c.get("llm") or {}).get("num_ctx")
     # Reserve the largest audit system and output for both requests so Ollama
     # keeps one stable window through support and topic checks.
     longest_system = max(len(SUPPORT_AUDIT_SYSTEM), len(TOPIC_AUDIT_SYSTEM))
-    needed = ((longest_system + len(prompt) + ADMISSION_CHARS_PER_TOKEN - 1)
-              // ADMISSION_CHARS_PER_TOKEN + 2000 + 256)
-    target = max(int(configured), needed) if configured else needed
-    if target > MAX_AUDIT_CONTEXT:
-        telemetry.refusal(telemetry.Reason.CONTEXT)
-        raise Refused("complete claim audit exceeds the maximum context budget")
-    context = next(step for step in (8192, 16384, MAX_AUDIT_CONTEXT) if target <= step)
-    return {**c, "llm": {**(c.get("llm") or {}), "num_ctx": context}}
+    return _stage_config(c, longest_system, prompt, AUDIT_PREDICT)
 
 
 def _quote_context(text: str, quote: str) -> str:
     """Validate the evidence anchor; retain every qualifier in the full source."""
-    start = text.find(quote)
+    haystack = text if quote in text else _plain_wikilinks(text)
+    start = haystack.find(quote)
     if start < 0:
         raise Refused("candidate claim lacks exact new-source evidence")
-    if text.find(quote, start + 1) != -1:
+    if haystack.find(quote, start + 1) != -1:
         raise Refused("ambiguous claim evidence: quote must identify one source occurrence")
     return text
 
@@ -529,7 +585,8 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "preserved old claims as irrelevant. Return one claims item per independent assertion, "
         "splitting a compound bullet into exact text spans rather than judging the whole bullet "
         "as one claim. Each item's text must copy its exact candidate span, source must name "
-        "one supplied new source, and quote must copy exact nonempty source evidence. "
+        "one supplied new source, and quote must copy exact nonempty source evidence "
+        "verbatim from new_sources, preserving any [[...]] and \\| Markdown link syntax. "
         "Set relevant and supported separately, with a nonempty reason for that assertion. "
         "The reason must explain that assertion's topic relationship, not shared meeting context. "
         "A tentative or unverified source quote cannot support an unconditional factual claim; "
@@ -573,8 +630,9 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "correct. Do not use false to mean not applicable. If a factual correction was made "
         "without its required ledger entry, set corrections_valid=false. "
         "Use accept only when all three checks are true.")
-    verdict = _json(local_complete(prompt, c, system="You are an independent conservative dossier judge.",
-                                   num_predict=1200),
+    stage_c = _stage_config(c, len(MAIN_JUDGE_SYSTEM), prompt, MAIN_JUDGE_PREDICT)
+    verdict = _json(local_complete(prompt, stage_c, system=MAIN_JUDGE_SYSTEM,
+                                   num_predict=MAIN_JUDGE_PREDICT),
                     {"verdict", "conserved", "supported", "corrections_valid", "reason", "claims"})
     if (verdict["verdict"] != "accept" or not isinstance(verdict["reason"], str)
             or not verdict["reason"].strip()
@@ -585,12 +643,13 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
               for claim in verdict["claims"]]
     # Pin one bounded window across every claim in this candidate. Switching
     # num_ctx between claims would repeatedly reload the resident Ollama model.
+    audit_c = c
     if audits:
         audit_window = max(_audit_config(c, _audit_prompt(theme, loaded, claim, source))["llm"]["num_ctx"]
                            for claim, source in audits)
-        c = {**c, "llm": {**(c.get("llm") or {}), "num_ctx": audit_window}}
+        audit_c = {**c, "llm": {**(c.get("llm") or {}), "num_ctx": audit_window}}
     for claim, source_context in audits:
-        audit_claim(theme, loaded, claim, c, quote_context=source_context)
+        audit_claim(theme, loaded, claim, audit_c, quote_context=source_context)
 
 
 def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dict, c: dict) -> str:
@@ -609,6 +668,7 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "into ## Как пришли. Do not add an unsourced explanatory sentence or history label. "
         "Give the new current state its new-source link and add a "
         "change ledger entry with exact before/after strings and an exact source quotation "
+        "copied verbatim from new_sources (preserving any [[...]] and \\| syntax) "
         "explicitly superseding the old claim. Do not infer corrections. Keep the five sections "
         "in order: ## Сейчас, ## Как пришли, ## Решено, ## Открыто, ## Кто в теме. "
         "Never output Источники or Правки автора sections; the writer preserves them. "
@@ -628,14 +688,15 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         telemetry.begin_attempt()
         payload = {**data, **({"correction_feedback": feedback} if feedback else {})}
         prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
-        raw = local_complete(prompt, c, system="You extend factual dossiers conservatively.",
+        stage_c = _stage_config(c, len(GENERATE_SYSTEM), prompt, dossier.GEN_PREDICT)
+        raw = local_complete(prompt, stage_c, system=GENERATE_SYSTEM,
                              num_predict=dossier.GEN_PREDICT)
         try:
             result = _json(raw, {"body", "changes"})
             validate_candidate(theme, loaded, names, files, c, result["body"], result["changes"])
             return result["body"].strip()
         except Refused as exc:
-            if attempt:
+            if attempt or exc.reason == telemetry.Reason.CONTEXT:
                 raise
             feedback = {"failure": str(exc), "previous_response": raw,
                         "instruction": "Ordinary additions require changes: []; remove invented correction entries. "

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import math
 import pathlib
 import signal
@@ -143,8 +144,10 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
     prompt = dossier.build_prompt(theme, members, files, schema=CHAROITE)
     if temperature is None:
         temperature = dossier.GEN_TEMPERATURES[0]
-    return dossier_incremental.local_complete(prompt, c, temperature=temperature,
-                                              fell_back=fell_back, **dossier.gen_call())
+    call = dossier.gen_call()
+    stage_c = dossier_incremental._stage_config(c, len(call["system"]), prompt, call["num_predict"])
+    return dossier_incremental.local_complete(prompt, stage_c, temperature=temperature,
+                                              fell_back=fell_back, **call)
 
 
 def generator_label(c: dict) -> str:
@@ -761,16 +764,24 @@ class RunResult:
         self.telemetry = telemetry.Collector()
 
 
+def _write_telemetry_sidecar(root: pathlib.Path, snap: dict) -> None:
+    target = charoite_paths.log_path(root, "dossier_telemetry")
+    charoite_paths.secure_dir(target.parent)
+    payload = json.dumps({"generated": datetime.now().isoformat(timespec="seconds"), **snap},
+                         ensure_ascii=False, indent=2) + "\n"
+    safe_write.write_text(target, payload, mode=0o600)
+
+
 def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
             limit: int | None = None, budget_s: float | None = None,
-            started: float | None = None) -> "RunResult":
+            started: float | None = None, on_telemetry=None) -> "RunResult":
     """Все графы одной очередью: скан всех, порядок `queue_order`, сборка до
     бюджета. Индекс каждого графа пишется, даже если прогон оборвался."""
     started = clock() if started is None else started
     today = date.today().isoformat()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")   # штамп копий .backup/, с секундами как у ревизии
     out = RunResult()
-    with out.telemetry.activate():
+    with out.telemetry.activate(on_emit=on_telemetry):
         gen = generator_label(c)
         candidates: list[Candidate] = []
         original_error = False
@@ -895,8 +906,9 @@ def main() -> int:
                 return 1
 
     signal.signal(signal.SIGTERM, _terminate)
+    sidecar = None if args.dry else (lambda snap: _write_telemetry_sidecar(_root(), snap))
     result = run_all(present, c, full=args.full, dry=args.dry, limit=args.limit,
-                     budget_s=args.budget_s, started=started)
+                     budget_s=args.budget_s, started=started, on_telemetry=sidecar)
     total = отказов = 0
     for g in result.graphs:
         r = g.result()

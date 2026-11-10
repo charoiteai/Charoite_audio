@@ -439,3 +439,125 @@ def test_actual_adapter_transport_is_checked_again_after_local_factory(monkeypat
     monkeypatch.setattr(llm, "LLM", WrongTransport)
     with pytest.raises(inc.Refused):
         inc.local_complete("source", LOCAL, system="judge")
+
+
+def test_stage_config_boundaries_and_auto_stepping(monkeypatch):
+    longest = max(len(inc.SUPPORT_AUDIT_SYSTEM), len(inc.TOPIC_AUDIT_SYSTEM))
+    # Odd boundary 11873 chars -> ceil(11873 / 2) = 5937 + 2000 + 256 = 8193 -> 16384.
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (11873 - longest))["llm"]["num_ctx"] == 16384
+    # Exact 32768 boundary: (32768 - 2000 - 256) * 2 = 61024 -> 32768; +1 -> Refused(CONTEXT).
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (61024 - longest))["llm"]["num_ctx"] == 32768
+    with pytest.raises(inc.Refused, match="maximum context budget") as over:
+        inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (61025 - longest))
+    assert over.value.reason == inc.telemetry.Reason.CONTEXT
+    # Explicit small (< 8192) and negative windows are preserved for admission to refuse.
+    assert inc._stage_config({"llm": {"num_ctx": 4096}}, 10, "x" * 14000, 350)["llm"]["num_ctx"] == 4096
+    assert inc._stage_config({"llm": {"num_ctx": -1}}, 10, "x", 350)["llm"]["num_ctx"] == -1
+    # Non-ollama configs pass through untouched so local_config enforces the local-only gate.
+    cloud_cfg = {"llm": {"engine": "cloud", "model": "invented"}}
+    assert inc._stage_config(cloud_cfg, 10, "x" * 70000, 350) is cloud_cfg
+    with pytest.raises(inc.Refused, match="Ollama"):
+        inc.source_relevance("Glasshouse", _old(), B, {"text": FACT}, cloud_cfg)
+    # Malformed or boolean num_ctx refuses at preflight with Reason.PREFLIGHT.
+    for bad in (True, False, "not-an-int", []):
+        with pytest.raises(inc.Refused, match="invalid configured context window") as bad_exc:
+            inc._stage_config({"llm": {"num_ctx": bad}}, 10, "x", 350)
+        assert bad_exc.value.reason == inc.telemetry.Reason.PREFLIGHT
+
+
+def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry(monkeypatch):
+    long_text = ("Подробная запись наблюдения по теплице. " * 380) + FACT
+    files = {B: {"text": long_text}}
+    cfg = {"llm": {"engine": "ollama", "base_url": "http://127.0.0.1:11434", "model": "invented", "num_ctx": 8192}}
+    seen = []
+
+    def complete(prompt, config, *, system, **kwargs):
+        seen.append((system, config["llm"]["num_ctx"]))
+        if system == SOURCE_SYSTEM:
+            return json.dumps({"verdict": "relevant", "reason": "Supported topic fact.", "quote": FACT})
+        if system == GENERATE_SYSTEM:
+            return json.dumps({"body": ADDED, "changes": []})
+        if system == MAIN_SYSTEM:
+            return json.dumps(_verdict())
+        if system == inc.SUPPORT_AUDIT_SYSTEM:
+            return json.dumps(SUPPORT_ACCEPT)
+        if system == inc.TOPIC_AUDIT_SYSTEM:
+            return json.dumps(TOPIC_ACCEPT)
+        assert system == dossier.gen_call()["system"]
+        return ADDED
+
+    monkeypatch.setattr(inc, "local_complete", complete)
+    assert inc.source_relevance("Glasshouse", _old(), B, files[B], cfg) is True
+    assert inc.append("Glasshouse", _old(), [B], files, cfg) == ADDED
+    assert night.generate("Glasshouse", [B], {B: {**files[B], "kind": "Встречи"}}, cfg) == ADDED
+    assert cfg["llm"]["num_ctx"] == 8192
+    assert [ctx for _, ctx in seen] == [16384, 16384, 16384, 16384, 16384, 16384]
+
+    # When downstream validation fails due to context budget, append must NOT burn a second attempt.
+    gen_calls = []
+
+    def overflow_downstream(prompt, config, *, system, **kwargs):
+        gen_calls.append(system)
+        return json.dumps({"body": ADDED, "changes": []})
+
+    monkeypatch.setattr(inc, "local_complete", overflow_downstream)
+    monkeypatch.setattr(
+        inc, "validate_candidate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            inc.Refused("complete dossier input exceeds the maximum context budget",
+                        reason=inc.telemetry.Reason.CONTEXT)
+        ),
+    )
+    with pytest.raises(inc.Refused, match="maximum context budget"):
+        inc.append("Glasshouse", _old(), [B], {B: {"text": FACT}}, cfg)
+    assert gen_calls == [GENERATE_SYSTEM]
+
+
+def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguity(monkeypatch):
+    table_source = "Шапка таблицы\n| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\nХвост\n"
+    plain_quote = "| Glasshouse | A rain cover was fitted. |"
+    raw_quote = "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |"
+    # Both plain display quote and verbatim raw wikilink quote are accepted in source_relevance.
+    for quote in (plain_quote, raw_quote):
+        monkeypatch.setattr(
+            inc, "local_complete",
+            lambda *a, q=quote, **k: json.dumps({"verdict": "relevant", "reason": "Table row fact.", "quote": q}),
+        )
+        assert inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {}) is True
+    # Stem without alias ("[[Ядра/Glasshouse]]") also resolves to "Glasshouse".
+    monkeypatch.setattr(
+        inc, "local_complete",
+        lambda *a, **k: json.dumps({"verdict": "relevant", "reason": "Stem quote.", "quote": "Тема Glasshouse обновлена."}),
+    )
+    assert inc.source_relevance("Glasshouse", _old(), B, {"text": "Тема [[Ядра/Glasshouse]] обновлена."}, {}) is True
+    # Whitespace-only quote, empty/anchor wikilinks, and unclosed [[ across newline never fabricate a match.
+    for bad_source, bad_quote in [
+        ("A rain cover was fitted.", "   "),
+        ("A [[Цель| ]] B", "A  B"),
+        ("A [[Раздел/Имя\\| ]] B", "A  B"),
+        ("A [[#Раздел]] B", "A  B"),
+        ("A [[]] B", "A  B"),
+        ("Первая [[незакрытая\nвторая]] строка", "Первая строка"),
+    ]:
+        monkeypatch.setattr(
+            inc, "local_complete",
+            lambda *a, q=bad_quote, **k: json.dumps({"verdict": "relevant", "reason": "Bad quote.", "quote": q}),
+        )
+        with pytest.raises(inc.Refused, match="uncertain or unsupported"):
+            inc.source_relevance("Glasshouse", _old(), B, {"text": bad_source}, {})
+
+    # Downstream validate_candidate (claims + changes + _quote_context) accepts unique plain table quotes...
+    calls = _transport(monkeypatch, _verdict([_claim(quote=plain_quote)]))
+    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": table_source}}, {}, ADDED, [])
+    assert len(calls) == 3
+    # ...and still refuses when two different wikilinks collapse to the same plain quote!
+    ambiguous_table = (
+        "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+        "| [[Архив/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+    )
+    _transport(monkeypatch, _verdict([_claim(quote=plain_quote)]))
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+    # Distinct raw wikilink quote on the same two-row table remains unambiguous and passes!
+    _transport(monkeypatch, _verdict([_claim(quote=raw_quote)]))
+    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])

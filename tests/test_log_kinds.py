@@ -53,6 +53,7 @@ def test_shared_logs_and_locks_are_named_by_log_path():
     assert cp.log_path(ROOT, "graph_unlinked", suffix=".old") == logs / "graph_unlinked.old"
     assert cp.log_path(ROOT, "import_prune", "Inbox") == logs / "import_prune-Inbox.log"
     assert cp.log_path(ROOT, "rebuild_pid", STEM) == logs / f"rebuild-{STEM}.pid"
+    assert cp.log_path(ROOT, "dossier_telemetry") == logs / "dossier_telemetry.json"
 
 
 @pytest.mark.parametrize("call", [
@@ -109,7 +110,7 @@ def _kind(entry: cp.LogKind) -> str:
 
 # Имена, которые живут в logs/ рядом с журналами и под ретеншн попадать не должны.
 NOT_SWEPT = ["graph_doctor.json", "graph_feed.json", "graph_feed_base.json", "daemon.lock", "rebuild.lock", "mutation.lock",
-             "nightly.json", f"rebuild-{STEM}.pid", "lexicon_candidates.md",
+             "nightly.json", "dossier_telemetry.json", f"rebuild-{STEM}.pid", "lexicon_candidates.md",
              "model_calls-2026-09-29.jsonl"]   # журнал вызовов модели только дописывается, ретеншн его не трогает (№807)
 
 
