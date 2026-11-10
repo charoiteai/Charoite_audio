@@ -116,7 +116,7 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
             # Сначала «уже возвращено»: открытая строка на своём месте — откат этой записи
             # состоялся (возможно, прошлым запуском). Искать `new` раньше нельзя: при двух
             # одинаковых поручениях откат открыл бы чужую закрытую строку с тем же текстом.
-            if i < len(lines) and lines[i] == old:
+            if i < len(lines) and i not in reverted and lines[i] == old:
                 # Но закрытая строка с тем же текстом ниже означает, что вставка сверху
                 # сдвинула строки и откат ещё не сделан. По тексту и номеру эти случаи
                 # неотличимы — не трогаем и зовём человека, а не выбираем наугад.
@@ -161,7 +161,7 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                 reverted.add(new_hits[0])
                 back.append(old)
                 continue
-            if len([k for k, line in enumerate(lines) if line == old]) == 1:
+            if len([k for k, line in enumerate(lines) if k not in reverted and line == old]) == 1:
                 continue                          # уже возвращено прошлым откатом, не «не найдено»
             missing += 1
             continue

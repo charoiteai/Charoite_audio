@@ -129,7 +129,11 @@ def ask_due(text: str, anchor: dt.date, variant: int, model: str = MODEL) -> dt.
 
 def judge_due(text: str, anchor: dt.date, model: str = MODEL, due_asker=ask_due) -> tuple[bool, dt.date | None]:
     """(срок подтверждён, дата), только если обе формулировки назвали одну дату. Сбой или расхождение —
-    (False, None): такая строка не кэшируется как «открыто» и проверяется в следующий прогон."""
+    (False, None): такая строка не кэшируется как «открыто» и проверяется в следующий прогон.
+
+    Асимметрия намеренная: если первая формулировка не нашла срока, второй запрос не тратим. «Срока нет» —
+    не действие (ничего не снимаем), ложный ответ лишь отложит автоматизацию до следующей проверки; два
+    запроса там, где снятие возможно, бережёт RUN_BUDGET (ревизор иначе упирается в бюджет прогона)."""
     try:
         first = due_asker(text, anchor, 0, model)
         if first is None:                                 # согласованное «срока нет» — это ответ, не сбой
@@ -217,8 +221,12 @@ def candidates(graph: pathlib.Path, owner: str, today: dt.date, returned: set[st
     return out
 
 
-def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due_asker=ask_due, deadline=None):
-    """(план для tasks_control.apply, кэш «открыто», опрошено строк, сбоев модели)."""
+def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due_asker=ask_due,
+               deadline=None, model: str = MODEL):
+    """(план для tasks_control.apply, кэш «открыто», опрошено строк, сбоев модели).
+
+    `model` — та же модель для всех запросов прогона: без него бенчмарк с --model мерил бы одну
+    модель, а снятие по сроку спрашивало вторую формулировку у дефолтной (замечание Gemini)."""
     plan: dict[pathlib.Path, list] = {}
     seen: dict[str, dict] = {}
     asked = edits = failed = 0
@@ -230,7 +238,7 @@ def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due
         if hit and hit.get("text") == text and (today - dt.date.fromisoformat(hit["day"])).days < RECHECK_DAYS:
             continue
         asked += 1
-        verdict = judge(text, anchor, today, asker=asker)
+        verdict = judge(text, anchor, today, model=model, asker=asker)
         if verdict is None:
             failed += 1
             continue
@@ -244,13 +252,13 @@ def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due
             dates, uncovered, long_sign = tc.due_dates(text, anchor)
             due, confirmed = None, False
             if uncovered and not long_sign:
-                confirmed, due = judge_due(text, anchor, due_asker=due_asker)
+                confirmed, due = judge_due(text, anchor, model=model, due_asker=due_asker)
                 if not confirmed:
                     failed += 1                            # сбой срока не кэшируем как «открыто»
                     continue
             if due and (not dates or due >= max(dates)) \
                     and (today - due).days >= DUE_OVERDUE_DAYS and (today - anchor).days > tc.MINE_DAYS:
-                second = asker(text, anchor, today, 1, MODEL)    # снятие необратимее: второе подтверждение
+                second = asker(text, anchor, today, 1, model)    # снятие необратимее: второе подтверждение
                 if second != "open":
                     if second is None:                  # молчание модели — сбой, а не «не поручение»
                         failed += 1

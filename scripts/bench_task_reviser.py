@@ -119,8 +119,10 @@ def main() -> int:
     # MAX_EDITS ограничивает прогон: без батчей часть случаев не проверялась бы вовсе, и «чистый»
     # результат полного пути молчал бы о непройденных строках.
     asked_plan = failed_plan = 0
+    plan_wrong: list[str] = []
+    edits_by_index: dict[int, str] = {}
     with tempfile.TemporaryDirectory() as tmp:
-        edits_by_index: dict[int, str] = {}
+        data = pathlib.Path(tmp) / "data"
         for start in range(0, len(CASES), tr.MAX_EDITS):
             chunk = CASES[start:start + tr.MAX_EDITS]
             graph = pathlib.Path(tmp) / f"граф{start}"
@@ -130,37 +132,37 @@ def main() -> int:
             (graph / rel).write_text("\n".join(f"- [ ] **Коля** — {t}" for t in texts) + "\n", encoding="utf-8")
             plan, _, asked_chunk, failed_chunk = tr.plan_edits(
                 graph, "Пётр", FIXED_ANCHOR + dt.timedelta(days=1), set(), {},
-                asker=lambda text, anchor, today, variant: retrying_asker(text, anchor, today, variant, args.model),
-                due_asker=lambda text, anchor, variant: retrying_due(text, anchor, variant, args.model),
+                asker=retrying_asker, due_asker=retrying_due, model=args.model,
                 deadline=time.monotonic() + 900)
             asked_plan += asked_chunk
             failed_plan += failed_chunk
             edits_by_index.update({start + i: new for edits in plan.values() for i, _, new, _ in edits})
-        plan_wrong = []
-        for i, (text, want) in enumerate(CASES):
-            new_line = edits_by_index.get(i)
-            if new_line is not None and want == "open":
-                plan_harmful.append(text)
-            if new_line is None and want != "open":
-                plan_missed.append(text)
-            if new_line is not None:
-                if want == "done" and " [x] " not in new_line:
-                    plan_wrong.append(text)
-                if want == "not_task" and not (" [-] " in new_line and tr.tc.REASONS["не поручение"] in new_line):
-                    plan_wrong.append(text)
-        edited = set(edits_by_index)
-        # Запись тем же путём, что в бою: apply на синтетическом графе (без гейта — проверяется отдельно).
-        data = pathlib.Path(tmp) / "data"
-        try:
-            applied_writes, skipped_writes, _ = tr.tc.apply(graph, plan, data)
-        except Exception as e:                            # noqa: BLE001 — замер должен падать с причиной
-            plan_wrong.append(f"apply: {type(e).__name__}: {e}")
-        else:
-            if len(applied_writes) != sum(len(v) for v in plan.values()):
-                plan_wrong.append(f"apply записал {len(applied_writes)} из {sum(len(v) for v in plan.values())}")
-            if skipped_writes:
-                plan_wrong.append(f"apply пропустил {skipped_writes}")
-        plan_rows = [{"text": t, "want": w, "edited": i in edited} for i, (t, w) in enumerate(CASES)]
+            # Запись тем же путём, что в бою: apply на графе ЭТОГО батча. Раньше apply вызывался один
+            # раз после цикла — на графе последнего батча и с его планом, а планы остальных батчей
+            # в запись не попадали вовсе (замечание Gemini).
+            try:
+                applied_writes, skipped_writes, _ = tr.tc.apply(graph, plan, data)
+            except Exception as e:                        # noqa: BLE001 — замер должен падать с причиной
+                plan_wrong.append(f"apply (батч {start}): {type(e).__name__}: {e}")
+            else:
+                planned = sum(len(v) for v in plan.values())
+                if len(applied_writes) != planned:
+                    plan_wrong.append(f"apply (батч {start}) записал {len(applied_writes)} из {planned}")
+                if skipped_writes:
+                    plan_wrong.append(f"apply (батч {start}) пропустил {skipped_writes}")
+    edited = set(edits_by_index)
+    for i, (text, want) in enumerate(CASES):
+        new_line = edits_by_index.get(i)
+        if new_line is not None and want == "open":
+            plan_harmful.append(text)
+        if new_line is None and want != "open":
+            plan_missed.append(text)
+        if new_line is not None:
+            if want == "done" and " [x] " not in new_line:
+                plan_wrong.append(text)
+            if want == "not_task" and not (" [-] " in new_line and tr.tc.REASONS["не поручение"] in new_line):
+                plan_wrong.append(text)
+    plan_rows = [{"text": t, "want": w, "edited": i in edited} for i, (t, w) in enumerate(CASES)]
 
     elapsed = time.monotonic() - started
     total = len(CASES)
@@ -189,6 +191,10 @@ def main() -> int:
         problems.append(f"вредных правок в полном пути: {len(plan_harmful)}")
     if unanswered:
         problems.append(f"без ответа модели: {unanswered}")
+    if missed * 2 >= total:
+        problems.append(f"пропусков {missed}/{total} — модель фактически не отвечает (пустой прогон не «чистый»)")
+    if len(plan_missed) * 2 >= total:
+        problems.append(f"полный путь: пропусков {len(plan_missed)}/{total} — модель не работает")
     if wrong:
         problems.append(f"неверных вердиктов: {wrong}")
     if failed_plan:

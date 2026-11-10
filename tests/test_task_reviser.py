@@ -393,3 +393,53 @@ def test_two_identical_confirmed_edits_roll_back_both(tmp_path: pathlib.Path) ->
     assert proc.returncode == 0, proc.stdout
     assert "вернул: 2" in proc.stdout, proc.stdout
     assert path.read_text(encoding="utf-8") == old + "\n" + old + "\n"
+
+
+def test_shifted_identical_edits_roll_back_both(tmp_path: pathlib.Path) -> None:
+    """Вставка строки сверху сдвинула обе правки: откат возвращает обе, а не половину (Gemini, critical)."""
+    old = "- [ ] **Иван** — отправил отчёт"
+    new = "- [x] **Иван** — отправил отчёт"
+    graph = meeting_graph(tmp_path, old + "\n" + old + "\n")
+    path = next(graph.rglob(tc.MINUTES))
+    _, _, backup = tc.apply(graph, {path: [(0, old, new, "первая"), (1, old, new, "вторая")]},
+                            tmp_path / "data")
+    path.write_text("# Заголовок\n" + path.read_text(encoding="utf-8"), encoding="utf-8", newline="")
+    proc = _restore_from_snapshot(backup, tmp_path)
+    assert proc.returncode == 0, proc.stdout
+    assert "вернул: 2" in proc.stdout, proc.stdout
+    assert path.read_text(encoding="utf-8") == "# Заголовок\n" + old + "\n" + old + "\n"
+
+
+def test_hand_deleted_twin_is_reported_not_silent(tmp_path: pathlib.Path) -> None:
+    """Одну из двух одинаково снятых строк удалили руками: откат обязан сказать, а не выйти с нулём."""
+    old = "- [ ] **Иван** — отправил отчёт"
+    new = "- [x] **Иван** — отправил отчёт"
+    graph = meeting_graph(tmp_path, old + "\n" + old + "\n")
+    path = next(graph.rglob(tc.MINUTES))
+    _, _, backup = tc.apply(graph, {path: [(0, old, new, "первая"), (1, old, new, "вторая")]},
+                            tmp_path / "data")
+    path.write_text(new + "\n", encoding="utf-8", newline="")   # вторую строку человек удалил
+    proc = _restore_from_snapshot(backup, tmp_path)
+    assert proc.returncode == 1, f"пропажа должна быть ненулевой: {proc.stdout!r}"
+    assert "не найдено (правили после прогона): 1" in proc.stdout, proc.stdout
+
+
+def test_plan_edits_threads_model_into_all_asks(tmp_path: pathlib.Path) -> None:
+    """Модель прогона доходит до вердикта, срока и второго подтверждения (Gemini, minor)."""
+    graph = meeting_graph(tmp_path, "- [ ] **Иван** — отправить отчёт к 20 числу\n")
+    models: list[str] = []
+
+    def asker(text, anchor, today, variant, model=tr.MODEL):
+        models.append(model)
+        return OPEN
+
+    def due_asker(text, anchor, variant, model=tr.MODEL):
+        models.append(model)
+        return None
+
+    plan, _, asked, failed = tr.plan_edits(graph, "Пётр", TODAY, set(), {},
+                                           asker=asker, due_asker=due_asker, model="модель-х")
+    assert asked >= 1 and failed == 0, (asked, failed)
+    assert models == ["модель-х"] * len(models), f"модель потерялась по дороге: {models}"
+    assert len(models) >= 2, "кроме вердикта обязан быть спрошен срок"
+    assert plan == {}
