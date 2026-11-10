@@ -69,6 +69,7 @@ def retrying_due(text, anchor, variant, model=tr.MODEL):
 
 
 def main() -> int:
+    charoite_paths.harden_umask()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json")
     ap.add_argument("--model", default=tr.MODEL)

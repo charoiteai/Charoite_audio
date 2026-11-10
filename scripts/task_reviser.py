@@ -29,13 +29,13 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.parse
 import urllib.request
 
 import tasks_control as tc
 
 import busy_signals  # noqa: E402 — путь src добавлен импортом tasks_control
 import charoite_paths  # noqa: E402
+from charoite_graph import net  # noqa: E402
 
 MODEL = "qwen3.8:27b-mlx"
 OLLAMA = "http://127.0.0.1:11434"
@@ -88,7 +88,7 @@ def _chat_json(prompt: str, model: str = MODEL) -> dict | None:
     request = urllib.request.Request(f"{OLLAMA}/api/chat", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
     try:
-        with _open(request, timeout=REQUEST_TIMEOUT) as response:
+        with net.open_url(request, timeout=REQUEST_TIMEOUT) as response:
             envelope = json.loads(response.read())
         message = envelope.get("message") if isinstance(envelope, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
@@ -329,21 +329,9 @@ def quiet(gate=None) -> bool:
         return False
 
 
-_LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def _open(url, *, timeout: float):
-    """Ollama живёт на loopback: прокси из окружения к нему не применяем (403/таймаут)."""
-    full = url.full_url if isinstance(url, urllib.request.Request) else url
-    host = urllib.parse.urlsplit(full).hostname or ""
-    if host in ("127.0.0.1", "localhost", "::1"):
-        return _LOOPBACK.open(url, timeout=timeout)
-    return urllib.request.urlopen(url, timeout=timeout)  # nosemgrep — адрес из константы OLLAMA (loopback)
-
-
 def model_alive(model: str = MODEL) -> bool:
     try:
-        with _open(f"{OLLAMA}/api/tags", timeout=5) as response:
+        with net.open_url(f"{OLLAMA}/api/tags", timeout=5) as response:
             models = json.loads(response.read()).get("models") or []
         return any(isinstance(m, dict) and m.get("name") == model for m in models)
     except (OSError, ValueError, AttributeError, TypeError, http.client.HTTPException):
@@ -701,6 +689,7 @@ def selftest() -> int:
 
 
 def main() -> int:
+    charoite_paths.harden_umask()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--watch", action="store_true")

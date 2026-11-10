@@ -40,7 +40,7 @@ def _bind_helpers():
     sys.path.insert(0, str(here / "lib"))
     try:
         import file_locks
-        import safe_write
+        from charoite_graph import safe_write
         return file_locks, safe_write
     except Exception:                           # noqa: BLE001 — и снимка нет: откатывать нечем
         sys.exit("откат: нет ни дерева кода из run.json, ни снимка хелперов lib/ рядом")

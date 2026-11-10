@@ -759,7 +759,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
         resolved[real] = edits
     plan = resolved
     base = charoite_paths.graph_backups(graph, "tasks_control", root=data)
-    lock_dir = charoite_paths.secure_dir(charoite_paths.graph_backups(graph, "cloud_backup", root=data).parent)
+    lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=data))
     # Микросекунды и pid в имени: два прогона в одну секунду иначе делили бы каталог,
     # манифест и копии файлов, и откат одного возвращал бы правки другого.
     backup = charoite_paths.secure_dir(
@@ -770,9 +770,13 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
     shutil.copy2(CODE / "scripts" / "restore.py", backup / "restore.py")
     try:                                          # хелперы рядом: откат переживёт удаление checkout
         lib = backup / "lib"
-        lib.mkdir(parents=True, exist_ok=True)
+        (lib / "charoite_graph").mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODE / "src" / "file_locks.py", lib / "file_locks.py")
-        shutil.copy2(CODE / "src" / "charoite_graph" / "safe_write.py", lib / "safe_write.py")
+        # safe_write кладём ВНУТРЬ пакета: откат импортирует члена пакета только через
+        # charoite_graph (границы импортов), и без исходного checkout пакет берётся из lib/.
+        shutil.copy2(CODE / "src" / "charoite_graph" / "safe_write.py",
+                     lib / "charoite_graph" / "safe_write.py")
+        (lib / "charoite_graph" / "__init__.py").write_text("", encoding="utf-8")
     except OSError as e:
         # Снимок — часть гарантии отката: без него граф не трогаем (нельзя обещать откат,
         # которого не будет, если checkout исчезнет).
@@ -1415,6 +1419,7 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
 
 
 def main() -> int:
+    charoite_paths.harden_umask()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true", help="записать (без флага — пробный прогон)")
     ap.add_argument("--selftest", action="store_true", help="правила, сводка и откат на временном графе")
