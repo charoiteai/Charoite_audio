@@ -20,6 +20,7 @@ import pytest
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import bench_task_reviser as bench  # noqa: E402
 import task_reviser as tr  # noqa: E402
 import tasks_control as tc  # noqa: E402
 
@@ -443,3 +444,16 @@ def test_plan_edits_threads_model_into_all_asks(tmp_path: pathlib.Path) -> None:
     assert models == ["модель-х"] * len(models), f"модель потерялась по дороге: {models}"
     assert len(models) >= 2, "кроме вердикта обязан быть спрошен срок"
     assert plan == {}
+
+
+def test_bench_masking_threshold_counts_actionable_cases() -> None:
+    """Порог «модель не работает» считается от строк, где требовалось действие, а не от всех."""
+    cases = [("a", "open"), ("b", "done"), ("c", "not_task"), ("d", "open"),
+             ("e", "done"), ("f", "not_task")]
+    assert bench.masking_problems(0, 0, cases) == []
+    assert bench.masking_problems(1, 0, cases) == [], "один пропуск из четырёх — ещё не вырождение"
+    assert bench.masking_problems(2, 0, cases), "половина действий пропущена — это проблема, а не «чисто»"
+    verdict, _ = bench.load_cases()
+    actionable = sum(1 for _, want in verdict if want != "open")
+    assert actionable < len(verdict), "в наборе есть законные «открыто» — иначе порог бессмыслен"
+    assert bench.masking_problems(actionable, actionable, verdict), "модель, всегда отвечающая «open», не «чиста»"

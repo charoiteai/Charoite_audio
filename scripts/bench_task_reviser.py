@@ -68,6 +68,20 @@ def retrying_due(text, anchor, variant, model=tr.MODEL):
         return tr.ask_due(text, anchor, variant, model)
 
 
+def masking_problems(missed: int, plan_missed: int, cases) -> list[str]:
+    """Порог «модель не работает» — от случаев, где действие требовалось, а не от всех подряд.
+
+    «Открыто» — законный ответ для 21 из 37 строк набора, поэтому missed * 2 >= total недостижимо:
+    полное вырождение модели в константное «open» выглядело бы «чисто» (замечание Gemini 3.8)."""
+    actionable = sum(1 for _, want in cases if want != "open")
+    problems: list[str] = []
+    if actionable and missed * 2 >= actionable:
+        problems.append(f"пропусков {missed}/{actionable} — модель фактически не отвечает (пустой прогон не «чистый»)")
+    if actionable and plan_missed * 2 >= actionable:
+        problems.append(f"полный путь: пропусков {plan_missed}/{actionable} — модель не работает")
+    return problems
+
+
 def main() -> int:
     charoite_paths.harden_umask()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -191,10 +205,7 @@ def main() -> int:
         problems.append(f"вредных правок в полном пути: {len(plan_harmful)}")
     if unanswered:
         problems.append(f"без ответа модели: {unanswered}")
-    if missed * 2 >= total:
-        problems.append(f"пропусков {missed}/{total} — модель фактически не отвечает (пустой прогон не «чистый»)")
-    if len(plan_missed) * 2 >= total:
-        problems.append(f"полный путь: пропусков {len(plan_missed)}/{total} — модель не работает")
+    problems.extend(masking_problems(missed, len(plan_missed), CASES))
     if wrong:
         problems.append(f"неверных вердиктов: {wrong}")
     if failed_plan:
