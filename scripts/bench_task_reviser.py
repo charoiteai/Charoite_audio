@@ -72,7 +72,7 @@ def masking_problems(missed: int, plan_missed: int, cases) -> list[str]:
     """Порог «модель не работает» — от случаев, где действие требовалось, а не от всех подряд.
 
     «Открыто» — законный ответ для 21 из 37 строк набора, поэтому missed * 2 >= total недостижимо:
-    полное вырождение модели в константное «open» выглядело бы «чисто» (замечание Gemini 3.8)."""
+    полное вырождение модели в константное «open» выглядело бы «чисто» (замечание второго ревью)."""
     actionable = sum(1 for _, want in cases if want != "open")
     problems: list[str] = []
     if actionable and missed * 2 >= actionable:
@@ -153,7 +153,7 @@ def main() -> int:
             edits_by_index.update({start + i: new for edits in plan.values() for i, _, new, _ in edits})
             # Запись тем же путём, что в бою: apply на графе ЭТОГО батча. Раньше apply вызывался один
             # раз после цикла — на графе последнего батча и с его планом, а планы остальных батчей
-            # в запись не попадали вовсе (замечание Gemini).
+            # в запись не попадали вовсе (замечание второго ревью).
             try:
                 applied_writes, skipped_writes, _ = tr.tc.apply(graph, plan, data)
             except Exception as e:                        # noqa: BLE001 — замер должен падать с причиной

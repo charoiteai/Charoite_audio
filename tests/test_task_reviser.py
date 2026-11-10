@@ -397,7 +397,7 @@ def test_two_identical_confirmed_edits_roll_back_both(tmp_path: pathlib.Path) ->
 
 
 def test_shifted_identical_edits_roll_back_both(tmp_path: pathlib.Path) -> None:
-    """Вставка строки сверху сдвинула обе правки: откат возвращает обе, а не половину (Gemini, critical)."""
+    """Вставка строки сверху сдвинула обе правки: откат возвращает обе, а не половину (второе ревью, critical)."""
     old = "- [ ] **Иван** — отправил отчёт"
     new = "- [x] **Иван** — отправил отчёт"
     graph = meeting_graph(tmp_path, old + "\n" + old + "\n")
@@ -426,7 +426,7 @@ def test_hand_deleted_twin_is_reported_not_silent(tmp_path: pathlib.Path) -> Non
 
 
 def test_plan_edits_threads_model_into_all_asks(tmp_path: pathlib.Path) -> None:
-    """Модель прогона доходит до вердикта, срока и второго подтверждения (Gemini, minor)."""
+    """Модель прогона доходит до вердикта, срока и второго подтверждения (второе ревью, minor)."""
     graph = meeting_graph(tmp_path, "- [ ] **Иван** — отправить отчёт к 20 числу\n")
     models: list[str] = []
 

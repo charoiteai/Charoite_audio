@@ -226,7 +226,7 @@ def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due
     """(план для tasks_control.apply, кэш «открыто», опрошено строк, сбоев модели).
 
     `model` — та же модель для всех запросов прогона: без него бенчмарк с --model мерил бы одну
-    модель, а снятие по сроку спрашивало вторую формулировку у дефолтной (замечание Gemini)."""
+    модель, а снятие по сроку спрашивало вторую формулировку у дефолтной (замечание второго ревью)."""
     plan: dict[pathlib.Path, list] = {}
     seen: dict[str, dict] = {}
     asked = edits = failed = 0
