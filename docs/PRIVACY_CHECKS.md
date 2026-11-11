@@ -38,16 +38,29 @@ its contents in shell arguments, model context, CI or a receipt.
    новой проверки. Hash приватного списка не сохранять.
 
 2. **Review content outside text scanning.** Inspect the candidate inventory
-   (`git ls-tree -r --full-tree HEAD`), including media, mode `160000`
-   submodules, LFS pointers and external attachments. A pointer is not its
-   payload. Record `none`, `separately approved` or `BLOCKED` for each relevant
+   of HEAD and **every outgoing commit on every outgoing ref**, including
+   replaced or deleted versions. Enumerate commits with `git rev-list` and
+   inspect each tree with `git ls-tree -r --full-tree`; deduplicate by object
+   identity, not filename. The template below records one reviewed base/head
+   range; reconcile the union of all actual outbound refs before publication.
+   Include media, mode `160000` submodules, LFS pointers and external attachments.
+   Review each distinct payload version (including the object behind each LFS
+   or submodule pointer); a pointer is not its payload. Non-commit refs need
+   their own object inventory; unknown coverage is BLOCKED. Record `none`,
+   `separately approved` or `BLOCKED` for each relevant
    class. Unexamined payload blocks full privacy clearance. A media skip or
    approved blob hash is not proof about visible text, audio or metadata;
    those require a separate permitted review. Do not open private originals
    to fill this gap: prepare approved synthetic/public replacements instead.
 
-   **Проверить нетекстовый охват.** Инвентаризация включает media, submodules
-   (`160000`), LFS и внешние вложения. Указатель не заменяет содержимое.
+   **Проверить нетекстовый охват.** Инвентаризировать HEAD и каждый уходящий
+   коммит всех отправляемых refs, включая заменённые и удалённые версии.
+   Перечень коммитов даёт `git rev-list`, дерево каждого — `git ls-tree -r --full-tree`.
+   Объединять по идентичности объекта, не имени файла. Шаблон ниже покрывает
+   одну пару base/head; перед публикацией сверить объединённый охват всех refs.
+   Проверить каждую версию media, submodules (`160000`), LFS и внешних вложений,
+   включая содержимое за указателями. Не-коммитные refs требуют отдельной
+   инвентаризации объектов; неизвестный охват — BLOCKED. Указатель не заменяет содержимое.
    Для каждого класса: отсутствует, отдельно проверен или BLOCKED. Непроверенные
    изображения/звук/метаданные не получают полный допуск от текстового сканера.
    Реальные приватные оригиналы ради этого не читать; использовать разрешённые
@@ -58,28 +71,43 @@ its contents in shell arguments, model context, CI or a receipt.
    shell, from the clean candidate root; substitute the reviewed base OID.
    Output goes to a private temporary directory, never into an agent/public
    log. Any failed step exits before a success message. It intentionally does
-   not publish anything. Never append an unconditional push or suppress failure.
+   not publish anything. The receipt directory is created before Git runs;
+   all validation diagnostics stay inside it, and creation/redirection errors
+   are kept off the console. Only the neutral success message is public.
+   Never append an unconditional push or suppress failure.
 
    **Выполнить штатные проверки.** Шаблон ниже — отдельный shell в чистом
    checkout; подставить согласованный base OID. Вывод остаётся в приватном
    временном каталоге, не в агентском/публичном логе. Ошибка завершает shell.
-   Публикации здесь нет; безусловный push после команды запрещён.
+   Каталог отчёта создаётся до Git; вся диагностика проверки приватна, ошибки
+   создания каталога/перенаправления не выводят пути в консоль. Наружу выходит
+   только нейтральное сообщение успеха. Публикации здесь нет; безусловный push
+   после команды запрещён.
 
    ```sh
    set -eu
    umask 077
-   base=REPLACE_WITH_REVIEWED_BASE_OID
-   head=$(git rev-parse --verify 'HEAD^{commit}')
-   git rev-parse --verify "${base}^{commit}" >/dev/null
-   status=$(git status --porcelain)
-   test -z "$status"
-   receipt_dir=$(mktemp -d "${TMPDIR:-/tmp}/charoite-privacy.XXXXXX")
-   python3 scripts/check_private_markers.py --all >"$receipt_dir/tree.log" 2>&1
-   python3 scripts/check_private_markers.py --range "$base..$head" >"$receipt_dir/range.log" 2>&1
-   current_head=$(git rev-parse HEAD)
-   test "$current_head" = "$head"
-   status=$(git status --porcelain)
-   test -z "$status"
+   receipt_dir=$(mktemp -d "${TMPDIR:-/tmp}/charoite-privacy.XXXXXX" 2>/dev/null)
+   (
+     set -eu
+     base=REPLACE_WITH_REVIEWED_BASE_OID
+     head=$(git rev-parse --verify 'HEAD^{commit}')
+     git rev-parse --verify "${base}^{commit}" >/dev/null
+     candidate_status=$(git status --porcelain)
+     test -z "$candidate_status"
+     git ls-tree -r --full-tree "$head" >"$receipt_dir/head-tree.log"
+     outgoing_commits=$(git rev-list "$base..$head")
+     for outgoing_commit in $outgoing_commits; do
+       printf 'commit %s\n' "$outgoing_commit"
+       git ls-tree -r --full-tree "$outgoing_commit"
+     done >"$receipt_dir/outgoing-trees.log"
+     python3 scripts/check_private_markers.py --all >"$receipt_dir/tree.log" 2>&1
+     python3 scripts/check_private_markers.py --range "$base..$head" >"$receipt_dir/range.log" 2>&1
+     current_head=$(git rev-parse HEAD)
+     test "$current_head" = "$head"
+     candidate_status=$(git status --porcelain)
+     test -z "$candidate_status"
+   ) 2>/dev/null >"$receipt_dir/validation.log" 2>&1
    printf '%s\n' 'TEXT_CHECKS_PASS; payload review and final pre-push still required'
    ```
 
@@ -145,7 +173,8 @@ python -m pytest --noconftest -o addopts= \
 | --- | --- |
 | Short ASCII/Cyrillic, case, digits/underscore/hyphen/Unicode, literal regex, long substring, NFC/NFD both inputs | `test_protocol_*` in `test_private_markers.py`, through actual loading and scanning / через загрузку и scanner |
 | Same synthetic bytes, legacy false alarm vs canonical result, standalone positive control | `test_protocol_raw_grep_and_canonical_scan_same_synthetic_snapshot` |
-| Shell Git/checker failure cannot reach the publication sink | `test_protocol_documented_shell_stops_before_publication` (executes the actual template / исполняет сам шаблон) |
+| Removed/replaced media versions remain in the review inventory | `test_protocol_inventory_keeps_replaced_and_deleted_media` |
+| Shell Git/checker failure cannot reach the publication sink or expose diagnostics | `test_protocol_documented_shell_stops_before_publication` (executes the actual template / исполняет сам шаблон) |
 | Missing/empty list; denial leaves remote refs unchanged | `test_protocol_failed_gate_keeps_synthetic_remote_unchanged` |
 | Intermediate leak then cleanup, Git failure, new/multiple refs, force, tags, deletion, unavailable/stale tips | Existing temporary-repository `test_pre_push_markers.py` cases / существующие сценарии с временными Git-репозиториями |
 | Media signature/spoof, non-UTF8, unknown binary and exact-blob approval | Existing `test_private_markers.py` / `test_pre_push_markers.py` cases |
