@@ -744,6 +744,12 @@ LOG_KINDS: dict[str, LogKind] = {
     # агрегированные счётчики последнего прогона шага досье без текста источников (№990):
     # перезаписывается прогоном, ретеншн не трогает
     "dossier_telemetry": LogKind("dossier_telemetry", "shared", None, (".json",), sweep=False, whole=True),
+    # общие журналы, состояние и замок контроля/ревизора поручений (№998): тел поручений и
+    # тем встреч не хранят, ретеншн звуковых логов их не стирает
+    "tasks_control_log": LogKind("tasks_control", "shared", None, (".log",), sweep=False, whole=True),
+    "task_reviser_log": LogKind("task_reviser", "shared", None, (".log",), sweep=False, whole=True),
+    "task_reviser_state": LogKind("task_reviser_state", "shared", None, (".json",), sweep=False, whole=True),
+    "task_reviser_lock": LogKind("task_reviser", "lock", None, (".lock",), sweep=False, whole=True),
 }
 
 

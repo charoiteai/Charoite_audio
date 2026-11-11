@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Collection
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -161,26 +162,31 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     return out, None
 
 
-def _read_bounded(url: str) -> bytes:
-    """Тело ответа за RESIDENT_TIMEOUT_S и не больше RESIDENT_MAX_BYTES:
+def read_bounded_url(request: urllib.request.Request | str, *,
+                     timeout_s: float = RESIDENT_TIMEOUT_S,
+                     max_bytes: int = RESIDENT_MAX_BYTES) -> bytes:
+    """Тело HTTP-ответа за `timeout_s` и не больше `max_bytes`:
     таймаут `urlopen` — на каждую операцию сокета, и сервер, отдающий тело по
-    байту, держал бы сторожа сколько угодно (Opus по №595). Дедлайн проверяется
-    между кусками, поэтому потолок — дедлайн плюс один таймаут сокета; заголовки
-    под ним не стоят (долг №615)."""
-    deadline = time.monotonic() + RESIDENT_TIMEOUT_S
+    байту, держал бы клиента сколько угодно (Opus по №595, DS M1 по №998)."""
+    deadline = time.monotonic() + timeout_s
     chunks, size = [], 0
-    with net.open_url(urllib.request.Request(url), timeout=RESIDENT_TIMEOUT_S) as r:
+    req = urllib.request.Request(request) if isinstance(request, str) else request
+    with net.open_url(req, timeout=timeout_s) as r:
         read = getattr(r, "read1", r.read)
         while chunk := read(65536):
             chunks.append(chunk)
             size += len(chunk)
-            if size > RESIDENT_MAX_BYTES:
-                raise ValueError(f"ответ больше {RESIDENT_MAX_BYTES} байт")
+            if size > max_bytes:
+                raise ValueError(f"ответ больше {max_bytes} байт")
             if time.monotonic() > deadline:
-                raise TimeoutError(f"ответ дольше {RESIDENT_TIMEOUT_S} с")
+                raise TimeoutError(f"ответ дольше {timeout_s} с")
         if getattr(r, "length", None):  # read1 не проверяет Content-Length — обрыв тела
             raise http.client.IncompleteRead(b"".join(chunks), r.length)
     return b"".join(chunks)
+
+
+def _read_bounded(url: str) -> bytes:
+    return read_bounded_url(url, timeout_s=RESIDENT_TIMEOUT_S, max_bytes=RESIDENT_MAX_BYTES)
 
 
 def _census_config(root: pathlib.Path) -> tuple[dict | None, str | None]:
@@ -224,6 +230,28 @@ def resident_config_problem(root: pathlib.Path) -> str | None:
     return _census_config(root)[1]
 
 
+def ollama_loopback_url(root: pathlib.Path) -> tuple[str | None, str | None]:
+    """Локальный адрес Ollama для скриптов того же корня данных — `(url, None)` или `(None, причина)`.
+
+    Запросы и выгрузка ревизора обязаны ходить на тот же адрес, где `resident_models`
+    читает `/api/ps`: иначе датчик проверяет один сервер, а модель грузится и выгружается
+    на другом. Корень без своего `config/config.yaml` — отказ без выхода в сеть (как и у
+    `resident_models`, чтобы тесты и голые каталоги не трогали живую Ollama на 11434);
+    удалённый или запрещённый политикой адрес — отказ с причиной."""
+    cfg, problem = _census_config(root)
+    if problem:
+        return None, f"память моделей не читается ({problem}) — почините {CONFIG_REL}"
+    if cfg is None:
+        return None, f"нет конфига {root / CONFIG_REL}"
+    try:
+        base = privacy.llm_base_url(cfg)
+    except privacy.PrivacyRefused as e:
+        return None, f"адрес локальной модели недоступен ({e})"
+    if not privacy.is_loopback_url(base):
+        return None, f"адрес локальной модели {base} не loopback"
+    return base.rstrip("/"), None
+
+
 def _until_words(expires: object, now: dt.datetime | None = None) -> str:
     """Срок выгрузки словами по местному времени: «до 17:39», другой день —
     «до 22.10 09:15», бессрочно (Ollama пишет год далеко вперёд) — «без срока»."""
@@ -247,15 +275,20 @@ def _physical_bytes() -> int | None:
     return n if n > 0 else None
 
 
-def resident_busy_reason(root: pathlib.Path) -> str | None:
+def _resident_model_key(name: str) -> str:
+    clean = name.strip()
+    if clean.endswith(":local"):
+        clean = clean[:-6]
+    return clean if ":" in clean else f"{clean}:latest"
+
+
+def resident_busy_reason(root: pathlib.Path, *,
+                         ignore_models: Collection[str] = ()) -> str | None:
     """Слова «модели держат память» или «память моделей не читается» — или None:
     держат меньше порога либо сигнала нет (`resident_models`).
     Не бросает: сбой сенсора — «не читается», а не «свободно» и не падение
     вызывающего (мутатор зовёт его между мутантами напрямую)."""
-    try:
-        return _resident_busy_reason(root)
-    except Exception as e:  # noqa: BLE001 — сломанный сенсор памяти не значит «свободно»
-        return f"память моделей не читается ({type(e).__name__}) — проверьте Ollama"
+    return _resident_state(root, ignore_models=ignore_models)[1]
 
 
 def _resident_limit(total: int) -> float:
@@ -264,33 +297,83 @@ def _resident_limit(total: int) -> float:
     return max(total * RESIDENT_BUSY_SHARE, min(RESIDENT_BUSY_FLOOR, total / 2))
 
 
-def _resident_busy_reason(root: pathlib.Path) -> str | None:
-    if problem := resident_config_problem(root):
-        return f"память моделей не читается ({problem}) — почините {CONFIG_REL}"
-    models, problem = resident_models(root)
-    if problem:
-        return f"память моделей не читается ({problem}) — проверьте Ollama"
-    if not models:
-        return None
-    held = sum(size for _, size, _ in models)
-    total = _physical_bytes()
-    if total is None:
-        if held < RESIDENT_BUSY_FLOOR:
-            return None
-        return "память моделей не читается (объём памяти машины не определён)"
-    limit = _resident_limit(total)
-    if held < limit:
-        return None
-    gb = lambda n: f"{n / 1e9:.1f}".replace(".", ",")  # noqa: E731
-    ordered = sorted(models, key=lambda m: -m[1])
-    names = ", ".join(f"{name} {gb(size)} ГБ" + (f" {until}" if until else "")
-                      for name, size, until in ordered)
-    return (f"локальные модели держат память ({names}; всего {gb(held)} ГБ при пороге "
-            f"{gb(limit)} ГБ) — освободить сразу: ollama stop {ordered[0][0]}")
+def _resident_state(root: pathlib.Path, *,
+                    ignore_models: Collection[str] = ()) -> tuple[str, str | None]:
+    """`("free" | "busy" | "broken", причина)`: сломанный датчик и реальная занятость
+    различаются типом исхода, чтобы часовой прогон не гасил сторожа при битом конфиге."""
+    try:
+        if problem := resident_config_problem(root):
+            return "broken", f"память моделей не читается ({problem}) — почините {CONFIG_REL}"
+        models, problem = resident_models(root)
+        if problem:
+            return "broken", f"память моделей не читается ({problem}) — проверьте Ollama"
+        if ignore_models:
+            ignored = {_resident_model_key(m) for m in ignore_models if m.strip()}
+            models = [m for m in models if _resident_model_key(m[0]) not in ignored]
+        if not models:
+            return "free", None
+        held = sum(size for _, size, _ in models)
+        total = _physical_bytes()
+        if total is None:
+            if held < RESIDENT_BUSY_FLOOR:
+                return "free", None
+            return "broken", "память моделей не читается (объём памяти машины не определён)"
+        limit = _resident_limit(total)
+        if held < limit:
+            return "free", None
+        gb = lambda n: f"{n / 1e9:.1f}".replace(".", ",")  # noqa: E731
+        ordered = sorted(models, key=lambda m: -m[1])
+        names = ", ".join(f"{name} {gb(size)} ГБ" + (f" {until}" if until else "")
+                          for name, size, until in ordered)
+        return "busy", (f"локальные модели держат память ({names}; всего {gb(held)} ГБ при пороге "
+                        f"{gb(limit)} ГБ) — освободить сразу: ollama stop {ordered[0][0]}")
+    except Exception as e:  # noqa: BLE001 — сломанный сенсор памяти не значит «свободно»
+        return "broken", f"память моделей не читается ({type(e).__name__}) — проверьте Ollama"
+
+
+def check_admission(root: pathlib.Path, *, count_mutation: bool = True,
+                    count_resident: bool = True,
+                    ignore_models: Collection[str] = ()) -> tuple[str, list[str]]:
+    """Допуск фонового прогона: `("free" | "busy" | "broken", причины)`.
+
+    В отличие от `machine_busy`, не сливает поломку датчика с обычной занятостью:
+    «занято» обновляет штатный пропуск сторожа, «broken» требует ремонта и тревоги."""
+    busy: list[str] = []
+    broken: list[str] = []
+    try:
+        if live_gate.daemon_alive(root):
+            busy.append("живая запись")
+    except Exception as e:  # noqa: BLE001
+        broken.append(f"датчик живой записи не читается ({type(e).__name__})")
+    try:
+        busy += [f"разбор встречи ({stage})" for stage in MeetingStatusStore(root).busy()]
+    except Exception as e:  # noqa: BLE001
+        broken.append(f"датчик разбора встреч не читается ({type(e).__name__})")
+    try:
+        if night := night_busy_reason(root):
+            busy.append(night)
+    except Exception as e:  # noqa: BLE001
+        broken.append(f"датчик ночного цикла не читается ({type(e).__name__})")
+    if count_resident:
+        kind, reason = _resident_state(root, ignore_models=ignore_models)
+        if kind == "broken" and reason:
+            broken.append(reason)
+        elif reason:
+            busy.append(reason)
+    if count_mutation:
+        try:
+            if mutation_running(root):
+                busy.append("мутация тестов")
+        except Exception as e:  # noqa: BLE001
+            broken.append(f"датчик мутации не читается ({type(e).__name__})")
+    if broken:
+        return "broken", broken + busy
+    return ("busy", busy) if busy else ("free", [])
 
 
 def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,
-                 count_resident: bool = True) -> list[str]:
+                 count_resident: bool = True,
+                 ignore_models: Collection[str] = ()) -> list[str]:
     """Чем занята машина, глазами тяжёлого процесса перед стартом.
 
     `count_mutation=False` — для самого мутатора: другой мутатор ему не помеха
@@ -300,7 +383,8 @@ def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,
 
     `count_resident=False` — модели в памяти Ollama не считать (№595); по
     умолчанию считают все: вторая большая модель или тяжёлый прогон поверх
-    резидентной 35b уводят машину в своп."""
+    резидентной 35b уводят машину в своп. `ignore_models` — не считать свою
+    модель при перепроверке после собственного опроса, сохраняя счёт чужих."""
     busy: list[str] = []
     if live_recording(root):
         busy.append("живая запись")
@@ -313,7 +397,7 @@ def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,
     night = night_busy_reason(root)
     if night:
         busy.append(night)
-    if count_resident and (resident := resident_busy_reason(root)):
+    if count_resident and (resident := resident_busy_reason(root, ignore_models=ignore_models)):
         busy.append(resident)
     if count_mutation and mutation_running(root):
         busy.append("мутация тестов")

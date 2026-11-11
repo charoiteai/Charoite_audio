@@ -41,6 +41,8 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -347,3 +349,76 @@ def key(line: str) -> str:
 def fields(line: str) -> dict[str, datetime.date]:
     """Поля хвоста строки — с ящиком и без: пересказ ревизии тоже может нести срок."""
     return _tail(line[_HEAD.match(line).end():])[2]
+
+
+FENCE = re.compile(r"^([ \t]*)(`{3,}|~{3,})")
+_OPEN_TASK_LINE = re.compile(r"^\s*[-*] \[ \] +(.+)$")
+CLOSED_TAIL = re.compile(
+    r"\s*_\((?:снято по сроку|снято: нет исполнителя|снято: давно, срок не разобран|снято: не поручение)"
+    r" \d\d\.\d\d\)_\s*$"
+)
+_CLOSED_TAIL = CLOSED_TAIL
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def is_digest(value: object) -> bool:
+    """Строка — валидный 64-символьный SHA-256 дайджест нижнего регистра."""
+    return isinstance(value, str) and bool(_SHA256_HEX.fullmatch(value))
+
+
+def fence_map(lines: list[str]) -> list[bool]:
+    """Строка внутри код-блока (или сама его граница). Общая карта для scan, apply, candidates и restore.
+
+    Блок закрывает только тот же символ, не короче открывающего, без хвоста после маркера; для открытия с
+    отступом 0..3 закрывает отступ 0..3, для вложенного открытия (4+) — отступ от открытия до +3 (не строка
+    верхнего уровня): ``` и ````python внутри ````-блока и строка с 4+ пробелами в блоке нулевого уровня — текст."""
+    inside, opener, opener_indent, out = False, "", 0, []
+    for line in lines:
+        m = FENCE.match(line)
+        if m:
+            indent = len(m.group(1).expandtabs(4))
+            marker = m.group(2)
+            tail = line[m.end():]
+            if not inside:
+                if marker[0] != "`" or "`" not in tail:
+                    inside, opener, opener_indent = True, marker, indent
+                    out.append(True)
+                    continue
+            else:
+                indent_ok = indent <= 3 if opener_indent <= 3 else opener_indent <= indent <= opener_indent + 3
+                if marker[0] == opener[0] and len(marker) >= len(opener) and not tail.strip() and indent_ok:
+                    inside, opener, opener_indent = False, "", 0
+                    out.append(True)
+                    continue
+        out.append(inside)
+    return out
+
+
+def meeting_key_of_path(rel: str | os.PathLike[str]) -> str | None:
+    """12-цифровой ключ встречи из пути файла в графе."""
+    digits = "".join(ch for ch in os.fspath(rel) if ch.isdecimal() and ch.isascii())[:12]
+    return digits if len(digits) == 12 else None
+
+
+def normalize_for_registry(text: str) -> str:
+    """Нормализация тела поручения без пометок контроля в хвосте, **, регистра и кратных пробелов."""
+    return " ".join(_CLOSED_TAIL.sub("", text).replace("**", "").lower().split())
+
+
+def returned_digest(meeting: str | None, text: str) -> str:
+    """Обезличенная личность поручения для реестра отката: без хранения текста и темы встречи."""
+    payload = f"{meeting}\0{normalize_for_registry(text)}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def cache_digest(meeting: str | None, text: str) -> str:
+    """Хеш точного текста поручения встречи для кэша ревизора: правка формулировки инвалидирует кэш."""
+    return hashlib.sha256(f"{meeting}\0{text}".encode("utf-8")).hexdigest()
+
+
+def returned_line_digest(rel: str, line: str) -> str | None:
+    """Дайджест открытой строки `- [ ] …` из файла `rel` для `returned.jsonl`."""
+    m = _OPEN_TASK_LINE.match(line)
+    if not m:
+        return None
+    return returned_digest(meeting_key_of_path(rel), m.group(1))

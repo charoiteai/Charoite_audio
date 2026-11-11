@@ -111,6 +111,7 @@ def _kind(entry: cp.LogKind) -> str:
 # Имена, которые живут в logs/ рядом с журналами и под ретеншн попадать не должны.
 NOT_SWEPT = ["graph_doctor.json", "graph_feed.json", "graph_feed_base.json", "daemon.lock", "rebuild.lock", "mutation.lock",
              "nightly.json", "dossier_telemetry.json", f"rebuild-{STEM}.pid", "lexicon_candidates.md",
+             "tasks_control.log", "task_reviser.log", "task_reviser_state.json", "task_reviser.lock",
              "model_calls-2026-09-29.jsonl"]   # журнал вызовов модели только дописывается, ретеншн его не трогает (№807)
 
 

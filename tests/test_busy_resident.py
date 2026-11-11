@@ -372,3 +372,81 @@ def test_no_census_endpoint_is_no_signal(tmp_path, ram_64gb):
         _config(tmp_path, url)
         assert busy_signals.resident_models(tmp_path) == ([], None)
         assert busy_signals.machine_busy(tmp_path) == []
+
+
+def test_ignore_models_excludes_own_model_but_keeps_competing_and_broken_sensor(tmp_path, ram_64gb):
+    """Ревизор поручений (№998) сам поднимает `qwen3.8:27b-mlx` (~19 ГБ): при перепроверке
+    свою модель (включая `:local` и bare/`:latest`) не считает конкурентом себе, но чужую
+    большую модель и нечитаемый сенсор продолжает считать занятостью."""
+    own = _model("qwen3.8:27b-mlx", 19 * GB)
+    emb = _model("bge-m3:latest", GB)
+    with _fake_ollama(body={"models": [own, emb]}) as url:
+        _config(tmp_path, url)
+        assert len(busy_signals.machine_busy(tmp_path)) == 1
+        assert busy_signals.machine_busy(tmp_path, ignore_models=("  ", "qwen3.8:27b-mlx")) == []
+        assert busy_signals.machine_busy(tmp_path, ignore_models=(" qwen3.8:27b-mlx:local ",)) == []
+        assert busy_signals.resident_busy_reason(tmp_path, ignore_models=("qwen3.8:27b-mlx",)) is None
+    with _fake_ollama(body={"models": [_model("custom-big:latest", 19 * GB)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.machine_busy(tmp_path, ignore_models=("custom-big",)) == []
+        assert busy_signals.machine_busy(tmp_path, ignore_models=("custom-big:local",)) == []
+    other = _model("qwen3.6:35b-mlx", 22 * GB)
+    with _fake_ollama(body={"models": [own, other]}) as url:
+        _config(tmp_path, url)
+        busy = busy_signals.machine_busy(tmp_path, ignore_models=("qwen3.8:27b-mlx",))
+        assert len(busy) == 1
+        assert "qwen3.8:27b-mlx" not in busy[0]
+        assert "qwen3.6:35b-mlx 22,0 ГБ" in busy[0] and "всего 22,0 ГБ" in busy[0]
+    with _fake_ollama(status=500, body={"error": "boom"}) as url:
+        _config(tmp_path, url)
+        busy = busy_signals.machine_busy(tmp_path, ignore_models=("qwen3.8:27b-mlx",))
+        assert len(busy) == 1 and busy[0].startswith("память моделей не читается (")
+        verdict, reasons = busy_signals.check_admission(tmp_path, ignore_models=("qwen3.8:27b-mlx",))
+        assert verdict == "broken" and reasons[0].startswith("память моделей не читается (")
+
+
+def test_check_admission_and_ollama_loopback_url_separate_broken_from_busy(tmp_path, ram_64gb):
+    """`check_admission` разделяет `free` / `busy` / `broken`, а `ollama_loopback_url` отдаёт
+    ровно тот loopback-адрес, который проверяет перепись."""
+    with _fake_ollama(body={"models": [_model("qwen3.6:35b-mlx", 22 * GB)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.ollama_loopback_url(tmp_path) == (url.rstrip("/"), None)
+        verdict, reasons = busy_signals.check_admission(tmp_path)
+        assert verdict == "busy" and len(reasons) == 1
+        assert busy_signals.check_admission(tmp_path, ignore_models=("qwen3.6:35b-mlx",)) == ("free", [])
+    _config(tmp_path, "localhost:11434")
+    verdict, reasons = busy_signals.check_admission(tmp_path)
+    assert verdict == "broken" and "почините config/config.yaml" in reasons[0]
+    url_val, err = busy_signals.ollama_loopback_url(tmp_path)
+    assert url_val is None and err and "почините config/config.yaml" in err
+    (tmp_path / "config" / "config.yaml").write_text(
+        "llm:\n  engine: cloud\n  base_url: https://api.example.com\n  allow_remote: true\n",
+        encoding="utf-8",
+    )
+    url_val, err = busy_signals.ollama_loopback_url(tmp_path)
+    assert url_val is None and err and "loopback" in err
+
+
+def test_check_admission_reports_broken_live_and_meeting_status_sensors(tmp_path, monkeypatch):
+    """Сбой `daemon_alive` или `MeetingStatusStore.busy` даёт `broken`, а не молчаливое `free`."""
+    monkeypatch.setattr(busy_signals.live_gate, "daemon_alive", lambda _r: (_ for _ in ()).throw(OSError("lock")))
+    monkeypatch.setattr(
+        busy_signals.MeetingStatusStore,
+        "busy",
+        lambda self: (_ for _ in ()).throw(RuntimeError("status")),
+    )
+    verdict, reasons = busy_signals.check_admission(tmp_path, count_resident=False, count_mutation=False)
+    assert verdict == "broken"
+    assert any("датчик живой записи" in r for r in reasons)
+    assert any("датчик разбора встреч" in r for r in reasons)
+
+
+def test_ollama_loopback_url_without_config_and_bounded_url_reader(tmp_path):
+    """Голый корень без `config/config.yaml` не подставляет порт по умолчанию, а `read_bounded_url` режет потолок."""
+    url_val, err = busy_signals.ollama_loopback_url(tmp_path / "no_config_here")
+    assert url_val is None and err and "нет конфига" in err
+    with _fake_ollama(body={"models": [_model("x", 1) for _ in range(10)]}) as url:
+        data = busy_signals.read_bounded_url(f"{url}/api/ps", timeout_s=2.0, max_bytes=10_000)
+        assert b"models" in data
+        with pytest.raises(ValueError, match="ответ больше"):
+            busy_signals.read_bounded_url(f"{url}/api/ps", timeout_s=2.0, max_bytes=16)

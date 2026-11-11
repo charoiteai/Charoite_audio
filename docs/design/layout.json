@@ -287,7 +287,10 @@
     "scripts/memory_case_suite.py": "валидация и экспорт учебных вопросов памяти, ручной прогон",
     "scripts/retrieval_compare.py": "сравнение результатов поиска по эталонным вопросам, ручной прогон",
     "scripts/decision_evidence_audit.py": "проверка цитат и истории решений в экспортированных записях, ручной прогон",
-    "scripts/runtime_profile.py": "замер локального потокового транспорта на заданных запросах, ручной прогон"
+    "scripts/runtime_profile.py": "замер локального потокового транспорта на заданных запросах, ручной прогон",
+    "scripts/bench_task_reviser.py": "замер ревизора поручений на синтетическом наборе (№998), ручной прогон на живой модели",
+    "scripts/task_reviser.py": "ревизор статусов поручений локальной моделью (№998): ручной прогон и launchd; сторож --watch",
+    "scripts/tasks_control.py": "контроль поручений: снятие старых и ничьих по правилам с откатом прогона (№366), ручной прогон и launchd"
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -295,6 +298,9 @@
     },
     "scripts/layout_map.py": {
       "file": "сам гейт раскладки: строка вычисляет корень РЕПОЗИТОРИЯ — две ступени вверх от scripts/layout_map.py, из него берутся src/, docs/design/layout.json и карта; sys.path она не трогает. Канон в этот момент недостижим: чтобы импортировать src/charoite_paths.py, надо сперва тем же подъёмом от __file__ положить src/ в sys.path — эта строка и есть такой подъём, сделанный до всякого канона. Цепочка ведёт к корню КОДА (src/, docs/design/layout.json), данных он не касается (№338)"
+    },
+    "scripts/restore.py": {
+      "file": "шаблон отката одного прогона: он живёт в каталоге прогона вместе с run.json и копиями файлов, поэтому __file__ здесь — единственный способ найти прогон. Канон корней по замыслу недостижим: откат идёт системным python3 из снимка, даже когда репозиторий уже другой (№998)"
     }
   },
   "run_contracts": {
@@ -313,6 +319,10 @@
       "why": "по коду: argparse"
     },
     "scripts/bench_models.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/bench_task_reviser.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },
@@ -493,6 +503,14 @@
       "why": "по коду: argparse"
     },
     "scripts/stt_bench.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/task_reviser.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/tasks_control.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },

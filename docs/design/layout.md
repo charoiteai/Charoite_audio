@@ -61,6 +61,7 @@
 Канон: `src/charoite_paths.py`. Область правила: `src/`, `scripts/`.
 
 - `scripts/layout_map.py`, форма «file»: сам гейт раскладки: строка вычисляет корень РЕПОЗИТОРИЯ — две ступени вверх от scripts/layout_map.py, из него берутся src/, docs/design/layout.json и карта; sys.path она не трогает. Канон в этот момент недостижим: чтобы импортировать src/charoite_paths.py, надо сперва тем же подъёмом от __file__ положить src/ в sys.path — эта строка и есть такой подъём, сделанный до всякого канона. Цепочка ведёт к корню КОДА (src/, docs/design/layout.json), данных он не касается (№338)
+- `scripts/restore.py`, форма «file»: шаблон отката одного прогона: он живёт в каталоге прогона вместе с run.json и копиями файлов, поэтому __file__ здесь — единственный способ найти прогон. Канон корней по замыслу недостижим: откат идёт системным python3 из снимка, даже когда репозиторий уже другой (№998)
 - `src/deps.py`, форма «file»: рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
@@ -89,6 +90,7 @@
 - `app/stage_code.sh` ← app/make_app.sh; не запускается: shell-скрипт: пробника нет; поведение держит test_install_engine (дерево бандла из него же); снимет №364 (проба вместо none)
 - `scripts/bench_extract.py` ← ручной запуск: бенчмарк извлечения, ручной прогон; проба help
 - `scripts/bench_models.py` ← ручной запуск: бенчмарк моделей, ручной прогон; проба help
+- `scripts/bench_task_reviser.py` ← ручной запуск: замер ревизора поручений на синтетическом наборе (№998), ручной прогон на живой модели; проба help
 - `scripts/build_app_icon.sh` ← ручной запуск: сборка иконки приложения руками; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/build_embedded_python.sh` ← .github/workflows/release-app.yml, app/make_app.sh; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/build_fake_pool.py` ← ручной запуск: сборка пула подставных имён маски (№793) руками, вывод в src/pii_fake_pool.py; не запускается: без аргументов: печатает модуль пула в stdout; поведение держит test_every_pool_word_declines; снимет №793 (сборщик пула подставных имён)
@@ -132,6 +134,8 @@
 - `scripts/runtime_profile.py` ← ручной запуск: замер локального потокового транспорта на заданных запросах, ручной прогон; проба help
 - `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml; проба help
 - `scripts/stt_bench.py` ← ручной запуск: бенчмарк STT, ручной прогон; проба help
+- `scripts/task_reviser.py` ← ручной запуск: ревизор статусов поручений локальной моделью (№998): ручной прогон и launchd; сторож --watch; проба help
+- `scripts/tasks_control.py` ← ручной запуск: контроль поручений: снятие старых и ничьих по правилам с откатом прогона (№366), ручной прогон и launchd; проба help
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py; проба help
 - `scripts/wait_for_idle.py` ← scripts/nightly.sh; проба help
 - `src/daemon.py` ← app/Sources/CharoiteApp/Models/AppSettings.swift, app/Sources/CharoiteApp/Services/SetupReadinessService.swift, app/Sources/CharoiteApp/Services/SuflerService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; проба refuse
@@ -150,16 +154,20 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
+- `scripts/restore.py` ← scripts/tasks_control.py
 - `src/brain.py` ← scripts/layout_map.py
 - `src/charoite_graph/cli.py` ← scripts/layout_map.py
 - `src/charoite_graph/graph_names.py` ← scripts/check_private_markers.py
 - `src/charoite_graph/graph_search.py` ← scripts/layout_map.py, scripts/memory_bench.py
+- `src/charoite_graph/safe_write.py` ← scripts/tasks_control.py
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/charoite_schema.py` ← .github/workflows/swift-tests.yml
 - `src/exit_codes.py` ← scripts/preflight.sh
+- `src/file_locks.py` ← scripts/tasks_control.py
 - `src/graphs.py` ← scripts/layout_map.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
+- `src/task_line.py` ← scripts/tasks_control.py
 - `src/threads.py` ← scripts/layout_map.py
 
 ## Пути, названные в документации и конфигах
