@@ -111,6 +111,27 @@ MISSING = "missing"   # сервер ответил 404: модели из ко�
 SLOW = "slow"         # сервер на связи, генерация не ответила за таймаут: очередь или зависание (GLM I2)
 
 
+def _mlx_prefill_step_size(cfg: dict, *, direct: bool = False) -> int | None:
+    """Validate startup intent without IO; inactive engines retain their existing paths.
+
+    A direct MLX restart explicitly selects that backend. Public health entry
+    points validate only when their canonical effective engine is MLX.
+    """
+    if not direct:
+        try:
+            if privacy.llm_engine(cfg) != "mlx-server":
+                return None
+        except RuntimeError:
+            return None  # preserve the existing caller's handling of invalid engine/privacy settings
+    llm = cfg.get("llm") or {}
+    if "mlx_prefill_step_size" in llm:
+        value = llm["mlx_prefill_step_size"]
+        if type(value) is not int or value <= 0:
+            raise ValueError("llm.mlx_prefill_step_size must be a positive integer when supplied")
+        return value
+    return 128 if (cfg.get("sufler") or {}).get("live_feed", False) else None
+
+
 def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     """Отвечает ли модель хоть чем-нибудь.
 
@@ -125,6 +146,7 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     нет: у Ollama так выглядит и очередь за длинной генерацией, и зависание —
     решать перезапуском сразу нельзя (аудит 13.09, GLM I2).
     """
+    _mlx_prefill_step_size(cfg)
     try:
         if privacy.cloud_engine_active(cfg):
             # Облачный шлюз пробуем самым дешёвым запросом. Ключ читается тем
@@ -336,6 +358,7 @@ def force_restart(cfg: dict, log: Callable[[str], None] = print) -> bool:
     вызывающий `force=True` (`scripts/doctor.py --restart-llm`). Человек
     решил, что застрявшее надо убрать; аренды, которые при этом умрут,
     называются в лог до kill (выходной круг DS I2 / GLM M4 по №264)."""
+    _mlx_prefill_step_size(cfg)
     live = busy_with_ours(cfg, log=log) or []
     if live:
         log("LLM: перезапуск поверх живой работы: " + model_lease.describe(live))
@@ -395,6 +418,7 @@ def _restart_mlx(cfg: dict, log: Callable[[str], None], *, force: bool = False) 
     logs/mlx_server.log: молча умерший сервер без лога — это снова «молчание
     вместо результата».
     """
+    prefill_step_size = _mlx_prefill_step_size(cfg, direct=True)
     if _spare(cfg, log, force=force):
         return False
     url = privacy.mlx_base_url(cfg)
@@ -419,9 +443,11 @@ def _restart_mlx(cfg: dict, log: Callable[[str], None], *, force: bool = False) 
     os.fchmod(fd, _LOG_MODE)     # режим в os.open действует только при создании файла
     logf = os.fdopen(fd, "a")
     try:
+        command = [sys.executable, "-m", "mlx_lm", "server", "--model", model, "--port", str(port)]
+        if prefill_step_size is not None:
+            command += ["--prefill-step-size", str(prefill_step_size)]
         subprocess.Popen(
-            [sys.executable, "-m", "mlx_lm", "server",
-             "--model", model, "--port", str(port)],
+            command,
             start_new_session=True,
             stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
         )
@@ -453,6 +479,7 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     жив, а очередь за занятой моделью вызывающий отстоит сам (busy_wait в
     llm.complete/stream).
     """
+    _mlx_prefill_step_size(cfg)
     state = probe(cfg)
     if state is True:
         return True

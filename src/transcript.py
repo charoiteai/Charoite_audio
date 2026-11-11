@@ -315,6 +315,16 @@ def names_banner_for(text: str) -> str:
     return head[:match.start("line")] + rewritten + head[match.end("line"):] + tail
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class AcceptedPortion:
+    """One post-dedup speech body and its capture-time display metadata."""
+
+    index: int
+    stamp: str
+    speaker: str
+    body: str
+
+
 class Transcript:
     """Стенограмма репликами по спикерам: соседние чанки одного голоса склеиваются.
 
@@ -345,6 +355,8 @@ class Transcript:
         self._title = f"# Встреча {stamp}"
         # блок: [t_start, t_last, speaker, text]
         self._blocks: list[list] = []
+        # Accepted speech is immutable, unlike display labels and block markup.
+        self._speech_portions: list[tuple[str, str, str]] = []
         self._notes: list[str] = []
         self._names: dict[str, str] = {}  # канальная метка → опознанное имя
         self._prev_chunk: dict[str, str] = {}  # спикер → последний чанк (дедуп швов)
@@ -506,6 +518,7 @@ class Transcript:
                     self._add_no += 1
                     self._prev_no[spk] = self._add_no
                     return None
+            self._speech_portions.append((f"{now:%H:%M}", spk, text))
             self._prev_chunk[spk] = text
             self._prev_seq[spk] = seq
             self._add_no += 1
@@ -637,6 +650,26 @@ class Transcript:
                 f"[{t0:%H:%M}] {spk}: {text}"
                 for t0, _t1, spk, text in self._blocks
             )
+
+    def accepted_cursor(self):
+        """Current immutable speech boundary, also used to position channel events."""
+        from feed_contract import SpeechCursor
+        with self._lock:
+            return SpeechCursor(len(self._speech_portions))
+
+    def accepted_portions(self, start: int = 0, stop: int | None = None) -> tuple[AcceptedPortion, ...]:
+        """A locked snapshot of post-dedup speech, without mutable block markup.
+
+        Absolute portion indices are stable within this Transcript instance. The
+        body is the accepted Unicode text; callers translate character offsets
+        to UTF-8 byte offsets before building source references.
+        """
+        with self._lock:
+            end = len(self._speech_portions) if stop is None else stop
+            if (type(start) is not int or type(end) is not int
+                    or start < 0 or start > end or end > len(self._speech_portions)):
+                raise ValueError("accepted portion range outside journal")
+            return tuple(AcceptedPortion(i, *self._speech_portions[i]) for i in range(start, end))
 
     def participants(self) -> list[str]:
         """Кто звучал на встрече: шапка (set_participants) плюс метки говорящих

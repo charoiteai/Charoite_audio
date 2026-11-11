@@ -155,8 +155,11 @@ struct LayerChip: View {
     let title: String
     @Binding var isOn: Bool
     var tint: Color = Theme.accent
+    var shortcut: KeyEquivalent? = nil
+    var shortcutModifiers: EventModifiers = [.command, .shift]
 
-    var body: some View {
+    @ViewBuilder
+    private var chipButton: some View {
         Button {
             isOn.toggle()
         } label: {
@@ -183,6 +186,14 @@ struct LayerChip: View {
         .accessibilityAddTraits(isOn ? .isSelected : [])
         .help(isOn ? L.t("Выключить слой", "Turn the layer off", "关闭该层")
                    : L.t("Включить слой", "Turn the layer on", "开启该层"))
+    }
+
+    var body: some View {
+        if let shortcut {
+            chipButton.keyboardShortcut(shortcut, modifiers: shortcutModifiers)
+        } else {
+            chipButton
+        }
     }
 }
 

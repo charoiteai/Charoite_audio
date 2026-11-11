@@ -133,10 +133,38 @@ jobs:
         # три попытки по 90 + 120 + 15 с — до 11¼ мин, как у job mutation
         timeout-minutes: 12
         run: |
+          dpkg -s libportaudio2 >/dev/null 2>&1 && exit 0
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+          APT_DIR="$(mktemp -d)"
+          chmod 755 "$APT_DIR"
+          trap 'rm -rf "$APT_DIR"' EXIT
+          APT_LIST="$APT_DIR/sources.list"
+          APT_PARTS="$APT_DIR/sources.list.d"
+          APT_LISTS="$APT_DIR/lists"
+          mkdir -p "$APT_PARTS" "$APT_LISTS/partial"
+          APT_OPTS=(
+            -o Acquire::Retries=1
+            -o Acquire::http::Timeout=10
+            -o Acquire::https::Timeout=10
+            -o Acquire::ForceIPv4=true
+            -o Acquire::Languages=none
+            -o APT::Get::List-Cleanup=0
+            -o DPkg::Lock::Timeout=25
+            -o "Dir::Etc::sourcelist=$APT_LIST"
+            -o "Dir::Etc::sourceparts=$APT_PARTS"
+            -o "Dir::State::Lists=$APT_LISTS"
+          )
           for try in 1 2 3; do
-            sudo timeout 90 apt-get update -qq || echo "apt-get update: попытка $try мимо"
-            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
-            echo "libportaudio2: попытка $try не прошла, ждём 15 с"
+            rm -rf "$APT_LISTS"/* "$APT_PARTS"/*
+            mkdir -p "$APT_LISTS/partial"
+            case "$try" in
+              1) MIRROR="https://mirrors.edge.kernel.org/ubuntu" ;;
+              2) MIRROR="http://azure.archive.ubuntu.com/ubuntu" ;;
+              3) MIRROR="http://archive.ubuntu.com/ubuntu" ;;
+            esac
+            printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] %s noble main universe\ndeb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] %s noble-updates main universe\n' "$MIRROR" "$MIRROR" > "$APT_LIST"
+            if sudo timeout 90 apt-get "${APT_OPTS[@]}" update -q && sudo timeout 120 apt-get "${APT_OPTS[@]}" install -y -q --no-install-recommends libportaudio2; then exit 0; fi
+            echo "libportaudio2: попытка $try ($MIRROR) не прошла, ждём 15 с"
             sleep 15
           done
           exit 1
@@ -211,7 +239,7 @@ jobs:
 
   mutation:
     name: mutation (changed lines)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Потолок job — сумма потолков шагов, а бюджет мутатора плюс худший прогон
     # набора укладывается в потолок своего шага (сторож — tests/test_workflows.py,
     # №395). Без этого GitHub обрывал job на 40-й минуте вместе с отчётом (#625: 34
@@ -252,9 +280,38 @@ jobs:
         # цикла повторов (облако, I3 круга 5 по №395)
         timeout-minutes: 12
         run: |
+          dpkg -s libportaudio2 >/dev/null 2>&1 && exit 0
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+          APT_DIR="$(mktemp -d)"
+          chmod 755 "$APT_DIR"
+          trap 'rm -rf "$APT_DIR"' EXIT
+          APT_LIST="$APT_DIR/sources.list"
+          APT_PARTS="$APT_DIR/sources.list.d"
+          APT_LISTS="$APT_DIR/lists"
+          mkdir -p "$APT_PARTS" "$APT_LISTS/partial"
+          APT_OPTS=(
+            -o Acquire::Retries=1
+            -o Acquire::http::Timeout=10
+            -o Acquire::https::Timeout=10
+            -o Acquire::ForceIPv4=true
+            -o Acquire::Languages=none
+            -o APT::Get::List-Cleanup=0
+            -o DPkg::Lock::Timeout=25
+            -o "Dir::Etc::sourcelist=$APT_LIST"
+            -o "Dir::Etc::sourceparts=$APT_PARTS"
+            -o "Dir::State::Lists=$APT_LISTS"
+          )
           for try in 1 2 3; do
-            sudo timeout 90 apt-get update -qq || echo "apt-get update: попытка $try мимо"
-            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
+            rm -rf "$APT_LISTS"/* "$APT_PARTS"/*
+            mkdir -p "$APT_LISTS/partial"
+            case "$try" in
+              1) MIRROR="https://mirrors.edge.kernel.org/ubuntu" ;;
+              2) MIRROR="http://azure.archive.ubuntu.com/ubuntu" ;;
+              3) MIRROR="http://archive.ubuntu.com/ubuntu" ;;
+            esac
+            printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] %s noble main universe\ndeb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] %s noble-updates main universe\n' "$MIRROR" "$MIRROR" > "$APT_LIST"
+            if sudo timeout 90 apt-get "${APT_OPTS[@]}" update -q && sudo timeout 120 apt-get "${APT_OPTS[@]}" install -y -q --no-install-recommends libportaudio2; then exit 0; fi
+            echo "libportaudio2: попытка $try ($MIRROR) не прошла, ждём 15 с"
             sleep 15
           done
           exit 1

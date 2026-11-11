@@ -352,6 +352,28 @@ def test_hint_pulse_names_the_reason_and_separates_waiting_from_work():
         "ручная и авто подсказки снова пишут в одно поле"
 
 
+@pytest.mark.parametrize("manual", [False, True])
+def test_grounded_hint_refusal_records_its_own_pulse_without_generation(manual):
+    from types import SimpleNamespace
+
+    tree = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
+    gen = next(node for node in ast.walk(tree)
+               if isinstance(node, ast.FunctionDef) and node.name == "gen_hint")
+    state = {"auto": {"reason": "earlier auto"}, "manual": {"reason": "earlier manual"}}
+    namespace = {
+        "grounded_feed": object(),
+        "hint_state": state,
+        "time": SimpleNamespace(monotonic=lambda: 10.0),
+    }
+    # No generation/lock/event bindings: reaching those would fail this scenario.
+    exec(compile(ast.Module(body=[gen], type_ignores=[]), "<hint-refusal>", "exec"), namespace)
+    namespace["gen_hint"](manual=manual)
+    selected, other = ("manual", "auto") if manual else ("auto", "manual")
+    assert state[selected] == {"reason": "classic hints disabled for grounded feed",
+                               "wait_ms": 0, "model_ms": 0}
+    assert state[other] == {"reason": f"earlier {other}"}
+
+
 def test_lag_line_carries_totals_because_the_lagging_cycle_never_splits():
     """Счётчик копится за всю запись, а не за цикл — иначе он мерит пустоту.
 

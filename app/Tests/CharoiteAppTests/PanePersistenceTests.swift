@@ -27,6 +27,131 @@ final class PanePersistenceTests: XCTestCase {
         XCTAssertTrue(pane.showHintCard)
     }
 
+    func testЖиваяНитьНеПоказываетОтдельнуюКарточкуПодсказки() {
+        for (hasHint, hinting) in [(true, false), (false, true), (true, true)] {
+            let pane = SuflerView.paneStack(hasHint: hasHint, hinting: hinting,
+                                            hasThread: true, running: true, liveFeed: true)
+            XCTAssertFalse(pane.showHintCard)
+            XCTAssertTrue(pane.showThread)
+        }
+    }
+
+    @MainActor
+    func testУстаревшийРучнойСтримИгнорируетсяПриАктивномНовомManualID() {
+        let service = SuflerService()
+        service.isHinting = true
+        service.consumeForTest(#"{"type":"manual","state":"question","manual_id":"manual-2","text":"Новый вопрос?"}"#)
+        service.consumeForTest(#"{"type":"hint","manual":true,"manual_id":"manual-1","text":"чужой хвост"}"#)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-1"}"#)
+        XCTAssertTrue(service.isHinting)
+        XCTAssertEqual(service.hint, "")
+        service.consumeForTest(#"{"type":"hint","manual":true,"manual_id":"manual-2","text":"точный ответ"}"#)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-2"}"#)
+        XCTAssertFalse(service.isHinting)
+        XCTAssertEqual(service.hint, "точный ответ")
+    }
+
+    @MainActor
+    func testПовторныйAskВРежимеЖивойНитиВытесняетПрежнийСтрим() throws {
+        let service = SuflerService()
+        let stdinPipe = Pipe(), stdoutPipe = Pipe()
+        let launch = DaemonLaunch(process: Process(), stdinPipe: stdinPipe,
+                                  stdout: stdoutPipe.fileHandleForReading, errHandle: nil)
+        defer { launch.close() }
+        try service.adoptLaunchForTest(launch, wire: false)
+        service.consumeForTest(#"{"type":"feed_mode","enabled":true}"#)
+
+        service.ask("Первый вопрос?")
+        XCTAssertTrue(service.isHinting)
+        service.consumeForTest(#"{"type":"manual","state":"question","manual_id":"manual-1","text":"Первый вопрос?"}"#)
+        service.consumeForTest(#"{"type":"hint","manual":true,"manual_id":"manual-1","text":"черновик "}"#)
+
+        // Второй ask отправляется, не дожидаясь завершения первого, и вытесняет manual-1
+        service.ask("Второй вопрос?")
+        XCTAssertTrue(service.isHinting)
+        // Опоздавшие кадры manual-1 до и после регистрации manual-2 обязаны игнорироваться
+        service.consumeForTest(#"{"type":"hint","manual":true,"manual_id":"manual-1","text":"хвост "}"#)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-1"}"#)
+        XCTAssertTrue(service.isHinting)
+
+        service.consumeForTest(#"{"type":"manual","state":"question","manual_id":"manual-2","text":"Второй вопрос?"}"#)
+        service.consumeForTest(#"{"type":"hint","manual":true,"manual_id":"manual-2","text":"ответ 2"}"#)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-2"}"#)
+        XCTAssertFalse(service.isHinting)
+        XCTAssertEqual(service.hint, "ответ 2")
+
+        try stdinPipe.fileHandleForWriting.close()
+        let sent = String(data: stdinPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertTrue(sent.contains("ask Первый вопрос?\n"))
+        XCTAssertTrue(sent.contains("ask Второй вопрос?\n"))
+    }
+
+    @MainActor
+    func testОтклонённыйAskСбрасываетОжиданиеИУсекаетСверхдлинныйUTF8() throws {
+        let clamped = SuflerService.utf8ClampedQuestion(String(repeating: "я", count: 4_500))
+        XCTAssertEqual(clamped.utf8.count, 8_000)
+        XCTAssertEqual(clamped.count, 4_000)
+
+        let service = SuflerService()
+        let stdinPipe = Pipe(), stdoutPipe = Pipe()
+        let launch = DaemonLaunch(process: Process(), stdinPipe: stdinPipe,
+                                  stdout: stdoutPipe.fileHandleForReading, errHandle: nil)
+        defer { launch.close() }
+        try service.adoptLaunchForTest(launch, wire: false)
+        service.consumeForTest(#"{"type":"feed_mode","enabled":true}"#)
+
+        // Одиночный отклонённый запрос без кадра manual(question) обязан снять isHinting
+        service.ask("Первый вопрос?")
+        XCTAssertTrue(service.isHinting)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-1","rejected":true}"#)
+        XCTAssertFalse(service.isHinting)
+
+        // Два быстрых ask подряд: отказ первого не сбивает FIFO-корреляцию второго
+        service.ask("Второй вопрос?")
+        service.ask("Третий вопрос?")
+        XCTAssertTrue(service.isHinting)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-2","rejected":true}"#)
+        XCTAssertTrue(service.isHinting)
+        service.consumeForTest(#"{"type":"manual","state":"question","manual_id":"manual-3","text":"Третий вопрос?"}"#)
+        service.consumeForTest(#"{"type":"hint","manual":true,"manual_id":"manual-3","text":"чистый ответ"}"#)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-3"}"#)
+        XCTAssertFalse(service.isHinting)
+        XCTAssertEqual(service.hint, "чистый ответ")
+    }
+
+    @MainActor
+    func testСмертьИПерезапускДемонаСбрасываютКорреляциюРучныхВопросов() throws {
+        let service = SuflerService()
+        service.userStopped = true
+        let stdin1 = Pipe(), stdout1 = Pipe()
+        let launch1 = DaemonLaunch(process: Process(), stdinPipe: stdin1,
+                                   stdout: stdout1.fileHandleForReading, errHandle: nil)
+        defer { launch1.close() }
+        try service.adoptLaunchForTest(launch1, wire: false)
+        service.consumeForTest(#"{"type":"feed_mode","enabled":true}"#)
+
+        service.ask("Вопрос до падения?")
+        XCTAssertTrue(service.isHinting)
+        launch1.receiveForTest(.eof)
+        launch1.receiveForTest(.exit)
+        XCTAssertFalse(service.isHinting)
+
+        service.userStopped = false
+        let stdin2 = Pipe(), stdout2 = Pipe()
+        let launch2 = DaemonLaunch(process: Process(), stdinPipe: stdin2,
+                                   stdout: stdout2.fileHandleForReading, errHandle: nil)
+        defer { launch2.close() }
+        try service.adoptLaunchForTest(launch2, wire: false)
+        service.consumeForTest(#"{"type":"feed_mode","enabled":true}"#)
+
+        service.ask("Вопрос новому демону?")
+        service.consumeForTest(#"{"type":"manual","state":"question","manual_id":"manual-1","text":"Вопрос новому демону?"}"#)
+        service.consumeForTest(#"{"type":"hint","manual":true,"manual_id":"manual-1","text":"свежий ответ"}"#)
+        service.consumeForTest(#"{"type":"hint_done","manual":true,"manual_id":"manual-1"}"#)
+        XCTAssertFalse(service.isHinting)
+        XCTAssertEqual(service.hint, "свежий ответ")
+    }
+
     func testПустаяПанельПослеСтопаВедётВПамять() {
         let pane = SuflerView.paneStack(hasHint: false, hinting: false,
                                         hasThread: false, running: false)

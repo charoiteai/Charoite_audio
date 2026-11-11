@@ -55,7 +55,11 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
     private nonisolated static let meetingIDKey = "meetingID"
     private nonisolated static let notePathKey = "notePath"
 
-    private let center = UNUserNotificationCenter.current()
+    private let center: UNUserNotificationCenter? = {
+        guard Bundle.main.bundleURL.pathExtension == "app",
+              Bundle.main.bundleIdentifier != nil else { return nil }
+        return UNUserNotificationCenter.current()
+    }()
     private var ledger = MeetingNotificationLedger()
 
     private override init() {
@@ -63,6 +67,7 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
     }
 
     func configure() {
+        guard let center else { return }
         center.delegate = self
         let start = UNNotificationAction(
             identifier: Self.startActionID,
@@ -95,6 +100,7 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
     /// баннеры автостопа и потери захвата обещаны «всегда» (аудит 13.09, GLM I1) —
     /// сказать об этом может только окно.
     func requestAuthorization(onDenied: (@MainActor @Sendable () -> Void)? = nil) {
+        guard let center else { return }
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard !granted, let onDenied else { return }
             Task { @MainActor in onDenied() }
@@ -122,7 +128,7 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
             identifier: Self.requestID(for: cue.id),
             content: content,
             trigger: nil)
-        center.add(request)
+        center?.add(request)
     }
 
     /// Текст баннера готовой встречи. Пересборка не завершилась — пометка:
@@ -152,7 +158,7 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         content.categoryIdentifier = Self.readyCategoryID
         content.userInfo = [Self.meetingIDKey: snapshot.meetingID,
                             Self.notePathKey: notePath]
-        center.add(UNNotificationRequest(
+        center?.add(UNNotificationRequest(
             identifier: Self.readyRequestPrefix + snapshot.meetingID,
             content: content,
             trigger: nil))
@@ -182,8 +188,8 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         }
         content.subtitle = detail
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "charoite.autostop." + reason,
-                                         content: content, trigger: nil))
+        center?.add(UNNotificationRequest(identifier: "charoite.autostop." + reason,
+                                          content: content, trigger: nil))
     }
 
     /// Системный захват звука умер посреди встречи и не восстановился.
@@ -199,8 +205,8 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
                            "系统捕获已停止且无法恢复——请停止并重新开始录音")
         content.subtitle = reason
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "charoite.capture-lost",
-                                         content: content, trigger: nil))
+        center?.add(UNNotificationRequest(identifier: "charoite.capture-lost",
+                                          content: content, trigger: nil))
     }
 
     /// Встреча стартовала на фолбэке BlackHole вместо системного захвата.
@@ -214,8 +220,8 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         content.title = L.t("Запись идёт через BlackHole", "Recording via BlackHole", "正在通过 BlackHole 录制")
         content.body = body
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "charoite.capture-fallback",
-                                         content: content, trigger: nil))
+        center?.add(UNNotificationRequest(identifier: "charoite.capture-fallback",
+                                          content: content, trigger: nil))
     }
 
     /// Предупреждение перед автостопом — только когда окна не видно.
@@ -236,20 +242,20 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
                             "录音即将停止")
         content.body = detail
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "charoite.autostop.warning",
-                                         content: content, trigger: nil))
+        center?.add(UNNotificationRequest(identifier: "charoite.autostop.warning",
+                                          content: content, trigger: nil))
     }
 
     func remove(cueID: String) {
         let id = Self.requestID(for: cueID)
-        center.removePendingNotificationRequests(withIdentifiers: [id])
-        center.removeDeliveredNotifications(withIdentifiers: [id])
+        center?.removePendingNotificationRequests(withIdentifiers: [id])
+        center?.removeDeliveredNotifications(withIdentifiers: [id])
     }
 
     func reset() {
         let ids = ledger.presentedIDs.map { Self.requestID(for: $0) }
-        center.removePendingNotificationRequests(withIdentifiers: ids)
-        center.removeDeliveredNotifications(withIdentifiers: ids)
+        center?.removePendingNotificationRequests(withIdentifiers: ids)
+        center?.removeDeliveredNotifications(withIdentifiers: ids)
         ledger.reset()
     }
 
@@ -274,7 +280,7 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         Task { @MainActor in
             if let meetingID {
                 if category == Self.readyCategoryID {
-                    self.center.removeDeliveredNotifications(
+                    self.center?.removeDeliveredNotifications(
                         withIdentifiers: [Self.readyRequestPrefix + meetingID])
                 } else {
                     self.remove(cueID: meetingID)

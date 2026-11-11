@@ -1,9 +1,7 @@
 import AVFoundation
 import Foundation
-
 #if os(macOS)
 import AppKit
-
 /// Мост к локальному суфлёру (папка установки Charoite_audio): запускает
 /// python-демон, читает NDJSON-события из stdout, шлёт команды в stdin.
 /// Всё локально: аудио → STT → Ollama, ничего не покидает машину.
@@ -18,15 +16,12 @@ final class SuflerService: ObservableObject {
         var speaker: String = ""
         var text: String
     }
-
     @Published private(set) var isRunning = false
     @Published private(set) var lifecycle: RecordingLifecycle = .idle
-
     var isTransitioning: Bool { lifecycle.isTransitioning }
     var hasActiveLifecycle: Bool {
         RecordingLifecyclePolicy.isActive(lifecycle, daemonAlive: process?.isRunning == true)
     }
-
     /// Когда началась текущая запись. Не nil ровно тогда, когда идёт встреча.
     ///
     /// «Идёт запись» без времени — обещание без доказательства: человек,
@@ -34,7 +29,6 @@ final class SuflerService: ObservableObject {
     /// запись от зависшего индикатора. Часы отсчитывают от старта демона,
     /// а не от первой реплики: тишина в начале встречи тоже записана.
     @Published private(set) var recordingStartedAt: Date?
-
     @Published var status = L.t("Готов к запуску", "Ready", "就绪")
     /// Текущий статус — про сбой, а не про обычный ход дела.
     ///
@@ -44,24 +38,20 @@ final class SuflerService: ObservableObject {
     /// текстом в одну строку и обрезалось. Признак должен приходить из
     /// модели, а не угадываться по переводу.
     @Published var statusIsError = false
-
     /// Ошибка от самого демона (`status` c `error: true`), не Swift-`fail()`:
     /// только ей позволено заменять критикал на экране (круг-2 DS, I1).
     @Published var statusErrorFromDaemon = false   // setter внутренний: пишет SuflerService+Status
-
     /// Липкие предупреждения про всю встречу — слоями по владельцу (№310):
     /// `channel_loss` демона, `capture` захвата, `notifications`; справки демона
     /// `retention` и `power` (№783), проблемы `disk`, `memory`. Один `String?`
     /// на троих давал отбой демона поверх чужого слоя. Приоритет, серьёзность и
     /// чтение — в `SuflerService+Sticky.swift`; старт чистит все слои.
     @Published private(set) var stickyLayers: [String: String] = [:]
-
     /// Поставить или снять липкий слой. Снятие адресуется теме: кто поставил,
     /// тот и снимает (№232 для канала, №310 для остальных).
     func setSticky(_ topic: String, _ text: String?) {
         if let text { stickyLayers[topic] = text } else { stickyLayers.removeValue(forKey: topic) }
     }
-
     /// Структурное здоровье живого конвейера. Обычные `status`-события его
     /// не сбрасывают: сообщение про обновлённые минутки не имеет права скрыть
     /// отказ записи на диск или продолжающееся отставание STT.
@@ -84,6 +74,14 @@ final class SuflerService: ObservableObject {
     /// присылает готовый вид. Это не лента: старое не уезжает вверх, а стоит
     /// на месте, и глазу не приходится каждый раз искать, что изменилось.
     @Published var thread = ""
+    /// nil is the legacy protocol; an empty array is an authoritative empty thread.
+    @Published private(set) var feedBlocks: [TypedFeedBlock]?
+    @Published private(set) var feedProtocolFailed = false
+    var hintManualID: String?
+    var pendingManualQuestions = 0
+    var ignoredManualIDs: Set<String> = []
+    @Published var liveFeed = false
+    @Published var manualRequestEpoch = UUID()
     @Published var isHinting = false
     /// Идёт явный поиск прошлого контекста по кнопке ⏮.
     /// Отдельно от isHinting: подсказка и архив могут выполняться параллельно,
@@ -244,7 +242,6 @@ final class SuflerService: ObservableObject {
     /// должно: закрыл ноутбук — закончил встречу.
     private var sleepGuard: NSObjectProtocol?
 
-
     /// Виден ли страж сна — только чтение, для тестов исхода «сдаёмся»:
     /// провалившаяся запись без снятия стража навсегда запрещала бы маку
     /// спать, и эта правка проходила зелёной (круг 5 по коду №332, DS I2).
@@ -401,6 +398,8 @@ final class SuflerService: ObservableObject {
             // ехать не должна: демон пришлёт нить не сразу, и первые минуты
             // человек читал бы вчерашний разговор как сегодняшний.
             thread = ""
+            feedBlocks = nil; feedProtocolFailed = false; resetManualCorrelation()
+            liveFeed = false
             // Ручной старт — это новая попытка, а не продолжение краш-лупа.
             // Без сброса одна неудачная серия (например, осиротевший python
             // держал flock) навсегда выключала автовосстановление: человек жал
@@ -413,6 +412,7 @@ final class SuflerService: ObservableObject {
         }
         _hintBuf = ""; _lastHintUI = .distantPast
         hintIsManual = false
+        resetManualCorrelation()
         // демон мог умереть посреди генерации — hint_done уже не придёт,
         // без сброса кнопки Подсказка/Claude/Протокол залипали заблокированными
         isHinting = false
@@ -533,6 +533,7 @@ final class SuflerService: ObservableObject {
         launch = nil
         stdoutBuffer = Data()
         daemonFatalReason = nil
+        resetManualCorrelation()
         // Прежний запуск закрыт выше, а закрытый молчит: события идут только от текущего.
         l.attach(onOutput: { [weak self] in self?.consume($0) },
                  onDead: { [weak self] l in self?.launch = nil; self?.daemonDied(l.process) })
@@ -549,6 +550,7 @@ final class SuflerService: ObservableObject {
         let wasRecording = lifecycle == .recording
         stopClock()
         isHinting = false   // ждать hint_done от мёртвого демона бессмысленно
+        resetManualCorrelation()
         disarmHintTimeout()
         watchdog?.invalidate()
         watchdog = nil
@@ -695,7 +697,6 @@ final class SuflerService: ObservableObject {
         hintDeadline = nil
     }
 
-
     /// Крестик на карточке подсказки: ручной ответ нить не гасит (он может
     /// быть нужен до конца встречи), поэтому убрать его с экрана может
     /// только сам человек — или вытеснить следующая авто-подсказка.
@@ -708,7 +709,6 @@ final class SuflerService: ObservableObject {
         _hintBuf = ""; _hintDoneUptime = -1
         hintIsManual = false
     }
-
 
     /// ⏮: хвосты прошлых встреч по текущей теме нити — из графа в нить.
     /// Не занимает панель подсказки: ответ дописывается в нить строками ⏮,
@@ -723,21 +723,6 @@ final class SuflerService: ObservableObject {
         // не глядя на выключатель.
         guard isRunning, cloudOn else { return }
         send("cloud")
-    }
-
-    func ask(_ question: String) {
-        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\n", with: " ")
-        // !isHinting: вопрос поверх идущей генерации мешал токены двух ответов в панели
-        guard isRunning, !isHinting, !q.isEmpty else { return }
-        hint = ""
-        _hintBuf = ""; _lastHintUI = .distantPast
-        isHinting = true
-        hintIsManual = true
-        // тот же предохранитель, что у «Подсказки»/«Протокола»: без него зависший
-        // ответ держал поле «Спросить» и кнопки отключёнными до конца встречи
-        armHintTimeout()
-        send("ask " + q)
     }
 
     /// Команда демону в stdin. Открыта модулю только потому, что `stop()`
@@ -853,7 +838,18 @@ final class SuflerService: ObservableObject {
                 if _linesShadow.count > 500 { _linesShadow.removeFirst(_linesShadow.count - 500) }
                 scheduleLinesFlush()
                 restartAttempts = 0  // транскрипция реально идёт — лимит рестартов обнуляем
+            case "feed_mode":
+                liveFeed = obj["enabled"] as? Bool ?? false
+                if !liveFeed { resetManualCorrelation() }
             case "thread":
+                liveFeed = obj["live_feed"] as? Bool ?? liveFeed
+                if let blocks = obj["blocks"] {
+                    feedBlocks = TypedFeedBlock.decode(blocks)
+                    feedProtocolFailed = feedBlocks == nil
+                } else {
+                    feedBlocks = nil
+                    feedProtocolFailed = false
+                }
                 thread = text
                 if Self.threadClearsHint(isHinting: isHinting,
                                          isAutoHinting: isAutoHinting,
@@ -897,11 +893,13 @@ final class SuflerService: ObservableObject {
                 statusIsError = true
                 statusErrorFromDaemon = false
                 MeetingNotificationService.shared.presentAutostopWarning(text)
+            case "manual":
+                acceptManualQuestionFrame(obj)
             case "hint":
                 // Демон помечает стрим: manual — запрошен человеком, иначе
                 // авто-цикл. Старый демон поля не шлёт — тогда считаем токен
                 // ручным, пока ждём ручной стрим, и авто — когда не ждём.
-                let manual = obj["manual"] as? Bool ?? isHinting
+                guard let manual = bindManualStreamFrame(obj) else { break }
                 if !manual && isHinting {
                     // хвост уступающего авто-стрима («…⏸»), пока ждём ручной
                     // ответ: раньше вклеивался в его начало — теперь мимо
@@ -952,7 +950,7 @@ final class SuflerService: ObservableObject {
                     scheduleLinesFlush()
                 }
             case "hint_done":
-                let manual = obj["manual"] as? Bool ?? isHinting
+                guard let manual = bindManualStreamFrame(obj) else { break }
                 if !manual {
                     isAutoHinting = false
                     _hintDoneUptime = ProcessInfo.processInfo.systemUptime

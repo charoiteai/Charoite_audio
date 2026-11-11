@@ -11,6 +11,8 @@ struct SuflerView: View {
     @ObservedObject private var calendar = CalendarService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
     @State private var question = ""
+    @State private var feedScroll = MeetingFeedReader()
+    @State private var feedScrollProbe = ChatScrollProbe()
     @State private var showFirstRun = false
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
     // чат встроен в суфлёр (панель справа); видимость запоминается
@@ -60,6 +62,9 @@ struct SuflerView: View {
         // должен стоить встречи. Выход из приложения — другое дело: там
         // applicationShouldTerminate спрашивает подтверждение.
         .onDisappear { }
+        .onChange(of: sufler.thread.isEmpty) { _, empty in
+            if empty { feedScroll.reset() }
+        }
         .sheet(isPresented: $showFirstRun) {
             FirstRunView { sufler.start() }
         }
@@ -146,7 +151,7 @@ struct SuflerView: View {
                 // (демон-то принял бы, отказ живёт на стороне приложения),
                 // а поле уже очистилось — текст терялся (ревью 16.08)
                 .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty
-                          || sufler.isHinting)
+                          || (sufler.isHinting && !sufler.liveFeed))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -154,7 +159,7 @@ struct SuflerView: View {
 
     private func submitQuestion() {
         let q = question.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty, sufler.isRunning, !sufler.isHinting else { return }
+        guard !q.isEmpty, sufler.isRunning, !sufler.isHinting || sufler.liveFeed else { return }
         question = ""
         sufler.ask(q)
     }
@@ -341,12 +346,20 @@ struct SuflerView: View {
     }
 
     static func paneStack(hasHint: Bool, hinting: Bool, hasThread: Bool,
-                          running: Bool, hintsOn: Bool = true) -> PaneStack {
-        let hint = hasHint || hinting
+                          running: Bool, hintsOn: Bool = true, liveFeed: Bool = false) -> PaneStack {
+        let hint = liveFeed ? false : (hasHint || hinting)
         let thread = hasThread
         var placeholder: String?
         if !hint && !thread {
-            if running && !hintsOn {
+            if liveFeed && running && !hintsOn {
+                placeholder = L.t("Лента на паузе — включите плашку сверху. Ручной вопрос доступен ниже.",
+                                  "Feed paused — turn on the chip above. You can still ask below.",
+                                  "纪要已暂停——请打开上方开关。下方仍可提问。")
+            } else if liveFeed && running {
+                placeholder = L.t("Лента дополняется по ходу разговора · задайте вопрос ниже",
+                                  "The feed grows as the conversation progresses · ask a question below",
+                                  "纪要随交谈逐步补充 · 可在下方提问")
+            } else if running && !hintsOn {
                 // Нить растёт только под тумблером подсказок (демон:
                 // toggles["hints"]) — с выключенным обещание «появится через
                 // минуту» было бы враньём. Тезисный контур из панели убран
@@ -372,11 +385,11 @@ struct SuflerView: View {
     }
 
     private var pane: PaneStack {
-        Self.paneStack(hasHint: !sufler.hint.isEmpty,
+        Self.paneStack(hasHint: !sufler.hint.isEmpty && !sufler.hintIsInThread,
                        hinting: sufler.isHinting,
-                       hasThread: !sufler.thread.isEmpty,
+                       hasThread: sufler.feedProtocolFailed || sufler.feedBlocks != nil || !sufler.thread.isEmpty,
                        running: sufler.isRunning,
-                       hintsOn: sufler.hintsOn)
+                       hintsOn: sufler.hintsOn, liveFeed: sufler.liveFeed)
     }
 
     /// ==Фрагменты==, которые внесла облачная ревизия нити, — небесным фоном:
@@ -570,7 +583,9 @@ struct SuflerView: View {
 
             // Действия встречи — сразу за кнопкой записи, ДО навигации: во
             // время записи это главные кнопки и они обязаны быть видны первыми.
-            if sufler.isRunning {
+            // В режиме живой локальной нити ручные вопросы идут через поле внизу
+            // прямо в нить — классический блок «Конспект / Claude / Протокол» скрыт.
+            if sufler.isRunning, !sufler.liveFeed {
                 CharoiteSegment {
                     // «Конспект», не «Подсказка»: рядом в LayerBar живёт чип
                     // «Подсказки», и две одинаковые надписи читались как дубль
@@ -611,14 +626,17 @@ struct SuflerView: View {
             // фирменной кнопкой. Чип несёт цвет слоя: индиго — локальное,
             // sky — единственный слой, который уходит с машины.
             LayerBar {
-                LayerChip(title: L.t("Подсказки", "Hints", "提示"), isOn: $sufler.hintsOn)
-                    .help(L.t("Подсказки и мгновенные ответы на вопросы собеседника", "Hints and instant answers to the other side's questions", "提示与对方提问的即时回答"))
-                    .accessibilityLabel(L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
-                    .accessibilityHint(L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
+                LayerChip(title: sufler.liveFeed ? L.t("Лента", "Feed", "纪要") : L.t("Подсказки", "Hints", "提示"),
+                          isOn: $sufler.hintsOn, shortcut: "l")
+                    .help(sufler.liveFeed ? L.t("Дополнять пересказ встречи (⌘⇧L); ручной вопрос доступен и при паузе", "Append the meeting account (⌘⇧L); manual questions remain available while paused", "追加会议纪要（⌘⇧L）；暂停时仍可手动提问") : L.t("Подсказки и мгновенные ответы на вопросы собеседника (⌘⇧L)", "Hints and instant answers to the other side's questions (⌘⇧L)", "提示与对方提问的即时回答（⌘⇧L）"))
+                    .accessibilityLabel(sufler.liveFeed ? L.t("Лента встречи", "Meeting feed", "会议纪要") : L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
+                    .accessibilityHint(sufler.liveFeed ? L.t("Приостановить или возобновить пересказ", "Pause or resume the meeting account", "暂停或继续会议纪要") : L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
+                if !sufler.liveFeed {
                 LayerChip(title: "Claude", isOn: $sufler.cloudOn, tint: Theme.sky)
                     .help(L.t("Параллельные ответы Claude на вопросы собеседника", "Parallel Claude answers to the other side's questions", "Claude 并行回答对方的提问"))
                     .accessibilityLabel(L.t("Ответы Claude", "Claude answers", "Claude 回答"))
                     .accessibilityHint(L.t("Параллельные ответы облачной модели", "Parallel answers from the cloud model", "云端模型的并行回答"))
+                }
             }
             .fixedSize(horizontal: true, vertical: false)
 
@@ -729,7 +747,7 @@ struct SuflerView: View {
         // живут в разделе «Память», здесь — только живой разговор и его нить.
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                paneTitle(L.t("Нить встречи", "Meeting thread", "会议脉络"),
+                paneTitle(sufler.liveFeed ? L.t("Лента встречи", "Meeting feed", "会议纪要") : L.t("Нить встречи", "Meeting thread", "会议脉络"),
                           systemImage: "text.line.first.and.arrowtriangle.forward",
                           copy: { sufler.thread })
                 // isClouding из условия ушёл (№53): флаг был вечно false с
@@ -783,10 +801,19 @@ struct SuflerView: View {
                             .padding(.bottom, 10)
                         }
                         if pane.showThread {
-                            Text(withThreadMarks(sufler.thread))
+                            if sufler.feedProtocolFailed {
+                                Text(L.t("Лента недоступна: ошибка формата данных", "Feed unavailable: invalid data format", "纪要不可用：数据格式错误"))
+                                    .foregroundStyle(.red)
+                            } else if let blocks = sufler.feedBlocks {
+                                TypedFeedContent(blocks: blocks)
+                            } else {
+                            Text(sufler.liveFeed ? ((try? AttributedString(markdown: sufler.thread,
+                                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+                                ?? AttributedString(sufler.thread)) : withThreadMarks(sufler.thread))
                                 .font(.callout)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         } else if let placeholder = pane.placeholder {
                             Text(placeholder)
                                 .font(.callout)
@@ -796,19 +823,49 @@ struct SuflerView: View {
                         // облачный информер — sky-карточкой в той же панели:
                         // напоминает, что тумблер шлёт стенограмму наружу;
                         // сам ответ приходит в нить (№53, круг по #466)
-                        if sufler.isRunning && sufler.cloudOn {
+                        if sufler.isRunning && sufler.cloudOn && !sufler.liveFeed {
                             cloudCard
                                 .padding(.top, 10)
                         }
                         Color.clear.frame(height: 1).id("hintBottom")
                     }
                     .padding(12)
+                    .background {
+                        if sufler.liveFeed {
+                            ChatScrollObserver(probe: feedScrollProbe, onBegin: { feedScroll.beginUserScroll() },
+                                onEnd: { feedScroll.endUserScroll(start: $0, lastMove: $1) },
+                                onCancel: { feedScroll.cancelUserScroll() }, onPosition: { sample, viewport in
+                                    feedScroll.observe(sample, viewport: viewport)
+                                })
+                        }
+                    }
+                }
+                .onChange(of: TypedFeedScrollUpdate(text: sufler.thread, blocks: sufler.feedBlocks,
+                                                   manualQuestionID: sufler.correlatedManualQuestionID)) { old, update in
+                    guard sufler.liveFeed,
+                          let target = update.target(after: old, follows: feedScroll.followsUpdate(
+                            manualCardOpen: pane.showHintCard && sufler.hintIsManual)) else { return }
+                    let revision = feedScroll.revision
+                    DispatchQueue.main.async {
+                        guard sufler.liveFeed, feedScroll.permitsRequestedJump(since: revision) else { return }
+                        proxy.scrollTo(target, anchor: target == "hintBottom" ? .bottom : .top)
+                    }
                 }
                 // Стрим токенов, без анимации — иначе дёргается. Подсказка
                 // теперь КАРТОЧКА НАД нитью: держаться за низ панели значит
                 // мотать читателя мимо неё — при видимой карточке держимся
                 // за её верх (ревью 16.08, №22).
+                .onChange(of: sufler.manualRequestEpoch) { _, request in
+                    guard sufler.liveFeed else { return }
+                    let revision = feedScroll.revision
+                    DispatchQueue.main.async {
+                        guard sufler.liveFeed, sufler.manualRequestEpoch == request,
+                              feedScroll.permitsRequestedJump(since: revision) else { return }
+                        proxy.scrollTo("hintBottom", anchor: .bottom)
+                    }
+                }
                 .onChange(of: sufler.hint) { _, _ in
+                    guard !sufler.liveFeed else { return }
                     DispatchQueue.main.async {
                         proxy.scrollTo(pane.showHintCard ? "hintTop" : "hintBottom",
                                        anchor: pane.showHintCard ? .top : .bottom)
@@ -887,6 +944,35 @@ struct SuflerView: View {
         }
     }
 
+}
+
+/// Also hostable in an isolated synthetic probe without product singletons.
+struct TypedFeedContent: View {
+    let blocks: [TypedFeedBlock]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(TypedFeedRow.project(blocks)) { row in
+                switch row {
+                case .topic(_, let label, _):
+                    Text(label)
+                        .font(.headline)
+                        .padding(.top, 8)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityAddTraits(.isHeader)
+                case .block(let block):
+                    Text(MarkdownLine.render(block.text))
+                        .font(.callout.weight(block.kind == "question" ? .semibold : .regular))
+                        .foregroundStyle(block.kind == "system" ? Color.secondary : Color.primary)
+                        .padding(.leading, block.kind == "answer" ? 16 : 0)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .id(block.id)
+                }
+            }
+        }
+    }
 }
 
 #endif

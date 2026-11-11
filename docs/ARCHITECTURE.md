@@ -21,6 +21,15 @@ GitHub — is described under "When the app learns about a new release".
 
 ## The daemon (src/daemon.py)
 
+The opt-in grounded feed (`sufler.live_feed: true`) runs through
+`grounded_feed.semantic.SemanticActor` and `grounded_feed.local_runner.LocalFeedRunner`
+under `LocalLoopbackAuthority` (loopback-only local Ollama `:local` or `mlx-server`,
+with zero cloud egress). Accepted speech, narrative claims, open questions, cursor
+and displayed entries live in one immutable state, while `ActorCore` owns the
+derived canvas projection, producer/worker retirement, manual Q/A preemption, and
+verified Stop export (`<transcript>.grounded.json`). Event positions include
+accepted UTF-8 speech bytes even while narrative generation lags. See [live feed](live-feed.md).
+
 One process, thread loops around a shared locked `Transcript`: STT loop,
 the fast question trigger, instant answers, auto-hints, co-thinking
 (theses), the meeting thread, live minutes, name
@@ -2473,3 +2482,15 @@ guarantee; its normal CLI supplies the required data root. No data migration is
 automatic. After writing
 to a new primary, rollback must retain the compatible reader and lock bridge;
 a bare old binary is not a safe write/forget rollback.
+
+
+## Grounded native admission
+
+The canonical actor/runner consumes opaque responses from the installed owner
+client. The factory verifies protected installation/proof, exact runtime/model
+identity and the Unix peer; caller callbacks or supported JSON cannot grant
+semantic authority. Exact planner/verifier source, body and visible bytes are
+bound to the existing actor CAS. Service replay reauthenticates committed private
+receipts through the same checker. Unconfirmed retirement retains job ownership.
+This source path requires installed evidence and remains unavailable without it;
+source tests do not certify installation, model quality or a second model profile.

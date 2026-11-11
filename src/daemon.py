@@ -144,6 +144,64 @@ def warm_core_vectors(cores, vecs: dict, embed, max_batches: int = WARM_BATCHES)
     return добавлено
 
 
+STT_PRODUCER_CUTOFF_S = 5.0
+
+
+def cut_stop_producers(hub, grounded_feed, timeout: float = STT_PRODUCER_CUTOFF_S) -> list[str]:
+    """Cut live producers before export even when hub.stop itself fails.
+
+    Legacy meetings (no grounded feed) keep the old propagate-on-failure
+    behaviour exactly; only the grounded path gets the visible fallback.
+    """
+    if grounded_feed is None:
+        hub.stop()
+        return []
+    def merge(reasons: list[str]) -> None:
+        existing = [r for r in (getattr(grounded_feed, "producer_cutoff_failure", None) or "").split(",") if r]
+        for reason in reasons:
+            if reason and reason not in existing:
+                existing.append(reason)
+        grounded_feed.producer_cutoff_failure = ",".join(existing) or None
+
+    late = []
+    try:
+        hub.stop()
+    except Exception as error:  # noqa: BLE001 - Stop still must cut and export
+        merge(["hub_stop_failed"])  # recorded before waiting, so a wait failure cannot hide it
+        print("grounded feed: hub.stop failed, producers were cut with the fallback: "
+              + type(error).__name__, file=sys.stderr)
+        try:
+            late = wait_live_producers(timeout)
+        except Exception as wait_error:  # noqa: BLE001 - cleanup continues and failure is visible
+            merge(["cutoff_wait_failed"])
+            print("grounded feed: producer cutoff wait failed: " + type(wait_error).__name__,
+                  file=sys.stderr)
+    else:
+        late = wait_live_producers(timeout)
+    if late:
+        merge(late)
+        print("grounded feed: producers survived Stop cutoff: " + ",".join(late), file=sys.stderr)
+    return late
+
+
+def wait_live_producers(timeout: float = STT_PRODUCER_CUTOFF_S) -> list[str]:
+    """Give the audio/STT/transcript producers a bounded, visible cutoff before export.
+
+    A drain-to-empty does not protect against a portion accepted after the empty
+    batch: the producer must reach its own end first, otherwise Stop silently
+    loses the tail. Returns the names that refused to stop in time.
+    """
+    deadline = time.monotonic() + timeout
+    names = {"stt-loop", "thread-loop"}
+    targets = [t for t in threads.ours() if t.name in names]
+    late = []
+    for thread in targets:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            late.append(thread.name)
+    return late
+
+
 def _root() -> pathlib.Path:
     """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
 
@@ -200,11 +258,13 @@ def emit(obj: dict):
         with _out_lock:
             sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
             sys.stdout.flush()
+        return True
     except (BrokenPipeError, ValueError):
         # Приложение закрылось или перезапустилось: доигрывать некому.
         # Ставим общий стоп — main дойдёт до finally и сохранит встречу.
         if _stop_event is not None:
             _stop_event.set()
+        return False
 
 
 def _content_age(hub) -> str:
@@ -922,6 +982,18 @@ def main():
     if graphs.env_override():
         print(f"граф перекрыт переменной окружения: {graphs.graph_dir(cfg)}",
               file=sys.stderr, flush=True)
+    # Grounded backlog (№859) is default-off and additive. Resolve the mode
+    # BEFORE any model constructor, Transcript or owner write: a requested but
+    # unusable grounded mode is a visible startup refusal, not a silent legacy
+    # meeting and not a transcript in the real root.
+    from live_feed import FeedPolicy, ManualPriority
+    from grounded_feed import bridge as grounded_feed_bridge
+    feed_policy = FeedPolicy.from_config(cfg)
+    grounded_activation = grounded_feed_bridge.select(feed_policy, emit)
+    grounded_feed = grounded_activation.session
+    feed_on, auto_hint_on, auto_expand_on = (grounded_activation.feed_on,
+                                             grounded_activation.auto_hint,
+                                             grounded_activation.auto_expand)
     # Отказ политики по адресу модели — тот же канал, что «корень не назван».
     # `type: fatal` приложение не знает и молча гасит (круг 1 по №332): статус
     # с `error` и причиной значением, код выхода — не 1, чтобы это не читалось
@@ -944,11 +1016,45 @@ def main():
     # защита от перезапуска под живой генерацией выключилась бы без следа
     # (выходной круг GLM M2 / DS I3 по №264)
     print(f"аренды модели: {llm.lease_stamp()}", file=sys.stderr, flush=True)
+    # Нить встречи живёт весь разговор: её дописывают, а не пересобирают.
+    import cancellable_http
+    local_authority = None
+    local_defer_err = None
+    if grounded_feed is not None:
+        from grounded_feed.local_runner import LocalLoopbackAuthority
+
+        try:
+            local_authority, local_defer_err = LocalLoopbackAuthority.verify_or_defer(llm)
+        except (ValueError, privacy.PrivacyRefused) as e:
+            emit_error(str(e), reason="privacy_refused")
+            print(e, file=sys.stderr, flush=True)
+            return EXIT_PRIVACY_REFUSED
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
+    stop = threading.Event()
     tr = Transcript(pathlib.Path(tdir) if tdir else _root() / cfg["log"]["transcripts_dir"])
-    # Нить встречи живёт весь разговор: её дописывают, а не пересобирают.
+    if grounded_feed is not None:
+        from grounded_feed.runtime import SourceProducerCutoff, bind_product_source
+
+        def cutoff_grounded_source(timeout_s):
+            stop.set()
+            return not wait_live_producers(timeout_s)
+
+        bind_product_source(grounded_feed, tr, SourceProducerCutoff(cutoff_grounded_source),
+                            source_only_notice=False, local_product_authority=True)
+        if local_defer_err is None:
+            status_text = (f"Живая нить: {local_authority.display_model} (локально)"
+                           if llm.lang == "ru"
+                           else f"Live feed: {local_authority.display_model} (local)")
+        else:
+            status_text = (
+                f"Живая нить ожидает локальную модель {local_authority.display_model} — запись встречи идёт"
+                if llm.lang == "ru"
+                else f"Live feed waiting for local model {local_authority.display_model} — recording continues"
+            )
+        emit({"type": "status", "text": status_text})
     thread = MeetingThread()
+    emit({"type": "feed_mode", "enabled": feed_on})
     # Штамп записи — тот же, что у стенограммы: rebuild_transcript ищет .wav
     # по имени .md, и разъехавшиеся на границе минуты штампы означали молча
     # пропущенную финальную пересборку.
@@ -956,7 +1062,8 @@ def main():
     # След события канала в документах встречи (№234): сайдкар (долговечно),
     # хвост «Ко-мышления» стенограммы и нить — одним владельцем по структурному
     # событию хаба, не по подстрокам статуса
-    trace = channel_trace.ChannelTrace(pathlib.Path(tr.path), tr.note, thread.add_system, bare=tr.stamp)
+    channel_sink = grounded_feed.add_system if grounded_feed is not None else thread.add_system
+    trace = channel_trace.ChannelTrace(pathlib.Path(tr.path), tr.note, channel_sink, bare=tr.stamp)
     hub.on_channel = trace.on_event
     # Смерть записи на диск — не серый статус, который затрёт следующий же
     # «⚡ отвечаю»: флаг error красит строку как отказ, и человек видит её
@@ -1012,7 +1119,7 @@ def main():
         emit({"type": "status", "text": f"Граф подключён к промптам ({len(graph_ctx)} зн. памяти)"})
     # архив ГЛАЗАМИ с первой секунды: карточка подсказок пустует до первой
     # генерации — кладём туда бриф последней встречи (тема, решения, задачи)
-    brief = start_brief(cfg)
+    brief = start_brief(cfg) if auto_hint_on else ""
     if brief:
         # manual: панель различает стримы — авто-контент (бриф, автоподсказки)
         # уступает место и гаснет с нитью, ручной ответ живёт до крестика
@@ -1040,7 +1147,9 @@ def main():
                   "text": f"Сверка с узлами графа: {node_index.size} узлов"})
     except Exception as e:  # noqa: BLE001 — сверка вспомогательна
         print(f"узлы графа: {e}", file=sys.stderr, flush=True)
-    threads.spawn(llm.warmup, name="llm-warmup", role="process",
+    threads.spawn(llm.warmup,
+                  args=(local_authority.model,) if local_authority is not None else (),
+                  name="llm-warmup", role="process",
                   detached="прогрев модели не держит старт встречи")
 
     # память подсказок — индекс графа в процессе демона (№250): прогреть до
@@ -1056,9 +1165,9 @@ def main():
             emit({"type": "status", "text": f"Память по графу: {mem.size} файлов, векторов {mem.vectors}"})
     threads.spawn(_warm_memory, name="memory-warm", role="process",
                   detached="прогрев памяти по графу не держит старт встречи")
-    emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
+    active_llm_tag = local_authority.model if local_authority is not None else llm.resolve_model()
+    emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {active_llm_tag}"})
 
-    stop = threading.Event()
     threads.spawn(llm.hold_meeting_model, args=(stop,), name="llm-hold", role="process",
                   detached="срок модели переутверждается до конца встречи, ждать нечего")
     # Живая речь для автостопа: когда в стенограмму последний раз лёг НОВЫЙ
@@ -1845,6 +1954,8 @@ def main():
 
     def think_loop():
         """Ко-мышление: КТ, ценные факты и мысли модели по ходу встречи."""
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
         seen = 0
         context_tail = ""
         while not stop.is_set():
@@ -1897,14 +2008,14 @@ def main():
                         continue
                     # Тезис — строка нити: одно полотно вместо двух панелей,
                     # между которыми человек метался глазами на встрече.
-                    if thread.add_thesis(line):
+                    if thread.add_thesis(line) and not feed_on:
                         emit({"type": "thread", "text": thread.render()})
                     tr.note(line)
             except Exception as e:  # noqa: BLE001
                 emit({"type": "status", "text": f"мышление: {e}"})
 
     hint_lock = threading.Lock()   # подсказки/минутки на 26b — по одной за раз
-    manual_evt = threading.Event()  # ручной запрос прерывает авто-генерацию
+    manual_evt = ManualPriority()  # each manual caller owns its pending registration
 
     def _collect(tokens) -> str | None:
         """Собрать стрим целиком, уступив ручному запросу: None — прервано
@@ -1940,6 +2051,11 @@ def main():
                 emit_error(f"{who}: подсказчик занят — прежняя генерация не отпустила замок")
         try:
             yield ok
+        except cancellable_http.CleanupIncomplete:
+            # Fail closed: never start another model request beside an unconfirmed child.
+            ok = False
+            emit_error("HTTP cancellation unconfirmed — model slot quarantined until meeting ends")
+            raise
         finally:
             if ok:
                 hint_lock.release()
@@ -1951,7 +2067,7 @@ def main():
         print("конфиг: llm.small_model не задан — фоновые контуры пойдут "
               "на основной модели", file=sys.stderr, flush=True)
     quiet = bool(cfg["sufler"].get("quiet", True))
-    instant_on = bool(cfg["sufler"].get("instant", True))
+    instant_on = feed_policy.instant
     # Решающий гейт в ТЕНИ (src/decision_gate.py): вердикт «вопрос или нет»
     # считается рядом с ⚡ и уходит в err-лог с исходом ответа. Ничего не
     # решает — копит замер для scripts/gate_bench.py shadow. Вся проводка —
@@ -2076,6 +2192,9 @@ def main():
                 slot["model_ms"] = (0 if began is None
                                     else round((time.monotonic() - began) * 1000))
 
+        if grounded_feed is not None:
+            _telemetry("classic hints disabled for grounded feed")
+            return  # grounded feed active: no classic generation
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
         # Замок — с потолком ожидания, не навсегда: 24.08 (встреча 10:14)
@@ -2175,7 +2294,7 @@ def main():
         уходит в файл-лог: аудит не на экране. Тумблер прежний (cloud_hints):
         это тот же постоянный поток стенограммы в облако.
         """
-        if not (cloud_hints and toggles["cloud"]):
+        if feed_on or not (cloud_hints and toggles["cloud"]):
             return
         tail = tr.tail(max_ctx)
         # Прирост меряем по ПОЛНОЙ стенограмме: хвост обрезан до max_ctx, и
@@ -2240,10 +2359,138 @@ def main():
                 return
             log = "\n".join(f"было: {a}\nстало: {b}" for a, b in applied)
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ревизия нити ({short}, {len(applied)})", log)
-            emit({"type": "thread", "text": thread.render()})
+            if not feed_on:
+                emit({"type": "thread", "text": thread.render()})
 
         threads.spawn(cloud_thread_refine, name="cloud-thread-refine", role="meeting",
                       detached="облачная ревизия нити не держит цикл встречи")
+
+    if grounded_feed is not None and local_authority is not None:
+        from grounded_feed.local_runner import LocalFeedRunner
+
+        grounded_feed.attach_local_runner(LocalFeedRunner(
+            grounded_feed._actor, tr, llm, local_authority,
+            slot=hint_slot, stop=stop, priority=manual_evt,
+            enabled=lambda: toggles["hints"], interval_s=15.0,
+        ))
+
+    @manual_evt.requested
+    def gen_grounded_answer(token, question: str) -> None:
+        """Локальный ответ на вопрос владельца прямо в живую нить (нулевой облачный выход)."""
+        nonlocal local_authority
+        if grounded_feed is None:
+            return
+        from grounded_feed.local_runner import build_grounded_answer_prompt, combine_cancel
+
+        manual_id = token.manual_id
+        cancel_ev = token.cancel_event
+        done_emitted = False
+
+        def emit_done_once() -> None:
+            nonlocal done_emitted
+            if not done_emitted:
+                done_emitted = True
+                emit({"type": "hint_done", "manual": True, "manual_id": manual_id})
+
+        try:
+            if cancel_ev.is_set() or stop.is_set():
+                return
+            memory_block = ""
+            try:
+                mem = brain.search(brain.ANSWER, question, cfg=cfg)
+                memory_block = brain.pack(brain.ANSWER, mem).text
+            except Exception:  # noqa: BLE001 — локальная память вспомогательна
+                memory_block = ""
+            with hint_slot("ответ в нити", timeout=45.0, clear_manual_on_busy=True) as got:
+                if not got:
+                    if not cancel_ev.is_set() and not stop.is_set():
+                        msg = ("⚠ Модель занята — повторите вопрос через пару секунд."
+                               if llm.lang == "ru"
+                               else "⚠ Local model is busy — try again in a moment.")
+                        committed = None
+                        try:
+                            committed = grounded_feed.commit_manual_answer(token, msg)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        if committed is not None:
+                            emit_error("ответ в нити: модель занята")
+                            emit({"type": "hint", "text": msg, "manual": True, "manual_id": manual_id})
+                    return
+                if cancel_ev.is_set() or stop.is_set():
+                    return
+                grounded_feed.ingest_source_once(limit=64)
+                sys_prompt, user_prompt = build_grounded_answer_prompt(
+                    llm.lang, question, grounded_feed.render(), tr.tail(3000), memory_block,
+                )
+                signal = combine_cancel(stop, cancel_ev)
+                parts: list[str] = []
+                failed: Exception | None = None
+                cancelled = False
+                answer_model = None
+                try:
+                    if local_authority is not None:
+                        if not local_authority.verified:
+                            local_authority = local_authority.ensure_verified(llm)
+                            adopt = getattr(grounded_feed, "adopt_local_authority", None)
+                            if callable(adopt):
+                                adopt(local_authority)
+                        answer_model = local_authority.model
+                    with contextlib.closing(
+                        llm.grounded_answer(
+                            user_prompt, system=sys_prompt, cancel_event=signal,
+                            model=answer_model,
+                        )
+                    ) as stream:
+                        for tok in stream:
+                            if cancel_ev.is_set() or stop.is_set():
+                                cancelled = True
+                                break
+                            emit({"type": "hint", "text": tok, "manual": True, "manual_id": manual_id})
+                            parts.append(tok)
+                except cancellable_http.StreamCancelled:
+                    cancelled = True
+                except cancellable_http.CleanupIncomplete:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    failed = exc
+                if cancelled or cancel_ev.is_set() or stop.is_set():
+                    return
+                answer = "".join(parts).strip()
+                fallback: str | None = None
+                if failed is not None or not answer:
+                    reason_str = short_error(failed) if failed is not None else (
+                        "модель вернула пустой ответ" if llm.lang == "ru" else "empty model answer"
+                    )
+                    fallback = (f"⚠ {reason_str} — попробуйте ещё раз."
+                                if llm.lang == "ru"
+                                else f"⚠ {reason_str} — please try again.")
+                    answer = f"{answer} …⚠" if answer else fallback
+                committed = None
+                try:
+                    committed = grounded_feed.commit_manual_answer(token, answer)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"grounded manual_answer error: {exc}", file=sys.stderr, flush=True)
+                if committed is None:
+                    return
+                if fallback is not None:
+                    reason_str = short_error(failed) if failed is not None else (
+                        "модель вернула пустой ответ" if llm.lang == "ru" else "empty model answer"
+                    )
+                    emit_error(f"ответ в нити: {reason_str}")
+                    emit({"type": "hint", "text": f"\n{fallback}", "manual": True,
+                          "manual_id": manual_id})
+                emit_done_once()
+                append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] вопрос в нити",
+                            f"**{question}**\n\n{answer}")
+        finally:
+            try:
+                emit_done_once()
+            finally:
+                grounded_feed.end_manual_generation(token)
+
+    def run_feed_loop():
+        if grounded_feed is not None:
+            grounded_feed.run(stop, enabled=lambda: toggles["hints"])
 
     def thread_loop():
         """Нить встречи: растёт по мере разговора, не переписывается заново.
@@ -2265,6 +2512,9 @@ def main():
         на плотной встрече она молча стояла бы часами (круг-3 DS I2,
         круг-4 критика-1).
         """
+        if feed_on:
+            run_feed_loop()
+            return
         seen = 0
         quiet_rounds = 0
         slot_misses = 0
@@ -2328,7 +2578,8 @@ def main():
                 added = thread.ingest(answer, at=f"{dt.datetime.now():%H:%M}")
                 quiet_rounds = 0 if added else quiet_rounds + 1
                 if added:
-                    emit({"type": "thread", "text": thread.render()})
+                    if not feed_on:
+                        emit({"type": "thread", "text": thread.render()})
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] нить (+{added})",
                                 thread.full())
                     _cloud_refine_thread()
@@ -2347,6 +2598,11 @@ def main():
         нить строками ⏮ — туда, где он его ждёт, а не в отдельное окно.
         Без названия разбирается текущая (последняя) тема нити.
         """
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
+        if feed_on:
+            emit({"type": "status", "text": "Archive expansion is available in classic mode."})
+            return
         if not expand_lock.acquire(blocking=False):
             emit({"type": "status", "text": "⏮ прошлый разбор ещё выполняется"})
             return
@@ -2376,7 +2632,8 @@ def main():
             except Exception as exc:  # noqa: BLE001 — память не готова: сначала узлы, потом честный статус
                 added = _nodes_direct()
                 if added:
-                    emit({"type": "thread", "text": thread.render()})
+                    if not feed_on:
+                        emit({"type": "thread", "text": thread.render()})
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title} (узлы)",
                                 thread.full())
                 else:
@@ -2392,7 +2649,8 @@ def main():
             if mem.status is not brain.Verdict.CONFIDENT:
                 added = _nodes_direct()
                 if added:
-                    emit({"type": "thread", "text": thread.render()})
+                    if not feed_on:
+                        emit({"type": "thread", "text": thread.render()})
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title} (узлы)",
                                 thread.full())
                     return
@@ -2415,7 +2673,8 @@ def main():
             from meeting_thread import parse_archive_facts
             added = thread.add_archive(title, parse_archive_facts(out))
             if added:
-                emit({"type": "thread", "text": thread.render()})
+                if not feed_on:
+                    emit({"type": "thread", "text": thread.render()})
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title}",
                             thread.full())
             else:
@@ -2459,6 +2718,11 @@ def main():
         # seen — в hint_state: перезапуск стражем наследует прочитанное, а
         # не считает всю стенограмму «новой» и не генерит внеплановый рекап
         # (круг-1 по PR #398, DS Minor-3).
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
+        if not auto_hint_on:
+            stop.wait()
+            return
         wait = HINT_EVERY
         failures = 0
         last_outcome = "-"
@@ -2533,6 +2797,11 @@ def main():
 
         Лёгкая модель: первые слова через ~2-3с после конца фразы, кулер молчит.
         """
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
+        if not instant_on:
+            stop.wait()
+            return
         while not stop.is_set():
             if not instant_evt.wait(timeout=0.5):
                 continue
@@ -2590,7 +2859,7 @@ def main():
                 # Отказ модели («вопроса не вижу, уточните») — не ответ, и в
                 # полотно он не идёт: раньше такие абзацы занимали пол-панели.
                 if answer and not question_filter.is_refusal(answer):
-                    if thread.add_answer(q, question_filter.squeeze(answer)):
+                    if thread.add_answer(q, question_filter.squeeze(answer)) and not feed_on:
                         emit({"type": "thread", "text": thread.render()})
                     # 400, не 120: реальные вопросы владельца длиннее, и
                     # аудит терял хвост (№95, находка Ox Alpha 24.08).
@@ -2615,6 +2884,11 @@ def main():
         `cloud` из stdin (кнопка «Claude», ⌘⇧⏎). Вторая проверку обходила,
         и нажатие отправляло стенограмму при cloud_live: false.
         """
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
+        if feed_on:
+            stop.wait()
+            return
         claude_bin = cloud.claude_bin()
         model = cloud.model(cfg, "cloud_live_model")
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
@@ -2697,7 +2971,7 @@ def main():
                 # хранить её как ответ на вопрос.
                 emit_error(f"☁️ облако не ответило: {failure}")
             elif out and not refusal:
-                if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
+                if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)) and not feed_on:
                     emit({"type": "thread", "text": thread.render()})
             # Вопрос в живом UI больше не показывается (пакет владельца 24.08):
             # в нить идёт чистый ответ, аудит несёт вопрос в label «на: {q}»
@@ -2722,7 +2996,9 @@ def main():
         Обрыв WebSocket (keepalive-таймаут под CPU-голоданием 20.07) раньше выключал
         триггер до конца встречи — теперь реконнект с backoff.
         """
-        if not (instant_on or cloud_live) or not bool(cfg["sufler"].get("fast_trigger", True)):
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
+        if feed_on or not (instant_on or cloud_live) or not bool(cfg["sufler"].get("fast_trigger", True)):
             return
         try:
             ws_connect = gigastt_stream_client()
@@ -3185,6 +3461,7 @@ def main():
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
 
+    @manual_evt.requested
     def gen_answer(question: str):
         """Вопрос пользователя из UI: ответ по живой стенограмме + графу/vault.
 
@@ -3196,6 +3473,8 @@ def main():
         префикса, потолок ответа 220, бюджет блока 3000. Ожидание слота подсказчика
         не входит.
         """
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
         emit({"type": "hint", "text": f"\n\n❓ {question}\n", "manual": True})
         manual_evt.set()  # авто-контуры уступают
         # vault ищем ДО лока: HTTP на 2.5с не смеет держать очередь подсказок
@@ -3245,7 +3524,10 @@ def main():
             if parts:
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ❓ {question}", "".join(parts))
 
+    @manual_evt.requested
     def _do_summary():
+        if grounded_feed is not None:
+            return  # grounded feed active: no classic generation
         manual_evt.set()   # фон (нить, тезисы, авто-подсказка) уступает, как ручной подсказке
         with hint_slot("минутки", timeout=45.0, clear_manual_on_busy=True) as got:
             if not got:
@@ -3288,6 +3570,30 @@ def main():
                     write_minutes(mpath, doc, note_minutes_written)
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
 
+    def _dispatch_grounded_manual(question: str) -> None:
+        manual_seq = hint_state.get("grounded_manual", 0) + 1
+        hint_state["grounded_manual"] = manual_seq
+        manual_id = f"manual-{manual_seq}"
+        try:
+            label = "Вопрос по ходу встречи" if llm.lang == "ru" else "Manual question"
+            grounded_feed.manual_request(manual_id, question, topic_label=label)
+            token = grounded_feed.begin_manual_generation(manual_id)
+        except (ValueError, RuntimeError) as exc:
+            msg = (f"Вопрос отклонён ({short_error(exc)}, максимум 8000 байт UTF-8)"
+                   if llm.lang == "ru"
+                   else f"Question rejected ({short_error(exc)}, max 8000 UTF-8 bytes)")
+            emit({"type": "status", "text": msg, "error": True})
+            emit({"type": "hint_done", "manual": True, "manual_id": manual_id, "rejected": True})
+            return
+        try:
+            threads.spawn(gen_grounded_answer, args=(token, question),
+                          name="grounded-answer", role="meeting",
+                          detached="локальный ответ в нити не держит разбор команд")
+        except Exception as exc:  # noqa: BLE001
+            grounded_feed.end_manual_generation(token)
+            emit({"type": "status", "text": short_error(exc), "error": True})
+            emit({"type": "hint_done", "manual": True, "manual_id": manual_id, "rejected": True})
+
     def stdin_loop():
         # команды — в отдельных потоках: синхронная генерация (минутки 26b — минуты!)
         # блокировала чтение stop → Swift терминейтил демона без finally (потеря графа)
@@ -3310,11 +3616,19 @@ def main():
                 stop.set()
                 return
             if cmd == "hint":
-                threads.spawn(gen_hint, kwargs={"manual": True}, name="hint-manual", role="meeting",
-                              detached="ручная подсказка не держит разбор команд панели")
+                if grounded_feed is not None:
+                    prompt_q = ("Что сейчас главное и какие вопросы открыты?"
+                                if llm.lang == "ru"
+                                else "What are the key points and open questions right now?")
+                    _dispatch_grounded_manual(prompt_q)
+                else:
+                    threads.spawn(gen_hint, kwargs={"manual": True}, name="hint-manual", role="meeting",
+                                  detached="ручная подсказка не держит разбор команд панели")
             elif cmd.startswith("ask "):
                 q = raw.strip()[4:].strip()
-                if q:
+                if q and grounded_feed is not None:
+                    _dispatch_grounded_manual(q)
+                elif q:
                     threads.spawn(gen_answer, args=(q,), name="answer-ask", role="meeting",
                                   detached="ответ на вопрос панели не держит разбор команд")
             elif cmd == "cloud":
@@ -3334,6 +3648,8 @@ def main():
                     wanted = parts[2] == "on"
                     changed = toggles[parts[1]] != wanted
                     toggles[parts[1]] = wanted
+                    if parts[1] == "hints" and grounded_feed is not None:
+                        grounded_feed.set_auto_feed_enabled(wanted)
                     # «quiet» — стартовая синхронизация дефолтов: тумблеры не
                     # переживают рестарт процесса, и приложение шлёт свои
                     # «set … off» при каждом запуске — без метки любой
@@ -3423,7 +3739,7 @@ def main():
                         limit=NODE_CAP + 1)
                 except Exception:  # noqa: BLE001
                     node_hits = []
-            if len(shown_nodes) < NODE_CAP:
+            if auto_expand_on and len(shown_nodes) < NODE_CAP:
                 for node in node_hits:
                     if node.name in shown_nodes:
                         continue
@@ -3434,7 +3750,8 @@ def main():
                     if not added:
                         continue
                     shown_nodes.add(node.name)
-                    emit({"type": "thread", "text": thread.render()})
+                    if not feed_on:
+                        emit({"type": "thread", "text": thread.render()})
                     emit({"type": "status",
                           "text": f"⏮ из графа: {node.name} ({added})"})
                     append_hint(tr.path,
@@ -3579,15 +3896,28 @@ def main():
             ("stdin-loop", stdin_loop),
             ("autostop-loop", autostop_loop),
         )
+        blocked_loops = frozenset({"think-loop", "thread-loop", "instant-loop", "cloud-loop",
+                                   "fast-trigger-loop", "dialog-markup-loop", "name-loop",
+                                   "minutes-loop", "live-context-loop"})
         for имя, цикл in loops:
+            grounded_skip = (имя in blocked_loops and
+                             grounded_feed is not None and имя != "thread-loop")
+            if grounded_skip:
+                continue  # classic model layers stay off; thread-loop only drives source/feed
             threads.spawn(цикл, name=имя, role="meeting",
                           detached="поток слоя живёт до конца встречи")
         # Авто-подсказки — под именем и сторожем: 24.08 слой молчал три встречи
         # подряд, и мёртвый поток был неотличим от «нечего сказать». Сторож в
         # главном цикле перезапускает умершего и говорит об этом вслух.
-        hint_state["thread"] = threads.spawn(
-            auto_hint_loop, name="auto-hint", role="meeting",
-            detached="слой авто-подсказок живёт до конца встречи, за ним следит сторож")
+        if grounded_feed is not None:
+            # a sleeping placeholder keeps the watchdog calm without starting a model loop
+            hint_state["thread"] = threads.spawn(
+                stop.wait, name="auto-hint", role="meeting",
+                detached="grounded unavailable: auto-hint is parked until stop")
+        else:
+            hint_state["thread"] = threads.spawn(
+                auto_hint_loop, name="auto-hint", role="meeting",
+                detached="слой авто-подсказок живёт до конца встречи, за ним следит сторож")
         last_hb = 0.0
         last_stt_stall_log = 0.0
         owner_pulse_at = [0.0]   # своя метка: пульс владельца — не слой подсказок
@@ -3762,6 +4092,8 @@ def main():
         except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
             pass
         try:
+            if grounded_feed is not None:
+                grounded_feed.cancel_live_generation(timeout_s=2.0)
             glog = open(meeting_log(_root(), "graph", stem=pathlib.Path(tr.path).stem), "w")  # не DEVNULL: молчаливые падения графа
             statuses = MeetingStatusStore(_root())
             try:
@@ -3793,12 +4125,28 @@ def main():
             except Exception as e2:  # noqa: BLE001 — статус отказа вспомогателен; запись финализируем всё равно
                 print(f"статус отказа фона не записан: {e2}", file=sys.stderr)
         try:
-            hub.stop()  # финализирует записи .pcm → .wav — их и ждёт rebuild
+            cut_stop_producers(hub, grounded_feed)  # hub.stop + bounded producer cutoff
             emit({"type": "status", "text": f"Стенограмма: {tr.path}"})
         finally:
             # тень — последней и даже если хаб упал: строка end журнала тени ждёт конца
             # отсрочки, отсчёт шёл с stop() выше; ребёнка при выходе добивает дверь (№533)
-            nemotron_shadow.close(live_nemotron.STOP_GRACE_S)
+            try:
+                nemotron_shadow.close(live_nemotron.STOP_GRACE_S)
+            except Exception as error:  # noqa: BLE001 - never skip the grounded export
+                print("nemotron shadow close failed: " + type(error).__name__, file=sys.stderr)
+            if grounded_feed is not None:
+                export_path = pathlib.Path(str(tr.path) + ".grounded.json")
+                try:
+                    if not grounded_feed.close(export_path=export_path, session_epoch=tr.stamp,
+                                               request_id=f"close-{tr.stamp}"):
+                        emit_error("Не удалось полностью сохранить живую ленту. Проверьте итог сеанса.",
+                                   reason="grounded_export_incomplete")
+                        print("grounded feed export incomplete: accepted tail was not fully drained",
+                              file=sys.stderr)
+                except Exception as error:  # noqa: BLE001 - Stop must still finish
+                    emit_error("Не удалось полностью сохранить живую ленту. Проверьте итог сеанса.",
+                               reason="grounded_export_failed")
+                    print(f"grounded feed export failed: {type(error).__name__}", file=sys.stderr)
 
 
 if __name__ == "__main__":

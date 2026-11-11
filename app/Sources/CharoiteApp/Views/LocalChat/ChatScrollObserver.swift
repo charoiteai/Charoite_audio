@@ -17,6 +17,9 @@ struct ChatScrollObserver: NSViewRepresentable {
     var onEnd: (_ start: ChatScrollSample?, _ lastMove: ChatScrollSample?) -> Void
     /// The observed scroll view is gone mid-gesture: release the gesture latch, never scroll.
     var onCancel: () -> Void
+    /// Optional native geometry for readers that also pause on phase-less wheel/keyboard movement.
+    /// Nil retains the chat's existing live-gesture-only observation and policy.
+    var onPosition: ((_ sample: ChatScrollSample, _ viewport: CGFloat) -> Void)? = nil
 
     func makeNSView(context: Context) -> Marker { Marker() }
 
@@ -25,7 +28,9 @@ struct ChatScrollObserver: NSViewRepresentable {
         view.onBegin = onBegin
         view.onEnd = onEnd
         view.onCancel = onCancel
+        view.onPosition = onPosition
         view.attach()
+        view.reportPosition()
         // SwiftUI may install the enclosing scroll view after updateNSView.
         DispatchQueue.main.async { [weak view] in view?.attach() }
     }
@@ -36,8 +41,13 @@ struct ChatScrollObserver: NSViewRepresentable {
         var onBegin: (() -> Void)?
         var onEnd: ((ChatScrollSample?, ChatScrollSample?) -> Void)?
         var onCancel: (() -> Void)?
+        var onPosition: ((ChatScrollSample, CGFloat) -> Void)?
         private weak var observedScrollView: NSScrollView?
+        private weak var observedDocument: NSView?
+        private var previousBoundsNotifications: Bool?
+        private var previousFrameNotifications: Bool?
         private var inGesture = false
+        private var observingPosition = false
         private var start: ChatScrollSample?
         private var lastMove: ChatScrollSample?
 
@@ -46,9 +56,12 @@ struct ChatScrollObserver: NSViewRepresentable {
         override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); attach() }
 
         func attach() {
-            guard let scroll = enclosingScrollView, scroll !== observedScrollView else { return }
+            guard let scroll = enclosingScrollView else { return }
+            let wantsPosition = onPosition != nil
+            guard scroll !== observedScrollView || wantsPosition != observingPosition else { return }
             detach()
             observedScrollView = scroll
+            observingPosition = wantsPosition
             let center = NotificationCenter.default
             center.addObserver(self, selector: #selector(began), name: NSScrollView.willStartLiveScrollNotification, object: scroll)
             center.addObserver(self, selector: #selector(scrolled), name: NSScrollView.didLiveScrollNotification, object: scroll)
@@ -56,20 +69,49 @@ struct ChatScrollObserver: NSViewRepresentable {
             // Any window: the marker may move between windows without changing its scroll view.
             center.addObserver(self, selector: #selector(windowLost), name: NSWindow.didResignKeyNotification, object: nil)
             center.addObserver(self, selector: #selector(windowLost), name: NSWindow.willCloseNotification, object: nil)
+            if onPosition != nil {
+                previousBoundsNotifications = scroll.contentView.postsBoundsChangedNotifications
+                scroll.contentView.postsBoundsChangedNotifications = true
+                center.addObserver(self, selector: #selector(positionChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+                if let document = scroll.documentView {
+                    observedDocument = document
+                    previousFrameNotifications = document.postsFrameChangedNotifications
+                    document.postsFrameChangedNotifications = true
+                    center.addObserver(self, selector: #selector(positionChanged), name: NSView.frameDidChangeNotification, object: document)
+                }
+            }
+            reportPosition() // also establishes intent after a successful deferred attachment
         }
 
         func detach() {
             NotificationCenter.default.removeObserver(self)
+            if let previousBoundsNotifications {
+                observedScrollView?.contentView.postsBoundsChangedNotifications = previousBoundsNotifications
+            }
+            if let previousFrameNotifications {
+                observedDocument?.postsFrameChangedNotifications = previousFrameNotifications
+            }
+            previousBoundsNotifications = nil
+            previousFrameNotifications = nil
+            observedDocument = nil
             // A gesture that began on the old scroll view will never report its end here.
             // Deferred: detach runs inside SwiftUI view updates, where state must not change.
             if inGesture, let cancel = onCancel { DispatchQueue.main.async(execute: cancel) }
             observedScrollView = nil
+            observingPosition = false
             inGesture = false
             start = nil
             lastMove = nil
         }
 
         fileprivate var distance: CGFloat? { sample?.distanceFromBottom }
+
+        @objc private func positionChanged(_ notification: Notification) { reportPosition() }
+
+        func reportPosition() {
+            guard let onPosition, let sample, let scroll = observedScrollView else { return }
+            onPosition(sample, scroll.documentVisibleRect.height)
+        }
 
         private var sample: ChatScrollSample? {
             guard let scroll = observedScrollView, let document = scroll.documentView else { return nil }

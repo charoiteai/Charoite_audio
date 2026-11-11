@@ -1,5 +1,14 @@
 # Архитектура
 
+В opt-in живой нити (`sufler.live_feed: true`) демон использует
+`grounded_feed.semantic.SemanticActor` и `grounded_feed.local_runner.LocalFeedRunner`
+под защитой `LocalLoopbackAuthority` (строго локальный loopback Ollama `:local`
+или `mlx-server`, без облачного выхода). Принятая речь, тезисы, открытые вопросы,
+курсор и строки ленты хранятся в одном неизменяемом состоянии; `ActorCore`
+владеет производной проекцией полотна, вытеснением ручным вопросом, отсечкой
+источника и проверенным Stop-экспортом (`<transcript>.grounded.json`). Позиция
+событий учитывает принятую речь, даже когда пересказ отстаёт. См. [живую ленту](../live-feed.md).
+
 *[English](../ARCHITECTURE.md) · **Русский** · [中文](../zh/ARCHITECTURE.md)*
 
 ## Общая схема
