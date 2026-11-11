@@ -73,3 +73,21 @@ covered by real caller collision tests asserting no dossier writer, current
 bytes/index preserved, another theme continuing, and existing CAS tests with
 stronger exact-byte backup assertions. Review reports must still be written on
 refusal: only the dossier final write is forbidden, not the diagnostic report.
+
+## Local acceptance
+
+Executed snapshot:213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b.
+Full:11180 passed,8 skipped,7 xfailed,0 failed (193.88s).
+Targeted regression:459 passed (76.31s). Fault baseline:13 passed;
+all five controls failed in the intended test for the intended reason.
+Source restored after every mutation; original checkout remained unchanged.
+Canonical changed-line check reported unmutable (0 candidates,0 unread files),
+so it is not claimed as a successful mutation score; explicit fault controls
+exercise publication, collision propagation, metadata and cleanup instead.
+The after-probe source hashes still match; its prior execution is reused.
+
+Repeat on a clean tracked checkout with the installed heavy_run wrapper:
+- `python -m pytest tests/ -q -n 6 --dist loadgroup --tb=short`
+- `python reports/handoff/tasks/875_backup_collision/fault_controls.py --checkout . --output <new-output-directory> --python <absolute-test-python> --guard <installed-quiet-guard>`
+Use fresh basetemp directories inside the system tempfile root and retain JUnit.
+No owner data, model calls, publication, installation or CI run is claimed.
