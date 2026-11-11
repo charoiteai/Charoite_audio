@@ -35,6 +35,14 @@ def _script():
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     nd = _script()
+    from datetime import datetime, timedelta
+    from itertools import count
+    from types import SimpleNamespace
+    # These are separate logical nightly runs. Collision refusal is tested
+    # with deliberately frozen time in test_dossier_queue.
+    base, ticks = datetime.now(), count()
+    monkeypatch.setattr(nd, "datetime", SimpleNamespace(
+        now=lambda: base + timedelta(seconds=next(ticks))))
     graph = tmp_path / "graph"
     for folder in ("Ядра", "Встречи", "Документы", "Досье"):
         (graph / folder).mkdir(parents=True)

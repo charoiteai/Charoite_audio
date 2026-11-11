@@ -1059,7 +1059,9 @@ def test_same_stamp_backup_collision_refuses_only_affected_review(tmp_path, monk
     path.write_text(path.read_text(encoding="utf-8").replace("Идёт пилот", "Идёт второй пилот"), encoding="utf-8")
     current = path.read_bytes()
     index = folder / ndr.dossier.INDEX_JSON
-    index.write_text('{"досье": []}\n', encoding="utf-8")
+    ndr.dossier.refresh_index(folder, [path.stem, "Два"])
+    entries_before = ndr.dossier.load_index(folder)
+    assert {entry["тема"] for entry in entries_before} == {path.stem, "Два"}
     index_before = index.read_bytes()
     other = folder / "Два.md"
     other_before = other.read_bytes()
@@ -1078,6 +1080,7 @@ def test_same_stamp_backup_collision_refuses_only_affected_review(tmp_path, monk
     assert not attempted
     assert path.read_bytes() == current and copy.read_bytes() == original
     assert index.read_bytes() == index_before
+    assert ndr.dossier.load_index(folder) == entries_before
     assert other.read_bytes() != other_before
     assert (copy.parent / other.name).read_bytes() == other_before
     assert set(p.name for p in copy.parent.iterdir()) == {path.name, other.name}

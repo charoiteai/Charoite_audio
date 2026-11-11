@@ -121,6 +121,8 @@ KINDS: tuple[tuple[str, str, str, str], ...] = (
      "синтетический снимок базового разбора №818: привязан к SHA и blob manifest, не точка входа продукта"),
     ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git",
      "синтетическое воспроизведение OUTPUT №818 с закреплёнными base/source SHA, не точка входа продукта"),
+    ("reports/handoff/tasks/875_backup_collision/reproduce.py", "history", "git",
+     "synthetic backup collision probe bound to recorded source hashes; not a product entry point"),
     ("tests/", "out", "git", "тесты строят синтетические деревья: пути в них — не факты о репозитории"),
     ("app/Tests/", "out", "git", "Swift-тесты приложения: те же выдуманные пути"),
     ("app-ios/", "out", "git", "телефон python и shell не запускает — пути там только в тексте"),
