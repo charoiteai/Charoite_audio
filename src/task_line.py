@@ -353,10 +353,17 @@ def fields(line: str) -> dict[str, datetime.date]:
 
 FENCE = re.compile(r"^([ \t]*)(`{3,}|~{3,})")
 _OPEN_TASK_LINE = re.compile(r"^\s*[-*] \[ \] +(.+)$")
-_CLOSED_TAIL = re.compile(
+CLOSED_TAIL = re.compile(
     r"\s*_\((?:снято по сроку|снято: нет исполнителя|снято: давно, срок не разобран|снято: не поручение)"
     r" \d\d\.\d\d\)_\s*$"
 )
+_CLOSED_TAIL = CLOSED_TAIL
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def is_digest(value: object) -> bool:
+    """Строка — валидный 64-символьный SHA-256 дайджест нижнего регистра."""
+    return isinstance(value, str) and bool(_SHA256_HEX.fullmatch(value))
 
 
 def fence_map(lines: list[str]) -> list[bool]:
@@ -402,6 +409,11 @@ def returned_digest(meeting: str | None, text: str) -> str:
     """Обезличенная личность поручения для реестра отката: без хранения текста и темы встречи."""
     payload = f"{meeting}\0{normalize_for_registry(text)}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def cache_digest(meeting: str | None, text: str) -> str:
+    """Хеш точного текста поручения встречи для кэша ревизора: правка формулировки инвалидирует кэш."""
+    return hashlib.sha256(f"{meeting}\0{text}".encode("utf-8")).hexdigest()
 
 
 def returned_line_digest(rel: str, line: str) -> str | None:

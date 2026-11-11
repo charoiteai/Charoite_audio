@@ -176,11 +176,14 @@ def test_state_roundtrip_drops_broken_cache(tmp_path: pathlib.Path) -> None:
     state = tr.read_state(data)
     state.setdefault("cache", {})
     state["asked"] = 3
-    state["cache"]["ключ"] = {"text": "**Иван** — отправил", "day": "2999-01-01", "verdict": DONE}
+    digest = "f" * 64
+    state["cache"][digest] = {"day": "2999-01-01", "verdict": DONE}
+    state["cache"]["202609011000\0**иван** — старый открытый ключ"] = {"day": TODAY.isoformat(), "verdict": OPEN}
     tr.write_state(data, state)
     saved = tr.read_state(data)
     assert saved["asked"] == 3
-    assert saved["cache"]["ключ"]["day"] == dt.date.today().isoformat(), "будущий день не должен растягивать кэш"
+    assert set(saved["cache"]) == {digest}, "сырые ключи старого формата не должны переживать чтение состояния"
+    assert saved["cache"][digest]["day"] == dt.date.today().isoformat(), "будущий день не должен растягивать кэш"
     broken = {"last_ok": "вчера", "asked": -1, "cache": {"x": {"text": "т", "day": "не дата", "verdict": "done"}}}
     (data / "logs" / tr.STATE).write_text(__import__("json").dumps(broken), encoding="utf-8")
     repaired = tr.read_state(data)
@@ -975,3 +978,60 @@ def test_live_sensor_error_and_unload_on_first_call_timeout(tmp_path: pathlib.Pa
     monkeypatch.setattr(tr, "quiet", lambda **_kw: True)
     assert tr.run(argparse.Namespace(apply=True)) == tc.HANDLED
     assert unloads == []
+
+
+def test_legacy_returned_registry_migrates_and_safe_err_hides_paths(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Старый `returned.jsonl` с `file`/`old` переписывается в дайджесты при `--apply`, а `_safe_err` и `restore` чисты."""
+    import argparse
+
+    secret_topic = "СекретнаяВстречаКлиента"
+    secret_body = "**Иван** — секретный договор"
+    rel = f"Встречи-архив/2026-09-01 10-00 — {secret_topic}/{tc.MINUTES}"
+    graph, data = _setup_run_env(tmp_path, monkeypatch, "")
+    for old_md in list(graph.rglob(tc.MINUTES)):
+        old_md.unlink()
+    (graph / rel).parent.mkdir(parents=True, exist_ok=True)
+    (graph / rel).write_text(f"- [ ] {secret_body}\n", encoding="utf-8")
+    base = tc.charoite_paths.graph_backups(graph, "tasks_control", root=data)
+    base.mkdir(parents=True, exist_ok=True)
+    registry = base / "returned.jsonl"
+    registry.write_text(
+        json.dumps({"file": rel, "old": f"- [ ] {secret_body}", "when": "2026-10-01T12:00:00"}, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(tc, "selftest", lambda **_kw: 0)
+    monkeypatch.setattr(tc, "live_meeting", lambda _d: False)
+    (data / "logs").mkdir(parents=True, exist_ok=True)
+    assert tc.run(argparse.Namespace(apply=True, quiet=True), data / "logs" / "tc.log", "2026-11-11 12:00") == 0
+    migrated = registry.read_text(encoding="utf-8")
+    assert secret_topic not in migrated and secret_body not in migrated
+    row = json.loads(migrated.strip())
+    assert tc.task_line.is_digest(row.get("id")) and set(row) == {"id", "when"}
+    assert tc.scan(graph, "Иван", TODAY, tc.load_returned(base))[0] == {}, "мигрированная запись обязана защищать строку"
+
+    # `_safe_err` не отдаёт `str(e)` с путями у `shutil.SameFileError` / `shutil.Error`:
+    same_err = shutil.SameFileError(f"/vault/{secret_topic}/Минутки.md and /backup/{secret_topic}/Минутки.md")
+    assert secret_topic not in tc._safe_err(same_err) and tc._safe_err(same_err) == "SameFileError"
+
+    # `restore._bind_helpers` переходит на снимок `lib/`, даже если в `run["code"]/src` лежит старый `task_line.py`:
+    graph2 = tmp_path / "граф2"
+    target = graph2 / "Встречи-архив/2026-09-01 10-00 — Встреча/Минутки.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("- [ ] **Коля** — старое дело\n", encoding="utf-8")
+    plan2, _, _ = tc.scan(graph2, "Иван", TODAY)
+    applied, _, backup = tc.apply(graph2, plan2, tmp_path / "data2")
+    assert len(applied) == 1
+    stale_code = tmp_path / "stale_code"
+    (stale_code / "src" / "charoite_graph").mkdir(parents=True)
+    shutil.copy2(backup / "lib" / "file_locks.py", stale_code / "src" / "file_locks.py")
+    shutil.copy2(backup / "lib" / "charoite_graph" / "safe_write.py", stale_code / "src" / "charoite_graph" / "safe_write.py")
+    (stale_code / "src" / "charoite_graph" / "__init__.py").write_text("", encoding="utf-8")
+    (stale_code / "src" / "task_line.py").write_text("X = 1\n", encoding="utf-8")
+    meta = json.loads((backup / "run.json").read_text(encoding="utf-8"))
+    meta["code"] = str(stale_code)
+    (backup / "run.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    res = subprocess.run([sys.executable, str(backup / "restore.py"), "--apply"], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert "- [ ] **Коля** — старое дело" in target.read_text(encoding="utf-8")

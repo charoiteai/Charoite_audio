@@ -94,7 +94,7 @@ class Collector:
         self.final_reasons[Reason.INPUT] += refused
 
     @contextmanager
-    def activate(self):
+    def activate(self, on_emit=None):
         token = _run.set(self)
         original_error = False
         try:
@@ -105,13 +105,25 @@ class Collector:
             raise
         finally:
             _run.reset(token)
+            emit_error = None
             try:
-                print("dossier_telemetry " + json.dumps(self.snapshot()))
-            except BaseException:
+                snap = self.snapshot()
+                try:
+                    print("dossier_telemetry " + json.dumps(snap))
+                except BaseException as exc:  # noqa: BLE001
+                    emit_error = exc
+                if on_emit is not None:
+                    try:
+                        on_emit(snap)
+                    except BaseException as exc:  # noqa: BLE001
+                        if emit_error is None:
+                            emit_error = exc
+            except BaseException as exc:  # noqa: BLE001
+                emit_error = exc
+            if emit_error is not None and not original_error:
                 # An output failure cannot replace the run's original exception.
                 # Delivery is unconfirmed; with no original error, propagate it.
-                if not original_error:
-                    raise
+                raise emit_error
 
     @contextmanager
     def topic(self):

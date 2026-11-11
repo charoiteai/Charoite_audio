@@ -93,7 +93,7 @@ HEADING = re.compile(r"^\s*#{1,6}\s")
 LEAD_BOLD = re.compile(r"^\s*\*\*([^*]+)\*\*")
 REASONS = {"срок": "снято по сроку", "ничьё": "снято: нет исполнителя", "давно": "снято: давно, срок не разобран",
            "не поручение": "снято: не поручение"}
-CLOSED_MARK = re.compile(r"\s*_\((?:снято по сроку|снято: нет исполнителя|снято: давно, срок не разобран|снято: не поручение) \d\d\.\d\d\)_\s*$")
+CLOSED_MARK = task_line.CLOSED_TAIL
 CAP_DAYS = 90                         # неразобранный знак времени — строка держится до потолка давности
 LONG_CAP_DAYS = 400                   # то же со знаком долгого срока (квартал, полгода, год, месяцы, сезон)
 
@@ -543,16 +543,12 @@ def task_key(meeting: str | None, text: str) -> str:
     return task_line.returned_digest(meeting, text)
 
 
-def load_returned(base: pathlib.Path) -> set[str]:
-    """Реестр возвращённого (`returned.jsonl` пишет restore.py): эти поручения больше не снимаются.
-    Хранит обезличенные SHA-256 дайджесты (`id`); прежний формат (`file` + `old`) тоже понимается.
-    Байты режутся по строкам до декодирования: оборванный хвост пропускается."""
-    keys = set()
-    try:
-        lines = (base / "returned.jsonl").read_bytes().split(b"\n")
-    except OSError:
-        return keys
-    for line in lines:
+def _parse_returned_rows(raw_bytes: bytes) -> tuple[list[tuple[str, str | None]], bool]:
+    """(Упорядоченные `(digest, when)` без дублей, нужны ли очистка старых полей `file`/`old` и невалидных строк)."""
+    entries: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    needs_rewrite = False
+    for line in raw_bytes.split(b"\n"):
         if not line.strip():
             continue
         try:
@@ -560,15 +556,85 @@ def load_returned(base: pathlib.Path) -> set[str]:
         except ValueError:                            # и UnicodeDecodeError: оборванная запись отката
             continue
         if not isinstance(row, dict):
+            needs_rewrite = True
             continue
         digest = row.get("id")
-        if isinstance(digest, str) and digest:
-            keys.add(digest)
+        when = row.get("when") if isinstance(row.get("when"), str) else None
+        if task_line.is_digest(digest):
+            if set(row) - {"id", "when"}:
+                needs_rewrite = True
+            if digest not in seen:
+                seen.add(digest)
+                entries.append((digest, when))
         elif isinstance(row.get("old"), str) and isinstance(row.get("file"), str):
+            needs_rewrite = True
             legacy = task_line.returned_line_digest(row["file"], row["old"])
-            if legacy:
-                keys.add(legacy)
-    return keys
+            if legacy and legacy not in seen:
+                seen.add(legacy)
+                entries.append((legacy, when))
+        else:
+            needs_rewrite = True
+    return entries, needs_rewrite
+
+
+def migrate_returned(base: pathlib.Path, *, lock_dir: pathlib.Path | None = None) -> bool:
+    """Атомарно переписать `returned.jsonl`, вычищая старые открытые поля `file`/`old`.
+
+    Если передан `lock_dir`, берёт замок графа только когда в файле действительно есть не-дайджестные строки;
+    без `lock_dir` предполагает, что вызывающий (`apply`) уже держит замок графа."""
+    registry = base / "returned.jsonl"
+    try:
+        raw = registry.read_bytes()
+    except OSError:
+        return False
+    entries, needs_rewrite = _parse_returned_rows(raw)
+    if not needs_rewrite:
+        return False
+
+    def _rewrite() -> bool:
+        try:
+            current = registry.read_bytes()
+        except OSError:
+            return False
+        cur_entries, cur_needs = _parse_returned_rows(current)
+        if not cur_needs:
+            return False
+        body = "".join(
+            json.dumps({"id": d, "when": w} if w else {"id": d}, ensure_ascii=False) + "\n"
+            for d, w in cur_entries
+        ).encode("utf-8")
+        tmp = registry.with_name(f"returned.jsonl.{os.getpid()}.tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(body)
+            charoite_paths.durable_replace(tmp, registry)
+            return True
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
+
+    if lock_dir is None:
+        return _rewrite()
+    charoite_paths.secure_dir(lock_dir)
+    with file_locks.graph_lock(lock_dir, LOCK_WAIT) as taken:
+        return _rewrite() if taken else False
+
+
+def load_returned(base: pathlib.Path) -> set[str]:
+    """Реестр возвращённого (`returned.jsonl` пишет restore.py): эти поручения больше не снимаются.
+    Хранит обезличенные SHA-256 дайджесты (`id`); прежний формат (`file` + `old`) тоже понимается.
+    Байты режутся по строкам до декодирования: оборванный хвост пропускается."""
+    try:
+        raw = (base / "returned.jsonl").read_bytes()
+    except OSError:
+        return set()
+    entries, _ = _parse_returned_rows(raw)
+    return {d for d, _ in entries}
 
 
 def meeting_of(rel: str) -> str | None:
@@ -742,9 +808,9 @@ def _safe_err(e: BaseException) -> str:
     """Текст сбоя без полного пути с темой встречи."""
     if isinstance(e, safe_write.LostRace):
         return e.kind
-    if getattr(e, "filename", None) or getattr(e, "filename2", None):
+    if isinstance(e, OSError):
         return e.strerror or type(e).__name__
-    return str(e)
+    return type(e).__name__
 
 
 def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None, guard=None, on_error=None):
@@ -818,6 +884,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                 pass
 
         note(f"запись начата; откат: {backup / 'restore.py'}")
+        migrate_returned(base)
         returned = load_returned(base)
         pending = list(plan.items())
         for index, (path, edits) in enumerate(pending):
@@ -1471,6 +1538,7 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
         print("пробный прогон: ничего не записано")
         return 0
     if not plan:
+        migrate_returned(base, lock_dir=charoite_paths.graph_lock_dir(graph, root=DATA))
         record(summary_line(stats, tab, applied=True) + extra + "; строк 0")
         print("снимать нечего")
         return 0

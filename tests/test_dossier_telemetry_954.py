@@ -434,3 +434,115 @@ def test_index_cleanup_error_without_an_original_error_still_propagates(night, m
     assert caught.value is original and publications == 1
     assert data["index_failed"] == 1 and data["interrupted"] is True
     assert data["topics_started"] == data["legacy_attempts"] == 0
+
+
+def test_cli_writes_private_content_free_telemetry_sidecar_and_skips_dry_and_find(night, monkeypatch, capsys):
+    nd, graph, _, _, _ = night
+    root = nd._root()
+    sidecar = nd.charoite_paths.log_path(root, "dossier_telemetry")
+    monkeypatch.setattr(nd, "cfg", lambda: LOCAL)
+
+    # --dry and --find must not create or overwrite logs/dossier_telemetry.json.
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--dry"])
+    assert nd.main() == 0
+    _ = aggregate(capsys)
+    assert not sidecar.exists()
+
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--find", "Альфа"])
+    assert nd.main() == 0
+    capsys.readouterr()
+    assert not sidecar.exists()
+
+    # Normal CLI run writes 0600 content-free JSON matching stdout telemetry.
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph)])
+    assert nd.main() == 0
+    stdout_data = aggregate(capsys)
+    assert sidecar.exists()
+    assert (sidecar.stat().st_mode & 0o777) == 0o600
+    assert (sidecar.parent.stat().st_mode & 0o777) == 0o700
+    raw = sidecar.read_text(encoding="utf-8")
+    assert SENTINEL not in raw and "Альфа" not in raw
+    disk_data = json.loads(raw)
+    assert isinstance(disk_data.pop("generated"), str)
+    assert disk_data == stdout_data
+
+
+def test_cli_sidecar_records_interrupted_on_sigterm_and_survives_broken_stdout(night, monkeypatch, capsys):
+    import builtins
+    nd, graph, _, _, _ = night
+    root = nd._root()
+    sidecar = nd.charoite_paths.log_path(root, "dossier_telemetry")
+    monkeypatch.setattr(nd, "cfg", lambda: LOCAL)
+
+    original_build = nd._build
+
+    def sigterm_build(*a, **kw):
+        raise SystemExit(143)
+
+    monkeypatch.setattr(nd, "_build", sigterm_build)
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph)])
+    with pytest.raises(SystemExit) as caught:
+        nd.main()
+    assert caught.value.code == 143
+    stdout_data = aggregate(capsys)
+    disk_data = json.loads(sidecar.read_text(encoding="utf-8"))
+    disk_data.pop("generated")
+    assert disk_data == stdout_data
+    assert disk_data["interrupted"] is True and disk_data["topics_interrupted"] == 1
+
+    # Even if stdout raises BrokenPipeError on telemetry line, on_emit still writes the sidecar.
+    monkeypatch.setattr(nd, "_build", original_build)
+    original_print = builtins.print
+
+    def broken_print(*args, **kwargs):
+        if args and str(args[0]).startswith("dossier_telemetry "):
+            raise BrokenPipeError("synthetic closed pipe")
+        return original_print(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", broken_print)
+    with pytest.raises(BrokenPipeError):
+        nd.run_all([graph], LOCAL, full=True, dry=False,
+                   on_telemetry=lambda snap: nd._write_telemetry_sidecar(root, snap))
+    disk_after = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert disk_after["interrupted"] is False
+    # And when stdout succeeds, a non-OSError callback failure propagates instead of vanishing.
+    monkeypatch.setattr(builtins, "print", original_print)
+    with pytest.raises(RuntimeError, match="callback boom"):
+        with telemetry.Collector().activate(on_emit=lambda snap: (_ for _ in ()).throw(RuntimeError("callback boom"))):
+            pass
+
+
+def test_sidecar_oserror_unlinks_stale_file_logs_stderr_and_preserves_run_result(night, monkeypatch, capsys):
+    nd, graph, _, _, _ = night
+    root = nd._root()
+    sidecar = nd.charoite_paths.log_path(root, "dossier_telemetry")
+    nd.charoite_paths.secure_dir(sidecar.parent)
+    sidecar.write_text('{"stale": true, "interrupted": false}\n', encoding="utf-8")
+    monkeypatch.setattr(nd, "cfg", lambda: LOCAL)
+
+    real_write = nd.safe_write.write_text
+
+    def broken_write(path, text, **kwargs):
+        if Path(path) == sidecar:
+            raise PermissionError(SENTINEL)
+        return real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(nd.safe_write, "write_text", broken_write)
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph)])
+    assert nd.main() == 0
+    captured = capsys.readouterr()
+    assert "итого собрано досье:" in captured.out
+    assert "dossier_telemetry_sidecar_failed: PermissionError" in captured.err
+    assert SENTINEL not in captured.err and SENTINEL not in captured.out
+    assert not sidecar.exists()
+
+    # On SIGTERM + sidecar OSError, exit code 143 and stderr diagnostic both survive cleanly.
+    sidecar.write_text('{"stale": true}\n', encoding="utf-8")
+    monkeypatch.setattr(nd, "_build", lambda *a, **kw: (_ for _ in ()).throw(SystemExit(143)))
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--full"])
+    with pytest.raises(SystemExit) as caught:
+        nd.main()
+    assert caught.value.code == 143
+    captured_sig = capsys.readouterr()
+    assert "dossier_telemetry_sidecar_failed: PermissionError" in captured_sig.err
+    assert not sidecar.exists()

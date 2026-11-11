@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1573,3 +1574,139 @@ def test_mp3_without_an_id3_tag_exits_by_its_hash(repo):
     assert p.returncode == 1 and "s.mp3 (двоичный)" in p.stderr, p.stderr
     _allow(repo, git(repo.work, "rev-parse", f"{sha}:s.mp3", env=repo.env).stdout.strip())
     assert guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env).returncode == 0
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+def test_protocol_raw_grep_and_canonical_scan_same_synthetic_snapshot(repo, standalone):
+    """Reproduce the old false alarm without ever opening the owner's list."""
+    (repo.tmp / "markers.txt").write_text("qzx\nабв\n", encoding="utf-8")
+    repo.write("notes.md", "qzx абв\n" if standalone else "preqzxpost преабвпост\n")
+    (repo.work / "sample.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\xff qzx ")
+    repo.commit("synthetic controls")
+    legacy = git(repo.work, "grep", "-iE", "qzx|абв", env=repo.env, check=False)
+    tree = guard_run(repo.work, "--all", env=repo.env)
+    commits = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert legacy.returncode == 0
+    assert tree.returncode == int(standalone), tree.stdout + tree.stderr
+    assert commits.returncode == int(standalone), commits.stdout + commits.stderr
+
+
+@pytest.mark.parametrize("list_state", ["missing", "empty"])
+def test_protocol_failed_gate_keeps_synthetic_remote_unchanged(repo, list_state):
+    repo.install()
+    wt = repo.worktree("protocol")
+    repo.write("notes.md", "clean\n", wt)
+    repo.commit("control", wt)
+    markers = repo.tmp / "markers.txt"
+    if list_state == "missing":
+        markers.unlink()
+    else:
+        markers.write_text("# no markers\n", encoding="utf-8")
+    result = git(wt, "push", "origin", "protocol", env=repo.env, check=False)
+    assert result.returncode != 0
+    assert git(repo.work, "ls-remote", "origin", "refs/heads/protocol", env=repo.env).stdout == ""
+    assert git(repo.work, "ls-remote", "origin", "refs/heads/main", env=repo.env).stdout.split()[0] == repo.base
+
+
+@pytest.mark.parametrize("failure", [
+    "none", "status-1", "status-2", "--all", "--range",
+    "rev-parse", "rev-list", "ls-tree", "tempdir",
+])
+def test_protocol_documented_shell_stops_before_publication(repo, failure):
+    """Execute the documented shell: a failed child must not reach the sink."""
+    document = (REPO / "docs" / "PRIVACY_CHECKS.md").read_text(encoding="utf-8")
+    script = document.split("```sh\n", 1)[1].split("```", 1)[0]
+    script = script.replace("REPLACE_WITH_REVIEWED_BASE_OID", repo.base)
+    binary = repo.tmp / "bin"
+    binary.mkdir()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    count_file = repo.tmp / "status-count"
+    git_wrapper = binary / "git"
+    git_wrapper.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = status ]; then\n'
+        '  n=0; if [ -f "$STATUS_COUNT" ]; then read -r n < "$STATUS_COUNT"; fi\n'
+        '  n=$((n + 1)); printf "%s\\n" "$n" > "$STATUS_COUNT"\n'
+        '  if [ "$FAIL_STEP" = "status-$n" ]; then echo PRIVATE_DIAGNOSTIC_SENTINEL >&2; exit 73; fi\n'
+        "fi\n"
+        'if [ "$FAIL_STEP" = "$1" ]; then echo PRIVATE_DIAGNOSTIC_SENTINEL >&2; exit 75; fi\n'
+        "exec " + shlex.quote(real_git) + ' "$@"\n', encoding="utf-8",
+    )
+    python_wrapper = binary / "python3"
+    python_wrapper.write_text(
+        "#!/bin/sh\n"
+        'for arg do if [ "$arg" = "$FAIL_STEP" ]; then echo PRIVATE_DIAGNOSTIC_SENTINEL >&2; exit 74; fi; done\n'
+        "exec " + shlex.quote(sys.executable) + ' "$@"\n', encoding="utf-8",
+    )
+    git_wrapper.chmod(0o700)
+    python_wrapper.chmod(0o700)
+    env = dict(repo.env, PATH=str(binary) + os.pathsep + repo.env["PATH"],
+               FAIL_STEP=failure, STATUS_COUNT=str(count_file), TMPDIR=str(repo.tmp))
+    if failure == "tempdir":
+        env["TMPDIR"] = str(repo.tmp / "PRIVATE_DIAGNOSTIC_SENTINEL")
+    # A local file is the publication sink; no external network is involved.
+    script += "\nprintf published > publication-sink\n"
+    result = subprocess.run(["/bin/sh", "-c", script], cwd=repo.work, env=env,
+                            capture_output=True, text=True)
+    sink = repo.work / "publication-sink"
+    assert "PRIVATE_DIAGNOSTIC_SENTINEL" not in result.stdout + result.stderr
+    if failure == "none":
+        assert result.returncode == 0, result.stderr
+        assert sink.read_text() == "published"
+        assert "TEXT_CHECKS_PASS" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert not sink.exists()
+        assert "TEXT_CHECKS_PASS" not in result.stdout
+        if failure != "tempdir":
+            private_logs = list(repo.tmp.glob("charoite-privacy.*/*.log"))
+            assert any("PRIVATE_DIAGNOSTIC_SENTINEL" in p.read_text() for p in private_logs)
+
+
+def test_protocol_inventory_keeps_replaced_and_deleted_media(repo):
+    """A clean HEAD cannot stand in for reviewing every outgoing payload."""
+    image = repo.work / "sample.png"
+    blobs = []
+    for version in [b"first", b"second"]:
+        image.write_bytes(b"\x89PNG\r\n\x1a\n\x00\xff " + version)
+        repo.commit("synthetic media version")
+        blobs.append(git(repo.work, "rev-parse", "HEAD:sample.png", env=repo.env).stdout.strip())
+    image.unlink()
+    repo.commit("remove media")
+    document = (REPO / "docs" / "PRIVACY_CHECKS.md").read_text(encoding="utf-8")
+    script = document.split("```sh\n", 1)[1].split("```", 1)[0]
+    script = script.replace("REPLACE_WITH_REVIEWED_BASE_OID", repo.base)
+    script = script.replace("python3 scripts/", shlex.quote(sys.executable) + " scripts/")
+    result = subprocess.run(["/bin/sh", "-c", script], cwd=repo.work,
+                            env=dict(repo.env, TMPDIR=str(repo.tmp)), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    inventories = list(repo.tmp.glob("charoite-privacy.*/outgoing-trees.log"))
+    assert len(inventories) == 1
+    inventory = inventories[0].read_text()
+    assert all(blob in inventory for blob in blobs)
+    assert "sample.png" not in git(repo.work, "ls-tree", "-r", "HEAD", env=repo.env).stdout
+    assert "payload review and final pre-push still required" in result.stdout
+
+
+def test_protocol_rejects_an_unreadable_tracked_file(repo):
+    """The clean-tree precondition must reject a file the scanner cannot read."""
+    repo.write("old.txt", MARKER + "\n")
+    repo.commit("historical fixture")
+    base = repo.head()
+    old = repo.work / "old.txt"
+    old.chmod(0)
+    try:
+        if os.access(old, os.R_OK):
+            pytest.skip("this user can read a mode-000 file")
+        document = (REPO / "docs" / "PRIVACY_CHECKS.md").read_text(encoding="utf-8")
+        script = document.split("```sh\n", 1)[1].split("```", 1)[0]
+        script = script.replace("REPLACE_WITH_REVIEWED_BASE_OID", base)
+        script = script.replace("python3 scripts/", shlex.quote(sys.executable) + " scripts/")
+        result = subprocess.run(["/bin/sh", "-c", script], cwd=repo.work,
+                                env=dict(repo.env, TMPDIR=str(repo.tmp)), capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "TEXT_CHECKS_PASS" not in result.stdout
+        assert "old.txt" not in result.stdout + result.stderr
+    finally:
+        old.chmod(0o600)

@@ -31,7 +31,10 @@ def _bind_helpers():
     Снимок кладёт прогон (`tasks_control.apply`): откат обязан работать, даже когда
     checkout, из которого писали, удалён или переехал."""
     for candidate in (pathlib.Path(run["code"]) / "src", here / "lib"):
-        sys.path.insert(0, str(candidate))
+        cand_str = str(candidate)
+        for mod in ("file_locks", "task_line", "charoite_graph.safe_write", "charoite_graph"):
+            sys.modules.pop(mod, None)
+        sys.path.insert(0, cand_str)
         try:
             import file_locks
             import task_line
@@ -40,6 +43,8 @@ def _bind_helpers():
                 return file_locks, safe_write, task_line
         except Exception:                           # noqa: BLE001 — чужое дерево не обязано импортироваться
             pass
+        if sys.path and sys.path[0] == cand_str:
+            sys.path.pop(0)
     sys.exit("откат: нет ни дерева кода из run.json, ни снимка хелперов lib/ рядом")
 
 

@@ -19,7 +19,6 @@ import argparse
 import collections
 import datetime as dt
 import fcntl
-import hashlib
 import http.client
 import json
 import math
@@ -48,6 +47,7 @@ STALE_HOURS = 3       # сторож: прогонов не было дольш�
 RUN_BUDGET = 20 * 60  # бюджет прогона: ожидание модели не должно тянуться часами
 REQUEST_TIMEOUT = 120
 REQUEST_MAX_BYTES = 65_536
+CHAT_MAX_BYTES = 262_144  # нестримовый ответ /api/chat с полем модели может превысить 64 КБ
 CLOCK_SKEW_S = 60.0   # допуск сдвига часов для штампов прогона; далёкое будущее — порча состояния
 VERDICTS = ("open", "done", "not_task")
 # Мета-инструкция модели внутри текста поручения: такие строки не правим никогда (инъекция в протокол).
@@ -98,7 +98,7 @@ def _chat_json(prompt: str, model: str = MODEL) -> dict | None:
     request = urllib.request.Request(f"{base_url}/api/chat", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
     try:
-        raw = busy_signals.read_bounded_url(request, timeout_s=REQUEST_TIMEOUT, max_bytes=REQUEST_MAX_BYTES)
+        raw = busy_signals.read_bounded_url(request, timeout_s=REQUEST_TIMEOUT, max_bytes=CHAT_MAX_BYTES)
         envelope = json.loads(raw)
         message = envelope.get("message") if isinstance(envelope, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
@@ -235,7 +235,7 @@ def candidates(graph: pathlib.Path, owner: str, today: dt.date, returned: set[st
 
 def _cache_key(meeting: str | None, text: str) -> str:
     """Хеш точного текста поручения встречи: кэш не хранит сырой текст и тему встречи на диске."""
-    return hashlib.sha256(f"{meeting}\0{text}".encode("utf-8")).hexdigest()
+    return tc.task_line.cache_digest(meeting, text)
 
 
 def _format_edit(indent: str, text: str, kind: str, today: dt.date) -> tuple[str, str]:
@@ -345,7 +345,7 @@ def read_state(data: pathlib.Path) -> dict:
     clean: dict[str, dict] = {}
     if isinstance(cache, dict):
         for key, item in cache.items():
-            if not isinstance(key, str) or not key or not isinstance(item, dict):
+            if not tc.task_line.is_digest(key) or not isinstance(item, dict):
                 continue
             day, verdict = item.get("day"), item.get("verdict")
             if verdict not in VERDICTS or not isinstance(day, str):
@@ -654,6 +654,8 @@ def run(args) -> int:
                        f"пропущено {skipped}; прогон неполный")
             if applied:
                 record_backup(backup, record)
+        else:
+            tc.migrate_returned(base, lock_dir=tc.charoite_paths.graph_lock_dir(graph, root=tc.DATA))
         cache = _merged_cache(cache, seen)
         now = time.time()
         write_state(tc.DATA, {"last_ok": state.get("last_ok", 0) if partial else now,
@@ -823,18 +825,20 @@ def selftest() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         data = pathlib.Path(tmp) / "data"
         (data / "logs").mkdir(parents=True)
+        ka, kb = "a" * 64, "b" * 64
         (data / "logs" / STATE).write_text(json.dumps({
             "last_ok": "вчера", "last_skip": 1.0, "cache": {
-                "a": {"text": "x", "day": today.isoformat(), "verdict": "open"},
-                "b": {"text": "y", "day": "2099-01-01", "verdict": "open"},
+                ka: {"day": today.isoformat(), "verdict": "open"},
+                kb: {"day": "2099-01-01", "verdict": "open"},
+                "202609011000\0старый сырой ключ": {"day": today.isoformat(), "verdict": "open"},
                 "c": "мусор",
-                "d": {"text": "z", "day": "не дата", "verdict": "open"}}}), encoding="utf-8")
+                "d" * 64: {"day": "не дата", "verdict": "open"}}}), encoding="utf-8")
         state = read_state(data)
         if state.get("last_ok") != 0 or state.get("last_skip") != 1.0:
             bad.append("повреждённое время состояния не отброшено")
-        if set(state.get("cache", {})) != {"a", "b"}:
+        if set(state.get("cache", {})) != {ka, kb}:
             bad.append(f"битые записи кэша не отброшены: {sorted(state.get('cache', {}))}")
-        if state["cache"]["b"]["day"] != today.isoformat():
+        if state["cache"][kb]["day"] != today.isoformat():
             bad.append("будущий день кэша не приведён к сегодняшнему")
         write_state(data, {"last_ok": 123.0, "cache": {}})
         if read_state(data).get("last_ok") != 123.0:

@@ -178,7 +178,7 @@
 - `scripts/bench_models.py` ← docs/FEATURES.md, docs/MODELS.md, docs/ru/MODELS.md, docs/zh/MODELS.md
 - `scripts/build_app_icon.sh` ← docs/ru/scripts/README.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/build_embedded_python.sh` ← README.md, app/README.md, docs/RELEASING.md, docs/SETUP.md, docs/ru/README.md, docs/ru/RELEASING.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/ru/scripts/README.md, docs/zh/README.md, docs/zh/RELEASING.md, docs/zh/SETUP.md, docs/zh/app/README.md, docs/zh/scripts/README.md, scripts/README.md
-- `scripts/check_private_markers.py` ← CONTRIBUTING.md, MAINTENANCE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md
+- `scripts/check_private_markers.py` ← CONTRIBUTING.md, MAINTENANCE.md, docs/PRIVACY_CHECKS.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md
 - `scripts/check_test_assertions.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/ru/tests/README.md, docs/zh/CONTRIBUTING.md, docs/zh/tests/README.md
 - `scripts/cloud_review.py` ← docs/FEATURES.md, docs/design/incremental-dossier-acceptance.md
 - `scripts/decision_evidence_audit.py` ← docs/FEATURES.md, docs/design/DECISION_EVIDENCE_AUDIT.md

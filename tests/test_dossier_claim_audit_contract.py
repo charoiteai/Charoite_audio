@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -439,3 +440,233 @@ def test_actual_adapter_transport_is_checked_again_after_local_factory(monkeypat
     monkeypatch.setattr(llm, "LLM", WrongTransport)
     with pytest.raises(inc.Refused):
         inc.local_complete("source", LOCAL, system="judge")
+
+
+def test_stage_config_boundaries_and_auto_stepping(monkeypatch):
+    longest = max(len(inc.SUPPORT_AUDIT_SYSTEM), len(inc.TOPIC_AUDIT_SYSTEM))
+    # Odd boundary 11873 chars -> ceil(11873 / 2) = 5937 + 2000 + 256 = 8193 -> 16384.
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (11873 - longest))["llm"]["num_ctx"] == 16384
+    # Exact 32768 boundary: (32768 - 2000 - 256) * 2 = 61024 -> 32768; +1 -> Refused(CONTEXT).
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (61024 - longest))["llm"]["num_ctx"] == 32768
+    with pytest.raises(inc.Refused, match="maximum context budget") as over:
+        inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (61025 - longest))
+    assert over.value.reason == inc.telemetry.Reason.CONTEXT
+    # Explicit small (< 8192) and negative windows are preserved for admission to refuse.
+    assert inc._stage_config({"llm": {"num_ctx": 4096}}, 10, "x" * 14000, 350)["llm"]["num_ctx"] == 4096
+    assert inc._stage_config({"llm": {"num_ctx": -1}}, 10, "x", 350)["llm"]["num_ctx"] == -1
+    # Explicit large (> 32768) operator windows are preserved on non-audit stages up to their exact budget.
+    max_64k_prompt = "x" * ((65536 - 350 - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN - 10)
+    assert inc._stage_config({"llm": {"num_ctx": 65536}}, 10, "x", 350)["llm"]["num_ctx"] == 65536
+    assert inc._stage_config({"llm": {"num_ctx": 65536}}, 10, max_64k_prompt, 350)["llm"]["num_ctx"] == 65536
+    with pytest.raises(inc.Refused, match="maximum context budget") as over_64k:
+        inc._stage_config({"llm": {"num_ctx": 65536}}, 10, max_64k_prompt + "x", 350)
+    assert over_64k.value.reason == inc.telemetry.Reason.CONTEXT
+    # Non-ollama configs pass through untouched so local_config enforces the local-only gate.
+    cloud_cfg = {"llm": {"engine": "cloud", "model": "invented"}}
+    assert inc._stage_config(cloud_cfg, 10, "x" * 70000, 350) is cloud_cfg
+    with pytest.raises(inc.Refused, match="Ollama"):
+        inc.source_relevance("Glasshouse", _old(), B, {"text": FACT}, cloud_cfg)
+    # Malformed, non-finite float or boolean num_ctx refuses at preflight with Reason.PREFLIGHT.
+    for bad in (True, False, "not-an-int", [], float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(inc.Refused, match="invalid configured context window") as bad_exc:
+            inc._stage_config({"llm": {"num_ctx": bad}}, 10, "x", 350)
+        assert bad_exc.value.reason == inc.telemetry.Reason.PREFLIGHT
+
+
+def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry(monkeypatch):
+    long_text = ("Подробная запись наблюдения по теплице. " * 380) + FACT
+    files = {B: {"text": long_text}}
+    cfg = {"llm": {"engine": "ollama", "base_url": "http://127.0.0.1:11434", "model": "invented", "num_ctx": 8192}}
+    seen = []
+
+    def complete(prompt, config, *, system, **kwargs):
+        seen.append((system, config["llm"]["num_ctx"]))
+        if system == SOURCE_SYSTEM:
+            return json.dumps({"verdict": "relevant", "reason": "Supported topic fact.", "quote": FACT})
+        if system == GENERATE_SYSTEM:
+            return json.dumps({"body": ADDED, "changes": []})
+        if system == MAIN_SYSTEM:
+            return json.dumps(_verdict())
+        if system == inc.SUPPORT_AUDIT_SYSTEM:
+            return json.dumps(SUPPORT_ACCEPT)
+        if system == inc.TOPIC_AUDIT_SYSTEM:
+            return json.dumps(TOPIC_ACCEPT)
+        assert system == dossier.gen_call()["system"]
+        return ADDED
+
+    monkeypatch.setattr(inc, "local_complete", complete)
+    assert inc.source_relevance("Glasshouse", _old(), B, files[B], cfg) is True
+    assert inc.append("Glasshouse", _old(), [B], files, cfg) == ADDED
+    assert night.generate("Glasshouse", [B], {B: {**files[B], "kind": "Встречи"}}, cfg) == ADDED
+    assert cfg["llm"]["num_ctx"] == 8192
+    assert [ctx for _, ctx in seen] == [16384, 16384, 16384, 16384, 16384, 16384]
+
+    # When downstream validation fails due to context budget, append must NOT burn a second attempt.
+    gen_calls = []
+
+    def overflow_downstream(prompt, config, *, system, **kwargs):
+        gen_calls.append(system)
+        return json.dumps({"body": ADDED, "changes": []})
+
+    monkeypatch.setattr(inc, "local_complete", overflow_downstream)
+    monkeypatch.setattr(
+        inc, "validate_candidate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            inc.Refused("complete dossier input exceeds the maximum context budget",
+                        reason=inc.telemetry.Reason.CONTEXT)
+        ),
+    )
+    with pytest.raises(inc.Refused, match="maximum context budget"):
+        inc.append("Glasshouse", _old(), [B], {B: {"text": FACT}}, cfg)
+    assert gen_calls == [GENERATE_SYSTEM]
+
+
+def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguity(monkeypatch):
+    table_source = "Шапка таблицы\n| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\nХвост\n"
+    plain_quote = "| Glasshouse | A rain cover was fitted. |"
+    raw_quote = "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |"
+    unescaped_quote = "| [[Ядра/Glasshouse|Glasshouse]] | A rain cover was fitted. |"
+    # Plain display quote, verbatim raw wikilink quote, and dropped-backslash table wikilink quote all pass.
+    for quote in (plain_quote, raw_quote, unescaped_quote):
+        monkeypatch.setattr(
+            inc, "local_complete",
+            lambda *a, q=quote, **k: json.dumps({"verdict": "relevant", "reason": "Table row fact.", "quote": q}),
+        )
+        assert inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {}) is True
+    # Stem without alias ("[[Ядра/Glasshouse]]") also resolves to "Glasshouse".
+    monkeypatch.setattr(
+        inc, "local_complete",
+        lambda *a, **k: json.dumps({"verdict": "relevant", "reason": "Stem quote.", "quote": "Тема Glasshouse обновлена."}),
+    )
+    assert inc.source_relevance("Glasshouse", _old(), B, {"text": "Тема [[Ядра/Glasshouse]] обновлена."}, {}) is True
+    # Whitespace-only quote, empty/anchor wikilinks, unclosed [[ across newline, and fabricated targets fail.
+    for bad_source, bad_quote in [
+        ("A rain cover was fitted.", "   "),
+        ("A [[Цель| ]] B", "A  B"),
+        ("A [[Раздел/Имя\\| ]] B", "A  B"),
+        ("A [[#Раздел]] B", "A  B"),
+        ("A [[]] B", "A  B"),
+        ("Первая [[незакрытая\nвторая]] строка", "Первая строка"),
+        ("A Glasshouse B", "A [[Выдуманная/Glasshouse|Glasshouse]] B"),
+    ]:
+        monkeypatch.setattr(
+            inc, "local_complete",
+            lambda *a, q=bad_quote, **k: json.dumps({"verdict": "relevant", "reason": "Bad quote.", "quote": q}),
+        )
+        with pytest.raises(inc.Refused, match="uncertain or unsupported"):
+            inc.source_relevance("Glasshouse", _old(), B, {"text": bad_source}, {})
+
+    # Downstream validate_candidate (claims + changes + _quote_context) accepts unique plain and unescaped table quotes...
+    for valid_quote in (plain_quote, unescaped_quote):
+        calls = _transport(monkeypatch, _verdict([_claim(quote=valid_quote)]))
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": table_source}}, {}, ADDED, [])
+        assert len(calls) == 3
+    # ...and still refuses when two different wikilinks collapse to the same plain quote!
+    ambiguous_table = (
+        "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+        "| [[Архив/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+    )
+    _transport(monkeypatch, _verdict([_claim(quote=plain_quote)]))
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+    # Distinct target wikilink quotes (both raw \| and unescaped |) on the two-row table remain unambiguous and pass!
+    for specific_quote in (raw_quote, unescaped_quote):
+        _transport(monkeypatch, _verdict([_claim(quote=specific_quote)]))
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+
+    # Direct projection invariants: bytes inside hidden blocks stay verbatim (never stripped to empty).
+    hidden_only = "Решили %%не%% ставить `[[Ядра/Glasshouse\\|крышу]]`.\n```md\n[[X|y]]\n```"
+    assert inc._plain_wikilinks(hidden_only) == hidden_only
+    assert inc._unescape_wikilinks(
+        "`| [[Ядра/Glasshouse\\|Glasshouse]] |` и [[Ядра/Glasshouse\\|Glasshouse]]"
+    ) == "`| [[Ядра/Glasshouse\\|Glasshouse]] |` и [[Ядра/Glasshouse|Glasshouse]]"
+    # Splicing across Obsidian %%...%% comments or inline code is refused as missing evidence.
+    for spliced_src, spliced_quote in (
+        ("Решили %%не%% ставить крышу.", "Решили  ставить крышу."),
+        ("A `[[X|y]]` B", "A  B"),
+    ):
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc._quote_context(spliced_src, spliced_quote)
+    # Identical text inside and outside a fenced block is refused as ambiguous!
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context("Glasshouse fitted.\n```\nGlasshouse fitted.\n```\n", "Glasshouse fitted.")
+
+    # Direct predicate contracts: index-0 match, empty quote, raw folder substring, code/comment exclusions,
+    # and mixed raw + wikilink ambiguity.
+    assert inc._has_source_quote("| [[Ядра/Glasshouse\\|Glasshouse]] | ok |", "| Glasshouse | ok |") is True
+    assert inc._has_source_quote("abc", "") is False
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc._quote_context("abc", "")
+    # Verbatim raw target path without "[[" still resolves when plain projection hides it behind an alias.
+    assert inc._has_source_quote("Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена.", "Ядра/Glasshouse") is True
+    assert inc._quote_context("Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена.", "Ядра/Glasshouse") == (
+        "Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена."
+    )
+    # Non-rendered wikilinks inside fenced code, inline code, or Obsidian %% comments are NOT stripped or unescaped.
+    for non_rendered in (
+        "```markdown\n| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n```\n",
+        "Пример `| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |` в коде.",
+        "Комментарий %% | [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. | %% скрыт.",
+    ):
+        for candidate_quote in (plain_quote, unescaped_quote):
+            assert inc._has_source_quote(non_rendered, candidate_quote) is False
+            with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+                inc._quote_context(non_rendered, candidate_quote)
+    # Mixed plain/unescaped/escaped duplicates and inline-code + rendered duplicates all refuse as ambiguous!
+    mixed_table = (
+        "| Glasshouse | A rain cover was fitted. |\n"
+        "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+    )
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context(mixed_table, plain_quote)
+    escaped_and_unescaped = (
+        "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+        "| [[Ядра/Glasshouse|Glasshouse]] | A rain cover was fitted. |\n"
+    )
+    for dup_quote in (raw_quote, unescaped_quote):
+        with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+            inc._quote_context(escaped_and_unescaped, dup_quote)
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context("Код `[[Ядра/Glasshouse]]` и ссылка [[Ядра/Glasshouse]].", "[[Ядра/Glasshouse]]")
+    # Truncated wikilink prefix/suffix quotes are judged via the raw branch (1 unique hit; 2 rows -> ambiguous),
+    # and rendered + fenced raw duplicates (raw=2, unescaped=1) refuse via max(...) rather than taking unescaped first.
+    for partial_quote in ("[[Ядра/Glasshouse\\|Glasshouse", "Ядра/Glasshouse\\|Glasshouse]] | A rain"):
+        assert inc._quote_hits(table_source, partial_quote) == 1
+        assert inc._quote_context(table_source, partial_quote) == table_source
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context(table_source + table_source, "[[Ядра/Glasshouse\\|Glasshouse")
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context(f"{table_source}```\n{raw_quote}\n```\n", raw_quote)
+
+    # Stage prompt contracts: isolated stage captures verify full instruction tails, exact open-question clauses,
+    # absence of bare \| escapes, and retryable Refused on invalid JSON \| from a model.
+    tails_by_system = {}
+
+    def capture_prompt(prompt, config, *, system, **kwargs):
+        tails_by_system[system] = prompt.split("\n", 1)[1]
+        if system == SOURCE_SYSTEM:
+            return json.dumps({"verdict": "relevant", "reason": "Open question.", "quote": plain_quote})
+        if system == GENERATE_SYSTEM:
+            return json.dumps({"body": BODY, "changes": []})
+        if system == MAIN_SYSTEM:
+            return json.dumps(_verdict([]))
+        raise AssertionError(f"unexpected stage system: {system}")
+
+    monkeypatch.setattr(inc, "local_complete", capture_prompt)
+    assert inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {}) is True
+    with pytest.raises(inc.Refused):
+        inc.append("Glasshouse", _old(), [B], {B: {"text": table_source}}, {})
+    inc.semantic_check("Glasshouse", _old(), [], {}, {}, BODY, [])
+    assert set(tails_by_system) == {SOURCE_SYSTEM, GENERATE_SYSTEM, MAIN_SYSTEM}
+    assert "adds a supported fact, decision, open question or risk about the topic" in tails_by_system[SOURCE_SYSTEM]
+    assert "without any topic fact, decision, open question or risk" in tails_by_system[SOURCE_SYSTEM]
+    for stage_system in (SOURCE_SYSTEM, GENERATE_SYSTEM, MAIN_SYSTEM):
+        assert "visible link text" in tails_by_system[stage_system]
+        assert "valid JSON escaping" in tails_by_system[stage_system]
+        assert re.search(r"(?<!\\)\\\|", tails_by_system[stage_system]) is None
+    monkeypatch.setattr(
+        inc, "local_complete",
+        lambda *a, **k: '{"verdict":"relevant","reason":"r","quote":"[[A\\|B]]"}',
+    )
+    with pytest.raises(inc.Refused, match="malformed model JSON"):
+        inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {})
