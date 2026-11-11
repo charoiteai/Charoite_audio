@@ -34,3 +34,42 @@ A cannot be restored after the second backup; B can. Different timestamps
 restore both A and B byte-for-byte. Source B remains unchanged in all cases.
 No model calls, full pipeline run or production fix is claimed. The earlier
 busy gate describes the initial attempt, not this completed baseline.
+
+## Fix contract (after reproduced baseline)
+
+Base4e17fb327f4be9ccf4f4f46086d21abf34e7c5dd; runtime base910b923c.
+An occupied backup name must never be overwritten, even for identical bytes.
+Select fail-closed FileExistsError; existing rebuild/review handlers must leave
+current dossier and index intact. No destination format or retention-policy change.
+Stage a complete copy with metadata in a uniquely named temporary file within
+its backup directory, then publish with atomic os.link(temp,destination), which
+fails if any destination entry already exists. Close/remove the temporary name
+on success or failure. Unsupported hardlinks fail closed through OSError.
+No os.replace/overwrite and no check-then-write race. Production graph locks,
+source snapshots and CAS writer are unchanged. Cross-process competitors for
+one destination, with no concurrent retention pruning, may yield exactly one winner; backup must equal that winner's
+whole preimage. The normal source/root trust boundary remains unchanged.
+
+Acceptance matrix:
+1. Original byte-exact four-case probe: same timestamp refuses second backup,
+   A still restores, currentB remains; distinct stamps restore both.
+2. Same content retry and occupied symlink/directory: reject without alteration.
+3. Concurrent callers: one successful complete copy and one FileExistsError;
+   no partial final destination or leftover temporary name.
+4. Copy/link/metadata failure: no source modification, no published partial copy,
+   preserved prior destination, temporary cleanup; missing source remains None.
+5. Real synthetic rebuild and review callers: collision prevents final write;
+   first backup and currentB/index persist; no real model/owner-data access.
+6. Existing author-race/CAS refusal, failed writer, restore and retention tests;
+   successful copy preserves metadata and multiple filenames share a stamp.
+7. Targeted regression suite; fault mutations reinstate copy2 overwrite, skip
+   publication or swallow collision and must be killed. Project changed-line
+   critical mutation policy plus final required test/CI gates remain mandatory.
+8. Independent INPUT and OUTPUT Terra6.1/Luna6/Sol6.1 on same bounded snapshot;
+   normal commits/hooks; no publish/merge without authorized delivery scope.
+
+INPUT resolution: all three reviewers report no Critical; Luna Important is
+covered by real caller collision tests asserting no dossier writer, current
+bytes/index preserved, another theme continuing, and existing CAS tests with
+stronger exact-byte backup assertions. Review reports must still be written on
+refusal: only the dossier final write is forbidden, not the diagnostic report.
