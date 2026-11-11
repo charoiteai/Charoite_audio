@@ -1687,3 +1687,26 @@ def test_protocol_inventory_keeps_replaced_and_deleted_media(repo):
     assert all(blob in inventory for blob in blobs)
     assert "sample.png" not in git(repo.work, "ls-tree", "-r", "HEAD", env=repo.env).stdout
     assert "payload review and final pre-push still required" in result.stdout
+
+
+def test_protocol_rejects_an_unreadable_tracked_file(repo):
+    """The clean-tree precondition must reject a file the scanner cannot read."""
+    repo.write("old.txt", MARKER + "\n")
+    repo.commit("historical fixture")
+    base = repo.head()
+    old = repo.work / "old.txt"
+    old.chmod(0)
+    try:
+        if os.access(old, os.R_OK):
+            pytest.skip("this user can read a mode-000 file")
+        document = (REPO / "docs" / "PRIVACY_CHECKS.md").read_text(encoding="utf-8")
+        script = document.split("```sh\n", 1)[1].split("```", 1)[0]
+        script = script.replace("REPLACE_WITH_REVIEWED_BASE_OID", base)
+        script = script.replace("python3 scripts/", shlex.quote(sys.executable) + " scripts/")
+        result = subprocess.run(["/bin/sh", "-c", script], cwd=repo.work,
+                                env=dict(repo.env, TMPDIR=str(repo.tmp)), capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "TEXT_CHECKS_PASS" not in result.stdout
+        assert "old.txt" not in result.stdout + result.stderr
+    finally:
+        old.chmod(0o600)
