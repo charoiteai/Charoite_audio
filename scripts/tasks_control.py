@@ -59,6 +59,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths
 import file_locks
 import live_gate
+import task_line
 from charoite_graph import graph_names, safe_write
 
 CODE = charoite_paths.code_root(__file__)
@@ -273,8 +274,7 @@ def md_files(graph: pathlib.Path):
 
 
 def meeting_key(rel: str) -> str | None:
-    digits = "".join(ch for ch in rel if ch.isdecimal() and ch.isascii())[:12]
-    return digits if len(digits) == 12 else None
+    return task_line.meeting_key_of_path(rel)
 
 
 def meeting_date(key: str | None) -> dt.date | None:
@@ -540,17 +540,17 @@ def _norm(text: str) -> str:
 
 
 def task_key(meeting: str | None, text: str) -> str:
-    return f"{meeting}\0{_norm(CLOSED_MARK.sub('', text))}"
+    return task_line.returned_digest(meeting, text)
 
 
 def load_returned(base: pathlib.Path) -> set[str]:
     """Реестр возвращённого (`returned.jsonl` пишет restore.py): эти поручения больше не снимаются.
-    Байты режутся по строкам до декодирования, как манифест в restore.py: хвост, оборванный посреди
-    буквы, пропускается, а не роняет каждый следующий прогон."""
+    Хранит обезличенные SHA-256 дайджесты (`id`); прежний формат (`file` + `old`) тоже понимается.
+    Байты режутся по строкам до декодирования: оборванный хвост пропускается."""
     keys = set()
     try:
         lines = (base / "returned.jsonl").read_bytes().split(b"\n")
-    except FileNotFoundError:
+    except OSError:
         return keys
     for line in lines:
         if not line.strip():
@@ -559,10 +559,15 @@ def load_returned(base: pathlib.Path) -> set[str]:
             row = json.loads(line.decode("utf-8"))
         except ValueError:                            # и UnicodeDecodeError: оборванная запись отката
             continue
-        if isinstance(row, dict) and isinstance(row.get("old"), str) and isinstance(row.get("file"), str):
-            b = BOX.match(row["old"])
-            if b:
-                keys.add(task_key(meeting_key(row["file"]), b.group(2)))
+        if not isinstance(row, dict):
+            continue
+        digest = row.get("id")
+        if isinstance(digest, str) and digest:
+            keys.add(digest)
+        elif isinstance(row.get("old"), str) and isinstance(row.get("file"), str):
+            legacy = task_line.returned_line_digest(row["file"], row["old"])
+            if legacy:
+                keys.add(legacy)
     return keys
 
 
@@ -621,30 +626,8 @@ def tab_summary(items, known: list[tuple[str, str]], owner: str, today: dt.date)
 
 
 def _fence_map(lines: list[str]) -> list[bool]:
-    """Строка внутри код-блока (или сама его граница). Блок закрывает только тот же символ, не
-    короче открывающего, без хвоста после маркера; для открытия с отступом 0..3 закрывает отступ
-    0..3, для вложенного открытия (4+) — отступ от открытия до +3 (не строка верхнего уровня):
-    ``` и ````python внутри ````-блока и строка с 4+ пробелами в блоке нулевого уровня — текст."""
-    inside, opener, opener_indent, out = False, "", 0, []
-    for line in lines:
-        m = FENCE.match(line)
-        if m:
-            indent = len(m.group(1).expandtabs(4))
-            marker = m.group(2)
-            tail = line[m.end():]
-            if not inside:
-                if marker[0] != "`" or "`" not in tail:
-                    inside, opener, opener_indent = True, marker, indent
-                    out.append(True)
-                    continue
-            else:
-                indent_ok = indent <= 3 if opener_indent <= 3 else opener_indent <= indent <= opener_indent + 3
-                if marker[0] == opener[0] and len(marker) >= len(opener) and not tail.strip() and indent_ok:
-                    inside, opener, opener_indent = False, "", 0
-                    out.append(True)
-                    continue
-        out.append(inside)
-    return out
+    """Строка внутри код-блока (или сама его граница): общая карта из `src/task_line.py`."""
+    return task_line.fence_map(lines)
 
 
 def _kinds_with_parents(lines: list[str], owner: str, fenced: list[bool] | None = None) -> dict[int, str]:
@@ -749,6 +732,21 @@ def _unique_index(lines: list[str], wanted: str, fenced: list[bool]) -> int | No
     return hits[0] if len(hits) == 1 else None
 
 
+def _file_tag(rel: str, name: str) -> str:
+    """Метка файла без названия папки встречи: общий лог не хранит темы встреч."""
+    key = meeting_key(rel)
+    return f"{key}/{name}" if key else name
+
+
+def _safe_err(e: BaseException) -> str:
+    """Текст сбоя без полного пути с темой встречи."""
+    if isinstance(e, safe_write.LostRace):
+        return e.kind
+    if getattr(e, "filename", None) or getattr(e, "filename2", None):
+        return e.strerror or type(e).__name__
+    return str(e)
+
+
 def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None, guard=None, on_error=None):
     """Записать план под замком графа. Возвращает (записанные правки, пропущено строк, каталог прогона).
 
@@ -769,9 +767,9 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
     for planned, edits in plan.items():
         real = pathlib.Path(planned).resolve()
         try:
-            real.relative_to(graph)
+            rel_real = str(real.relative_to(graph))
         except ValueError:
-            note(f"пропуск {planned}: путь вне графа после раскрытия ссылок")
+            note(f"пропуск {pathlib.Path(planned).name}: путь вне графа после раскрытия ссылок")
             continue
         if real in resolved:
             seen_pairs = {(i, old) for i, old, *_ in resolved[real]}
@@ -779,7 +777,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                 if (item[0], item[1]) not in seen_pairs:
                     resolved[real].append(item)
                     seen_pairs.add((item[0], item[1]))
-            note(f"объединение плана {planned} → {real.relative_to(graph)}: две ссылки на один файл")
+            note(f"объединение плана {_file_tag(rel_real, real.name)}: две ссылки на один файл")
         else:
             resolved[real] = list(edits)
     plan = resolved
@@ -797,6 +795,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
         lib = backup / "lib"
         (lib / "charoite_graph").mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODE / "src" / "file_locks.py", lib / "file_locks.py")
+        shutil.copy2(CODE / "src" / "task_line.py", lib / "task_line.py")
         # safe_write кладём ВНУТРЬ пакета: откат импортирует члена пакета только через
         # charoite_graph (границы импортов), и без исходного checkout пакет берётся из lib/.
         shutil.copy2(CODE / "src" / "charoite_graph" / "safe_write.py",
@@ -805,7 +804,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
     except OSError as e:
         # Снимок — часть гарантии отката: без него граф не трогаем (нельзя обещать откат,
         # которого не будет, если checkout исчезнет).
-        raise RuntimeError(f"снимок хелперов отката не скопирован: {type(e).__name__}: {e} — не пишу") from e
+        raise RuntimeError(f"снимок хелперов отката не скопирован: {type(e).__name__}: {_safe_err(e)} — не пишу") from e
     manifest = backup / "manifest.jsonl"
     manifest.touch()
     applied, skipped = [], 0
@@ -831,6 +830,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                 break
             rel = str(path.relative_to(graph))
             key = meeting_key(rel)
+            tag = _file_tag(rel, path.name)
             edits = [e for e in edits if task_key(key, BOX.match(e[1]).group(2)) not in returned]
             if not edits:
                 continue
@@ -840,9 +840,9 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                 shutil.copy2(path, dst)
             except OSError as e:
                 if isinstance(e, FileNotFoundError) and not path.exists():
-                    _note(f"пропуск {rel}: файл исчез до записи ({e})")
+                    _note(f"пропуск {tag}: файл исчез до записи")
                     continue
-                detail = f"{rel}: {type(e).__name__}: {e}"
+                detail = f"{tag}: {type(e).__name__}: {_safe_err(e)}"
                 _note(f"пропуск {detail}")
                 if on_error is not None:
                     on_error(detail)
@@ -862,7 +862,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                         done.append((j, old, new, meta))
                 return "\n".join(lines), len(done)
 
-            def _mark_not_applied(missed) -> None:
+            def _mark_not_applied(missed, tag=tag) -> None:
                 if not missed:
                     return
                 try:
@@ -870,8 +870,11 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                         for idx, old, new, *_ in missed:
                             f.write(json.dumps({"file": rel, "line": idx + 1, "old": old, "new": new,
                                                 "state": "not_applied"}, ensure_ascii=False) + "\n")
-                except OSError:
-                    pass
+                except OSError as e:
+                    detail = f"{tag}: manifest: {type(e).__name__}: {_safe_err(e)}"
+                    _note(f"пропуск {detail}")
+                    if on_error is not None:
+                        on_error(detail)
 
             # Журнал до записи, подтверждение — после. «Намерение» (state=intent) пишется ДО
             # перезаписи файла: обрыв между записью и журналом иначе оставлял правку без следа
@@ -886,7 +889,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
             try:
                 n = safe_write.rewrite_file(path, transform, "снятие поручений")
             except safe_write.LostRace as e:
-                detail = f"{rel}: {type(e).__name__}: {e}"
+                detail = f"{tag}: {type(e).__name__}: {_safe_err(e)}"
                 _note(f"пропуск {detail}")
                 if e.unreachable:
                     if on_error is not None:
@@ -896,7 +899,7 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                     _mark_not_applied(edits)
                 continue
             except (OSError, UnicodeDecodeError) as e:
-                detail = f"{rel}: {type(e).__name__}: {e}"
+                detail = f"{tag}: {type(e).__name__}: {_safe_err(e)}"
                 _note(f"пропуск {detail}")
                 if on_error is not None:
                     on_error(detail)
@@ -909,16 +912,16 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                                             "state": "done"}, ensure_ascii=False) + "\n")
                 applied.extend(meta for *_, meta in done)
             if n < len(edits):                            # строка успела измениться — не сбой записи, без тревоги
-                done_Left = collections.Counter((old, new) for _, old, new, _ in done)
+                done_left = collections.Counter((old, new) for _, old, new, _ in done)
                 missed = []
                 for item in edits:
                     pair = (item[1], item[2])
-                    if done_Left[pair] > 0:
-                        done_Left[pair] -= 1
+                    if done_left[pair] > 0:
+                        done_left[pair] -= 1
                     else:
                         missed.append(item)
                 _mark_not_applied(missed)
-                _note(f"пропуск {rel}: строки уже изменены или неоднозначны ({len(edits) - n})")
+                _note(f"пропуск {tag}: строки уже изменены или неоднозначны ({len(edits) - n})")
     return applied, skipped, backup
 
 
@@ -1304,7 +1307,8 @@ def _selftest_restore_race() -> list[str]:
             last = json.loads(registry.read_bytes().rstrip(b"\n").rsplit(b"\n", 1)[-1].decode("utf-8"))
         except ValueError:
             last = None
-        if not isinstance(last, dict) or last.get("old") != "- [ ] **Коля** — А":
+        want_id = task_key(meeting_key(rel), "**Коля** — А")
+        if not isinstance(last, dict) or last.get("id") != want_id or "Коля" in last.get("old", ""):
             bad.append(f"реестр: запись после оборванного хвоста испорчена: {last!r}")
         # оборванная строка манифеста (прогон убит посреди дозаписи) не роняет откат всего прогона
         with (backup / "manifest.jsonl").open("ab") as f:
@@ -1425,15 +1429,33 @@ def selftest(quiet: bool = False) -> int:
     return 1 if bad else 0
 
 
+def _live_meeting_state(data: pathlib.Path) -> tuple[bool, str | None]:
+    """`(встреча идёт, ошибка датчика)`: нечитаемый лок/каталог не притворяется штатным пропуском."""
+    try:
+        return bool(live_meeting(data)), None
+    except Exception as e:                                # noqa: BLE001 — сигнал сломан ≠ штатный пропуск
+        return False, f"датчик живой записи не читается ({type(e).__name__})"
+
+
 def run(args, log: pathlib.Path, stamp: str) -> int:
     def record(line: str) -> None:
         with log.open("a", encoding="utf-8") as f:
             f.write(f"{stamp} {line}\n")
 
+    def fail_alert(fail: str) -> int:
+        record(f"ОШИБКА: {fail}")
+        if not args.quiet:
+            notify(fail)
+        print(f"ошибка: {fail}")
+        return HANDLED
+
     graph, owner = config(DATA)
     today = dt.date.today()
     if args.apply:
-        if live_meeting(DATA):
+        live_now, live_err = _live_meeting_state(DATA)
+        if live_err is not None:
+            return fail_alert(f"контроль задач: {live_err}")
+        if live_now:
             record("живая встреча — пропуск")
             print("живая встреча — ничего не пишу")
             return 0
@@ -1453,15 +1475,17 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
         print("снимать нечего")
         return 0
     guard_stopped: list[bool] = []
+    guard_broken: list[str] = []
 
     def guard() -> bool:
-        try:
-            ok = not live_meeting(DATA)                   # встреча могла начаться, пока ждали замок
-        except Exception:                                 # noqa: BLE001 — нечитаемый сигнал = не пишем
-            ok = False
-        if not ok:
+        live_now, live_err = _live_meeting_state(DATA)    # встреча могла начаться, пока ждали замок
+        if live_err is not None:
+            guard_broken.append(live_err)
+            return False
+        if live_now:
             guard_stopped.append(True)
-        return ok
+            return False
+        return True
 
     write_errors: list[str] = []
     applied, skipped, backup = apply(graph, plan, DATA, note=record, guard=guard,
@@ -1477,22 +1501,14 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
     line = short + extra + f"; строк {len(applied)}; откат: {backup / 'restore.py'}"
     record(line)
     if write_errors:
-        fail = f"контроль задач: сбой записи графа ({len(write_errors)}): {write_errors[0]}"
-        record(f"ОШИБКА: {fail}")
-        if not args.quiet:
-            notify(fail)
-        print(f"ошибка: {fail}")
-        return HANDLED
+        return fail_alert(f"контроль задач: сбой записи графа ({len(write_errors)}): {write_errors[0]}")
+    if guard_broken:
+        return fail_alert(f"контроль задач: {guard_broken[0]}")
     if guard_stopped and not applied:
         print(line)
         return 0
     if skipped and not applied:
-        fail = f"контроль задач не отработал: НЕ записано строк: {skipped}, снято 0"
-        record(f"ОШИБКА: {fail}")
-        if not args.quiet:
-            notify(fail)
-        print(f"ошибка: {fail}")
-        return HANDLED                                # run.sh: уже в логе и в уведомлении
+        return fail_alert(f"контроль задач не отработал: НЕ записано строк: {skipped}, снято 0")
     if not args.quiet:
         notify(short)
     print(line)
@@ -1510,7 +1526,8 @@ def main() -> int:
         return selftest()
     global DATA
     DATA = charoite_paths.name_data_root_or_exit(__file__, guess_from_code=True)
-    log = charoite_paths.secure_dir(DATA / "logs") / "tasks_control.log"
+    charoite_paths.secure_dir(DATA / "logs")
+    log = charoite_paths.log_path(DATA, "tasks_control_log")
     stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     try:
         return run(args, log, stamp)

@@ -162,26 +162,31 @@ def resident_models(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], str
     return out, None
 
 
-def _read_bounded(url: str) -> bytes:
-    """Тело ответа за RESIDENT_TIMEOUT_S и не больше RESIDENT_MAX_BYTES:
+def read_bounded_url(request: urllib.request.Request | str, *,
+                     timeout_s: float = RESIDENT_TIMEOUT_S,
+                     max_bytes: int = RESIDENT_MAX_BYTES) -> bytes:
+    """Тело HTTP-ответа за `timeout_s` и не больше `max_bytes`:
     таймаут `urlopen` — на каждую операцию сокета, и сервер, отдающий тело по
-    байту, держал бы сторожа сколько угодно (Opus по №595). Дедлайн проверяется
-    между кусками, поэтому потолок — дедлайн плюс один таймаут сокета; заголовки
-    под ним не стоят (долг №615)."""
-    deadline = time.monotonic() + RESIDENT_TIMEOUT_S
+    байту, держал бы клиента сколько угодно (Opus по №595, DS M1 по №998)."""
+    deadline = time.monotonic() + timeout_s
     chunks, size = [], 0
-    with net.open_url(urllib.request.Request(url), timeout=RESIDENT_TIMEOUT_S) as r:
+    req = urllib.request.Request(request) if isinstance(request, str) else request
+    with net.open_url(req, timeout=timeout_s) as r:
         read = getattr(r, "read1", r.read)
         while chunk := read(65536):
             chunks.append(chunk)
             size += len(chunk)
-            if size > RESIDENT_MAX_BYTES:
-                raise ValueError(f"ответ больше {RESIDENT_MAX_BYTES} байт")
+            if size > max_bytes:
+                raise ValueError(f"ответ больше {max_bytes} байт")
             if time.monotonic() > deadline:
-                raise TimeoutError(f"ответ дольше {RESIDENT_TIMEOUT_S} с")
+                raise TimeoutError(f"ответ дольше {timeout_s} с")
         if getattr(r, "length", None):  # read1 не проверяет Content-Length — обрыв тела
             raise http.client.IncompleteRead(b"".join(chunks), r.length)
     return b"".join(chunks)
+
+
+def _read_bounded(url: str) -> bytes:
+    return read_bounded_url(url, timeout_s=RESIDENT_TIMEOUT_S, max_bytes=RESIDENT_MAX_BYTES)
 
 
 def _census_config(root: pathlib.Path) -> tuple[dict | None, str | None]:
@@ -230,14 +235,16 @@ def ollama_loopback_url(root: pathlib.Path) -> tuple[str | None, str | None]:
 
     Запросы и выгрузка ревизора обязаны ходить на тот же адрес, где `resident_models`
     читает `/api/ps`: иначе датчик проверяет один сервер, а модель грузится и выгружается
-    на другом. Отсутствие файла конфига — умолчание `privacy.DEFAULT_LLM_URL`; удалённый
-    или запрещённый политикой адрес для локального скрипта — отказ с причиной, а не
-    молчаливый поход на 11434."""
+    на другом. Корень без своего `config/config.yaml` — отказ без выхода в сеть (как и у
+    `resident_models`, чтобы тесты и голые каталоги не трогали живую Ollama на 11434);
+    удалённый или запрещённый политикой адрес — отказ с причиной."""
     cfg, problem = _census_config(root)
     if problem:
         return None, f"память моделей не читается ({problem}) — почините {CONFIG_REL}"
+    if cfg is None:
+        return None, f"нет конфига {root / CONFIG_REL}"
     try:
-        base = privacy.llm_base_url(cfg or {})
+        base = privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused as e:
         return None, f"адрес локальной модели недоступен ({e})"
     if not privacy.is_loopback_url(base):

@@ -439,3 +439,14 @@ def test_check_admission_reports_broken_live_and_meeting_status_sensors(tmp_path
     assert verdict == "broken"
     assert any("датчик живой записи" in r for r in reasons)
     assert any("датчик разбора встреч" in r for r in reasons)
+
+
+def test_ollama_loopback_url_without_config_and_bounded_url_reader(tmp_path):
+    """Голый корень без `config/config.yaml` не подставляет порт по умолчанию, а `read_bounded_url` режет потолок."""
+    url_val, err = busy_signals.ollama_loopback_url(tmp_path / "no_config_here")
+    assert url_val is None and err and "нет конфига" in err
+    with _fake_ollama(body={"models": [_model("x", 1) for _ in range(10)]}) as url:
+        data = busy_signals.read_bounded_url(f"{url}/api/ps", timeout_s=2.0, max_bytes=10_000)
+        assert b"models" in data
+        with pytest.raises(ValueError, match="ответ больше"):
+            busy_signals.read_bounded_url(f"{url}/api/ps", timeout_s=2.0, max_bytes=16)

@@ -741,6 +741,12 @@ LOG_KINDS: dict[str, LogKind] = {
     # срока у него пока нет; общий ретеншн судит по mtime и сроку записи звука и стёр бы
     # журнал после двух суток простоя
     "model_calls": LogKind("model_calls-", "shared", None, (".jsonl",), sweep=False),
+    # общие журналы, состояние и замок контроля/ревизора поручений (№998): тел поручений и
+    # тем встреч не хранят, ретеншн звуковых логов их не стирает
+    "tasks_control_log": LogKind("tasks_control", "shared", None, (".log",), sweep=False, whole=True),
+    "task_reviser_log": LogKind("task_reviser", "shared", None, (".log",), sweep=False, whole=True),
+    "task_reviser_state": LogKind("task_reviser_state", "shared", None, (".json",), sweep=False, whole=True),
+    "task_reviser_lock": LogKind("task_reviser", "lock", None, (".lock",), sweep=False, whole=True),
 }
 
 

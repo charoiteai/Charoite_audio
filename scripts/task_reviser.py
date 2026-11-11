@@ -19,8 +19,10 @@ import argparse
 import collections
 import datetime as dt
 import fcntl
+import hashlib
 import http.client
 import json
+import math
 import os
 import shutil
 import pathlib
@@ -35,7 +37,6 @@ import tasks_control as tc
 
 import busy_signals  # noqa: E402 — путь src добавлен импортом tasks_control
 import charoite_paths  # noqa: E402
-from charoite_graph import net  # noqa: E402
 
 MODEL = "qwen3.8:27b-mlx"
 OLLAMA = "http://127.0.0.1:11434"
@@ -46,6 +47,8 @@ RECHECK_DAYS = 7      # «открыта» повторно не спрашив�
 STALE_HOURS = 3       # сторож: прогонов не было дольше — тревога
 RUN_BUDGET = 20 * 60  # бюджет прогона: ожидание модели не должно тянуться часами
 REQUEST_TIMEOUT = 120
+REQUEST_MAX_BYTES = 65_536
+CLOCK_SKEW_S = 60.0   # допуск сдвига часов для штампов прогона; далёкое будущее — порча состояния
 VERDICTS = ("open", "done", "not_task")
 # Мета-инструкция модели внутри текста поручения: такие строки не правим никогда (инъекция в протокол).
 _META = re.compile(
@@ -95,8 +98,8 @@ def _chat_json(prompt: str, model: str = MODEL) -> dict | None:
     request = urllib.request.Request(f"{base_url}/api/chat", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
     try:
-        with net.open_url(request, timeout=REQUEST_TIMEOUT) as response:
-            envelope = json.loads(response.read())
+        raw = busy_signals.read_bounded_url(request, timeout_s=REQUEST_TIMEOUT, max_bytes=REQUEST_MAX_BYTES)
+        envelope = json.loads(raw)
         message = envelope.get("message") if isinstance(envelope, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         answer = json.loads(content) if isinstance(content, str) else None
@@ -226,21 +229,40 @@ def candidates(graph: pathlib.Path, owner: str, today: dt.date, returned: set[st
                 continue
             if counts[line] == 1 and not _has_children(lines, i, fenced):   # дубли и пункты с подпунктами не трогаем
                 out.append((path, i, line, text, key, anchor, kinds.get(i) == "мои"))
-    out.sort(key=lambda c: (not c[6], c[5], tc.task_key(c[4], c[3])))   # ваши, затем старые встречи; равные — устойчиво
+    out.sort(key=lambda c: (not c[6], c[5], tc.task_key(c[4], c[3]), str(c[0])))   # ваши, затем старые встречи; равные — устойчиво
     return out
+
+
+def _cache_key(meeting: str | None, text: str) -> str:
+    """Хеш точного текста поручения встречи: кэш не хранит сырой текст и тему встречи на диске."""
+    return hashlib.sha256(f"{meeting}\0{text}".encode("utf-8")).hexdigest()
+
+
+def _format_edit(indent: str, text: str, kind: str, today: dt.date) -> tuple[str, str]:
+    if kind == "done":
+        return f"{indent}[x] {text}", "done"
+    if kind == "срок":
+        return f"{indent}[-] {text.rstrip()} _({tc.REASONS['срок']} {today:%d.%m})_", "срок"
+    return f"{indent}[-] {text.rstrip()} _({tc.REASONS['не поручение']} {today:%d.%m})_", "not_task"
 
 
 def _plan_edits_detailed(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due_asker=ask_due,
                          deadline=None, model: str = MODEL):
     plan: dict[pathlib.Path, list] = {}
     seen: dict[str, dict] = {}
+    decided_edits: dict[str, str] = {}                    # один вердикт на одинаковую строку копий встречи в прогоне
     asked = edits = failed = answered = 0
     for path, i, line, text, key, anchor, mine in candidates(graph, owner, today, returned):
         if asked >= batch or edits >= MAX_EDITS or (deadline is not None and time.monotonic() > deadline):
             break
-        ck = tc.task_key(key, text)
-        hit = cache.get(ck)
-        if hit and hit.get("text") == text and (today - dt.date.fromisoformat(hit["day"])).days < RECHECK_DAYS:
+        ck = _cache_key(key, text)
+        hit = cache.get(ck) or seen.get(ck)
+        if hit and (today - dt.date.fromisoformat(hit["day"])).days < RECHECK_DAYS:
+            continue
+        if ck in decided_edits:
+            new, meta_kind = _format_edit(tc.BOX.match(line).group(1), text, decided_edits[ck], today)
+            plan.setdefault(path, []).append((i, line, new, (meta_kind, True, mine)))
+            edits += 1
             continue
         asked += 1
         verdict = judge(text, anchor, today, model=model, asker=asker)
@@ -250,7 +272,7 @@ def _plan_edits_detailed(graph, owner, today, returned, cache, asker=ask, batch=
         answered += 1
         if verdict == "open":
             if suspect(text):                          # инъекция: кэшируем «открыто», но не снимаем по сроку
-                seen[ck] = {"text": text, "day": today.isoformat(), "verdict": verdict}
+                seen[ck] = {"day": today.isoformat(), "verdict": verdict}
                 continue
             # Срок модели — только там, где штатный разбор оставил знак времени непокрытым и он не долгий.
             # Модельная дата не может быть раньше уже разобранной: иначе ранняя дата закрыла бы поручение
@@ -269,18 +291,16 @@ def _plan_edits_detailed(graph, owner, today, returned, cache, asker=ask, batch=
                     if second is None:                  # молчание модели — сбой, а не «не поручение»
                         failed += 1
                     continue
-                new = f"{tc.BOX.match(line).group(1)}[-] {text.rstrip()} _({tc.REASONS['срок']} {today:%d.%m})_"
-                plan.setdefault(path, []).append((i, line, new, ("срок", True, mine)))
+                new, meta_kind = _format_edit(tc.BOX.match(line).group(1), text, "срок", today)
+                plan.setdefault(path, []).append((i, line, new, (meta_kind, True, mine)))
+                decided_edits[ck] = "срок"
                 edits += 1
             else:
-                seen[ck] = {"text": text, "day": today.isoformat(), "verdict": verdict}
+                seen[ck] = {"day": today.isoformat(), "verdict": verdict}
             continue
-        indent = tc.BOX.match(line).group(1)
-        if verdict == "done":
-            new = f"{indent}[x] {text}"
-        else:
-            new = f"{indent}[-] {text.rstrip()} _({tc.REASONS['не поручение']} {today:%d.%m})_"
-        plan.setdefault(path, []).append((i, line, new, (verdict, True, mine)))
+        new, meta_kind = _format_edit(tc.BOX.match(line).group(1), text, verdict, today)
+        plan.setdefault(path, []).append((i, line, new, (meta_kind, True, mine)))
+        decided_edits[ck] = verdict
         edits += 1
     return plan, seen, asked, failed, answered
 
@@ -304,41 +324,46 @@ def read_state(data: pathlib.Path) -> dict:
     """Состояние сторожа и кэш вердиктов. Битые записи пропускаются, а не роняют прогон: чужой или
     недописанный файл не должен останавливать ревизор."""
     try:
-        raw = json.loads((data / "logs" / STATE).read_text(encoding="utf-8"))
+        raw = json.loads(charoite_paths.log_path(data, "task_reviser_state").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not isinstance(raw, dict):
         return {}
     state: dict = {}
+    now = time.time()
     for name in ("last_ok", "last_skip"):
         stamp = raw.get(name)
-        state[name] = stamp if isinstance(stamp, (int, float)) and stamp > 0 else 0
+        if (isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+                and math.isfinite(stamp) and 0 < stamp <= now + CLOCK_SKEW_S):
+            state[name] = min(float(stamp), now)
+        else:
+            state[name] = 0
     for name in ("asked", "failed", "applied", "skipped"):
         value = raw.get(name)
-        state[name] = value if isinstance(value, int) and value >= 0 else 0
+        state[name] = value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
     cache = raw.get("cache")
     clean: dict[str, dict] = {}
     if isinstance(cache, dict):
         for key, item in cache.items():
-            if not isinstance(item, dict):
+            if not isinstance(key, str) or not key or not isinstance(item, dict):
                 continue
-            text, day, verdict = item.get("text"), item.get("day"), item.get("verdict")
-            if not isinstance(text, str) or verdict not in VERDICTS or not isinstance(day, str):
+            day, verdict = item.get("day"), item.get("verdict")
+            if verdict not in VERDICTS or not isinstance(day, str):
                 continue
             try:
                 when = dt.date.fromisoformat(day)
             except ValueError:
                 continue
             if when > dt.date.today():                    # будущий день растянул бы кэш навсегда
-                when, day = dt.date.today(), dt.date.today().isoformat()
-            clean[key] = {"text": text, "day": day, "verdict": verdict}
+                day = dt.date.today().isoformat()
+            clean[key] = {"day": day, "verdict": verdict}
     state["cache"] = clean
     return state
 
 
 def write_state(data: pathlib.Path, state: dict) -> None:
-    path = data / "logs" / STATE
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = charoite_paths.log_path(data, "task_reviser_state")
+    charoite_paths.secure_dir(path.parent)
     tmp = path.with_name(f"{path.name}.{int(time.time())}-{os.getpid()}.tmp")   # два прогона не топчут один tmp
     tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
@@ -376,14 +401,15 @@ def quiet(gate=None, *, ignore_models: tuple[str, ...] = ()) -> bool:
 _ORIGINAL_QUIET = quiet
 
 
-def _model_resident(data: pathlib.Path, model: str = MODEL) -> bool:
-    """Была ли модель уже загружена на целевом локальном сервере: чужую сессию выгружать нельзя."""
+def _model_resident(data: pathlib.Path, model: str = MODEL, default_on_error: bool = True) -> bool:
+    """Была ли модель загружена на целевом сервере (`default_on_error=True` на входе: чужую не выгрузим;
+    `default_on_error=False` в `finally`: при нечитаемом `/api/ps` не стреляем выгрузкой вслепую)."""
     try:
         models, problem = busy_signals.resident_models(data)
     except Exception:                                     # noqa: BLE001
-        return True
+        return default_on_error
     if problem:
-        return True
+        return default_on_error
     wanted = busy_signals._resident_model_key(model)
     return any(busy_signals._resident_model_key(name) == wanted for name, _, _ in models)
 
@@ -398,8 +424,7 @@ def _unload_model(model: str = MODEL, *, base_url: str | None = None) -> None:
     # nosemgrep — base_url проверен privacy.is_loopback_url в ollama_loopback_url; локальной модели TLS не нужен
     req = urllib.request.Request(f"{base_url}/api/generate", body, {"Content-Type": "application/json"})
     try:
-        with net.open_url(req, timeout=5) as response:
-            response.read()
+        busy_signals.read_bounded_url(req, timeout_s=5, max_bytes=REQUEST_MAX_BYTES)
     except (OSError, ValueError, http.client.HTTPException):
         pass
 
@@ -409,8 +434,9 @@ def model_alive(model: str = MODEL) -> bool:
     if problem or not base_url:
         return False
     try:
-        with net.open_url(f"{base_url}/api/tags", timeout=5) as response:
-            models = json.loads(response.read()).get("models") or []
+        raw = busy_signals.read_bounded_url(
+            f"{base_url}/api/tags", timeout_s=5, max_bytes=busy_signals.RESIDENT_MAX_BYTES)
+        models = json.loads(raw).get("models") or []
         return any(isinstance(m, dict) and m.get("name") == model for m in models)
     except (OSError, ValueError, AttributeError, TypeError, http.client.HTTPException):
         return False
@@ -418,7 +444,8 @@ def model_alive(model: str = MODEL) -> bool:
 
 def hold_run(data: pathlib.Path):
     """Замок прогона: второй ревизор (ручной запуск рядом с часовым) не планирует и не пишет второй раз."""
-    lock = tc.charoite_paths.secure_dir(data / "logs") / "task_reviser.lock"
+    tc.charoite_paths.secure_dir(data / "logs")
+    lock = tc.charoite_paths.log_path(data, "task_reviser_lock")
     handle = lock.open("w")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -452,7 +479,8 @@ def record_backup(backup: pathlib.Path | None, record) -> None:
 def run(args) -> int:
     graph, owner = tc.config(tc.DATA)
     today = dt.date.today()
-    log = tc.charoite_paths.secure_dir(tc.DATA / "logs") / LOG
+    tc.charoite_paths.secure_dir(tc.DATA / "logs")
+    log = tc.charoite_paths.log_path(tc.DATA, "task_reviser_log")
     stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     def record(line: str) -> None:
@@ -487,10 +515,11 @@ def run(args) -> int:
         except OSError:
             pass
 
-    def _fail_broken_sensor(reasons: list[str]) -> int:
+    def _fail_broken_sensor(reasons: list[str], *, alert: bool = True) -> int:
         msg = "; ".join(reasons) or "тихий сторож не читается"
         record(f"ОШИБКА: {msg}")
-        tc.notify(f"ревизор задач: {msg}")
+        if alert:
+            tc.notify(f"ревизор задач: {msg}")
         print(f"ошибка: {msg}")
         return tc.HANDLED
 
@@ -500,17 +529,29 @@ def run(args) -> int:
         print("прогон уже идёт — пропуск")
         return 0
     try:
-        if args.apply and tc.live_meeting(tc.DATA):
-            return skip("идёт встреча")
-        if args.apply:
-            verdict, reasons = _quiet_status(ignore_models=(MODEL,))
-            if verdict == "broken":
-                return _fail_broken_sensor(reasons)
-            if verdict != "free":
-                return skip(f"машина занята ({'; '.join(reasons)})" if reasons else "машина занята")
+        # Входной допуск общий для --apply и пробного прогона (DS C1): без --apply скрипт тоже
+        # поднял бы 19 ГБ модель в Ollama во время встречи или чужой 35b. В пробном прогоне
+        # штатный пропуск НЕ продвигает last_skip, чтобы ручной запуск не усыплял сторожа.
+        live_now, live_err = tc._live_meeting_state(tc.DATA)
+        if live_err is not None:
+            return _fail_broken_sensor([live_err], alert=bool(args.apply))
+        if live_now:
+            if args.apply:
+                return skip("идёт встреча")
+            print("пропуск: идёт встреча")
+            return 0
+        verdict, reasons = _quiet_status(ignore_models=(MODEL,))
+        if verdict == "broken":
+            return _fail_broken_sensor(reasons, alert=bool(args.apply))
+        if verdict != "free":
+            reason = f"машина занята ({'; '.join(reasons)})" if reasons else "машина занята"
+            if args.apply:
+                return skip(reason)
+            print(f"пропуск: {reason}")
+            return 0
         base_url, url_problem = _ollama_url()
         if url_problem or not base_url:
-            return _fail_broken_sensor([url_problem or "локальный адрес модели недоступен"])
+            return _fail_broken_sensor([url_problem or "локальный адрес модели недоступен"], alert=bool(args.apply))
         if not model_alive():
             record(f"ОШИБКА: модель {MODEL} недоступна")
             print(f"модель {MODEL} недоступна")
@@ -532,7 +573,9 @@ def run(args) -> int:
                 plan, seen, asked, failed, answered = _plan_edits_detailed(
                     graph, owner, today, tc.load_returned(base), cache, deadline=deadline)
         finally:
-            if answered > 0 and not was_resident and _model_resident(tc.DATA):
+            live_after, live_after_err = tc._live_meeting_state(tc.DATA)
+            if (not was_resident and not live_after and live_after_err is None
+                    and _model_resident(tc.DATA, MODEL, False)):
                 _unload_model()
         total = sum(len(v) for v in plan.values())
         print(f"опрошено строк: {asked}, сбоев модели: {failed}, к правке: {total}")
@@ -547,7 +590,11 @@ def run(args) -> int:
             return 0
         # Гейты перепроверяются перед записью: встреча или чужая нагрузка могли начаться за время опроса
         # (собственную модель, если её выгрузка в Ollama ещё догоняет, не считаем конкурентом себе).
-        if tc.live_meeting(tc.DATA):
+        live_now, live_err = tc._live_meeting_state(tc.DATA)
+        if live_err is not None:
+            _persist_cache_only(state, cache, seen)
+            return _fail_broken_sensor([live_err])
+        if live_now:
             _persist_cache_only(state, cache, seen)
             return skip("идёт встреча (началась за время опроса)")
         verdict, reasons = _quiet_status(ignore_models=(MODEL,))
@@ -571,7 +618,11 @@ def run(args) -> int:
                 if v == "broken":
                     broken_gate.extend(r or ["тихий сторож не читается"])
                     return False
-                ok = v == "free" and not tc.live_meeting(tc.DATA)
+                live_g, live_g_err = tc._live_meeting_state(tc.DATA)
+                if live_g_err is not None:
+                    broken_gate.append(live_g_err)
+                    return False
+                ok = v == "free" and not live_g
                 if not ok:
                     refused.append(True)
                 return ok
@@ -622,12 +673,15 @@ def watch() -> int:
     """Сторож: ревизор давно не шёл или модель мертва — тревога. Ночью и при записи молчит.
     Свежий штатный пропуск (машина занята) — не повод тревожить: тишина объяснена."""
     now = dt.datetime.now()
-    if tc.live_meeting(tc.DATA) or not 8 <= now.hour < 23:
+    if not 8 <= now.hour < 23:
+        return 0
+    live_now, live_err = tc._live_meeting_state(tc.DATA)
+    if live_now:
         return 0
     state = read_state(tc.DATA)
     age = time.time() - state.get("last_ok", 0)
     skip_age = time.time() - state.get("last_skip", 0)
-    problems = []
+    problems = [live_err] if live_err else []
     if age > STALE_HOURS * 3600:
         if state.get("last_skip", 0) and skip_age <= STALE_HOURS * 3600:
             print("ревизор не шёл, но прогоны пропускались занятостью — штатно")
@@ -855,7 +909,8 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 — агент launchd без этого падает молча, без строки в логе
         detail = f"{type(e).__name__}: {e}"
         try:                                              # сам обработчик не должен падать на сбое диска
-            log = charoite_paths.secure_dir(tc.DATA / "logs") / LOG
+            charoite_paths.secure_dir(tc.DATA / "logs")
+            log = charoite_paths.log_path(tc.DATA, "task_reviser_log")
             with log.open("a", encoding="utf-8") as f:
                 f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M} ОШИБКА: {detail}\n")
         except OSError:

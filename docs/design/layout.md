@@ -167,6 +167,7 @@
 - `src/graphs.py` ← scripts/layout_map.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
+- `src/task_line.py` ← scripts/tasks_control.py
 - `src/threads.py` ← scripts/layout_map.py
 
 ## Пути, названные в документации и конфигах

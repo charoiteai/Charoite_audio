@@ -30,23 +30,20 @@ def _bind_helpers():
 
     Снимок кладёт прогон (`tasks_control.apply`): откат обязан работать, даже когда
     checkout, из которого писали, удалён или переехал."""
-    sys.path.insert(0, str(pathlib.Path(run["code"]) / "src"))
-    try:
-        import file_locks
-        from charoite_graph import safe_write
-        return file_locks, safe_write
-    except Exception:                           # noqa: BLE001 — чужое дерево не обязано импортироваться
-        pass
-    sys.path.insert(0, str(here / "lib"))
-    try:
-        import file_locks
-        from charoite_graph import safe_write
-        return file_locks, safe_write
-    except Exception:                           # noqa: BLE001 — и снимка нет: откатывать нечем
-        sys.exit("откат: нет ни дерева кода из run.json, ни снимка хелперов lib/ рядом")
+    for candidate in (pathlib.Path(run["code"]) / "src", here / "lib"):
+        sys.path.insert(0, str(candidate))
+        try:
+            import file_locks
+            import task_line
+            from charoite_graph import safe_write
+            if hasattr(task_line, "fence_map") and hasattr(task_line, "returned_line_digest"):
+                return file_locks, safe_write, task_line
+        except Exception:                           # noqa: BLE001 — чужое дерево не обязано импортироваться
+            pass
+    sys.exit("откат: нет ни дерева кода из run.json, ни снимка хелперов lib/ рядом")
 
 
-file_locks, safe_write = _bind_helpers()
+file_locks, safe_write, task_line = _bind_helpers()
 
 graph = pathlib.Path(run["graph"])
 registry = pathlib.Path(run.get("returned") or here.parent / "returned.jsonl")
@@ -62,27 +59,57 @@ def rows_of_run() -> list[tuple[str, int, str, str, str]]:
     global broken
     rows = []
     if (here / "manifest.jsonl").exists():
-        for raw in (here / "manifest.jsonl").read_bytes().split(b"\n"):
+        try:
+            raw_lines = (here / "manifest.jsonl").read_bytes().split(b"\n")
+        except OSError:
+            broken += 1
+            return []
+        for raw in raw_lines:
             if not raw.strip():
                 continue
             try:                                      # UnicodeDecodeError — тоже ValueError
                 r = json.loads(raw.decode("utf-8"))
+                if not isinstance(r, dict):
+                    broken += 1
+                    continue
+                rel, line_no, old, new = r["file"], r["line"], r["old"], r["new"]
                 state = r.get("state", "done")        # прогоны до split-журнала состояния не знали
-                rows.append((r["file"], r["line"] - 1, r["old"], r["new"], state))
+                if (not isinstance(rel, str) or not isinstance(line_no, int) or isinstance(line_no, bool)
+                        or line_no < 1 or not isinstance(old, str) or not isinstance(new, str)
+                        or not isinstance(state, str)):
+                    broken += 1
+                    continue
+                rows.append((rel, line_no - 1, old, new, state))
             except (ValueError, KeyError, TypeError):
                 broken += 1
-    else:
-        for line in (here / "manifest.tsv").read_text(encoding="utf-8").split("\n")[1:]:
-            if line:
-                rel, n, old, new = line.split("\t", 3)
-                rows.append((rel, int(n) - 1, old, new, "done"))
+    elif (here / "manifest.tsv").exists():
+        try:
+            tsv_lines = (here / "manifest.tsv").read_bytes().split(b"\n")[1:]
+        except OSError:
+            broken += 1
+            return []
+        for raw in tsv_lines:
+            if not raw:
+                continue
+            try:
+                rel, n, old, new = raw.decode("utf-8").split("\t", 3)
+                line_no = int(n)
+                if line_no < 1:
+                    broken += 1
+                    continue
+                rows.append((rel, line_no - 1, old, new, "done"))
+            except (ValueError, IndexError):
+                broken += 1
     return list(dict.fromkeys(rows))
 
 
 def append_registry(rel: str, olds: list[str], when: str) -> None:
-    """Дописать возвращённые строки в реестр с fsync. Хвост без перевода строки (обрыв прошлой
-    дозаписи) сначала закрывается переводом: иначе новая запись склеится с ним и пропадёт."""
-    rows = "".join(json.dumps({"file": rel, "old": old, "when": when}, ensure_ascii=False) + "\n" for old in olds)
+    """Дописать обезличенные хеши возвращённых строк в реестр с fsync (без текста и темы встречи).
+    Хвост без перевода строки (обрыв прошлой дозаписи) сначала закрывается переводом."""
+    digests = [d for old in olds if (d := task_line.returned_line_digest(rel, old))]
+    if not digests:
+        return
+    rows = "".join(json.dumps({"id": d, "when": when}, ensure_ascii=False) + "\n" for d in digests)
     with registry.open("ab+") as f:
         f.seek(0, os.SEEK_END)
         if f.tell():
@@ -110,34 +137,35 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
         back.clear()
         missing = ambiguous = 0
         lines = before.split("\n")
+        fenced = task_line.fence_map(lines)
         pair_total = collections.Counter((old, new) for _, old, new in edits)
         reverted: set[int] = set()                    # что открыли мы сами в этом преобразовании
         for i, old, new in edits:
-            # Сначала «уже возвращено»: открытая строка на своём месте — откат этой записи
+            # Сначала «уже возвращено»: открытая строка на своём месте вне забора — откат этой записи
             # состоялся (возможно, прошлым запуском). Искать `new` раньше нельзя: при двух
             # одинаковых поручениях откат открыл бы чужую закрытую строку с тем же текстом.
-            if i < len(lines) and i not in reverted and lines[i] == old:
-                # Но закрытая строка с тем же текстом ниже означает, что вставка сверху
+            if i < len(lines) and not fenced[i] and i not in reverted and lines[i] == old:
+                # Но закрытая строка с тем же текстом вне забора означает, что вставка сверху
                 # сдвинула строки и откат ещё не сделан. По тексту и номеру эти случаи
                 # неотличимы — не трогаем и зовём человека, а не выбираем наугад.
-                if any(line == new for line in lines):
+                if any(not fenced[k] and line == new for k, line in enumerate(lines)):
                     ambiguous += 1
                 continue
-            old_elsewhere = any(k != i and k not in reverted and line == old
+            old_elsewhere = any(k != i and not fenced[k] and k not in reverted and line == old
                                 for k, line in enumerate(lines))
             if old_elsewhere:
                 # Рядом стоит открытая строка с тем же текстом: нашу уже вернули руками, а
                 # закрытая — чужая, либо это сдвиг после одинаковой строки. По тексту и номеру
                 # не доказать принадлежность — не угадываем и не трогаем.
-                if any(line == new for line in lines):
+                if any(not fenced[k] and line == new for k, line in enumerate(lines)):
                     ambiguous += 1
                 else:
                     missing += 1
                 continue
-            if i < len(lines) and lines[i] == new:
-                # Закрытых строк с этим текстом больше, чем правок прогона, — часть из них
+            if i < len(lines) and not fenced[i] and lines[i] == new:
+                # Закрытых строк с этим текстом вне забора больше, чем правок прогона, — часть из них
                 # чужие (вставка дубля сверху). По тексту принадлежность не доказать: не угадываем.
-                occurrences = sum(1 for line in lines if line == new)
+                occurrences = sum(1 for k, line in enumerate(lines) if not fenced[k] and line == new)
                 if occurrences > pair_total[(old, new)]:
                     ambiguous += 1
                     continue
@@ -145,7 +173,7 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                 reverted.add(i)
                 back.append(old)
                 continue
-            new_hits = [k for k, line in enumerate(lines) if line == new]
+            new_hits = [k for k, line in enumerate(lines) if not fenced[k] and line == new]
             if len(new_hits) == 1:
                 lines[new_hits[0]] = old
                 reverted.add(new_hits[0])
@@ -161,7 +189,7 @@ def restore_file(rel: str, edits, back: list, when: str) -> tuple[int, int]:
                 reverted.add(new_hits[0])
                 back.append(old)
                 continue
-            if len([k for k, line in enumerate(lines) if k not in reverted and line == old]) == 1:
+            if len([k for k, line in enumerate(lines) if not fenced[k] and k not in reverted and line == old]) == 1:
                 continue                          # уже возвращено прошлым откатом, не «не найдено»
             missing += 1
             continue
