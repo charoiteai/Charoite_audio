@@ -167,6 +167,13 @@ def _plain_wikilinks(text: str) -> str:
     return _NON_RENDERED_OR_WIKILINK.sub(_wikilink_display, text)
 
 
+def _unescape_wikilinks(text: str) -> str:
+    return _NON_RENDERED_OR_WIKILINK.sub(
+        lambda m: m.group(0) if m.group("target") is None else m.group(0).replace(r"\|", "|"),
+        text,
+    )
+
+
 def _span_hits(haystack: str, quote: str) -> int:
     start = haystack.find(quote)
     if start < 0:
@@ -178,7 +185,10 @@ def _quote_hits(text: str, quote: str) -> int:
     if not quote:
         return 0
     if "[[" in quote:
-        return _span_hits(text, quote)
+        return max(
+            _span_hits(text, quote),
+            _span_hits(_unescape_wikilinks(text), _unescape_wikilinks(quote)),
+        )
     plain_hits = _span_hits(_plain_wikilinks(text), quote)
     return plain_hits if plain_hits > 0 else _span_hits(text, quote)
 
@@ -199,10 +209,11 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
         "the same objects, activities or purpose can be relevant without repeating the topic name. "
         "Use backlinks as context, while rejecting unrelated content merely carrying a backlink "
         "or shared name. A source is relevant only if its actual content adds a supported fact, "
-        "decision or open risk about the topic. When a source merely asks a question, speculates "
-        "without an established topic fact, or mentions a name in passing, return verdict "
-        'irrelevant with quote "". Copy quote verbatim from source_text, including any [[...]] '
-        "and \\| Markdown link syntax. Return ONLY JSON "
+        "decision, open question or risk about the topic. When a source merely mentions a name in "
+        "passing, asks about another topic, or contains off-topic chatter without any topic fact, "
+        'decision, open question or risk, return verdict irrelevant with quote "". Copy quote '
+        "from source_text (for wikilinks, copy either the exact source text or the visible link "
+        "text, keeping valid JSON escaping). Return ONLY JSON "
         '{"verdict":"relevant|irrelevant|uncertain","reason":"nonempty reason",'
         '"quote":"exact source quotation supporting relevance, empty for irrelevant"}. '
         "Use uncertain only when identity or topic connection is genuinely ambiguous. "
@@ -609,7 +620,8 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "splitting a compound bullet into exact text spans rather than judging the whole bullet "
         "as one claim. Each item's text must copy its exact candidate span, source must name "
         "one supplied new source, and quote must copy exact nonempty source evidence "
-        "verbatim from new_sources, preserving any [[...]] and \\| Markdown link syntax. "
+        "from new_sources (for wikilinks, either the exact source text or the visible link text, "
+        "keeping valid JSON escaping). "
         "Set relevant and supported separately, with a nonempty reason for that assertion. "
         "The reason must explain that assertion's topic relationship, not shared meeting context. "
         "A tentative or unverified source quote cannot support an unconditional factual claim; "
@@ -691,7 +703,8 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "into ## Как пришли. Do not add an unsourced explanatory sentence or history label. "
         "Give the new current state its new-source link and add a "
         "change ledger entry with exact before/after strings and an exact source quotation "
-        "copied verbatim from new_sources (preserving any [[...]] and \\| syntax) "
+        "copied from new_sources (for wikilinks, either the exact source text or the visible link "
+        "text, keeping valid JSON escaping) "
         "explicitly superseding the old claim. Do not infer corrections. Keep the five sections "
         "in order: ## Сейчас, ## Как пришли, ## Решено, ## Открыто, ## Кто в теме. "
         "Never output Источники or Правки автора sections; the writer preserves them. "

@@ -524,8 +524,9 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
     table_source = "Шапка таблицы\n| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\nХвост\n"
     plain_quote = "| Glasshouse | A rain cover was fitted. |"
     raw_quote = "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |"
-    # Both plain display quote and verbatim raw wikilink quote are accepted in source_relevance.
-    for quote in (plain_quote, raw_quote):
+    unescaped_quote = "| [[Ядра/Glasshouse|Glasshouse]] | A rain cover was fitted. |"
+    # Plain display quote, verbatim raw wikilink quote, and dropped-backslash table wikilink quote all pass.
+    for quote in (plain_quote, raw_quote, unescaped_quote):
         monkeypatch.setattr(
             inc, "local_complete",
             lambda *a, q=quote, **k: json.dumps({"verdict": "relevant", "reason": "Table row fact.", "quote": q}),
@@ -537,7 +538,7 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
         lambda *a, **k: json.dumps({"verdict": "relevant", "reason": "Stem quote.", "quote": "Тема Glasshouse обновлена."}),
     )
     assert inc.source_relevance("Glasshouse", _old(), B, {"text": "Тема [[Ядра/Glasshouse]] обновлена."}, {}) is True
-    # Whitespace-only quote, empty/anchor wikilinks, and unclosed [[ across newline never fabricate a match.
+    # Whitespace-only quote, empty/anchor wikilinks, unclosed [[ across newline, and fabricated targets fail.
     for bad_source, bad_quote in [
         ("A rain cover was fitted.", "   "),
         ("A [[Цель| ]] B", "A  B"),
@@ -545,6 +546,7 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
         ("A [[#Раздел]] B", "A  B"),
         ("A [[]] B", "A  B"),
         ("Первая [[незакрытая\nвторая]] строка", "Первая строка"),
+        ("A Glasshouse B", "A [[Выдуманная/Glasshouse|Glasshouse]] B"),
     ]:
         monkeypatch.setattr(
             inc, "local_complete",
@@ -553,10 +555,11 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
         with pytest.raises(inc.Refused, match="uncertain or unsupported"):
             inc.source_relevance("Glasshouse", _old(), B, {"text": bad_source}, {})
 
-    # Downstream validate_candidate (claims + changes + _quote_context) accepts unique plain table quotes...
-    calls = _transport(monkeypatch, _verdict([_claim(quote=plain_quote)]))
-    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": table_source}}, {}, ADDED, [])
-    assert len(calls) == 3
+    # Downstream validate_candidate (claims + changes + _quote_context) accepts unique plain and unescaped table quotes...
+    for valid_quote in (plain_quote, unescaped_quote):
+        calls = _transport(monkeypatch, _verdict([_claim(quote=valid_quote)]))
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": table_source}}, {}, ADDED, [])
+        assert len(calls) == 3
     # ...and still refuses when two different wikilinks collapse to the same plain quote!
     ambiguous_table = (
         "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
@@ -565,9 +568,27 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
     _transport(monkeypatch, _verdict([_claim(quote=plain_quote)]))
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
-    # Distinct raw wikilink quote on the same two-row table remains unambiguous and passes!
-    _transport(monkeypatch, _verdict([_claim(quote=raw_quote)]))
-    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+    # Distinct target wikilink quotes (both raw \| and unescaped |) on the two-row table remain unambiguous and pass!
+    for specific_quote in (raw_quote, unescaped_quote):
+        _transport(monkeypatch, _verdict([_claim(quote=specific_quote)]))
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+
+    # Direct projection invariants: bytes inside hidden blocks stay verbatim (never stripped to empty).
+    hidden_only = "Решили %%не%% ставить `[[Ядра/Glasshouse\\|крышу]]`.\n```md\n[[X|y]]\n```"
+    assert inc._plain_wikilinks(hidden_only) == hidden_only
+    assert inc._unescape_wikilinks(
+        "`| [[Ядра/Glasshouse\\|Glasshouse]] |` и [[Ядра/Glasshouse\\|Glasshouse]]"
+    ) == "`| [[Ядра/Glasshouse\\|Glasshouse]] |` и [[Ядра/Glasshouse|Glasshouse]]"
+    # Splicing across Obsidian %%...%% comments or inline code is refused as missing evidence.
+    for spliced_src, spliced_quote in (
+        ("Решили %%не%% ставить крышу.", "Решили  ставить крышу."),
+        ("A `[[X|y]]` B", "A  B"),
+    ):
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc._quote_context(spliced_src, spliced_quote)
+    # Identical text inside and outside a fenced block is refused as ambiguous!
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context("Glasshouse fitted.\n```\nGlasshouse fitted.\n```\n", "Glasshouse fitted.")
 
     # Direct predicate contracts: index-0 match, empty quote, raw folder substring, code/comment exclusions,
     # and mixed raw + wikilink ambiguity.
@@ -580,21 +601,29 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
     assert inc._quote_context("Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена.", "Ядра/Glasshouse") == (
         "Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена."
     )
-    # Non-rendered wikilinks inside fenced code, inline code, or Obsidian %% comments are NOT stripped.
+    # Non-rendered wikilinks inside fenced code, inline code, or Obsidian %% comments are NOT stripped or unescaped.
     for non_rendered in (
         "```markdown\n| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n```\n",
         "Пример `| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |` в коде.",
         "Комментарий %% | [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. | %% скрыт.",
     ):
-        assert inc._has_source_quote(non_rendered, plain_quote) is False
-        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
-            inc._quote_context(non_rendered, plain_quote)
-    # Mixed plain row + wikilink row and inline-code + rendered raw wikilink both refuse as ambiguous!
+        for candidate_quote in (plain_quote, unescaped_quote):
+            assert inc._has_source_quote(non_rendered, candidate_quote) is False
+            with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+                inc._quote_context(non_rendered, candidate_quote)
+    # Mixed plain/unescaped/escaped duplicates and inline-code + rendered duplicates all refuse as ambiguous!
     mixed_table = (
         "| Glasshouse | A rain cover was fitted. |\n"
         "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
     )
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc._quote_context(mixed_table, plain_quote)
+    escaped_and_unescaped = (
+        "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+        "| [[Ядра/Glasshouse|Glasshouse]] | A rain cover was fitted. |\n"
+    )
+    for dup_quote in (raw_quote, unescaped_quote):
+        with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+            inc._quote_context(escaped_and_unescaped, dup_quote)
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc._quote_context("Код `[[Ядра/Glasshouse]]` и ссылка [[Ядра/Glasshouse]].", "[[Ядра/Glasshouse]]")

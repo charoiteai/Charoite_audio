@@ -505,6 +505,11 @@ def test_cli_sidecar_records_interrupted_on_sigterm_and_survives_broken_stdout(n
                    on_telemetry=lambda snap: nd._write_telemetry_sidecar(root, snap))
     disk_after = json.loads(sidecar.read_text(encoding="utf-8"))
     assert disk_after["interrupted"] is False
+    # And when stdout succeeds, a non-OSError callback failure propagates instead of vanishing.
+    monkeypatch.setattr(builtins, "print", original_print)
+    with pytest.raises(RuntimeError, match="callback boom"):
+        with telemetry.Collector().activate(on_emit=lambda snap: (_ for _ in ()).throw(RuntimeError("callback boom"))):
+            pass
 
 
 def test_sidecar_oserror_unlinks_stale_file_logs_stderr_and_preserves_run_result(night, monkeypatch, capsys):
