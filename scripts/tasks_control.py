@@ -621,18 +621,20 @@ def tab_summary(items, known: list[tuple[str, str]], owner: str, today: dt.date)
 
 
 def _fence_map(lines: list[str]) -> list[bool]:
-    """Строка внутри код-блока (или сама его граница). Блок закрывает только тот же символ и не
-    короче открывающего: ``` внутри ````-блока — текст, а не конец блока."""
+    """Строка внутри код-блока (или сама его граница). Блок закрывает только тот же символ, не
+    короче открывающего и без хвоста после маркера: ``` и ````python внутри ````-блока — текст."""
     inside, opener, out = False, "", []
     for line in lines:
         m = FENCE.match(line)
         if m:
             marker = m.group(1)
+            tail = line[m.end():]
             if not inside:
-                inside, opener = True, marker
-                out.append(True)
-                continue
-            if marker[0] == opener[0] and len(marker) >= len(opener):
+                if marker[0] != "`" or "`" not in tail:
+                    inside, opener = True, marker
+                    out.append(True)
+                    continue
+            elif marker[0] == opener[0] and len(marker) >= len(opener) and not tail.strip():
                 inside, opener = False, ""
                 out.append(True)
                 continue
@@ -738,7 +740,7 @@ def _unique_index(lines: list[str], wanted: str, fenced: list[bool]) -> int | No
     return hits[0] if len(hits) == 1 else None
 
 
-def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None, guard=None):
+def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None, guard=None, on_error=None):
     """Записать план под замком графа. Возвращает (записанные правки, пропущено строк, каталог прогона).
 
     Под замком реестр возврата перечитывается: откат, прошедший между сканом и записью, выигрывает.
@@ -754,7 +756,10 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
         try:
             real.relative_to(graph)
         except ValueError:
-            note(f"пропуск {planned}: путь вне графа после раскрытия ссылок")
+            detail = f"{planned}: путь вне графа после раскрытия ссылок"
+            note(f"пропуск {detail}")
+            if on_error is not None:
+                on_error(detail)
             continue
         resolved[real] = edits
     plan = resolved
@@ -814,7 +819,10 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
             try:
                 shutil.copy2(path, dst)
             except OSError as e:
-                _note(f"пропуск {rel}: {type(e).__name__}: {e}")
+                detail = f"{rel}: {type(e).__name__}: {e}"
+                _note(f"пропуск {detail}")
+                if on_error is not None:
+                    on_error(detail)
                 skipped += len(edits)
                 continue
             done: list = []
@@ -844,7 +852,10 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
             try:
                 n = safe_write.rewrite_file(path, transform, "снятие поручений")
             except (OSError, UnicodeDecodeError, safe_write.LostRace) as e:
-                _note(f"пропуск {rel}: {type(e).__name__}: {e}")
+                detail = f"{rel}: {type(e).__name__}: {e}"
+                _note(f"пропуск {detail}")
+                if on_error is not None:
+                    on_error(detail)
                 skipped += len(edits)
                 continue
             if n:

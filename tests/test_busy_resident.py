@@ -372,3 +372,32 @@ def test_no_census_endpoint_is_no_signal(tmp_path, ram_64gb):
         _config(tmp_path, url)
         assert busy_signals.resident_models(tmp_path) == ([], None)
         assert busy_signals.machine_busy(tmp_path) == []
+
+
+def test_ignore_models_excludes_own_model_but_keeps_competing_and_broken_sensor(tmp_path, ram_64gb):
+    """Ревизор поручений (№998) сам поднимает `qwen3.8:27b-mlx` (~19 ГБ): при перепроверке
+    свою модель (включая `:local` и bare/`:latest`) не считает конкурентом себе, но чужую
+    большую модель и нечитаемый сенсор продолжает считать занятостью."""
+    own = _model("qwen3.8:27b-mlx", 19 * GB)
+    emb = _model("bge-m3:latest", GB)
+    with _fake_ollama(body={"models": [own, emb]}) as url:
+        _config(tmp_path, url)
+        assert len(busy_signals.machine_busy(tmp_path)) == 1
+        assert busy_signals.machine_busy(tmp_path, ignore_models=("  ", "qwen3.8:27b-mlx")) == []
+        assert busy_signals.machine_busy(tmp_path, ignore_models=(" qwen3.8:27b-mlx:local ",)) == []
+        assert busy_signals.resident_busy_reason(tmp_path, ignore_models=("qwen3.8:27b-mlx",)) is None
+    with _fake_ollama(body={"models": [_model("custom-big:latest", 19 * GB)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.machine_busy(tmp_path, ignore_models=("custom-big",)) == []
+        assert busy_signals.machine_busy(tmp_path, ignore_models=("custom-big:local",)) == []
+    other = _model("qwen3.6:35b-mlx", 22 * GB)
+    with _fake_ollama(body={"models": [own, other]}) as url:
+        _config(tmp_path, url)
+        busy = busy_signals.machine_busy(tmp_path, ignore_models=("qwen3.8:27b-mlx",))
+        assert len(busy) == 1
+        assert "qwen3.8:27b-mlx" not in busy[0]
+        assert "qwen3.6:35b-mlx 22,0 ГБ" in busy[0] and "всего 22,0 ГБ" in busy[0]
+    with _fake_ollama(status=500, body={"error": "boom"}) as url:
+        _config(tmp_path, url)
+        busy = busy_signals.machine_busy(tmp_path, ignore_models=("qwen3.8:27b-mlx",))
+        assert len(busy) == 1 and busy[0].startswith("память моделей не читается (")

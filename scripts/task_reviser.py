@@ -323,7 +323,7 @@ def write_state(data: pathlib.Path, state: dict) -> None:
     tmp.replace(path)
 
 
-def quiet(gate=None) -> bool:
+def quiet(gate=None, *, ignore_models: tuple[str, ...] = ()) -> bool:
     """Машина свободна: True — можно писать. Нечитаемый или зависший сигнал — «занято» (сломанный
     сигнал ≠ свободная машина). Занятость судит общий агрегат продукта, не второй список здесь."""
     if gate is not None:                                  # подмена для самопроверки
@@ -332,9 +332,33 @@ def quiet(gate=None) -> bool:
         except Exception:                                 # noqa: BLE001 — сбой сигнала значит «занято»
             return False
     try:
-        return not busy_signals.machine_busy(tc.DATA)
+        return not busy_signals.machine_busy(tc.DATA, ignore_models=ignore_models)
     except Exception:                                     # noqa: BLE001 — сломанный сигнал ≠ свободна машина
         return False
+
+
+def _model_resident(data: pathlib.Path, model: str = MODEL) -> bool:
+    """Была ли модель уже загружена до прогона: чужую сессию выгружать после опроса нельзя."""
+    try:
+        models, problem = busy_signals.resident_models(data)
+    except Exception:                                     # noqa: BLE001
+        return True
+    if problem:
+        return True
+    wanted = busy_signals._resident_model_key(model)
+    return any(busy_signals._resident_model_key(name) == wanted for name, _, _ in models)
+
+
+def _unload_model(model: str = MODEL) -> None:
+    """Освободить память модели сразу после опроса, чтобы keep_alive=10m не держал сторожа."""
+    body = json.dumps({"model": model, "keep_alive": 0}).encode()
+    # nosemgrep — OLLAMA — loopback-адрес из константы; локальной модели TLS не нужен
+    req = urllib.request.Request(f"{OLLAMA}/api/generate", body, {"Content-Type": "application/json"})
+    try:
+        with net.open_url(req, timeout=5) as response:
+            response.read()
+    except (OSError, ValueError, http.client.HTTPException):
+        pass
 
 
 def model_alive(model: str = MODEL) -> bool:
@@ -419,8 +443,13 @@ def run(args) -> int:
         cache = state.get("cache", {})
         base = tc.charoite_paths.graph_backups(graph, "tasks_control", root=tc.DATA)
         deadline = time.monotonic() + RUN_BUDGET
-        plan, seen, asked, failed = plan_edits(graph, owner, today, tc.load_returned(base), cache,
-                                               deadline=deadline)
+        was_resident = _model_resident(tc.DATA)
+        try:
+            plan, seen, asked, failed = plan_edits(graph, owner, today, tc.load_returned(base), cache,
+                                                   deadline=deadline)
+        finally:
+            if asked and not was_resident:
+                _unload_model()
         total = sum(len(v) for v in plan.values())
         print(f"опрошено строк: {asked}, сбоев модели: {failed}, к правке: {total}")
         if asked and failed == asked:
@@ -432,33 +461,45 @@ def run(args) -> int:
         if not args.apply:
             print("пробный прогон: ничего не записано")
             return 0
-        # Гейты перепроверяются перед записью: встреча или нагрузка могли начаться за время опроса модели.
+        # Гейты перепроверяются перед записью: встреча или чужая нагрузка могли начаться за время опроса
+        # (собственную модель, если её выгрузка в Ollama ещё догоняет, не считаем конкурентом себе).
         if tc.live_meeting(tc.DATA):
             return skip("идёт встреча (началась за время опроса)")
-        if not quiet():
+        if not quiet(ignore_models=(MODEL,)):
             return skip("машина занята (занятость появилась за время опроса)")
         applied = skipped = 0
         backup = None
         partial = False
         if plan:
-            refused = []
+            refused: list[bool] = []
+            write_errors: list[str] = []
 
             def gates_ok() -> bool:                     # замок ждали минуты: медленную проверку — первой
-                ok = quiet() and not tc.live_meeting(tc.DATA)
+                ok = quiet(ignore_models=(MODEL,)) and not tc.live_meeting(tc.DATA)
                 if not ok:
                     refused.append(True)
                 return ok
 
-            done, skipped, backup = tc.apply(graph, plan, tc.DATA, note=record, guard=gates_ok)
+            done, skipped, backup = tc.apply(graph, plan, tc.DATA, note=record, guard=gates_ok,
+                                             on_error=write_errors.append)
             applied = len(done)
             skipped += max(0, total - applied - skipped)   # строки, изменившиеся до записи, apply не считает
-            if not applied:                                # ни одной правки — это не успешный прогон
-                return skip(f"не записано ни одной правки (пропущено {skipped})")
+            if write_errors:
+                if applied:
+                    record_backup(backup, record)
+                tail = f"; откат: {backup / 'restore.py'}" if applied and backup else ""
+                record(f"ОШИБКА: сбой записи графа ({len(write_errors)}): {write_errors[0]}{tail}")
+                tc.notify(f"ревизор задач: сбой записи ({write_errors[0]})")
+                print(f"ошибка записи: {write_errors[0]}")
+                return tc.HANDLED
+            if not applied and refused:
+                return skip(f"гейт остановил запись до первой правки (пропущено {skipped})")
             partial = bool(refused) and skipped > 0        # часть файлов осталась не записана — неполный прогон
             if partial:
                 record(f"ВНИМАНИЕ: гейт отказал во время записи — записано {applied} из {total}, "
                        f"пропущено {skipped}; прогон неполный")
-            record_backup(backup, record)
+            if applied:
+                record_backup(backup, record)
         cache.update(seen)
         cutoff = (today - dt.timedelta(days=RECHECK_DAYS * 4)).isoformat()
         cache = {k: v for k, v in cache.items() if v["day"] >= cutoff}
@@ -469,7 +510,7 @@ def run(args) -> int:
                               "applied": applied, "skipped": skipped, "cache": cache})
         record(f"опрошено {asked}, правок {applied}, не записано {skipped}"
                + ("; прогон неполный" if partial else "")
-               + (f"; откат: {backup / 'restore.py'}" if backup else ""))
+               + (f"; откат: {backup / 'restore.py'}" if applied and backup else ""))
         print(f"записано {applied}, не записано {skipped}" + ("; прогон неполный" if partial else ""))
         return 0
     finally:

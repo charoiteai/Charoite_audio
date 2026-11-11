@@ -457,3 +457,108 @@ def test_bench_masking_threshold_counts_actionable_cases() -> None:
     actionable = sum(1 for _, want in verdict if want != "open")
     assert actionable < len(verdict), "в наборе есть законные «открыто» — иначе порог бессмыслен"
     assert bench.masking_problems(actionable, actionable, verdict), "модель, всегда отвечающая «open», не «чиста»"
+
+
+def _setup_run_env(tmp_path: pathlib.Path, monkeypatch, body: str) -> tuple[pathlib.Path, pathlib.Path]:
+    graph = meeting_graph(tmp_path, body, day=f"{dt.date.today() - dt.timedelta(days=2):%Y-%m-%d}")
+    data = tmp_path / "data"
+    (data / "config").mkdir(parents=True)
+    (data / "config" / "config.yaml").write_text(
+        f"sufler:\n  graph_dir: {graph}\n  user_name: Пётр\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(graph))
+    monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
+    monkeypatch.setattr(tc, "DATA", data)
+    monkeypatch.setattr(tc, "live_meeting", lambda _d: False)
+    monkeypatch.setattr(tr, "model_alive", lambda *_a: True)
+    return graph, data
+
+
+def test_run_apply_ignores_own_resident_model_and_unloads_when_loaded_by_run(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Собственная модель ~19 ГБ, поднятая `plan_edits`, не блокирует запись и выгружается после опроса."""
+    import argparse
+
+    graph, data = _setup_run_env(
+        tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n- [ ] **Сергей** — подготовить план\n"
+    )
+    resident: list[tuple[str, int, str]] = []
+    unloads: list[str] = []
+    monkeypatch.setattr(tr.busy_signals, "_physical_bytes", lambda: 64 * 2**30)
+    monkeypatch.setattr(tr.busy_signals, "resident_models", lambda _r: (list(resident), None))
+    monkeypatch.setattr(tr, "_unload_model", lambda model=tr.MODEL: unloads.append(model))
+
+    real_plan = tr.plan_edits
+
+    def loading_plan(*args, **kwargs):
+        resident.append((tr.MODEL, 19 * 10**9, "до 12:00"))
+        return real_plan(*args, **kwargs, asker=answer_by_text({"**Иван** — отправил отчёт": DONE}))
+
+    monkeypatch.setattr(tr, "plan_edits", loading_plan)
+    rc = tr.run(argparse.Namespace(apply=True))
+    assert rc == 0
+    assert unloads == [tr.MODEL], "модель поднята самим прогоном — должна быть освобождена после опроса"
+    path = next(graph.rglob(tc.MINUTES))
+    assert "- [x] **Иван** — отправил отчёт" in path.read_text(encoding="utf-8")
+    state = tr.read_state(data)
+    assert state["last_ok"] > 0 and state["applied"] == 1
+
+
+def test_run_apply_still_skips_when_competing_model_appears_during_plan(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Чужая тяжёлая модель, появившаяся за время опроса, по-прежнему останавливает запись."""
+    import argparse
+
+    graph, data = _setup_run_env(tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n")
+    resident: list[tuple[str, int, str]] = []
+    unloads: list[str] = []
+    monkeypatch.setattr(tr.busy_signals, "_physical_bytes", lambda: 64 * 2**30)
+    monkeypatch.setattr(tr.busy_signals, "resident_models", lambda _r: (list(resident), None))
+    monkeypatch.setattr(tr, "_unload_model", lambda model=tr.MODEL: unloads.append(model))
+
+    real_plan = tr.plan_edits
+
+    def competing_plan(*args, **kwargs):
+        resident.extend([(tr.MODEL, 19 * 10**9, "до 12:00"), ("qwen3.6:35b-mlx", 22 * 10**9, "до 12:30")])
+        return real_plan(*args, **kwargs, asker=answer_by_text({"**Иван** — отправил отчёт": DONE}))
+
+    monkeypatch.setattr(tr, "plan_edits", competing_plan)
+    rc = tr.run(argparse.Namespace(apply=True))
+    assert rc == 0
+    assert "- [ ] **Иван** — отправил отчёт" in next(graph.rglob(tc.MINUTES)).read_text(encoding="utf-8")
+    assert "пропуск: машина занята" in (data / "logs" / tr.LOG).read_text(encoding="utf-8")
+
+
+def test_run_apply_reports_write_error_without_advancing_skip_timestamp(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Сбой записи файла — авария (`HANDLED` + `notify`), а не штатный `skip`, гасящий сторожа."""
+    import argparse
+
+    graph, data = _setup_run_env(tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n")
+    alerts: list[str] = []
+    monkeypatch.setattr(tr, "quiet", lambda **_kw: True)
+    monkeypatch.setattr(tr, "_model_resident", lambda *_a: True)
+    monkeypatch.setattr(tc, "notify", alerts.append)
+    real_plan = tr.plan_edits
+    monkeypatch.setattr(
+        tr, "plan_edits",
+        lambda *a, **kw: real_plan(*a, **kw, asker=answer_by_text({"**Иван** — отправил отчёт": DONE})),
+    )
+
+    def disk_full(*_a, **_kw):
+        raise OSError("диск полон")
+
+    monkeypatch.setattr(tc.safe_write, "rewrite_file", disk_full)
+    rc = tr.run(argparse.Namespace(apply=True))
+    assert rc == tc.HANDLED
+    assert alerts and "сбой записи" in alerts[0]
+    state = tr.read_state(data)
+    assert state.get("last_ok", 0) == 0 and state.get("last_skip", 0) == 0
+    log_text = (data / "logs" / tr.LOG).read_text(encoding="utf-8")
+    assert "ОШИБКА: сбой записи графа" in log_text
+    assert "отправил отчёт" not in log_text, "текст поручения не должен попадать в общий лог"
+
+
+def test_four_backtick_fence_is_not_closed_by_inner_info_line(tmp_path: pathlib.Path) -> None:
+    """Внутри ````-блока ни ```, ни ````python с хвостом блок не закрывают."""
+    body = "````markdown\n```\n- [ ] **Иван** — отправил отчёт\n````python\n- [ ] **Иван** — отправил отчёт 2\n````\n"
+    graph = meeting_graph(tmp_path, body)
+    plan, _, asked, _ = tr.plan_edits(graph, "Пётр", TODAY, set(), {}, asker=lambda *_a, **_k: DONE)
+    assert plan == {} and asked == 0

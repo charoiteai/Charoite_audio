@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Collection
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -247,13 +248,21 @@ def _physical_bytes() -> int | None:
     return n if n > 0 else None
 
 
-def resident_busy_reason(root: pathlib.Path) -> str | None:
+def _resident_model_key(name: str) -> str:
+    clean = name.strip()
+    if clean.endswith(":local"):
+        clean = clean[:-6]
+    return clean if ":" in clean else f"{clean}:latest"
+
+
+def resident_busy_reason(root: pathlib.Path, *,
+                         ignore_models: Collection[str] = ()) -> str | None:
     """Слова «модели держат память» или «память моделей не читается» — или None:
     держат меньше порога либо сигнала нет (`resident_models`).
     Не бросает: сбой сенсора — «не читается», а не «свободно» и не падение
     вызывающего (мутатор зовёт его между мутантами напрямую)."""
     try:
-        return _resident_busy_reason(root)
+        return _resident_busy_reason(root, ignore_models=ignore_models)
     except Exception as e:  # noqa: BLE001 — сломанный сенсор памяти не значит «свободно»
         return f"память моделей не читается ({type(e).__name__}) — проверьте Ollama"
 
@@ -264,12 +273,16 @@ def _resident_limit(total: int) -> float:
     return max(total * RESIDENT_BUSY_SHARE, min(RESIDENT_BUSY_FLOOR, total / 2))
 
 
-def _resident_busy_reason(root: pathlib.Path) -> str | None:
+def _resident_busy_reason(root: pathlib.Path, *,
+                          ignore_models: Collection[str] = ()) -> str | None:
     if problem := resident_config_problem(root):
         return f"память моделей не читается ({problem}) — почините {CONFIG_REL}"
     models, problem = resident_models(root)
     if problem:
         return f"память моделей не читается ({problem}) — проверьте Ollama"
+    if ignore_models:
+        ignored = {_resident_model_key(m) for m in ignore_models if m.strip()}
+        models = [m for m in models if _resident_model_key(m[0]) not in ignored]
     if not models:
         return None
     held = sum(size for _, size, _ in models)
@@ -290,7 +303,8 @@ def _resident_busy_reason(root: pathlib.Path) -> str | None:
 
 
 def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,
-                 count_resident: bool = True) -> list[str]:
+                 count_resident: bool = True,
+                 ignore_models: Collection[str] = ()) -> list[str]:
     """Чем занята машина, глазами тяжёлого процесса перед стартом.
 
     `count_mutation=False` — для самого мутатора: другой мутатор ему не помеха
@@ -300,7 +314,8 @@ def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,
 
     `count_resident=False` — модели в памяти Ollama не считать (№595); по
     умолчанию считают все: вторая большая модель или тяжёлый прогон поверх
-    резидентной 35b уводят машину в своп."""
+    резидентной 35b уводят машину в своп. `ignore_models` — не считать свою
+    модель при перепроверке после собственного опроса, сохраняя счёт чужих."""
     busy: list[str] = []
     if live_recording(root):
         busy.append("живая запись")
@@ -313,7 +328,7 @@ def machine_busy(root: pathlib.Path, *, count_mutation: bool = True,
     night = night_busy_reason(root)
     if night:
         busy.append(night)
-    if count_resident and (resident := resident_busy_reason(root)):
+    if count_resident and (resident := resident_busy_reason(root, ignore_models=ignore_models)):
         busy.append(resident)
     if count_mutation and mutation_running(root):
         busy.append("мутация тестов")
