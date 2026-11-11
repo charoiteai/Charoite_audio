@@ -558,7 +558,15 @@ def run(args) -> int:
             return tc.HANDLED
         state = read_state(tc.DATA)
         cache = state.get("cache", {})
-        base = tc.charoite_paths.graph_backups(graph, "tasks_control", root=tc.DATA)
+        captured = None
+        if args.apply:
+            try:
+                captured = tc.graphs.mutation_addresses(graph, root=tc.DATA)
+            except (OSError, ValueError) as e:
+                return _fail_broken_sensor([f"граф недоступен ({type(e).__name__}: {tc._safe_err(e)})"], alert=True)
+            base = captured.backup_root("tasks_control")
+        else:
+            base = tc.charoite_paths.graph_backups(graph, "tasks_control", root=tc.DATA)
         deadline = time.monotonic() + RUN_BUDGET
         was_resident = _model_resident(tc.DATA)
         plan: dict = {}
@@ -582,10 +590,10 @@ def run(args) -> int:
         if asked and answered == 0:
             record(f"ОШИБКА: модель не ответила ни на одну из {asked} строк")
             return tc.HANDLED
-        for path, edits in plan.items():
-            for _, old, new, _meta in edits:
-                print(f"  {path.name}: {old.strip()}  →  {new.strip()}")
         if not args.apply:
+            for path, edits in plan.items():
+                for _, old, new, _meta in edits:
+                    print(f"  {path.name}: {old.strip()}  →  {new.strip()}")
             print("пробный прогон: ничего не записано")
             return 0
         # Гейты перепроверяются перед записью: встреча или чужая нагрузка могли начаться за время опроса
@@ -628,7 +636,7 @@ def run(args) -> int:
                 return ok
 
             done, skipped, backup = tc.apply(graph, plan, tc.DATA, note=record, guard=gates_ok,
-                                             on_error=write_errors.append)
+                                             on_error=write_errors.append, captured=captured)
             applied = len(done)
             skipped += max(0, total - applied - skipped)   # строки, изменившиеся до записи, apply не считает
             if write_errors or broken_gate:
@@ -655,7 +663,7 @@ def run(args) -> int:
             if applied:
                 record_backup(backup, record)
         else:
-            tc.migrate_returned(base, lock_dir=tc.charoite_paths.graph_lock_dir(graph, root=tc.DATA))
+            tc.migrate_returned(base, graph=graph, data=tc.DATA, captured=captured, note=record)
         cache = _merged_cache(cache, seen)
         now = time.time()
         write_state(tc.DATA, {"last_ok": state.get("last_ok", 0) if partial else now,
@@ -911,7 +919,7 @@ def main() -> int:
             return watch()
         return run(args)
     except Exception as e:  # noqa: BLE001 — агент launchd без этого падает молча, без строки в логе
-        detail = f"{type(e).__name__}: {e}"
+        detail = f"{type(e).__name__}: {tc._safe_err(e)}"
         try:                                              # сам обработчик не должен падать на сбое диска
             charoite_paths.secure_dir(tc.DATA / "logs")
             log = charoite_paths.log_path(tc.DATA, "task_reviser_log")
@@ -920,7 +928,7 @@ def main() -> int:
         except OSError:
             print(f"ошибка: {detail} (и лог недоступен)", file=sys.stderr)
         try:
-            tc.notify(f"ревизор задач не отработал: {e}")
+            tc.notify(f"ревизор задач не отработал: {detail}")
         except OSError:
             pass
         print(f"ошибка: {detail}")

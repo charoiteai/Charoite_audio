@@ -30,10 +30,11 @@ def _bind_helpers():
 
     Снимок кладёт прогон (`tasks_control.apply`): откат обязан работать, даже когда
     checkout, из которого писали, удалён или переехал."""
-    for candidate in (pathlib.Path(run["code"]) / "src", here / "lib"):
+    for idx, candidate in enumerate((pathlib.Path(run["code"]) / "src", here / "lib")):
         cand_str = str(candidate)
-        for mod in ("file_locks", "task_line", "charoite_graph.safe_write", "charoite_graph"):
-            sys.modules.pop(mod, None)
+        if idx > 0:
+            for mod in ("file_locks", "task_line", "charoite_graph.safe_write", "charoite_graph"):
+                sys.modules.pop(mod, None)
         sys.path.insert(0, cand_str)
         try:
             import file_locks
@@ -244,7 +245,8 @@ def walk() -> None:
 
 
 if apply:
-    with file_locks.graph_lock(pathlib.Path(run["lock_dir"]), 300) as taken:
+    lock_dirs = [pathlib.Path(p) for p in (run.get("lock_dirs") or [run["lock_dir"]])]
+    with file_locks.graph_locks(lock_dirs, 300) as taken:
         if not taken:
             sys.exit("замок графа не взят — откат не записан")
         walk()

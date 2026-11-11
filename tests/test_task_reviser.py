@@ -838,14 +838,14 @@ def test_dry_run_respects_live_and_busy_gates_without_advancing_last_skip(tmp_pa
 
 def test_restore_fences_corrupt_manifests_and_textless_privacy(tmp_path: pathlib.Path, monkeypatch) -> None:
     """`restore.py` не трогает заборы, не кладёт текст/тему в `returned.jsonl`, а битый манифест не маскирует 0."""
-    secret_topic = "СекретнаяТемаВстречи"
-    secret_task = "секретный текст поручения Ивана"
-    rel = pathlib.Path("Встречи-архив") / f"2026-10-05 10-00 — {secret_topic}" / tc.MINUTES
+    canary_topic = "ТемаКанарейкаВстречи"
+    canary_task = "текст поручения канарейки Ивана"
+    rel = pathlib.Path("Встречи-архив") / f"2026-10-05 10-00 — {canary_topic}" / tc.MINUTES
     graph = tmp_path / "граф"
     path = graph / rel
     path.parent.mkdir(parents=True)
-    old = f"- [ ] **Иван** — {secret_task}"
-    body = f"```markdown\n- [x] **Иван** — {secret_task}\n```\n{old}\n"
+    old = f"- [ ] **Иван** — {canary_task}"
+    body = f"```markdown\n- [x] **Иван** — {canary_task}\n```\n{old}\n"
     path.write_text(body, encoding="utf-8", newline="")
 
     plan, seen, _, _ = tr.plan_edits(graph, "Пётр", TODAY, set(), {}, asker=answer_by_text({old[2 + 4:]: DONE}))
@@ -859,7 +859,7 @@ def test_restore_fences_corrupt_manifests_and_textless_privacy(tmp_path: pathlib
 
     reg_path = pathlib.Path(json.loads((backup / "run.json").read_text(encoding="utf-8"))["returned"])
     reg_raw = reg_path.read_text(encoding="utf-8")
-    assert secret_topic not in reg_raw and secret_task not in reg_raw
+    assert canary_topic not in reg_raw and canary_task not in reg_raw
     returned = tc.load_returned(backup.parent)
     plan_after, _, asked_after, _ = tr.plan_edits(
         graph, "Пётр", TODAY, returned, {}, asker=answer_by_text({old[2 + 4:]: DONE})
@@ -869,7 +869,7 @@ def test_restore_fences_corrupt_manifests_and_textless_privacy(tmp_path: pathlib
     # В state и логе при сбое записи тоже нет ни темы встречи, ни текста поручения:
     tr.write_state(data, {"cache": seen})
     state_raw = (data / "logs" / tr.STATE).read_text(encoding="utf-8")
-    assert secret_topic not in state_raw and secret_task not in state_raw
+    assert canary_topic not in state_raw and canary_task not in state_raw
     errs: list[str] = []
     monkeypatch.setattr(
         tc.safe_write,
@@ -877,7 +877,7 @@ def test_restore_fences_corrupt_manifests_and_textless_privacy(tmp_path: pathlib
         lambda *_a, **_kw: (_ for _ in ()).throw(OSError(28, "нет места", str(path))),
     )
     tc.apply(graph, plan, tmp_path / "data2", on_error=errs.append)
-    assert errs and secret_topic not in errs[0] and "OSError" in errs[0]
+    assert errs and canary_topic not in errs[0] and "OSError" in errs[0]
 
     # `null` в `manifest.jsonl` и `line=0` в `manifest.tsv` дают ненулевой код отката:
     bad_jsonl = tmp_path / "bad_jsonl"
@@ -984,19 +984,19 @@ def test_legacy_returned_registry_migrates_and_safe_err_hides_paths(tmp_path: pa
     """Старый `returned.jsonl` с `file`/`old` переписывается в дайджесты при `--apply`, а `_safe_err` и `restore` чисты."""
     import argparse
 
-    secret_topic = "СекретнаяВстречаКлиента"
-    secret_body = "**Иван** — секретный договор"
-    rel = f"Встречи-архив/2026-09-01 10-00 — {secret_topic}/{tc.MINUTES}"
+    canary_topic = "ВстречаКлиентаКанарейка"
+    canary_body = "**Иван** — договор канарейки"
+    rel = f"Встречи-архив/2026-09-01 10-00 — {canary_topic}/{tc.MINUTES}"
     graph, data = _setup_run_env(tmp_path, monkeypatch, "")
     for old_md in list(graph.rglob(tc.MINUTES)):
         old_md.unlink()
     (graph / rel).parent.mkdir(parents=True, exist_ok=True)
-    (graph / rel).write_text(f"- [ ] {secret_body}\n", encoding="utf-8")
+    (graph / rel).write_text(f"- [ ] {canary_body}\n", encoding="utf-8")
     base = tc.charoite_paths.graph_backups(graph, "tasks_control", root=data)
     base.mkdir(parents=True, exist_ok=True)
     registry = base / "returned.jsonl"
     registry.write_text(
-        json.dumps({"file": rel, "old": f"- [ ] {secret_body}", "when": "2026-10-01T12:00:00"}, ensure_ascii=False)
+        json.dumps({"file": rel, "old": f"- [ ] {canary_body}", "when": "2026-10-01T12:00:00"}, ensure_ascii=False)
         + "\n",
         encoding="utf-8",
     )
@@ -1006,14 +1006,14 @@ def test_legacy_returned_registry_migrates_and_safe_err_hides_paths(tmp_path: pa
     (data / "logs").mkdir(parents=True, exist_ok=True)
     assert tc.run(argparse.Namespace(apply=True, quiet=True), data / "logs" / "tc.log", "2026-11-11 12:00") == 0
     migrated = registry.read_text(encoding="utf-8")
-    assert secret_topic not in migrated and secret_body not in migrated
+    assert canary_topic not in migrated and canary_body not in migrated
     row = json.loads(migrated.strip())
     assert tc.task_line.is_digest(row.get("id")) and set(row) == {"id", "when"}
     assert tc.scan(graph, "Иван", TODAY, tc.load_returned(base))[0] == {}, "мигрированная запись обязана защищать строку"
 
     # `_safe_err` не отдаёт `str(e)` с путями у `shutil.SameFileError` / `shutil.Error`:
-    same_err = shutil.SameFileError(f"/vault/{secret_topic}/Минутки.md and /backup/{secret_topic}/Минутки.md")
-    assert secret_topic not in tc._safe_err(same_err) and tc._safe_err(same_err) == "SameFileError"
+    same_err = shutil.SameFileError(f"/vault/{canary_topic}/Минутки.md and /backup/{canary_topic}/Минутки.md")
+    assert canary_topic not in tc._safe_err(same_err) and tc._safe_err(same_err) == "SameFileError"
 
     # `restore._bind_helpers` переходит на снимок `lib/`, даже если в `run["code"]/src` лежит старый `task_line.py`:
     graph2 = tmp_path / "граф2"
@@ -1035,3 +1035,99 @@ def test_legacy_returned_registry_migrates_and_safe_err_hides_paths(tmp_path: pa
     res = subprocess.run([sys.executable, str(backup / "restore.py"), "--apply"], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
     assert "- [ ] **Коля** — старое дело" in target.read_text(encoding="utf-8")
+
+
+def test_real_selftest_titled_filename_privacy_and_graph_identity_binding(
+    tmp_path: pathlib.Path, monkeypatch, capsys
+) -> None:
+    """C1/I1/I2/M1-M4: живой `selftest` контроля, скрытие темы в имени файла, захват `mutation_addresses` и реестр."""
+    import argparse
+
+    # C1: настоящий `tasks_control.py --selftest` выходит с 0 и печатает «самопроверка: чисто»:
+    st_proc = subprocess.run(
+        [sys.executable, str(tc.CODE / "scripts" / "tasks_control.py"), "--selftest"],
+        capture_output=True,
+        text=True,
+    )
+    assert st_proc.returncode == 0 and "самопроверка: чисто" in st_proc.stdout, st_proc.stdout + st_proc.stderr
+
+    # C1: боевой `tc.run(apply=True)` БЕЗ подмены `tc.selftest` реально записывает правку, а `SystemExit` в `selftest`
+    # превращается в ошибку (`HANDLED`), а не в тихий exit 0:
+    graph, data = _setup_run_env(tmp_path, monkeypatch, "")
+    for old_md in list(graph.rglob(tc.MINUTES)):
+        old_md.unlink()
+    old_file = graph / "Встречи-архив/2026-09-01 10-00 — Встреча" / tc.MINUTES
+    old_file.parent.mkdir(parents=True, exist_ok=True)
+    old_file.write_text("- [ ] **Коля** — старое дело\n", encoding="utf-8")
+    monkeypatch.setattr(tc, "live_meeting", lambda _d: False)
+    (data / "logs").mkdir(parents=True, exist_ok=True)
+    log_path = data / "logs" / "tasks_control.log"
+    assert tc.run(argparse.Namespace(apply=True, quiet=True), log_path, "2026-11-11 12:00") == 0
+    assert "- [-] **Коля** — старое дело" in old_file.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(tc, "selftest", lambda **_kw: (_ for _ in ()).throw(SystemExit(0)))
+    assert tc.main.__wrapped__() if hasattr(tc.main, "__wrapped__") else True
+    with pytest.raises(RuntimeError, match="самопроверка не прошла"):
+        tc.run(argparse.Namespace(apply=True, quiet=True), log_path, "2026-11-11 12:01")
+
+    # I1: тема в самом имени файла (`Документация/Стенограммы встреч/2026-09-01_1000_<Тема>_minutes.md`)
+    # не попадает в лог ни при `LostRace.CHANGED`, ни при сбое `mkdir`/`main()`:
+    canary_title = "ТемаВСамомИмениФайла"
+    titled = graph / "Документация" / "Стенограммы встреч" / f"2026-09-01_1000_{canary_title}_minutes.md"
+    titled.parent.mkdir(parents=True, exist_ok=True)
+    titled.write_text("- [ ] **Коля** — отчёт\n", encoding="utf-8")
+    plan_titled, _, _ = tc.scan(graph, "Иван", TODAY)
+    assert titled in plan_titled
+    notes: list[str] = []
+    monkeypatch.setattr(
+        tc.safe_write,
+        "rewrite_file",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            tc.safe_write.LostRace(titled, "снятие поручений", kind=tc.safe_write.LostRace.CHANGED)
+        ),
+    )
+    tc.apply(graph, {titled: plan_titled[titled]}, tmp_path / "data_i1", note=notes.append)
+    assert notes and all(canary_title not in line for line in notes)
+
+    # I2: подмена симлинка графа между `mutation_addresses` и `apply` отказывает в записи:
+    graph_b = tmp_path / "граф_чужой"
+    (graph_b / "Встречи").mkdir(parents=True)
+    alias = tmp_path / "selected_graph"
+    alias.symlink_to(graph, target_is_directory=True)
+    captured = tc.graphs.mutation_addresses(alias, root=tmp_path / "data_i2")
+    alias.unlink()
+    alias.symlink_to(graph_b, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="замок или идентичность графа"):
+        tc.apply(alias, {alias / titled.relative_to(graph): plan_titled[titled]}, tmp_path / "data_i2", captured=captured)
+
+    # M1 + M2: каталог вместо `returned.jsonl` пробрасывает `OSError` в `load_returned`, а оборванная строка
+    # в `returned.jsonl` вычищается при `migrate_returned`:
+    bad_base = tmp_path / "bad_base"
+    (bad_base / "returned.jsonl").mkdir(parents=True)
+    with pytest.raises(OSError):
+        tc.load_returned(bad_base)
+
+    trunc_base = tmp_path / "trunc_base"
+    trunc_base.mkdir(parents=True)
+    good_id = "a" * 64
+    (trunc_base / "returned.jsonl").write_bytes(
+        (json.dumps({"id": good_id}) + "\n").encode("utf-8") + f'{{"file": "{canary_title}'.encode("utf-8")
+    )
+    assert tc.migrate_returned(trunc_base) is True
+    cleaned = (trunc_base / "returned.jsonl").read_text(encoding="utf-8")
+    assert canary_title not in cleaned and good_id in cleaned
+
+    # M3: `task_reviser.run(apply=True)` не печатает тела поручений и имена файлов в stdout:
+    capsys.readouterr()
+    canary_task_text = "уникальное тело поручения для stdout"
+    _setup_run_env(tmp_path / "m3", monkeypatch, f"- [ ] **Иван** — {canary_task_text}\n")
+    monkeypatch.setattr(tr, "quiet", lambda **_kw: True)
+    monkeypatch.setattr(tr, "_model_resident", lambda *_a: True)
+    real_plan = tr.plan_edits
+    monkeypatch.setattr(
+        tr, "plan_edits",
+        lambda *a, **kw: real_plan(*a, **kw, asker=answer_by_text({f"**Иван** — {canary_task_text}": DONE})),
+    )
+    assert tr.run(argparse.Namespace(apply=True)) == 0
+    out_m3 = capsys.readouterr().out
+    assert canary_task_text not in out_m3

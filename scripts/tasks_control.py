@@ -41,7 +41,9 @@ from __future__ import annotations
 import argparse
 import calendar
 import collections
+import contextlib
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -58,6 +60,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths
 import file_locks
+import graphs
 import live_gate
 import task_line
 from charoite_graph import graph_names, safe_write
@@ -554,6 +557,7 @@ def _parse_returned_rows(raw_bytes: bytes) -> tuple[list[tuple[str, str | None]]
         try:
             row = json.loads(line.decode("utf-8"))
         except ValueError:                            # и UnicodeDecodeError: оборванная запись отката
+            needs_rewrite = True
             continue
         if not isinstance(row, dict):
             needs_rewrite = True
@@ -577,24 +581,58 @@ def _parse_returned_rows(raw_bytes: bytes) -> tuple[list[tuple[str, str | None]]
     return entries, needs_rewrite
 
 
-def migrate_returned(base: pathlib.Path, *, lock_dir: pathlib.Path | None = None) -> bool:
-    """Атомарно переписать `returned.jsonl`, вычищая старые открытые поля `file`/`old`.
+def _hold_graph(graph: pathlib.Path, data: pathlib.Path,
+                captured: charoite_paths.GraphAddresses | None = None):
+    """Замок всей группы адресов графа (`lock_dirs`) с проверкой неизменности идентичности."""
+    if captured is None:
+        return graphs.mutation_snapshot(graph, data, LOCK_WAIT, log=lambda _m: None)
 
-    Если передан `lock_dir`, берёт замок графа только когда в файле действительно есть не-дайджестные строки;
-    без `lock_dir` предполагает, что вызывающий (`apply`) уже держит замок графа."""
+    @contextlib.contextmanager
+    def _held():
+        with charoite_paths.graph_lock_group(captured, LOCK_WAIT) as taken:
+            if not taken:
+                yield None
+                return
+            try:
+                fresh = graphs.mutation_addresses(graph, root=data)
+                if fresh != captured:
+                    raise OSError("graph address group changed")
+            except (OSError, ValueError):
+                yield None
+                return
+            yield captured
+
+    return _held()
+
+
+def migrate_returned(base: pathlib.Path, *, lock_dir: pathlib.Path | None = None,
+                     graph: pathlib.Path | None = None, data: pathlib.Path | None = None,
+                     captured: charoite_paths.GraphAddresses | None = None, note=None) -> bool:
+    """Атомарно переписать `returned.jsonl`, вычищая старые открытые поля `file`/`old` и битые строки.
+
+    При `graph`/`captured` берёт групповой замок `mutation_snapshot` только когда в файле действительно
+    есть строки к очистке; без замка предполагает, что вызывающий (`apply`) уже держит замок графа."""
     registry = base / "returned.jsonl"
     try:
         raw = registry.read_bytes()
-    except OSError:
+    except FileNotFoundError:
         return False
-    entries, needs_rewrite = _parse_returned_rows(raw)
+    except OSError as e:
+        if note is not None:
+            note(f"ВНИМАНИЕ: реестр returned.jsonl не читается ({type(e).__name__}: {_safe_err(e)})")
+        return False
+    _, needs_rewrite = _parse_returned_rows(raw)
     if not needs_rewrite:
         return False
 
     def _rewrite() -> bool:
         try:
             current = registry.read_bytes()
-        except OSError:
+        except FileNotFoundError:
+            return False
+        except OSError as e:
+            if note is not None:
+                note(f"ВНИМАНИЕ: реестр returned.jsonl не читается ({type(e).__name__}: {_safe_err(e)})")
             return False
         cur_entries, cur_needs = _parse_returned_rows(current)
         if not cur_needs:
@@ -611,13 +649,24 @@ def migrate_returned(base: pathlib.Path, *, lock_dir: pathlib.Path | None = None
                 f.write(body)
             charoite_paths.durable_replace(tmp, registry)
             return True
-        except OSError:
+        except OSError as e:
             try:
                 tmp.unlink()
             except OSError:
                 pass
+            if note is not None:
+                note(f"ВНИМАНИЕ: миграция returned.jsonl не записана ({type(e).__name__}: {_safe_err(e)})")
             return False
 
+    if captured is not None or graph is not None:
+        root_dir = data if data is not None else DATA
+        target_graph = graph if graph is not None else captured.graph
+        with _hold_graph(target_graph, root_dir, captured) as group:
+            if group is None:
+                if note is not None:
+                    note("ВНИМАНИЕ: замок или идентичность графа не подтверждены для миграции returned.jsonl")
+                return False
+            return _rewrite()
     if lock_dir is None:
         return _rewrite()
     charoite_paths.secure_dir(lock_dir)
@@ -628,10 +677,10 @@ def migrate_returned(base: pathlib.Path, *, lock_dir: pathlib.Path | None = None
 def load_returned(base: pathlib.Path) -> set[str]:
     """Реестр возвращённого (`returned.jsonl` пишет restore.py): эти поручения больше не снимаются.
     Хранит обезличенные SHA-256 дайджесты (`id`); прежний формат (`file` + `old`) тоже понимается.
-    Байты режутся по строкам до декодирования: оборванный хвост пропускается."""
+    Отсутствие файла — пусто; иные ошибки чтения (`EACCES`/`EIO`/каталог) пробрасываются наверх."""
     try:
         raw = (base / "returned.jsonl").read_bytes()
-    except OSError:
+    except FileNotFoundError:
         return set()
     entries, _ = _parse_returned_rows(raw)
     return {d for d, _ in entries}
@@ -798,14 +847,21 @@ def _unique_index(lines: list[str], wanted: str, fenced: list[bool]) -> int | No
     return hits[0] if len(hits) == 1 else None
 
 
-def _file_tag(rel: str, name: str) -> str:
-    """Метка файла без названия папки встречи: общий лог не хранит темы встреч."""
-    key = meeting_key(rel)
-    return f"{key}/{name}" if key else name
+class _SafeRuntimeError(RuntimeError):
+    """Внутренняя ошибка с текстом, который заведомо не несёт путей и тем встреч."""
+
+
+def _file_tag(rel: str, name: str = "") -> str:
+    """Метка файла без имени файла и темы встречи: ключ встречи (если есть) и короткий хеш пути."""
+    digest = hashlib.sha256((rel or name).encode("utf-8")).hexdigest()[:8]
+    key = meeting_key(rel) if rel else None
+    return f"{key}/#{digest}" if key else f"#{digest}"
 
 
 def _safe_err(e: BaseException) -> str:
     """Текст сбоя без полного пути с темой встречи."""
+    if isinstance(e, _SafeRuntimeError):
+        return str(e)
     if isinstance(e, safe_write.LostRace):
         return e.kind
     if isinstance(e, OSError):
@@ -813,78 +869,88 @@ def _safe_err(e: BaseException) -> str:
     return type(e).__name__
 
 
-def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None, guard=None, on_error=None):
-    """Записать план под замком графа. Возвращает (записанные правки, пропущено строк, каталог прогона).
+def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None, guard=None, on_error=None,
+          *, captured: charoite_paths.GraphAddresses | None = None):
+    """Записать план под групповым замком идентичности графа (`mutation_snapshot`).
+    Возвращает (записанные правки, пропущено строк, каталог прогона).
 
-    Под замком реестр возврата перечитывается: откат, прошедший между сканом и записью, выигрывает.
-    Файл переписывает `safe_write.rewrite_file` (снимок до чтения, expect перед replace, две попытки);
-    строка ищется по номеру, при сдвиге — единственная такая же вне код-блоков. Манифест пишется
-    как журнал «намерение — сделано»: намерение пишется до файла, откат берёт только подтверждённое;
-    копия файла — в files/.
+    Под замком проверяется неизменность адресов графа и перечитывается реестр возврата: откат, прошедший
+    между сканом и записью, выигрывает. Файл переписывает `safe_write.rewrite_file` (снимок до чтения,
+    expect перед replace, две попытки); строка ищется по номеру, при сдвиге — единственная такая же вне
+    код-блоков. Манифест пишется как журнал «намерение — сделано»: намерение пишется до файла, откат берёт
+    только подтверждённое; копия файла — в files/.
 
     `note(line)` — журнал хода (любой пропуск, старт записи). `on_error(detail)` — машинный сигнал
     настоящего сбоя ввода-вывода/кодировки файла (`copy2`, `OSError`, `UnicodeDecodeError`,
     `LostRace.UNREACHABLE`); запись остальных файлов продолжается. Штатные гонки (`LostRace.CHANGED`,
     `LostRace.GONE`) и симлинк вне графа пишутся в `note` без `on_error`."""
-    # Симлинк графа могут перецепить, пока ждём замок: пишем и откатываем ровно те пути,
-    # которые видели при планировании, а не то, куда теперь ведёт изменяемый псевдоним.
-    graph = pathlib.Path(graph).resolve()
-    resolved: dict[pathlib.Path, list] = {}
-    for planned, edits in plan.items():
-        real = pathlib.Path(planned).resolve()
+    def _note(line: str) -> None:
         try:
-            rel_real = str(real.relative_to(graph))
-        except ValueError:
-            note(f"пропуск {pathlib.Path(planned).name}: путь вне графа после раскрытия ссылок")
-            continue
-        if real in resolved:
-            seen_pairs = {(i, old) for i, old, *_ in resolved[real]}
-            for item in edits:
-                if (item[0], item[1]) not in seen_pairs:
-                    resolved[real].append(item)
-                    seen_pairs.add((item[0], item[1]))
-            note(f"объединение плана {_file_tag(rel_real, real.name)}: две ссылки на один файл")
-        else:
-            resolved[real] = list(edits)
-    plan = resolved
-    base = charoite_paths.graph_backups(graph, "tasks_control", root=data)
-    lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=data))
-    # Микросекунды и pid в имени: два прогона в одну секунду иначе делили бы каталог,
-    # манифест и копии файлов, и откат одного возвращал бы правки другого.
-    backup = charoite_paths.secure_dir(
-        base / f"{dt.datetime.now():%Y%m%d-%H%M%S-%f}-{os.getpid()}")
-    (backup / "run.json").write_text(json.dumps(
-        {"graph": str(graph), "lock_dir": str(lock_dir), "code": str(CODE),
-         "returned": str(base / "returned.jsonl")}, ensure_ascii=False), encoding="utf-8")
-    shutil.copy2(CODE / "scripts" / "restore.py", backup / "restore.py")
-    try:                                          # хелперы рядом: откат переживёт удаление checkout
-        lib = backup / "lib"
-        (lib / "charoite_graph").mkdir(parents=True, exist_ok=True)
-        shutil.copy2(CODE / "src" / "file_locks.py", lib / "file_locks.py")
-        shutil.copy2(CODE / "src" / "task_line.py", lib / "task_line.py")
-        # safe_write кладём ВНУТРЬ пакета: откат импортирует члена пакета только через
-        # charoite_graph (границы импортов), и без исходного checkout пакет берётся из lib/.
-        shutil.copy2(CODE / "src" / "charoite_graph" / "safe_write.py",
-                     lib / "charoite_graph" / "safe_write.py")
-        (lib / "charoite_graph" / "__init__.py").write_text("", encoding="utf-8")
-    except OSError as e:
-        # Снимок — часть гарантии отката: без него граф не трогаем (нельзя обещать откат,
-        # которого не будет, если checkout исчезнет).
-        raise RuntimeError(f"снимок хелперов отката не скопирован: {type(e).__name__}: {_safe_err(e)} — не пишу") from e
-    manifest = backup / "manifest.jsonl"
-    manifest.touch()
-    applied, skipped = [], 0
-    with file_locks.graph_lock(lock_dir, LOCK_WAIT) as taken:
-        if not taken:
-            raise RuntimeError(f"замок графа не взят за {LOCK_WAIT} с — не пишу")
-        def _note(line: str) -> None:
-            try:
-                note(line)
-            except OSError:                               # сбой лога не должен обрывать цикл по файлам
-                pass
+            note(line)
+        except OSError:                               # сбой лога не должен обрывать цикл по файлам
+            pass
 
-        note(f"запись начата; откат: {backup / 'restore.py'}")
-        migrate_returned(base)
+    scope = _hold_graph(graph, data, captured)
+    applied, skipped = [], 0
+    with scope as group:
+        if group is None:
+            raise _SafeRuntimeError(f"замок или идентичность графа не подтверждены за {LOCK_WAIT} с — не пишу")
+        phys_graph = group.graph
+        resolved: dict[pathlib.Path, list] = {}
+        for planned, edits in plan.items():
+            try:
+                bound = group.bind(planned)
+            except ValueError:
+                _note(f"пропуск {_file_tag(str(planned))}: путь вне захваченного графа")
+                continue
+            real = bound.resolve()
+            try:
+                rel_real = str(real.relative_to(phys_graph))
+            except ValueError:
+                _note(f"пропуск {_file_tag(str(bound.relative_to(phys_graph)))}: путь вне графа после раскрытия ссылок")
+                continue
+            if real in resolved:
+                seen_pairs = {(i, old) for i, old, *_ in resolved[real]}
+                for item in edits:
+                    if (item[0], item[1]) not in seen_pairs:
+                        resolved[real].append(item)
+                        seen_pairs.add((item[0], item[1]))
+                _note(f"объединение плана {_file_tag(rel_real, real.name)}: две ссылки на один файл")
+            else:
+                resolved[real] = list(edits)
+        plan = resolved
+        base = group.backup_root("tasks_control")
+        for ld in group.lock_dirs:
+            charoite_paths.secure_dir(ld)
+        # Микросекунды и pid в имени: два прогона в одну секунду иначе делили бы каталог,
+        # манифест и копии файлов, и откат одного возвращал бы правки другого.
+        backup = charoite_paths.secure_dir(
+            base / f"{dt.datetime.now():%Y%m%d-%H%M%S-%f}-{os.getpid()}")
+        (backup / "run.json").write_text(json.dumps(
+            {"graph": str(phys_graph), "lock_dir": str(group.primary),
+             "lock_dirs": [str(d) for d in group.lock_dirs], "code": str(CODE),
+             "returned": str(base / "returned.jsonl")}, ensure_ascii=False), encoding="utf-8")
+        shutil.copy2(CODE / "scripts" / "restore.py", backup / "restore.py")
+        try:                                          # хелперы рядом: откат переживёт удаление checkout
+            lib = backup / "lib"
+            (lib / "charoite_graph").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(CODE / "src" / "file_locks.py", lib / "file_locks.py")
+            shutil.copy2(CODE / "src" / "task_line.py", lib / "task_line.py")
+            # safe_write кладём ВНУТРЬ пакета: откат импортирует члена пакета только через
+            # charoite_graph (границы импортов), и без исходного checkout пакет берётся из lib/.
+            shutil.copy2(CODE / "src" / "charoite_graph" / "safe_write.py",
+                         lib / "charoite_graph" / "safe_write.py")
+            (lib / "charoite_graph" / "__init__.py").write_text("", encoding="utf-8")
+        except OSError as e:
+            # Снимок — часть гарантии отката: без него граф не трогаем (нельзя обещать откат,
+            # которого не будет, если checkout исчезнет).
+            raise _SafeRuntimeError(
+                f"снимок хелперов отката не скопирован: {type(e).__name__}: {_safe_err(e)} — не пишу"
+            ) from e
+        manifest = backup / "manifest.jsonl"
+        manifest.touch()
+        _note(f"запись начата; откат: {backup / 'restore.py'}")
+        migrate_returned(base, note=_note)
         returned = load_returned(base)
         pending = list(plan.items())
         for index, (path, edits) in enumerate(pending):
@@ -895,15 +961,15 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                       "не пишу дальше")
                 skipped += sum(len(items) for _, items in pending[index:])
                 break
-            rel = str(path.relative_to(graph))
+            rel = str(path.relative_to(phys_graph))
             key = meeting_key(rel)
             tag = _file_tag(rel, path.name)
             edits = [e for e in edits if task_key(key, BOX.match(e[1]).group(2)) not in returned]
             if not edits:
                 continue
             dst = backup / "files" / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
             try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, dst)
             except OSError as e:
                 if isinstance(e, FileNotFoundError) and not path.exists():
@@ -949,10 +1015,18 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
             # мог бы вернуть чужую уже закрытую строку с тем же текстом, которая к прогону
             # отношения не имеет. Штатно неприменённые строки закрываются state=not_applied,
             # а у прерванного прогона голые intent-записи остаются в отчёте («не подтверждено»).
-            with manifest.open("a", encoding="utf-8") as f:
-                for i, old, new, _ in edits:
-                    f.write(json.dumps({"file": rel, "line": i + 1, "old": old, "new": new,
-                                        "state": "intent"}, ensure_ascii=False) + "\n")
+            try:
+                with manifest.open("a", encoding="utf-8") as f:
+                    for i, old, new, _ in edits:
+                        f.write(json.dumps({"file": rel, "line": i + 1, "old": old, "new": new,
+                                            "state": "intent"}, ensure_ascii=False) + "\n")
+            except OSError as e:
+                detail = f"{tag}: manifest: {type(e).__name__}: {_safe_err(e)}"
+                _note(f"пропуск {detail}")
+                if on_error is not None:
+                    on_error(detail)
+                skipped += len(edits)
+                continue
             try:
                 n = safe_write.rewrite_file(path, transform, "снятие поручений")
             except safe_write.LostRace as e:
@@ -973,11 +1047,17 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                 skipped += len(edits)
                 continue
             if n:
-                with manifest.open("a", encoding="utf-8") as f:
-                    for j, old, new, _ in done:
-                        f.write(json.dumps({"file": rel, "line": j + 1, "old": old, "new": new,
-                                            "state": "done"}, ensure_ascii=False) + "\n")
                 applied.extend(meta for *_, meta in done)
+                try:
+                    with manifest.open("a", encoding="utf-8") as f:
+                        for j, old, new, _ in done:
+                            f.write(json.dumps({"file": rel, "line": j + 1, "old": old, "new": new,
+                                                "state": "done"}, ensure_ascii=False) + "\n")
+                except OSError as e:
+                    detail = f"{tag}: manifest: {type(e).__name__}: {_safe_err(e)}"
+                    _note(f"ошибка {detail}")
+                    if on_error is not None:
+                        on_error(detail)
             if n < len(edits):                            # строка успела измениться — не сбой записи, без тревоги
                 done_left = collections.Counter((old, new) for _, old, new, _ in done)
                 missed = []
@@ -1344,13 +1424,18 @@ def _selftest_restore_race() -> list[str]:
 
         safe_write.write_text, sys.argv = racy, [str(backup / "restore.py"), "--apply"]
         crashed = False
+        exited = None
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 runpy.run_path(str(backup / "restore.py"), run_name="__main__")
         except RuntimeError:
             crashed = True
+        except SystemExit as e:
+            exited = e.code
         finally:
             safe_write.write_text, sys.argv = real_write, argv
+        if exited is not None:
+            bad.append(f"гонка отката: restore.py завершился SystemExit({exited!r}) вместо гонки")
         body = path.read_text(encoding="utf-8")
         if len(applied) != 3 or not crashed or body.count("- [ ] **Коля** —") != 2:
             bad.append(f"гонка отката: снято {len(applied)}, обрыв {crashed}, текст {body!r}")
@@ -1518,6 +1603,7 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
 
     graph, owner = config(DATA)
     today = dt.date.today()
+    captured: charoite_paths.GraphAddresses | None = None
     if args.apply:
         live_now, live_err = _live_meeting_state(DATA)
         if live_err is not None:
@@ -1526,9 +1612,21 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
             record("живая встреча — пропуск")
             print("живая встреча — ничего не пишу")
             return 0
-        if selftest(quiet=True):
-            raise RuntimeError("самопроверка не прошла — не пишу")
-    base = charoite_paths.graph_backups(graph, "tasks_control", root=DATA)
+        try:
+            st_rc = selftest(quiet=True)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:
+            raise _SafeRuntimeError("самопроверка не прошла — не пишу") from e
+        if st_rc:
+            raise _SafeRuntimeError("самопроверка не прошла — не пишу")
+        try:
+            captured = graphs.mutation_addresses(graph, root=DATA)
+        except (OSError, ValueError) as e:
+            return fail_alert(f"контроль задач: граф недоступен ({type(e).__name__}: {_safe_err(e)})")
+        base = captured.backup_root("tasks_control")
+    else:
+        base = charoite_paths.graph_backups(graph, "tasks_control", root=DATA)
     plan, stats, tab = scan(graph, owner, today, load_returned(base))
     extra = f"; срок не разобран {stats['срок не разобран']}, возвращённых {stats['возвращено']}"
     print(f"граф: {graph}\nсегодня: {today}")
@@ -1538,7 +1636,7 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
         print("пробный прогон: ничего не записано")
         return 0
     if not plan:
-        migrate_returned(base, lock_dir=charoite_paths.graph_lock_dir(graph, root=DATA))
+        migrate_returned(base, graph=graph, data=DATA, captured=captured, note=record)
         record(summary_line(stats, tab, applied=True) + extra + "; строк 0")
         print("снимать нечего")
         return 0
@@ -1557,7 +1655,7 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
 
     write_errors: list[str] = []
     applied, skipped, backup = apply(graph, plan, DATA, note=record, guard=guard,
-                                     on_error=write_errors.append)
+                                     on_error=write_errors.append, captured=captured)
     done: collections.Counter = collections.Counter()
     for why, canonical, mine in applied:
         done[why] += canonical
@@ -1600,11 +1698,12 @@ def main() -> int:
     try:
         return run(args, log, stamp)
     except Exception as e:  # noqa: BLE001 — агент launchd без этого падает молча
+        detail = f"{type(e).__name__}: {_safe_err(e)}"
         with log.open("a", encoding="utf-8") as f:
-            f.write(f"{stamp} ОШИБКА: {type(e).__name__}: {e}\n")
+            f.write(f"{stamp} ОШИБКА: {detail}\n")
         if not args.quiet:
-            notify(f"контроль задач не отработал: {e}")
-        print(f"ошибка: {type(e).__name__}: {e}")
+            notify(f"контроль задач не отработал: {detail}")
+        print(f"ошибка: {detail}")
         return HANDLED                                # run.sh: уже в логе и в уведомлении
 
 
