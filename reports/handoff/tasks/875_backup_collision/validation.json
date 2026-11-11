@@ -45,7 +45,7 @@
     {
       "name": "overwrite",
       "from": "os.link(staged.name, dst)",
-      "to": "os.replace(staged.name, dst)"
+      "to": "shutil.copy2(staged.name, dst)"
     },
     {
       "name": "skip-publication",

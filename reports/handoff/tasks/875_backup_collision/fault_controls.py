@@ -40,6 +40,13 @@ def main():
         "lose-metadata": "test_complete_copy_metadata_and_distinct_names",
         "leave-staging": "test_complete_copy_metadata_and_distinct_names",
     }
+    expected_reasons = {
+        "overwrite": ["DID NOT RAISE <class 'FileExistsError'>"],
+        "skip-publication": ["FileNotFoundError", "/.backup/2030-01-01_010101/Sample.md"],
+        "swallow-collision": ["DID NOT RAISE <class 'FileExistsError'>"],
+        "lose-metadata": ["assert copy.stat().st_mtime_ns == expected_stat.st_mtime_ns"],
+        "leave-staging": ["assert copy.stat().st_nlink == 1", "assert 2 == 1"],
+    }
     result = {"head": head, "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
               "snapshot": str(snapshot), "status": "incomplete", "runs": []}
     result_path = args.output / "result.json"
@@ -70,13 +77,21 @@ def main():
         failures = [c for c in cases if c.find("failure") is not None]
         errors = [c for c in cases if c.find("error") is not None]
         skipped = [c for c in cases if c.find("skipped") is not None]
+        failure_text = ""
+        if len(failures) == 1:
+            failure = failures[0].find("failure")
+            failure_text = failure.get("message", "") + "\n" + (failure.text or "")
+        reason_matches = name != "baseline" and all(
+            text in failure_text for text in expected_reasons[name])
         valid = (completed.returncode == 0 and len(cases) == 13 and not failures and not errors
                  and not skipped) if name == "baseline" else (
                      completed.returncode == 1 and len(failures) == 1 and not errors
-                     and not skipped and failures[0].get("name", "").startswith(expected_tests[name]))
+                     and not skipped and reason_matches
+                     and failures[0].get("name", "").startswith(expected_tests[name]))
         entry = {"name": name, "returncode": completed.returncode, "cases": len(cases),
                  "failures": [c.get("name") for c in failures], "errors": len(errors),
-                 "valid": valid, "command": command, "log": log_path.name}
+                 "valid": valid, "reason_matches": reason_matches,
+                 "command": command, "log": log_path.name}
         if recipe:
             entry["recipe"] = recipe
             entry["mutant_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
