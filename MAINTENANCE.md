@@ -61,6 +61,8 @@ pipeline, at any hour.
 
 ## Privacy of the process itself
 
+Follow the [reproducible privacy protocol](docs/PRIVACY_CHECKS.md) before publication.
+
 The product's promise — nothing leaves your machine — extends to how it
 is built:
 

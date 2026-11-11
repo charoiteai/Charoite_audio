@@ -16,6 +16,9 @@
 """
 import pathlib
 import sys
+import unicodedata
+
+import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -103,3 +106,50 @@ def test_personal_path_pattern_catches_a_capitalised_user_name():
     assert pat.search("файл /Users/" + "Василий" + "/Desktop/x.md")
     assert pat.search("/Users/" + "vasilii" + "/x/")
     assert not pat.search("/Users/user/x/") and not pat.search("/Users/ПУТЬ/x/")
+
+
+@pytest.mark.parametrize("marker", ["qzx", "абв", "qzxy"])
+@pytest.mark.parametrize("left,right,expected", [
+    (" ", " ", True), ("-", "-", True), ("(", ")", True),
+    ("x", "", False), ("", "x", False), ("я", "", False),
+    ("", "я", False), ("7", "", False), ("", "7", False),
+    ("_", "", False), ("", "_", False),
+])
+def test_protocol_short_boundaries_through_loader_and_scanner(
+    tmp_path, marker, left, right, expected,
+):
+    """The runbook promises Python Unicode boundaries, including digits/_ ."""
+    markers = tmp_path / "markers.txt"
+    markers.write_text(marker + "\n", encoding="utf-8")
+    document = tmp_path / "document.txt"
+    document.write_text(left + marker.upper() + right, encoding="utf-8")
+    pattern = guard.build_pattern(guard.load_markers(markers))
+    assert bool(guard.scan_files(pattern, [document])) is expected
+
+
+@pytest.mark.parametrize("marker_form", ["NFC", "NFD"])
+@pytest.mark.parametrize("text_form", ["NFC", "NFD"])
+@pytest.mark.parametrize("marker", ["йё", "йёqzx"])
+def test_protocol_normalizes_both_marker_and_text(tmp_path, marker_form, text_form, marker):
+    markers = tmp_path / "markers.txt"
+    markers.write_text(unicodedata.normalize(marker_form, marker), encoding="utf-8")
+    document = tmp_path / "document.txt"
+    document.write_text(unicodedata.normalize(text_form, marker.upper()), encoding="utf-8")
+    pattern = guard.build_pattern(guard.load_markers(markers))
+    assert guard.scan_files(pattern, [document]) == [f"{document}:1"]
+
+
+@pytest.mark.parametrize("marker,text,expected", [
+    ("q.z", "q.z", True), ("q.z", "qaz", False),
+    ("q|z", "q|z", True), ("q|z", "q", False),
+    ("qzxyz", "preQZXYZpost", True),
+    # Boundary syntax is literal Python \b, even for punctuation endpoints.
+    ("q+", " q+ ", False), ("q+", " q+x", True),
+])
+def test_protocol_literals_and_long_substrings(tmp_path, marker, text, expected):
+    markers = tmp_path / "markers.txt"
+    markers.write_text(marker, encoding="utf-8")
+    document = tmp_path / "document.txt"
+    document.write_text(text, encoding="utf-8")
+    pattern = guard.build_pattern(guard.load_markers(markers))
+    assert bool(guard.scan_files(pattern, [document])) is expected
