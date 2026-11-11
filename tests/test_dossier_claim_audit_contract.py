@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -627,35 +628,45 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
             inc._quote_context(escaped_and_unescaped, dup_quote)
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc._quote_context("Код `[[Ядра/Glasshouse]]` и ссылка [[Ядра/Glasshouse]].", "[[Ядра/Glasshouse]]")
-    # Truncated wikilink prefix/suffix quotes are judged via the raw branch (1 unique hit; 2 rows -> ambiguous).
+    # Truncated wikilink prefix/suffix quotes are judged via the raw branch (1 unique hit; 2 rows -> ambiguous),
+    # and rendered + fenced raw duplicates (raw=2, unescaped=1) refuse via max(...) rather than taking unescaped first.
     for partial_quote in ("[[Ядра/Glasshouse\\|Glasshouse", "Ядра/Glasshouse\\|Glasshouse]] | A rain"):
         assert inc._quote_hits(table_source, partial_quote) == 1
         assert inc._quote_context(table_source, partial_quote) == table_source
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc._quote_context(table_source + table_source, "[[Ядра/Glasshouse\\|Glasshouse")
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context(f"{table_source}```\n{raw_quote}\n```\n", raw_quote)
 
-    # Stage prompt contracts: open topic questions stay eligible for ## Открыто, and no prompt tail emits bare \|.
-    captured_prompts = []
+    # Stage prompt contracts: isolated stage captures verify full instruction tails, exact open-question clauses,
+    # absence of bare \| escapes, and retryable Refused on invalid JSON \| from a model.
+    tails_by_system = {}
 
     def capture_prompt(prompt, config, *, system, **kwargs):
-        captured_prompts.append((system, prompt.split("\n")[-1]))
+        tails_by_system[system] = prompt.split("\n", 1)[1]
         if system == SOURCE_SYSTEM:
             return json.dumps({"verdict": "relevant", "reason": "Open question.", "quote": plain_quote})
         if system == GENERATE_SYSTEM:
-            return json.dumps({"body": ADDED, "changes": []})
+            return json.dumps({"body": BODY, "changes": []})
         if system == MAIN_SYSTEM:
-            return json.dumps(_verdict([_claim(quote=plain_quote)]))
-        if system == inc.SUPPORT_AUDIT_SYSTEM:
-            return json.dumps(SUPPORT_ACCEPT)
-        assert system == inc.TOPIC_AUDIT_SYSTEM
-        return json.dumps(TOPIC_ACCEPT)
+            return json.dumps(_verdict([]))
+        raise AssertionError(f"unexpected stage system: {system}")
 
     monkeypatch.setattr(inc, "local_complete", capture_prompt)
     assert inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {}) is True
-    assert inc.append("Glasshouse", _old(), [B], {B: {"text": table_source}}, {}) == ADDED
-    tails_by_system = dict(captured_prompts[:3])
-    assert "open question" in tails_by_system[SOURCE_SYSTEM]
+    with pytest.raises(inc.Refused):
+        inc.append("Glasshouse", _old(), [B], {B: {"text": table_source}}, {})
+    inc.semantic_check("Glasshouse", _old(), [], {}, {}, BODY, [])
+    assert set(tails_by_system) == {SOURCE_SYSTEM, GENERATE_SYSTEM, MAIN_SYSTEM}
+    assert "adds a supported fact, decision, open question or risk about the topic" in tails_by_system[SOURCE_SYSTEM]
+    assert "without any topic fact, decision, open question or risk" in tails_by_system[SOURCE_SYSTEM]
     for stage_system in (SOURCE_SYSTEM, GENERATE_SYSTEM, MAIN_SYSTEM):
         assert "visible link text" in tails_by_system[stage_system]
         assert "valid JSON escaping" in tails_by_system[stage_system]
-        assert r"\|" not in tails_by_system[stage_system]
+        assert re.search(r"(?<!\\)\\\|", tails_by_system[stage_system]) is None
+    monkeypatch.setattr(
+        inc, "local_complete",
+        lambda *a, **k: '{"verdict":"relevant","reason":"r","quote":"[[A\\|B]]"}',
+    )
+    with pytest.raises(inc.Refused, match="malformed model JSON"):
+        inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {})
