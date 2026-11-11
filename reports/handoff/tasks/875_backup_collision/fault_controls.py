@@ -41,9 +41,9 @@ def main():
         "leave-staging": "test_complete_copy_metadata_and_distinct_names",
     }
     expected_reasons = {
-        "overwrite": ["DID NOT RAISE <class 'FileExistsError'>"],
+        "overwrite": ["DID NOT RAISE FileExistsError"],
         "skip-publication": ["FileNotFoundError", "/.backup/2030-01-01_010101/Sample.md"],
-        "swallow-collision": ["DID NOT RAISE <class 'FileExistsError'>"],
+        "swallow-collision": ["DID NOT RAISE FileExistsError"],
         "lose-metadata": ["assert copy.stat().st_mtime_ns == expected_stat.st_mtime_ns"],
         "leave-staging": ["assert copy.stat().st_nlink == 1", "assert 2 == 1"],
     }

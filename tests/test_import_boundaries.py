@@ -602,6 +602,8 @@ APPROVED_KINDS = (
     ("docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py", "history", "git"),
     ("reports/handoff/tasks/818_baseline_probe.py", "history", "git"),
     ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git"),
+    ("reports/handoff/tasks/875_backup_collision/reproduce.py", "history", "git"),
+    ("reports/handoff/tasks/875_backup_collision/fault_controls.py", "history", "git"),
     ("tests/", "out", "git"),
     ("app/Tests/", "out", "git"),
     ("app-ios/", "out", "git"),
