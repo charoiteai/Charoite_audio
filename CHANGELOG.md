@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.104.0](https://github.com/charoiteai/Charoite_audio/compare/v0.103.1...v0.104.0) (2026-11-11)
+
+
+### Features
+
+* **tasks:** ревизор статусов поручений на локальной модели (№998) ([#917](https://github.com/charoiteai/Charoite_audio/issues/917)) ([7df58e1](https://github.com/charoiteai/Charoite_audio/commit/7df58e13a11d13c1be71769f75f30115e64b41df))
+
+
+### Bug Fixes
+
+* **dossier:** scale stage context windows, table quotes, and telemetry sidecar ([#923](https://github.com/charoiteai/Charoite_audio/issues/923)) ([910b923](https://github.com/charoiteai/Charoite_audio/commit/910b923c85b6a2398a6a7426b4f0feb2aba1f211))
+
 ## [0.103.1](https://github.com/charoiteai/Charoite_audio/compare/v0.103.0...v0.103.1) (2026-11-08)
 
 
