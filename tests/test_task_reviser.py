@@ -557,8 +557,152 @@ def test_run_apply_reports_write_error_without_advancing_skip_timestamp(tmp_path
 
 
 def test_four_backtick_fence_is_not_closed_by_inner_info_line(tmp_path: pathlib.Path) -> None:
-    """Внутри ````-блока ни ```, ни ````python с хвостом блок не закрывают."""
-    body = "````markdown\n```\n- [ ] **Иван** — отправил отчёт\n````python\n- [ ] **Иван** — отправил отчёт 2\n````\n"
+    """Внутри ````-блока ни ```, ни ````python с хвостом, ни строка с 4 пробелами блок не закрывают."""
+    body = (
+        "````markdown\n```\n- [ ] **Иван** — отправил отчёт\n````python\n"
+        "- [ ] **Иван** — отправил отчёт 2\n    ````\n- [ ] **Иван** — отправил отчёт 3\n````\n"
+    )
     graph = meeting_graph(tmp_path, body)
     plan, _, asked, _ = tr.plan_edits(graph, "Пётр", TODAY, set(), {}, asker=lambda *_a, **_k: DONE)
     assert plan == {} and asked == 0
+
+
+def test_broken_sensor_alerts_without_advancing_skip_timestamp(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Битый конфиг (`llm.base_url` без схемы) — `HANDLED` + тревога, а не `skip`, гасящий `--watch`."""
+    import argparse
+
+    _graph, data = _setup_run_env(tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n")
+    (data / "config" / "config.yaml").write_text(
+        f"sufler:\n  graph_dir: {_graph}\n  user_name: Пётр\nllm:\n  base_url: localhost:11434\n",
+        encoding="utf-8",
+    )
+    alerts: list[str] = []
+    monkeypatch.setattr(tc, "notify", alerts.append)
+    rc = tr.run(argparse.Namespace(apply=True))
+    assert rc == tc.HANDLED
+    assert alerts and "почините config/config.yaml" in alerts[0]
+    state = tr.read_state(data)
+    assert state.get("last_skip", 0) == 0 and state.get("last_ok", 0) == 0
+
+
+def test_plan_edits_exception_propagates_without_unbound_local(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Падение внутри `plan_edits` не подменяется `UnboundLocalError` в `finally`."""
+    import argparse
+
+    _setup_run_env(tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n")
+    monkeypatch.setattr(tr, "quiet", lambda **_kw: True)
+    monkeypatch.setattr(tr, "_model_resident", lambda *_a: False)
+    monkeypatch.setattr(tr, "plan_edits", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError, match="boom"):
+        tr.run(argparse.Namespace(apply=True))
+
+
+def test_configured_base_url_prevents_touching_or_unloading_default_port(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Если `llm.base_url` указывает на 11435, ревизор не трогает и не выгружает модель на 11434."""
+    import argparse
+    import io
+
+    graph, data = _setup_run_env(tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n")
+    (data / "config" / "config.yaml").write_text(
+        f"sufler:\n  graph_dir: {graph}\n  user_name: Пётр\nllm:\n  base_url: http://127.0.0.1:11435\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tr, "model_alive", tr.__dict__["model_alive"])  # вернуть настоящую функцию поверх фикстуры
+    touched: list[str] = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def fake_open(req, timeout=5):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        touched.append(url)
+        if "11435" in url:
+            raise ConnectionRefusedError("нет сервера на 11435")
+        return _Resp(json.dumps({"models": [{"name": tr.MODEL, "size": 19 * 10**9}]}).encode())
+
+    monkeypatch.setattr(tr.net, "open_url", fake_open)
+    monkeypatch.setattr(tr.busy_signals.net, "open_url", fake_open)
+    rc = tr.run(argparse.Namespace(apply=True))
+    assert rc == tc.HANDLED
+    assert touched and all("11435" in u for u in touched), f"ушёл запрос мимо 11435: {touched}"
+
+
+def test_lost_race_changed_is_benign_while_partial_disk_error_fails_both_callers(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """`LostRace.CHANGED` не будит тревогу, а частичный `OSError` возвращает `HANDLED` и сохраняет `seen`."""
+    import argparse
+
+    graph, data = _setup_run_env(
+        tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n- [ ] **Сергей** — подготовить план\n"
+    )
+    alerts: list[str] = []
+    monkeypatch.setattr(tr, "quiet", lambda **_kw: True)
+    monkeypatch.setattr(tr, "_model_resident", lambda *_a: True)
+    monkeypatch.setattr(tc, "notify", alerts.append)
+    real_plan = tr.plan_edits
+    monkeypatch.setattr(
+        tr, "plan_edits",
+        lambda *a, **kw: real_plan(
+            *a, **kw,
+            asker=answer_by_text({"**Иван** — отправил отчёт": DONE, "**Сергей** — подготовить план": "open"}),
+        ),
+    )
+
+    real_rewrite = tc.safe_write.rewrite_file
+
+    def race_changed(path, *_a, **_kw):
+        raise tc.safe_write.LostRace(path, "снятие поручений", kind=tc.safe_write.LostRace.CHANGED)
+
+    monkeypatch.setattr(tc.safe_write, "rewrite_file", race_changed)
+    rc = tr.run(argparse.Namespace(apply=True))
+    assert rc == 0 and alerts == []
+    assert tr.read_state(data)["last_ok"] > 0
+
+    # Теперь частичный сбой диска на втором файле: `seen` сохраняется в кэше, а оба вызывающих дают HANDLED.
+    first = next(graph.rglob(tc.MINUTES))
+    second = first.parent.parent / f"{dt.date.today() - dt.timedelta(days=2):%Y-%m-%d} 11-00 — Вторая" / tc.MINUTES
+    second.parent.mkdir(parents=True, exist_ok=True)
+    second.write_text("- [ ] **Борис** — отправил смету\n", encoding="utf-8")
+    calls = 0
+
+    def fail_second(path, transform, what):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("диск полон")
+        return real_rewrite(path, transform, what)
+
+    monkeypatch.setattr(tc.safe_write, "rewrite_file", fail_second)
+    first.write_text("- [ ] **Иван** — отправил отчёт\n- [ ] **Елена** — прислать смету\n", encoding="utf-8")
+    monkeypatch.setattr(
+        tr, "plan_edits",
+        lambda *a, **kw: real_plan(
+            *a, **kw,
+            asker=answer_by_text({
+                "**Иван** — отправил отчёт": DONE,
+                "**Елена** — прислать смету": "open",
+                "**Борис** — отправил смету": DONE,
+            }),
+        ),
+    )
+    rc2 = tr.run(argparse.Namespace(apply=True))
+    assert rc2 == tc.HANDLED
+    assert tr.read_state(data).get("cache"), "оплаченные вердикты `open` не должны теряться при сбое записи"
+
+    # И `tasks_control.run` при частичном сбое записи не должен выходить нулём:
+    calls = 0
+    monkeypatch.setattr(tc, "selftest", lambda **_kw: 0)
+    (data / "logs").mkdir(parents=True, exist_ok=True)
+    old_a = first.parent.parent / f"{dt.date.today() - dt.timedelta(days=21):%Y-%m-%d} 10-00 — Третья" / tc.MINUTES
+    old_b = first.parent.parent / f"{dt.date.today() - dt.timedelta(days=20):%Y-%m-%d} 10-00 — Четвёртая" / tc.MINUTES
+    old_a.parent.mkdir(parents=True, exist_ok=True)
+    old_b.parent.mkdir(parents=True, exist_ok=True)
+    old_a.write_text("- [ ] ещё одно ничьё поручение\n", encoding="utf-8")
+    old_b.write_text("- [ ] ничьё старое поручение\n", encoding="utf-8")
+    rc_tc = tc.run(argparse.Namespace(apply=True, quiet=False), data / "logs" / "tc.log", "2026-11-11 11:30")
+    assert rc_tc == tc.HANDLED

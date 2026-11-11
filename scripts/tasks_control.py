@@ -87,7 +87,7 @@ MARKERS = ("до ", "к ", "дедлайн ", "дедлайну ")          # Ta
 BOX = re.compile(r"^(\s*[-*] )\[ \] (.+)$")
 TODO = re.compile(r"^\s*[-*] \[( |x|X)\] +(.+)$")        # TasksService.todoRx
 ANY_BOX = re.compile(r"^(\s*)[-*] \[[ xX-]\] +(.+)$")    # дерево пунктов: родитель вложенного
-FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+FENCE = re.compile(r"^([ \t]*)(`{3,}|~{3,})")
 HEADING = re.compile(r"^\s*#{1,6}\s")
 LEAD_BOLD = re.compile(r"^\s*\*\*([^*]+)\*\*")
 REASONS = {"срок": "снято по сроку", "ничьё": "снято: нет исполнителя", "давно": "снято: давно, срок не разобран",
@@ -622,20 +622,23 @@ def tab_summary(items, known: list[tuple[str, str]], owner: str, today: dt.date)
 
 def _fence_map(lines: list[str]) -> list[bool]:
     """Строка внутри код-блока (или сама его граница). Блок закрывает только тот же символ, не
-    короче открывающего и без хвоста после маркера: ``` и ````python внутри ````-блока — текст."""
-    inside, opener, out = False, "", []
+    короче открывающего, без хвоста после маркера и с отступом не глубже max(3, отступ открытия):
+    ``` и ````python внутри ````-блока и строка с 4+ пробелами в блоке нулевого уровня — текст."""
+    inside, opener, opener_indent, out = False, "", 0, []
     for line in lines:
         m = FENCE.match(line)
         if m:
-            marker = m.group(1)
+            indent = len(m.group(1).expandtabs(4))
+            marker = m.group(2)
             tail = line[m.end():]
             if not inside:
                 if marker[0] != "`" or "`" not in tail:
-                    inside, opener = True, marker
+                    inside, opener, opener_indent = True, marker, indent
                     out.append(True)
                     continue
-            elif marker[0] == opener[0] and len(marker) >= len(opener) and not tail.strip():
-                inside, opener = False, ""
+            elif (marker[0] == opener[0] and len(marker) >= len(opener)
+                  and not tail.strip() and indent <= max(3, opener_indent)):
+                inside, opener, opener_indent = False, "", 0
                 out.append(True)
                 continue
         out.append(inside)
@@ -746,7 +749,13 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
     Под замком реестр возврата перечитывается: откат, прошедший между сканом и записью, выигрывает.
     Файл переписывает `safe_write.rewrite_file` (снимок до чтения, expect перед replace, две попытки);
     строка ищется по номеру, при сдвиге — единственная такая же вне код-блоков. Манифест пишется
-    как журнал «намерение — сделано»: намерение пишется до файла, откат берёт только подтверждённое; копия файла — в files/."""
+    как журнал «намерение — сделано»: намерение пишется до файла, откат берёт только подтверждённое;
+    копия файла — в files/.
+
+    `note(line)` — журнал хода (любой пропуск, старт записи). `on_error(detail)` — машинный сигнал
+    настоящего сбоя ввода-вывода/кодировки файла (`copy2`, `OSError`, `UnicodeDecodeError`,
+    `LostRace.UNREACHABLE`); запись остальных файлов продолжается. Штатные гонки (`LostRace.CHANGED`,
+    `LostRace.GONE`) и симлинк вне графа пишутся в `note` без `on_error`."""
     # Симлинк графа могут перецепить, пока ждём замок: пишем и откатываем ровно те пути,
     # которые видели при планировании, а не то, куда теперь ведёт изменяемый псевдоним.
     graph = pathlib.Path(graph).resolve()
@@ -756,12 +765,17 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
         try:
             real.relative_to(graph)
         except ValueError:
-            detail = f"{planned}: путь вне графа после раскрытия ссылок"
-            note(f"пропуск {detail}")
-            if on_error is not None:
-                on_error(detail)
+            note(f"пропуск {planned}: путь вне графа после раскрытия ссылок")
             continue
-        resolved[real] = edits
+        if real in resolved:
+            seen_pairs = {(i, old) for i, old, *_ in resolved[real]}
+            for item in edits:
+                if (item[0], item[1]) not in seen_pairs:
+                    resolved[real].append(item)
+                    seen_pairs.add((item[0], item[1]))
+            note(f"объединение плана {planned} → {real.relative_to(graph)}: две ссылки на один файл")
+        else:
+            resolved[real] = list(edits)
     plan = resolved
     base = charoite_paths.graph_backups(graph, "tasks_control", root=data)
     lock_dir = charoite_paths.secure_dir(charoite_paths.graph_lock_dir(graph, root=data))
@@ -851,7 +865,15 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                                         "state": "intent"}, ensure_ascii=False) + "\n")
             try:
                 n = safe_write.rewrite_file(path, transform, "снятие поручений")
-            except (OSError, UnicodeDecodeError, safe_write.LostRace) as e:
+            except safe_write.LostRace as e:
+                detail = f"{rel}: {type(e).__name__}: {e}"
+                _note(f"пропуск {detail}")
+                if e.unreachable:
+                    if on_error is not None:
+                        on_error(detail)
+                    skipped += len(edits)
+                continue
+            except (OSError, UnicodeDecodeError) as e:
                 detail = f"{rel}: {type(e).__name__}: {e}"
                 _note(f"пропуск {detail}")
                 if on_error is not None:
@@ -1405,7 +1427,9 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
         except Exception:                                 # noqa: BLE001 — нечитаемый сигнал = не пишем
             return False
 
-    applied, skipped, backup = apply(graph, plan, DATA, note=record, guard=guard)
+    write_errors: list[str] = []
+    applied, skipped, backup = apply(graph, plan, DATA, note=record, guard=guard,
+                                     on_error=write_errors.append)
     done: collections.Counter = collections.Counter()
     for why, canonical, mine in applied:
         done[why] += canonical
@@ -1416,6 +1440,13 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
              + (f"; устарело строк: {stale}" if stale else ""))
     line = short + extra + f"; строк {len(applied)}; откат: {backup / 'restore.py'}"
     record(line)
+    if write_errors:
+        fail = f"контроль задач: сбой записи графа ({len(write_errors)}): {write_errors[0]}"
+        record(f"ОШИБКА: {fail}")
+        if not args.quiet:
+            notify(fail)
+        print(f"ошибка: {fail}")
+        return HANDLED
     if skipped and not applied:
         fail = f"контроль задач не отработал: НЕ записано строк: {skipped}, снято 0"
         record(f"ОШИБКА: {fail}")

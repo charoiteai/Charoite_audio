@@ -401,3 +401,27 @@ def test_ignore_models_excludes_own_model_but_keeps_competing_and_broken_sensor(
         _config(tmp_path, url)
         busy = busy_signals.machine_busy(tmp_path, ignore_models=("qwen3.8:27b-mlx",))
         assert len(busy) == 1 and busy[0].startswith("память моделей не читается (")
+        verdict, reasons = busy_signals.check_admission(tmp_path, ignore_models=("qwen3.8:27b-mlx",))
+        assert verdict == "broken" and reasons[0].startswith("память моделей не читается (")
+
+
+def test_check_admission_and_ollama_loopback_url_separate_broken_from_busy(tmp_path, ram_64gb):
+    """`check_admission` разделяет `free` / `busy` / `broken`, а `ollama_loopback_url` отдаёт
+    ровно тот loopback-адрес, который проверяет перепись."""
+    with _fake_ollama(body={"models": [_model("qwen3.6:35b-mlx", 22 * GB)]}) as url:
+        _config(tmp_path, url)
+        assert busy_signals.ollama_loopback_url(tmp_path) == (url.rstrip("/"), None)
+        verdict, reasons = busy_signals.check_admission(tmp_path)
+        assert verdict == "busy" and len(reasons) == 1
+        assert busy_signals.check_admission(tmp_path, ignore_models=("qwen3.6:35b-mlx",)) == ("free", [])
+    _config(tmp_path, "localhost:11434")
+    verdict, reasons = busy_signals.check_admission(tmp_path)
+    assert verdict == "broken" and "почините config/config.yaml" in reasons[0]
+    url_val, err = busy_signals.ollama_loopback_url(tmp_path)
+    assert url_val is None and err and "почините config/config.yaml" in err
+    (tmp_path / "config" / "config.yaml").write_text(
+        "llm:\n  engine: cloud\n  base_url: https://api.example.com\n  allow_remote: true\n",
+        encoding="utf-8",
+    )
+    url_val, err = busy_signals.ollama_loopback_url(tmp_path)
+    assert url_val is None and err and "loopback" in err
