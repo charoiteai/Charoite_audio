@@ -622,7 +622,8 @@ def tab_summary(items, known: list[tuple[str, str]], owner: str, today: dt.date)
 
 def _fence_map(lines: list[str]) -> list[bool]:
     """Строка внутри код-блока (или сама его граница). Блок закрывает только тот же символ, не
-    короче открывающего, без хвоста после маркера и с отступом не глубже max(3, отступ открытия):
+    короче открывающего, без хвоста после маркера; для открытия с отступом 0..3 закрывает отступ
+    0..3, для вложенного открытия (4+) — отступ от открытия до +3 (не строка верхнего уровня):
     ``` и ````python внутри ````-блока и строка с 4+ пробелами в блоке нулевого уровня — текст."""
     inside, opener, opener_indent, out = False, "", 0, []
     for line in lines:
@@ -636,20 +637,25 @@ def _fence_map(lines: list[str]) -> list[bool]:
                     inside, opener, opener_indent = True, marker, indent
                     out.append(True)
                     continue
-            elif (marker[0] == opener[0] and len(marker) >= len(opener)
-                  and not tail.strip() and indent <= max(3, opener_indent)):
-                inside, opener, opener_indent = False, "", 0
-                out.append(True)
-                continue
+            else:
+                indent_ok = indent <= 3 if opener_indent <= 3 else opener_indent <= indent <= opener_indent + 3
+                if marker[0] == opener[0] and len(marker) >= len(opener) and not tail.strip() and indent_ok:
+                    inside, opener, opener_indent = False, "", 0
+                    out.append(True)
+                    continue
         out.append(inside)
     return out
 
 
-def _kinds_with_parents(lines: list[str], owner: str) -> dict[int, str]:
+def _kinds_with_parents(lines: list[str], owner: str, fenced: list[bool] | None = None) -> dict[int, str]:
     """Исполнитель каждого пункта: свой ведущий жирный блок или, у вложенного без имени, родителя."""
+    if fenced is None:
+        fenced = _fence_map(lines)
     kinds: dict[int, str] = {}
     stack: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
+        if fenced[i]:
+            continue
         if HEADING.match(line):
             stack.clear()
             continue
@@ -690,8 +696,8 @@ def scan(graph: pathlib.Path, owner: str, today: dt.date, returned: set[str] = f
         is_min = path.name == MINUTES
         canonical = is_min or key not in minutes_meetings
         can_write = anchor is not None and writable(rel)
-        kinds = _kinds_with_parents(lines, owner) if can_write else {}
         fenced = _fence_map(lines)
+        kinds = _kinds_with_parents(lines, owner, fenced) if can_write else {}
         for i, line in enumerate(lines):
             m = TODO.match(line)
             if m:
@@ -833,6 +839,9 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
             try:
                 shutil.copy2(path, dst)
             except OSError as e:
+                if isinstance(e, FileNotFoundError) and not path.exists():
+                    _note(f"пропуск {rel}: файл исчез до записи ({e})")
+                    continue
                 detail = f"{rel}: {type(e).__name__}: {e}"
                 _note(f"пропуск {detail}")
                 if on_error is not None:
@@ -853,12 +862,23 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                         done.append((j, old, new, meta))
                 return "\n".join(lines), len(done)
 
+            def _mark_not_applied(missed) -> None:
+                if not missed:
+                    return
+                try:
+                    with manifest.open("a", encoding="utf-8") as f:
+                        for idx, old, new, *_ in missed:
+                            f.write(json.dumps({"file": rel, "line": idx + 1, "old": old, "new": new,
+                                                "state": "not_applied"}, ensure_ascii=False) + "\n")
+                except OSError:
+                    pass
+
             # Журнал до записи, подтверждение — после. «Намерение» (state=intent) пишется ДО
             # перезаписи файла: обрыв между записью и журналом иначе оставлял правку без следа
             # в откате. Откатывается только подтверждённое (state=done): откат «намерения»
             # мог бы вернуть чужую уже закрытую строку с тем же текстом, которая к прогону
-            # отношения не имеет. У прерванного прогона intent-записи остаются в отчёте
-            # («не подтверждено»), а копия файла лежит в files/ для ручной сверки.
+            # отношения не имеет. Штатно неприменённые строки закрываются state=not_applied,
+            # а у прерванного прогона голые intent-записи остаются в отчёте («не подтверждено»).
             with manifest.open("a", encoding="utf-8") as f:
                 for i, old, new, _ in edits:
                     f.write(json.dumps({"file": rel, "line": i + 1, "old": old, "new": new,
@@ -872,6 +892,8 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                     if on_error is not None:
                         on_error(detail)
                     skipped += len(edits)
+                else:
+                    _mark_not_applied(edits)
                 continue
             except (OSError, UnicodeDecodeError) as e:
                 detail = f"{rel}: {type(e).__name__}: {e}"
@@ -887,6 +909,15 @@ def apply(graph: pathlib.Path, plan, data: pathlib.Path, note=lambda line: None,
                                             "state": "done"}, ensure_ascii=False) + "\n")
                 applied.extend(meta for *_, meta in done)
             if n < len(edits):                            # строка успела измениться — не сбой записи, без тревоги
+                done_Left = collections.Counter((old, new) for _, old, new, _ in done)
+                missed = []
+                for item in edits:
+                    pair = (item[1], item[2])
+                    if done_Left[pair] > 0:
+                        done_Left[pair] -= 1
+                    else:
+                        missed.append(item)
+                _mark_not_applied(missed)
                 _note(f"пропуск {rel}: строки уже изменены или неоднозначны ({len(edits) - n})")
     return applied, skipped, backup
 
@@ -1421,11 +1452,16 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
         record(summary_line(stats, tab, applied=True) + extra + "; строк 0")
         print("снимать нечего")
         return 0
+    guard_stopped: list[bool] = []
+
     def guard() -> bool:
         try:
-            return not live_meeting(DATA)                 # встреча могла начаться, пока ждали замок
+            ok = not live_meeting(DATA)                   # встреча могла начаться, пока ждали замок
         except Exception:                                 # noqa: BLE001 — нечитаемый сигнал = не пишем
-            return False
+            ok = False
+        if not ok:
+            guard_stopped.append(True)
+        return ok
 
     write_errors: list[str] = []
     applied, skipped, backup = apply(graph, plan, DATA, note=record, guard=guard,
@@ -1447,6 +1483,9 @@ def run(args, log: pathlib.Path, stamp: str) -> int:
             notify(fail)
         print(f"ошибка: {fail}")
         return HANDLED
+    if guard_stopped and not applied:
+        print(line)
+        return 0
     if skipped and not applied:
         fail = f"контроль задач не отработал: НЕ записано строк: {skipped}, снято 0"
         record(f"ОШИБКА: {fail}")

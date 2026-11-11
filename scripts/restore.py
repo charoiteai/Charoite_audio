@@ -194,9 +194,11 @@ def walk() -> None:
         # откатывать его нельзя (могло не примениться), но и молчать нельзя — считаем вслух.
         # Считаем кратности, а не множество пар: два одинаковых поручения, из которых
         # записано одно, иначе выглядели бы полностью подтверждёнными.
-        intent = collections.Counter((old, new) for _, old, new, state in edits if state != "done")
-        confirmed = collections.Counter((old, new) for _, old, new in done_rows)
-        total_unconfirmed += sum(max(0, n - confirmed[pair]) for pair, n in intent.items())
+        intent = collections.Counter((old, new) for _, old, new, state in edits if state == "intent")
+        settled = collections.Counter((old, new) for _, old, new, state in edits if state in ("done", "not_applied"))
+        total_unconfirmed += sum(max(0, n - settled[pair]) for pair, n in intent.items())
+        if not done_rows:
+            continue
         back: list[str] = []
         try:
             missing, ambiguous = restore_file(rel, done_rows, back, when)

@@ -225,24 +225,19 @@ def resident_config_problem(root: pathlib.Path) -> str | None:
     return _census_config(root)[1]
 
 
-def ollama_loopback_url(root: pathlib.Path, *,
-                        default: str = privacy.DEFAULT_LLM_URL) -> tuple[str | None, str | None]:
+def ollama_loopback_url(root: pathlib.Path) -> tuple[str | None, str | None]:
     """Локальный адрес Ollama для скриптов того же корня данных — `(url, None)` или `(None, причина)`.
 
     Запросы и выгрузка ревизора обязаны ходить на тот же адрес, где `resident_models`
     читает `/api/ps`: иначе датчик проверяет один сервер, а модель грузится и выгружается
-    на другом. Отсутствие файла конфига — умолчание `default`; удалённый или запрещённый
-    политикой адрес для локального скрипта — отказ с причиной, а не молчаливый поход на 11434."""
+    на другом. Отсутствие файла конфига — умолчание `privacy.DEFAULT_LLM_URL`; удалённый
+    или запрещённый политикой адрес для локального скрипта — отказ с причиной, а не
+    молчаливый поход на 11434."""
     cfg, problem = _census_config(root)
     if problem:
         return None, f"память моделей не читается ({problem}) — почините {CONFIG_REL}"
-    if cfg is None:
-        return default.rstrip("/"), None
-    llm_cfg = cfg.get("llm")
-    if default != privacy.DEFAULT_LLM_URL and not (isinstance(llm_cfg, dict) and llm_cfg.get("base_url")):
-        return default.rstrip("/"), None
     try:
-        base = privacy.llm_base_url(cfg)
+        base = privacy.llm_base_url(cfg or {})
     except privacy.PrivacyRefused as e:
         return None, f"адрес локальной модели недоступен ({e})"
     if not privacy.is_loopback_url(base):
@@ -339,14 +334,14 @@ def check_admission(root: pathlib.Path, *, count_mutation: bool = True,
     busy: list[str] = []
     broken: list[str] = []
     try:
-        if live_recording(root):
+        if live_gate.daemon_alive(root):
             busy.append("живая запись")
     except Exception as e:  # noqa: BLE001
         broken.append(f"датчик живой записи не читается ({type(e).__name__})")
     try:
         busy += [f"разбор встречи ({stage})" for stage in MeetingStatusStore(root).busy()]
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        broken.append(f"датчик разбора встреч не читается ({type(e).__name__})")
     try:
         if night := night_busy_reason(root):
             busy.append(night)

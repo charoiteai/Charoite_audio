@@ -706,3 +706,109 @@ def test_lost_race_changed_is_benign_while_partial_disk_error_fails_both_callers
     old_b.write_text("- [ ] ничьё старое поручение\n", encoding="utf-8")
     rc_tc = tc.run(argparse.Namespace(apply=True, quiet=False), data / "logs" / "tc.log", "2026-11-11 11:30")
     assert rc_tc == tc.HANDLED
+
+
+def test_fenced_lines_do_not_clobber_owner_inheritance_or_open_real_fence(tmp_path: pathlib.Path) -> None:
+    """`# пример` и `- [ ]` внутри забора не сбрасывают родителя, а строка с 4 пробелами не гасит настоящий забор."""
+    body = (
+        "- [ ] **Иван** — переписать отчёт\n"
+        "  ```\n"
+        "  # пример\n"
+        "  - [ ] чужая строка в примере\n"
+        "  ```\n"
+        "  - [ ] собрать цифры\n"
+    )
+    graph = meeting_graph(tmp_path, body, day="2026-11-08")
+    plan, _, _ = tc.scan(graph, "Иван", dt.date(2026, 11, 11))
+    assert plan == {}, "подпункт после забора обязан наследовать владельца, а не становиться ничьим"
+
+    pseudo = "    ```\n- [ ] **Иван** — не трогать\n```\n- [ ] **Иван** — отправил отчёт\n"
+    graph2 = meeting_graph(tmp_path / "g2", pseudo)
+    plan2, _, asked2, _ = tr.plan_edits(graph2, "Пётр", TODAY, set(), {}, asker=lambda *_a, **_k: DONE)
+    assert plan2 == {} and asked2 == 0
+
+
+def test_settled_races_keep_restore_clean_and_vanished_file_is_not_write_error(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """Гонка `LostRace.CHANGED` и исчезнувший до `copy2` файл не ломают `restore.py` и не будят тревогу."""
+    body = "- [ ] **Иван** — отправил отчёт\n"
+    graph = meeting_graph(tmp_path, body)
+    plan, _, _, _ = tr.plan_edits(graph, "Пётр", TODAY, set(), {}, asker=lambda *_a, **_k: DONE)
+    data = tmp_path / "data"
+
+    monkeypatch.setattr(
+        tc.safe_write,
+        "rewrite_file",
+        lambda path, *_a, **_kw: (_ for _ in ()).throw(
+            tc.safe_write.LostRace(path, "снятие поручений", kind=tc.safe_write.LostRace.CHANGED)
+        ),
+    )
+    applied, skipped, backup = tc.apply(graph, plan, data)
+    assert applied == [] and skipped == 0
+    proc = _restore_from_snapshot(backup, tmp_path)
+    assert proc.returncode == 0, proc.stdout
+
+    # Файл исчез до `copy2` — штатная гонка GONE без `on_error`:
+    errs: list[str] = []
+    next(graph.rglob(tc.MINUTES)).unlink()
+    applied2, skipped2, _ = tc.apply(graph, plan, data, on_error=errs.append)
+    assert applied2 == [] and skipped2 == 0 and errs == []
+
+
+def test_pre_existing_own_model_and_due_failure_and_guard_stop(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Своя модель до старта не мешает допуску (и не выгружается), сбой срока выгружает поднятую модель,
+    а остановка `tasks_control.run` по начавшейся встрече выходит 0 без аварии."""
+    import argparse
+
+    graph, data = _setup_run_env(tmp_path, monkeypatch, "- [ ] **Иван** — отправил отчёт\n")
+    unloads: list[str] = []
+    monkeypatch.setattr(tr.busy_signals, "_physical_bytes", lambda: 64 * 2**30)
+    monkeypatch.setattr(tr.busy_signals, "resident_models", lambda _r: ([(tr.MODEL, 19 * 10**9, "до 12:00")], None))
+    monkeypatch.setattr(tr, "_unload_model", lambda model=tr.MODEL: unloads.append(model))
+    real_plan = tr._plan_edits_detailed
+    monkeypatch.setattr(
+        tr,
+        "_plan_edits_detailed",
+        lambda *a, **kw: real_plan(*a, **kw, asker=answer_by_text({"**Иван** — отправил отчёт": DONE})),
+    )
+    assert tr.run(argparse.Namespace(apply=True)) == 0
+    assert unloads == [], "чужую уже резидентную сессию своей модели выгружать нельзя"
+
+    # Поднятая прогоном модель отвечает `open`, а `judge_due` падает — это не «модель не ответила ни на одну»:
+    graph2, _data2 = _setup_run_env(
+        tmp_path / "due", monkeypatch, "- [ ] **Иван** — позвонить подрядчику, ближайшая неделя\n"
+    )
+    resident2: list[tuple[str, int, str]] = []
+    monkeypatch.setattr(tr.busy_signals, "resident_models", lambda _r: (list(resident2), None))
+
+    def load_and_fail_due(*a, **kw):
+        resident2.append((tr.MODEL, 19 * 10**9, "до 12:00"))
+        return real_plan(
+            *a,
+            **kw,
+            asker=lambda *_x, **_y: OPEN,
+            due_asker=lambda *_x, **_y: (_ for _ in ()).throw(tr._NoAnswer),
+        )
+
+    monkeypatch.setattr(tr, "_plan_edits_detailed", load_and_fail_due)
+    assert tr.run(argparse.Namespace(apply=True)) == 0
+    assert unloads == [tr.MODEL]
+
+    # Остановка `tasks_control.run` гейтом (началась встреча) — штатный пропуск 0:
+    old = next(graph2.rglob(tc.MINUTES)).parent.parent / f"{dt.date.today() - dt.timedelta(days=20):%Y-%m-%d} 10-00 — Старая" / tc.MINUTES
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("- [ ] ничья строка\n", encoding="utf-8")
+    calls = 0
+
+    def meeting_starts(_d):
+        nonlocal calls
+        calls += 1
+        return calls >= 2  # до скана встречи нет, под замком уже идёт
+
+    monkeypatch.setattr(tc, "live_meeting", meeting_starts)
+    monkeypatch.setattr(tc, "selftest", lambda **_kw: 0)
+    alerts: list[str] = []
+    monkeypatch.setattr(tc, "notify", alerts.append)
+    assert tc.run(argparse.Namespace(apply=True, quiet=False), _data2 / "logs" / "tc.log", "2026-11-11 12:00") == 0
+    assert alerts == []

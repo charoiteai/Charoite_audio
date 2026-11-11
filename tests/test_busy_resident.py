@@ -425,3 +425,17 @@ def test_check_admission_and_ollama_loopback_url_separate_broken_from_busy(tmp_p
     )
     url_val, err = busy_signals.ollama_loopback_url(tmp_path)
     assert url_val is None and err and "loopback" in err
+
+
+def test_check_admission_reports_broken_live_and_meeting_status_sensors(tmp_path, monkeypatch):
+    """Сбой `daemon_alive` или `MeetingStatusStore.busy` даёт `broken`, а не молчаливое `free`."""
+    monkeypatch.setattr(busy_signals.live_gate, "daemon_alive", lambda _r: (_ for _ in ()).throw(OSError("lock")))
+    monkeypatch.setattr(
+        busy_signals.MeetingStatusStore,
+        "busy",
+        lambda self: (_ for _ in ()).throw(RuntimeError("status")),
+    )
+    verdict, reasons = busy_signals.check_admission(tmp_path, count_resident=False, count_mutation=False)
+    assert verdict == "broken"
+    assert any("датчик живой записи" in r for r in reasons)
+    assert any("датчик разбора встреч" in r for r in reasons)

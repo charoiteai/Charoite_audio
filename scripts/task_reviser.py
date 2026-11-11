@@ -80,7 +80,7 @@ PROMPTS = (
 
 
 def _ollama_url() -> tuple[str | None, str | None]:
-    return busy_signals.ollama_loopback_url(tc.DATA, default=OLLAMA)
+    return busy_signals.ollama_loopback_url(tc.DATA)
 
 
 def _chat_json(prompt: str, model: str = MODEL) -> dict | None:
@@ -184,11 +184,13 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip())
 
 
-def _has_children(lines: list[str], i: int) -> bool:
-    """Следующая непустая строка глубже — подпункт (пустые строки между ними не мешают)."""
-    for nxt in lines[i + 1:]:
-        if nxt.strip():
-            return _indent(nxt) > _indent(lines[i])
+def _has_children(lines: list[str], i: int, fenced: list[bool] | None = None) -> bool:
+    """Следующая непустая строка вне забора глубже — подпункт (пустые строки между ними не мешают)."""
+    for j in range(i + 1, len(lines)):
+        if fenced is not None and fenced[j]:
+            continue
+        if lines[j].strip():
+            return _indent(lines[j]) > _indent(lines[i])
     return False
 
 
@@ -211,8 +213,8 @@ def candidates(graph: pathlib.Path, owner: str, today: dt.date, returned: set[st
         anchor = tc.meeting_date(key)
         if anchor is None or not tc.writable(rel) or (key in minutes and path.name != tc.MINUTES):
             continue
-        kinds = tc._kinds_with_parents(lines, owner)
         fenced = tc._fence_map(lines)
+        kinds = tc._kinds_with_parents(lines, owner, fenced)
         counts = collections.Counter(lines)                    # дубли: один проход на файл, не count на строку
         for i, line in enumerate(lines):
             m = tc.BOX.match(line)
@@ -222,21 +224,17 @@ def candidates(graph: pathlib.Path, owner: str, today: dt.date, returned: set[st
             if tc.task_key(key, text) in returned or tc.CLOSED_MARK.search(text) \
                     or tc.decide(text, anchor, today, owner, kinds.get(i)) is not None:
                 continue
-            if counts[line] == 1 and not _has_children(lines, i):   # дубли и пункты с подпунктами не трогаем
+            if counts[line] == 1 and not _has_children(lines, i, fenced):   # дубли и пункты с подпунктами не трогаем
                 out.append((path, i, line, text, key, anchor, kinds.get(i) == "мои"))
     out.sort(key=lambda c: (not c[6], c[5], tc.task_key(c[4], c[3])))   # ваши, затем старые встречи; равные — устойчиво
     return out
 
 
-def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due_asker=ask_due,
-               deadline=None, model: str = MODEL):
-    """(план для tasks_control.apply, кэш «открыто», опрошено строк, сбоев модели).
-
-    `model` — та же модель для всех запросов прогона: без него бенчмарк с --model мерил бы одну
-    модель, а снятие по сроку спрашивало вторую формулировку у дефолтной (замечание второго ревью)."""
+def _plan_edits_detailed(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due_asker=ask_due,
+                         deadline=None, model: str = MODEL):
     plan: dict[pathlib.Path, list] = {}
     seen: dict[str, dict] = {}
-    asked = edits = failed = 0
+    asked = edits = failed = answered = 0
     for path, i, line, text, key, anchor, mine in candidates(graph, owner, today, returned):
         if asked >= batch or edits >= MAX_EDITS or (deadline is not None and time.monotonic() > deadline):
             break
@@ -249,6 +247,7 @@ def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due
         if verdict is None:
             failed += 1
             continue
+        answered += 1
         if verdict == "open":
             if suspect(text):                          # инъекция: кэшируем «открыто», но не снимаем по сроку
                 seen[ck] = {"text": text, "day": today.isoformat(), "verdict": verdict}
@@ -283,7 +282,22 @@ def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due
             new = f"{indent}[-] {text.rstrip()} _({tc.REASONS['не поручение']} {today:%d.%m})_"
         plan.setdefault(path, []).append((i, line, new, (verdict, True, mine)))
         edits += 1
+    return plan, seen, asked, failed, answered
+
+
+def plan_edits(graph, owner, today, returned, cache, asker=ask, batch=BATCH, due_asker=ask_due,
+               deadline=None, model: str = MODEL):
+    """(план для tasks_control.apply, кэш «открыто», опрошено строк, сбоев модели).
+
+    `model` — та же модель для всех запросов прогона: без него бенчмарк с --model мерил бы одну
+    модель, а снятие по сроку спрашивало вторую формулировку у дефолтной (замечание второго ревью)."""
+    plan, seen, asked, failed, _answered = _plan_edits_detailed(
+        graph, owner, today, returned, cache, asker=asker, batch=batch,
+        due_asker=due_asker, deadline=deadline, model=model)
     return plan, seen, asked, failed
+
+
+_ORIGINAL_PLAN_EDITS = plan_edits
 
 
 def read_state(data: pathlib.Path) -> dict:
@@ -330,7 +344,7 @@ def write_state(data: pathlib.Path, state: dict) -> None:
     tmp.replace(path)
 
 
-def _quiet_status(gate=None, *, ignore_models: tuple[str, ...] = ()) -> tuple[str, list[str]]:
+def _quiet_status(gate=None, *, ignore_models: tuple[str, ...] = (MODEL,)) -> tuple[str, list[str]]:
     """`("free" | "busy" | "broken", причины)`: сломанный датчик не маскируется под обычную занятость."""
     if gate is not None:                                  # подмена для самопроверки
         try:
@@ -489,7 +503,7 @@ def run(args) -> int:
         if args.apply and tc.live_meeting(tc.DATA):
             return skip("идёт встреча")
         if args.apply:
-            verdict, reasons = _quiet_status()
+            verdict, reasons = _quiet_status(ignore_models=(MODEL,))
             if verdict == "broken":
                 return _fail_broken_sensor(reasons)
             if verdict != "free":
@@ -508,16 +522,21 @@ def run(args) -> int:
         was_resident = _model_resident(tc.DATA)
         plan: dict = {}
         seen: dict = {}
-        asked = failed = 0
+        asked = failed = answered = 0
         try:
-            plan, seen, asked, failed = plan_edits(graph, owner, today, tc.load_returned(base), cache,
-                                                   deadline=deadline)
+            if plan_edits is not _ORIGINAL_PLAN_EDITS:
+                plan, seen, asked, failed = plan_edits(graph, owner, today, tc.load_returned(base), cache,
+                                                       deadline=deadline)
+                answered = max(0, asked - failed)
+            else:
+                plan, seen, asked, failed, answered = _plan_edits_detailed(
+                    graph, owner, today, tc.load_returned(base), cache, deadline=deadline)
         finally:
-            if asked > failed and not was_resident and _model_resident(tc.DATA):
+            if answered > 0 and not was_resident and _model_resident(tc.DATA):
                 _unload_model()
         total = sum(len(v) for v in plan.values())
         print(f"опрошено строк: {asked}, сбоев модели: {failed}, к правке: {total}")
-        if asked and failed == asked:
+        if asked and answered == 0:
             record(f"ОШИБКА: модель не ответила ни на одну из {asked} строк")
             return tc.HANDLED
         for path, edits in plan.items():
