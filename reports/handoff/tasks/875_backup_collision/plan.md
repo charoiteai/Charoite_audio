@@ -24,3 +24,13 @@ Set CHAROITE_ROOT to the synthetic root before product imports.
 Local gate returned 3: updating_graph and resident models above memory limit.
 Do not run even narrow tests until fresh quiet_guard + heavy_run allow them.
 Do not infer successful experiment from source inspection.
+
+## Baseline execution
+
+Executed on Darwin/Python3.12.13 at tested commit c178149a. Host gate allowed
+execution. Result: collision_reproduced (exit1); see baseline-result.json.
+Both helper and review wrapper replace A with B for identical timestamps:
+A cannot be restored after the second backup; B can. Different timestamps
+restore both A and B byte-for-byte. Source B remains unchanged in all cases.
+No model calls, full pipeline run or production fix is claimed. The earlier
+busy gate describes the initial attempt, not this completed baseline.
