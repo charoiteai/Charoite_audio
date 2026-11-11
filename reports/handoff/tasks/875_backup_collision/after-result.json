@@ -1,0 +1,121 @@
+{
+  "python": "3.12.13",
+  "platform": "Darwin",
+  "scope": "production backup helper and review wrapper only",
+  "full_pipeline_executed": false,
+  "model_calls": 0,
+  "source_hashes": {
+    "src/charoite_graph/dossier.py": "d6cb820eea359769dc5145715be6b5abc1b129933e3b16ed77410234889b66a0",
+    "scripts/nightly_dossier_review.py": "fd1ea57faa7a974ebdb8e2b4664fa4fa9ae2767d37bab44cf0783bf1ad657014"
+  },
+  "cases": [
+    {
+      "wrapper_only": false,
+      "distinct_timestamps": false,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": null,
+      "paths_equal": false,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "second_refusal": "FileExistsError",
+      "source_unchanged": true,
+      "restored_a": true,
+      "restored_b": null,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7"
+        }
+      ],
+      "safe_retention": true
+    },
+    {
+      "wrapper_only": false,
+      "distinct_timestamps": true,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+      "paths_equal": false,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "second_refusal": null,
+      "source_unchanged": true,
+      "restored_a": true,
+      "restored_b": true,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7"
+        },
+        {
+          "path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+          "sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+        }
+      ],
+      "safe_retention": true
+    },
+    {
+      "wrapper_only": true,
+      "distinct_timestamps": false,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": null,
+      "paths_equal": false,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "second_refusal": "FileExistsError",
+      "source_unchanged": true,
+      "restored_a": true,
+      "restored_b": null,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7"
+        }
+      ],
+      "safe_retention": true
+    },
+    {
+      "wrapper_only": true,
+      "distinct_timestamps": true,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+      "paths_equal": false,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "second_refusal": null,
+      "source_unchanged": true,
+      "restored_a": true,
+      "restored_b": true,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7"
+        },
+        {
+          "path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+          "sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+        }
+      ],
+      "safe_retention": true
+    }
+  ],
+  "status": "helper_preimages_preserved",
+  "tested_code_sha": "18712e58d759bc3b72765260a3488f8c6e817bca",
+  "source_binding": "Working source bytes before commit matched committed18712e58; source unchanged atff9ddfd3.",
+  "exit_code": 0
+}

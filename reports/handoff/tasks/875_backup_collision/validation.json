@@ -1,0 +1,77 @@
+{
+  "status": "partial",
+  "code_sha": "18712e58d759bc3b72765260a3488f8c6e817bca",
+  "latest_fixture_sha": "ff9ddfd3c6ceba48615b2dc4aacbfe112faf9b7a",
+  "runtime_source_unchanged": true,
+  "before_new_tests": {
+    "failed": 11,
+    "passed": 0,
+    "warnings": 8,
+    "cause": "backup overwrites occupied names or publishes partial files; legacy cleanup warnings tracked separately"
+  },
+  "targeted_after": {
+    "passed": 283,
+    "duration_s": 6.15,
+    "files": [
+      "tests/test_dossier_backup_collision.py",
+      "tests/test_dossier.py",
+      "tests/test_dossier_queue.py",
+      "tests/test_nightly_cloud_reports.py",
+      "tests/test_safe_write.py"
+    ]
+  },
+  "full_before_fixture_adjustment": {
+    "passed": 11154,
+    "failed": 26,
+    "skipped": 8,
+    "xfailed": 7,
+    "duration_s": 210.95,
+    "failures": {
+      "same_timestamp_legacy_fixtures": 25,
+      "missing_probe_layout_rule": 1
+    }
+  },
+  "fixture_adjustment": {
+    "status": "NOT_RUN",
+    "description": "Separate logical timestamps, exact historical probe classification, valid two-topic index preservation check"
+  },
+  "outstanding": [
+    "fresh regression suite on ff9ddfd3",
+    "canonical changed-line critical mutation check",
+    "fault mutations for no-clobber publication",
+    "full final test run"
+  ],
+  "manual_mutation_recipes": [
+    {
+      "name": "overwrite",
+      "from": "os.link(staged.name, dst)",
+      "to": "os.replace(staged.name, dst)"
+    },
+    {
+      "name": "skip-publication",
+      "from": "os.link(staged.name, dst)",
+      "to": "pass"
+    },
+    {
+      "name": "swallow-collision",
+      "from": "        os.link(staged.name, dst)",
+      "to": "        try:\n            os.link(staged.name, dst)\n        except FileExistsError:\n            pass"
+    },
+    {
+      "name": "lose-metadata",
+      "from": "shutil.copy2(path, staged.name)",
+      "to": "shutil.copyfile(path, staged.name)"
+    },
+    {
+      "name": "leave-staging",
+      "from": "prefix=\".backup-\", suffix=\".tmp\")",
+      "to": "prefix=\".backup-\", suffix=\".tmp\", delete=False)"
+    }
+  ],
+  "mutant_test_targets": [
+    "tests/test_dossier_backup_collision.py",
+    "tests/test_dossier_queue.py::test_same_stamp_collision_keeps_current_dossier_and_index",
+    "tests/test_nightly_cloud_reports.py::test_same_stamp_backup_collision_refuses_only_affected_review"
+  ],
+  "mutation_execution": "Use a clean isolated tracked snapshot; normal baseline first; each mutant must fail an intended assertion rather than setup/collection. All under resource gate. Not executed yet."
+}
