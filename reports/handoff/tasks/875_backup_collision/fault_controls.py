@@ -18,6 +18,7 @@ def main():
     ap.add_argument("--python", type=Path, required=True)
     ap.add_argument("--guard", type=Path, required=True)
     args = ap.parse_args()
+    args.output = args.output.resolve()
     checkout = args.checkout.resolve()
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout):
