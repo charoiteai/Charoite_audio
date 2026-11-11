@@ -42,8 +42,9 @@ MAIN_JUDGE_SYSTEM = "You are an independent conservative dossier judge."
 SOURCE_PREDICT = 350
 MAIN_JUDGE_PREDICT = 1200
 AUDIT_PREDICT = 2000
-_INLINE_WIKILINK = re.compile(
-    r"!?\[\[(?P<target>[^\[\]|#\r\n^]*)(?:[#^][^\[\]|\r\n]*)?(?:\|(?P<alias>[^\[\]\r\n]*))?\]\]"
+_NON_RENDERED_OR_WIKILINK = re.compile(
+    r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%"
+    r"|!?\[\[(?P<target>[^\[\]|#\r\n^]*)(?:[#^][^\[\]|\r\n]*)?(?:\|(?P<alias>[^\[\]\r\n]*))?\]\]"
 )
 
 
@@ -154,6 +155,8 @@ def source_text(meta: dict) -> str:
 
 
 def _wikilink_display(match: re.Match[str]) -> str:
+    if match.group("target") is None:
+        return match.group(0)
     alias = match.group("alias")
     if alias is not None:
         return alias.strip() or match.group(0)
@@ -161,11 +164,27 @@ def _wikilink_display(match: re.Match[str]) -> str:
 
 
 def _plain_wikilinks(text: str) -> str:
-    return _INLINE_WIKILINK.sub(_wikilink_display, text)
+    return _NON_RENDERED_OR_WIKILINK.sub(_wikilink_display, text)
+
+
+def _span_hits(haystack: str, quote: str) -> int:
+    start = haystack.find(quote)
+    if start < 0:
+        return 0
+    return 2 if haystack.find(quote, start + 1) != -1 else 1
+
+
+def _quote_hits(text: str, quote: str) -> int:
+    if not quote:
+        return 0
+    if "[[" in quote:
+        return _span_hits(text, quote)
+    plain_hits = _span_hits(_plain_wikilinks(text), quote)
+    return plain_hits if plain_hits > 0 else _span_hits(text, quote)
 
 
 def _has_source_quote(text: str, quote: str) -> bool:
-    return quote in text or quote in _plain_wikilinks(text)
+    return _quote_hits(text, quote) > 0
 
 
 def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
@@ -491,7 +510,8 @@ TOPIC_AUDIT_SYSTEM = "You judge one claim's topic relevance.\n\n" + TOPIC_AUDIT_
 MAX_AUDIT_CONTEXT = 32_768
 
 
-def _stage_config(c: dict, system_len: int, prompt: str, num_predict: int) -> dict:
+def _stage_config(c: dict, system_len: int, prompt: str, num_predict: int,
+                  *, strict_cap: bool = False) -> dict:
     if privacy.llm_engine(c) != "ollama":
         return c
     llm_cfg = c.get("llm") or {}
@@ -500,19 +520,23 @@ def _stage_config(c: dict, system_len: int, prompt: str, num_predict: int) -> di
         if isinstance(configured, bool):
             raise ValueError("boolean context window")
         parsed = 0 if configured is None else int(configured)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         telemetry.refusal(telemetry.Reason.PREFLIGHT)
         raise Refused("invalid configured context window", reason=telemetry.Reason.PREFLIGHT) from exc
     if parsed and parsed < MIN_AUTO_CONTEXT:
         return {**c, "llm": {**llm_cfg, "num_ctx": parsed}}
     needed = ((system_len + len(prompt) + ADMISSION_CHARS_PER_TOKEN - 1)
               // ADMISSION_CHARS_PER_TOKEN + num_predict + CONTEXT_RESERVE)
+    cap = MAX_AUDIT_CONTEXT if strict_cap else max(parsed, MAX_AUDIT_CONTEXT)
     target = max(parsed, needed)
-    if target > MAX_AUDIT_CONTEXT:
+    if target > cap:
         telemetry.refusal(telemetry.Reason.CONTEXT)
         raise Refused("complete dossier input exceeds the maximum context budget",
                       reason=telemetry.Reason.CONTEXT)
-    context = next(step for step in (MIN_AUTO_CONTEXT, MID_AUTO_CONTEXT, MAX_AUDIT_CONTEXT) if target <= step)
+    context = next(
+        (step for step in (MIN_AUTO_CONTEXT, MID_AUTO_CONTEXT, MAX_AUDIT_CONTEXT) if target <= step),
+        parsed,
+    )
     return {**c, "llm": {**llm_cfg, "num_ctx": context}}
 
 
@@ -520,16 +544,15 @@ def _audit_config(c: dict, prompt: str) -> dict:
     # Reserve the largest audit system and output for both requests so Ollama
     # keeps one stable window through support and topic checks.
     longest_system = max(len(SUPPORT_AUDIT_SYSTEM), len(TOPIC_AUDIT_SYSTEM))
-    return _stage_config(c, longest_system, prompt, AUDIT_PREDICT)
+    return _stage_config(c, longest_system, prompt, AUDIT_PREDICT, strict_cap=True)
 
 
 def _quote_context(text: str, quote: str) -> str:
     """Validate the evidence anchor; retain every qualifier in the full source."""
-    haystack = text if quote in text else _plain_wikilinks(text)
-    start = haystack.find(quote)
-    if start < 0:
+    hits = _quote_hits(text, quote)
+    if hits < 1:
         raise Refused("candidate claim lacks exact new-source evidence")
-    if haystack.find(quote, start + 1) != -1:
+    if hits > 1:
         raise Refused("ambiguous claim evidence: quote must identify one source occurrence")
     return text
 

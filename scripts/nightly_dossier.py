@@ -150,9 +150,23 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
                                               fell_back=fell_back, **call)
 
 
+def _generator_window(c: dict, default_ctx: int) -> int | list:
+    configured = (c.get("llm") or {}).get("num_ctx")
+    if isinstance(configured, bool):
+        raise ValueError("boolean context window")
+    parsed = default_ctx if configured is None else int(configured)
+    if (parsed and parsed < dossier_incremental.MIN_AUTO_CONTEXT) or parsed > dossier_incremental.MAX_AUDIT_CONTEXT:
+        return parsed
+    steps = [step for step in (dossier_incremental.MIN_AUTO_CONTEXT,
+                               dossier_incremental.MID_AUTO_CONTEXT,
+                               dossier_incremental.MAX_AUDIT_CONTEXT)
+             if step >= parsed]
+    return [steps, dossier_incremental.ADMISSION_CHARS_PER_TOKEN, dossier_incremental.CONTEXT_RESERVE]
+
+
 def generator_label(c: dict) -> str:
     """`вход:` генератора этой ночи (№842) — модель та, что ответит на деле
-    (`LLM.effective_model`, как у ключа кэша сводок), и окно — только у Ollama:
+    (`LLM.effective_model`, как у ключа кэша сводок), и политика окна у Ollama:
     mlx-server и облако его в вызов не берут (out2 Sonnet I1; облако без тумблера
     `LLM` сам переводит в `ollama`); ответ облачного запаса метка не видит —
     его тело `_build` пишет без метки. Конфиг без модели — `""`: метки нет; любой сбой — `""` и
@@ -164,8 +178,8 @@ def generator_label(c: dict) -> str:
     try:
         from llm import LLM  # noqa: PLC0415
         llm = LLM(dossier_incremental.local_config(c))
-        num_ctx = llm.num_ctx if llm.engine == "ollama" else None
-        return dossier.generator_input(llm.effective_model(model), num_ctx)
+        window = _generator_window(c, llm.num_ctx) if llm.engine == "ollama" else None
+        return dossier.generator_input(llm.effective_model(model), window)
     except Exception as e:  # noqa: BLE001
         print(f"  ⚠️ вход генератора не посчитан ({type(e).__name__}: {e}) — досье без метки `вход:`")
         return ""
@@ -766,10 +780,15 @@ class RunResult:
 
 def _write_telemetry_sidecar(root: pathlib.Path, snap: dict) -> None:
     target = charoite_paths.log_path(root, "dossier_telemetry")
-    charoite_paths.secure_dir(target.parent)
     payload = json.dumps({"generated": datetime.now().isoformat(timespec="seconds"), **snap},
                          ensure_ascii=False, indent=2) + "\n"
-    safe_write.write_text(target, payload, mode=0o600)
+    try:
+        charoite_paths.secure_dir(target.parent)
+        safe_write.write_text(target, payload, mode=0o600)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            target.unlink(missing_ok=True)
+        print(f"dossier_telemetry_sidecar_failed: {type(exc).__name__}", file=sys.stderr)
 
 
 def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,

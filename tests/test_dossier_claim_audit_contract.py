@@ -453,13 +453,20 @@ def test_stage_config_boundaries_and_auto_stepping(monkeypatch):
     # Explicit small (< 8192) and negative windows are preserved for admission to refuse.
     assert inc._stage_config({"llm": {"num_ctx": 4096}}, 10, "x" * 14000, 350)["llm"]["num_ctx"] == 4096
     assert inc._stage_config({"llm": {"num_ctx": -1}}, 10, "x", 350)["llm"]["num_ctx"] == -1
+    # Explicit large (> 32768) operator windows are preserved on non-audit stages up to their exact budget.
+    max_64k_prompt = "x" * ((65536 - 350 - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN - 10)
+    assert inc._stage_config({"llm": {"num_ctx": 65536}}, 10, "x", 350)["llm"]["num_ctx"] == 65536
+    assert inc._stage_config({"llm": {"num_ctx": 65536}}, 10, max_64k_prompt, 350)["llm"]["num_ctx"] == 65536
+    with pytest.raises(inc.Refused, match="maximum context budget") as over_64k:
+        inc._stage_config({"llm": {"num_ctx": 65536}}, 10, max_64k_prompt + "x", 350)
+    assert over_64k.value.reason == inc.telemetry.Reason.CONTEXT
     # Non-ollama configs pass through untouched so local_config enforces the local-only gate.
     cloud_cfg = {"llm": {"engine": "cloud", "model": "invented"}}
     assert inc._stage_config(cloud_cfg, 10, "x" * 70000, 350) is cloud_cfg
     with pytest.raises(inc.Refused, match="Ollama"):
         inc.source_relevance("Glasshouse", _old(), B, {"text": FACT}, cloud_cfg)
-    # Malformed or boolean num_ctx refuses at preflight with Reason.PREFLIGHT.
-    for bad in (True, False, "not-an-int", []):
+    # Malformed, non-finite float or boolean num_ctx refuses at preflight with Reason.PREFLIGHT.
+    for bad in (True, False, "not-an-int", [], float("inf"), float("-inf"), float("nan")):
         with pytest.raises(inc.Refused, match="invalid configured context window") as bad_exc:
             inc._stage_config({"llm": {"num_ctx": bad}}, 10, "x", 350)
         assert bad_exc.value.reason == inc.telemetry.Reason.PREFLIGHT
@@ -561,3 +568,33 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
     # Distinct raw wikilink quote on the same two-row table remains unambiguous and passes!
     _transport(monkeypatch, _verdict([_claim(quote=raw_quote)]))
     inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+
+    # Direct predicate contracts: index-0 match, empty quote, raw folder substring, code/comment exclusions,
+    # and mixed raw + wikilink ambiguity.
+    assert inc._has_source_quote("| [[Ядра/Glasshouse\\|Glasshouse]] | ok |", "| Glasshouse | ok |") is True
+    assert inc._has_source_quote("abc", "") is False
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc._quote_context("abc", "")
+    # Verbatim raw target path without "[[" still resolves when plain projection hides it behind an alias.
+    assert inc._has_source_quote("Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена.", "Ядра/Glasshouse") is True
+    assert inc._quote_context("Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена.", "Ядра/Glasshouse") == (
+        "Ссылка [[Ядра/Glasshouse|Витрина]] подтверждена."
+    )
+    # Non-rendered wikilinks inside fenced code, inline code, or Obsidian %% comments are NOT stripped.
+    for non_rendered in (
+        "```markdown\n| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n```\n",
+        "Пример `| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |` в коде.",
+        "Комментарий %% | [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. | %% скрыт.",
+    ):
+        assert inc._has_source_quote(non_rendered, plain_quote) is False
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc._quote_context(non_rendered, plain_quote)
+    # Mixed plain row + wikilink row and inline-code + rendered raw wikilink both refuse as ambiguous!
+    mixed_table = (
+        "| Glasshouse | A rain cover was fitted. |\n"
+        "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
+    )
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context(mixed_table, plain_quote)
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
+        inc._quote_context("Код `[[Ядра/Glasshouse]]` и ссылка [[Ядра/Glasshouse]].", "[[Ядра/Glasshouse]]")

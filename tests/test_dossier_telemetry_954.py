@@ -505,3 +505,39 @@ def test_cli_sidecar_records_interrupted_on_sigterm_and_survives_broken_stdout(n
                    on_telemetry=lambda snap: nd._write_telemetry_sidecar(root, snap))
     disk_after = json.loads(sidecar.read_text(encoding="utf-8"))
     assert disk_after["interrupted"] is False
+
+
+def test_sidecar_oserror_unlinks_stale_file_logs_stderr_and_preserves_run_result(night, monkeypatch, capsys):
+    nd, graph, _, _, _ = night
+    root = nd._root()
+    sidecar = nd.charoite_paths.log_path(root, "dossier_telemetry")
+    nd.charoite_paths.secure_dir(sidecar.parent)
+    sidecar.write_text('{"stale": true, "interrupted": false}\n', encoding="utf-8")
+    monkeypatch.setattr(nd, "cfg", lambda: LOCAL)
+
+    real_write = nd.safe_write.write_text
+
+    def broken_write(path, text, **kwargs):
+        if Path(path) == sidecar:
+            raise PermissionError(SENTINEL)
+        return real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(nd.safe_write, "write_text", broken_write)
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph)])
+    assert nd.main() == 0
+    captured = capsys.readouterr()
+    assert "итого собрано досье:" in captured.out
+    assert "dossier_telemetry_sidecar_failed: PermissionError" in captured.err
+    assert SENTINEL not in captured.err and SENTINEL not in captured.out
+    assert not sidecar.exists()
+
+    # On SIGTERM + sidecar OSError, exit code 143 and stderr diagnostic both survive cleanly.
+    sidecar.write_text('{"stale": true}\n', encoding="utf-8")
+    monkeypatch.setattr(nd, "_build", lambda *a, **kw: (_ for _ in ()).throw(SystemExit(143)))
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--full"])
+    with pytest.raises(SystemExit) as caught:
+        nd.main()
+    assert caught.value.code == 143
+    captured_sig = capsys.readouterr()
+    assert "dossier_telemetry_sidecar_failed: PermissionError" in captured_sig.err
+    assert not sidecar.exists()

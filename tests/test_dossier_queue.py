@@ -1136,13 +1136,24 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
     monkeypatch.setattr(llm_mod, "LLM", Fake)
     assert nd.generator_label({}) == ""
     assert nd.generator_label({"llm": {}}) == ""
-    assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q", 8192)
+    default_window = [[8192, 16384, 32768], 2, 256]
+    assert nd.generator_label({"llm": {"model": "q"}}) == dossier.generator_input("mlx/q", default_window)
+    assert nd.generator_label({"llm": {"model": "q", "num_ctx": 16384}}) == dossier.generator_input(
+        "mlx/q", [[16384, 32768], 2, 256]
+    )
+    assert nd.generator_label({"llm": {"model": "q", "num_ctx": 65536}}) == dossier.generator_input("mlx/q", 65536)
+    assert nd.generator_label({"llm": {"model": "q", "num_ctx": 4096}}) == dossier.generator_input("mlx/q", 4096)
+    assert nd.generator_label({"llm": {"model": "q", "num_ctx": True}}) == ""
+    capsys.readouterr()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(nd.dossier_incremental, "MID_AUTO_CONTEXT", 24576)
+        assert nd.generator_label({"llm": {"model": "q"}}) != dossier.generator_input("mlx/q", default_window)
     # Direct MLX has no verified request window; cloud is prohibited. Neither
     # can generate for this path, so neither may construct a provider or stamp it.
-    assert len(constructed) == 1
+    assert len(constructed) == 6
     assert nd.generator_label({"llm": {"model": "q", "engine": "mlx-server"}}) == ""
     assert nd.generator_label({"llm": {"model": "q", "engine": "cloud"}}) == ""
-    assert len(constructed) == 1
+    assert len(constructed) == 6
     assert nd.generator_label({"llm": {"model": "сломан"}}) == ""
     assert "вход генератора не посчитан (KeyError" in capsys.readouterr().out
     # неимпортируемый `llm` — тоже без метки, а не трейсбек прогона (out1 M2)
