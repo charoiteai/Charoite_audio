@@ -1575,12 +1575,12 @@ class GraphSearch:
                           service=gen.service)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
-        gen = self._gen          # одно поле — одно поколение: документы, голоса и
-        all_docs = list(gen.docs.values())   # каталог не могут разъехаться по построению
+        # Keep documents, votes and links in the same immutable generation.
+        gen = self._gen
         # слоты выдачи — только первичным (разрез поколения): сводка досье идёт
         # своей секцией «📁», а в «Найдено в графе» вытесняла бы заметку, которую
         # сама пересказала; целью ссылок и переходов она остаётся (`by_rel` — по всем)
-        docs = list(gen.primary)
+        docs = gen.primary
         indeg = gen.indeg
         catalog = gen.catalog
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
@@ -1597,7 +1597,7 @@ class GraphSearch:
         best_cov = 0.0
         # иглы от редкой к частой; пуст ровно тогда, когда пуст `keys`
         rare_first: list[str] = []
-        by_rel: dict[str, Doc] = {d.rel: d for d in all_docs}
+        by_rel: dict[str, Doc] = {d.rel: d for d in gen.docs.values()}
         if keys:
             hits: list[tuple[Doc, list[int], list[int]]] = []
             for d in docs:

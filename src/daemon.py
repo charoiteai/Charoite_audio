@@ -145,13 +145,7 @@ def warm_core_vectors(cores, vecs: dict, embed, max_batches: int = WARM_BATCHES)
 
 
 def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
-
-    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
-    входа успевала назвать корень: половина процесса жила в названном корне,
-    половина — в выведенном из положения файла, и расхождение было немым
-    (замер 21.09, №329).
-    """
+    """Resolve the data root at call time: configuration may change after import."""
     return resolve_root(__file__)
 CODE = code_root(__file__)         # src/ и scripts/ — рядом с этим файлом
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам

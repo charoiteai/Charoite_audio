@@ -117,6 +117,8 @@ KINDS: tuple[tuple[str, str, str, str], ...] = (
      "сохранённый автономный контроль исторического опыта; не модуль и не точка входа продукта"),
     ("docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py", "history", "git",
      "первый автономный контроль исторического опыта, сохранён для воспроизводимости"),
+    ("reports/handoff/tasks/1020_search_benchmark.py", "history", "git",
+     "saved synthetic search benchmark for refactor verification; not a product entry point"),
     ("reports/handoff/tasks/818_baseline_probe.py", "history", "git",
      "синтетический снимок базового разбора №818: привязан к SHA и blob manifest, не точка входа продукта"),
     ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git",

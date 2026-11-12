@@ -23,7 +23,8 @@
       "live_gate",
       "config_loader",
       "privacy",
-      "machine_power"
+      "machine_power",
+      "scratch_files"
     ],
     "llm": [
       "llm",

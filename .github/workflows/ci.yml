@@ -211,7 +211,7 @@ jobs:
 
   mutation:
     name: mutation (changed lines)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Потолок job — сумма потолков шагов, а бюджет мутатора плюс худший прогон
     # набора укладывается в потолок своего шага (сторож — tests/test_workflows.py,
     # №395). Без этого GitHub обрывал job на 40-й минуте вместе с отчётом (#625: 34
