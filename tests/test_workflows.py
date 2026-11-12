@@ -709,6 +709,12 @@ def test_linux_pytest_uses_explicit_runner_and_complete_command():
         "Linux pytest must run the complete unchanged command")
 
 
+def test_linux_mutation_uses_explicit_runner():
+    """Шарды мутаций ставят libportaudio2 и гоняют native-audio подмножества pytest (№974, №1016)."""
+    job = _load("ci.yml")["jobs"]["mutation"]
+    assert job["runs-on"] == "ubuntu-24.04", "Linux mutation shards must use the explicit ubuntu-24.04 runner"
+
+
 def test_full_suite_runs_in_parallel_by_the_registry():
     jobs = _jobs()
     found = {key for key, (calls, _) in jobs.items() if any(_full_suite(c) for c in calls)}
