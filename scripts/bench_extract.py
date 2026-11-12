@@ -51,12 +51,7 @@ from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 
 def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
-
-    Подмена в тестах — через окружение (`CHAROITE_ROOT`) или публичную дверь
-    канона `use_data_root`, не через глобал модуля: второго ответа на вопрос
-    «где корень» здесь быть не должно (№338).
-    """
+    """Resolve the data root at call time: configuration may change after import."""
     return resolve_root(__file__)
 
 

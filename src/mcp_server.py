@@ -49,19 +49,7 @@ from charoite_paths import RootNotNamed, code_root, harden_umask, require_data_r
 
 
 def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
-
-    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
-    входа успевала назвать корень: половина процесса жила в названном корне,
-    половина — в выведенном из положения файла, и расхождение было немым
-    (замер 21.09, №329).
-
-    Спрашиваем `require_data_root`, а не `resolve_root`: третий ответ
-    `resolve_root` — корень КОДА, выведенный из положения файла, и клиент MCP,
-    зарегистрировавший сервер без `CHAROITE_ROOT`, молча работал бы по
-    догадке. Без названного корня — `RootNotNamed` этого вызова; в ошибку
-    инструмента его превращает `_tool` (№336).
-    """
+    """Require an explicitly named data root at call time; never infer it from code."""
     return require_data_root(__file__)
 
 

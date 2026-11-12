@@ -55,18 +55,21 @@ def test_quote_check_rejects_unverifiable_chinese():
     assert ok, "дословная китайская цитата не прошла проверку"
 
 
-def test_scratch_dir_is_removed_with_the_process():
+@pytest.mark.parametrize("module", ["transcribe_file", "diarize"])
+def test_scratch_dir_is_removed_with_the_process(module):
     """Копия полного аудио не должна пережить процесс."""
     code = (
         "import sys; sys.path.insert(0, 'src');"
-        "import transcribe_file as tf;"
-        "d = tf._scratch_dir(); (d / 'probe.wav').write_bytes(b'x'); print(d)"
+        f"import {module} as tf;"
+        "d = tf._scratch_dir(); assert d.is_dir(); (d / 'probe.wav').write_bytes(b'x'); print(d)"
     )
     root = pathlib.Path(__file__).resolve().parent.parent
     out = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                         text=True, cwd=root)
-    path = pathlib.Path(out.stdout.strip())
-    assert str(path), f"скрипт не отработал: {out.stderr[-300:]}"
+                         text=True, cwd=root, check=True)
+    lines = out.stdout.strip().splitlines()
+    assert len(lines) == 1, "cleanup probe must emit exactly one path"
+    path = pathlib.Path(lines[0])
+    assert path.is_absolute() and path.name.startswith("charoite-")
     assert not path.exists(), f"временная копия аудио осталась в {path}"
 
 

@@ -27,13 +27,7 @@ from charoite_paths import durable_replace, free_bytes, resolve_root
 
 
 def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
-
-    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
-    входа успевала назвать корень: половина процесса жила в названном корне,
-    половина — в выведенном из положения файла, и расхождение было немым
-    (замер 21.09, №329).
-    """
+    """Resolve the data root at call time: configuration may change after import."""
     return resolve_root(__file__)
 
 

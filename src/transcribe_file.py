@@ -8,12 +8,9 @@ m4a → wav 16кГц (afconvert, нативный macOS) → GigaAM сегмен
 from __future__ import annotations
 
 import datetime as dt
-import atexit
-import shutil
 import pathlib
 import subprocess
 import sys
-import tempfile
 import wave
 
 import numpy as np
@@ -24,35 +21,16 @@ from transcript import Transcript, is_noise  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
 from config_loader import load_user_or_example
+from scratch_files import scratch_dir as _scratch_dir
 
 
 def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
-
-    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
-    входа успевала назвать корень: половина процесса жила в названном корне,
-    половина — в выведенном из положения файла, и расхождение было немым
-    (замер 21.09, №329).
-    """
+    """Resolve the data root at call time: configuration may change after import."""
     return resolve_root(__file__)
 
 SEG_S = 25.0
 OVERLAP_S = 1.0
 
-
-
-def _scratch_dir() -> pathlib.Path:
-    """Временная папка, которая ГАРАНТИРОВАННО исчезнет вместе с процессом.
-
-    Сюда кладётся 16-кГц WAV всей встречи (трёхчасовая — 345 МБ). Раньше это
-    был просто mkdtemp без уборки: копия полного аудио оставалась в
-    /var/folders до перезагрузки, а часто и дольше. Из неё извлекаются
-    голосовые эмбеддинги, и про неё не знает ретеншн record_keep_days —
-    то есть обещание «записи временны» обходилось незаметной копией.
-    """
-    d = pathlib.Path(tempfile.mkdtemp(prefix="charoite-"))
-    atexit.register(shutil.rmtree, d, True)
-    return d
 
 STT_RATE = 16000   # контракт STT.transcribe — float32 mono 16 кГц (stt.py)
 
