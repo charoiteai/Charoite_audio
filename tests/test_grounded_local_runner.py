@@ -1644,13 +1644,25 @@ def test_cleanup_refusal_keeps_source_loop_and_poisoned_slot(tmp_path):
     session.attach_local_runner(runner)
     enabled = [True]
     waits = []
+    outcomes = []
+    real_step = session.step
+
+    def observed_step():
+        outcome = real_step()
+        outcomes.append(outcome)
+        return outcome
+
+    session.step = observed_step
 
     def advance(_timeout=None):
         waits.append(True)
         if len(waits) == 1:
+            assert session._local_generation_blocked
+            assert outcomes == [{"status": "quarantined", "reason": "cleanup_unconfirmed"}]
             enabled[0] = False
             transcript.add("Второе синтетическое сообщение.", speaker="Ведущий")
         elif len(waits) == 2:
+            assert session.source_ingested == 2
             enabled[0] = True
             transcript.add("Третье синтетическое сообщение.", speaker="Ведущий")
         else:
