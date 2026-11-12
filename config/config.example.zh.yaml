@@ -53,6 +53,9 @@ llm:
   # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
+  # 仅影响应用下次启动 MLX：必须是正整数，不能为 null/字符串/小数/布尔值。
+  # 省略时 classic 保持原参数，live_feed 使用128。不会重启健康的现有服务器。
+  # mlx_prefill_step_size: 128
   model: qwen3.6:35b-a3b             # 主模型（提示、纪要、姓名）——中文原生
   # 预设（见 docs/MODELS.md）：
   #  16GB 内存：model: gemma4:latest · small_model: qwen3.5:2b
@@ -67,6 +70,12 @@ llm:
   # ledger_keep_days: 0
 
 sufler:
+  # 本地顺序实时会议纪要（主题、事实与问答统一呈现在同一面板中）。
+  live_feed: true
+  # Optional local model role; omitted means llm.model. mlx-server uses llm.mlx_model.
+  feed_model: null
+  auto_hint: true
+  auto_expand: true
   # --- 使用者 ---
   user_name: ""           # 您的名字：标记您的麦克风，提示中也以此称呼您
   user_context: ""        # 用一两句话介绍您/您的工作——作为回答的背景

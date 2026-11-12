@@ -17,6 +17,7 @@
       "charoite_graph.frontmatter",
       "charoite_graph.redirects",
       "exit_codes",
+      "feed_contract",
       "dossier_telemetry"
     ],
     "runtime": [
@@ -29,7 +30,8 @@
     "llm": [
       "llm",
       "model_lease",
-      "llm_health"
+      "llm_health",
+      "cancellable_http"
     ],
     "graph": [
       "graphs",
@@ -89,6 +91,21 @@
       "hint_guard",
       "autostop",
       "busy_signals",
+      "live_feed",
+      "grounded_feed",
+      "grounded_feed.thread",
+      "grounded_feed.render",
+      "grounded_feed.publish",
+      "grounded_feed.events",
+      "grounded_feed.export",
+      "grounded_feed.session",
+      "grounded_feed.bridge",
+      "grounded_feed.accepted_source",
+      "grounded_feed.source_actor",
+      "grounded_feed.actor_core",
+      "grounded_feed.semantic",
+      "grounded_feed.local_runner",
+      "grounded_feed.runtime",
       "dossier_incremental"
     ],
     "app": [
@@ -289,6 +306,7 @@
     "scripts/retrieval_compare.py": "сравнение результатов поиска по эталонным вопросам, ручной прогон",
     "scripts/decision_evidence_audit.py": "проверка цитат и истории решений в экспортированных записях, ручной прогон",
     "scripts/runtime_profile.py": "замер локального потокового транспорта на заданных запросах, ручной прогон",
+    "src/cancellable_http.py": "Task 859: internal HTTP worker launches its own file dynamically from ProcessResponse; not a user command; self-launch is not resolved by the static caller scan",
     "scripts/bench_task_reviser.py": "замер ревизора поручений на синтетическом наборе (№998), ручной прогон на живой модели",
     "scripts/task_reviser.py": "ревизор статусов поручений локальной моделью (№998): ручной прогон и launchd; сторож --watch",
     "scripts/tasks_control.py": "контроль поручений: снятие старых и ничьих по правилам с откатом прогона (№366), ручной прогон и launchd"
@@ -523,6 +541,10 @@
       "mode": "help",
       "why": "по коду: argparse"
     },
+    "src/cancellable_http.py": {
+      "mode": "help",
+      "why": "Task 859: owned HTTP worker; argparse rejects missing worker flag before reading stdin"
+    },
     "src/daemon.py": {
       "mode": "refuse",
       "why": "по коду: конструктор корня"
@@ -628,15 +650,19 @@
     "transcribe_file": "пишет стенограмму импорта в каталог стенограмм мимо safe_write, перезаписывая файл",
     "transcript": "пишет стенограмму встречи мимо safe_write — главная работа модуля",
     "voice_memos_bridge": "отметка «скопировано» без копии теряет запись, когда владелец чистит Диктофон",
+    "cancellable_http": "Task 859: owns the local HTTP child and lease; an unconfirmed cancellation must never release a model slot",
     "charoite_graph.frontmatter::scalar_field": "чтение ревизии удерживает проверенное тело: ошибка обработки комментария снимает защиту от пересборки",
     "charoite_graph.frontmatter::with_scalar_preserving": "точечная замена ревизии обязана сохранять остальные байты шапки перед CAS-записью тела",
     "scripts/nightly_dossier_review.py::_review_loop": "ревизия и LABELS_ONLY пишут досье с исходным снимком, сохранением правок автора, backup и CAS",
     "dossier_incremental": "локальные source/candidate gates разрешают дописывание досье: ошибка может принять чужой факт или потерять прежнее утверждение",
+    "llm::LLM.validate_local_model_tag": "проверяет тег модели на запрет :cloud/-cloud и вложенных селекторов: ошибка выпускает стенограмму встречи в облачный манифест",
     "llm::LLM.require_local_ollama_model": "проверяет локальный селектор и возможности Ollama до отправки досье: ошибка выпускает текст в remote manifest или допускает усечение",
-    "llm::LLM.stream": "сериализует явные запреты truncate/shift и обрабатывает поток: ошибка принимает усечённый результат или теряет отказ сервера"
+    "llm::LLM.feed": "отправляет окно стенограммы живой нити строго на loopback-модель: ошибка выпускает стенограмму встречи за машину",
+    "llm::LLM.grounded_answer": "отправляет ручной вопрос и контекст встречи строго на loopback-модель: ошибка выпускает стенограмму встречи за машину",
+    "llm::LLM.stream": "сериализует явные запреты truncate/shift и обрабатывает поток: ошибка принимает усечённый результат или теряет отказ сервера",
+    "grounded_feed.local_runner": "локальный раннер живой нити и ручного ответа: loopback-проверка и отказ от облачного шлюза — ошибка выпускает стенограмму встречи за машину"
   },
   "mutation_not_critical": {
-    "dossier_telemetry": "закрытые счётчики в памяти и stdout — производная; не допускают модель и не пишут данные графа",
     "busy_signals": "сторож занятости: в сеть — только GET переписи моделей Ollama на loopback (№595); пишет лишь свой замок мутатора, не данные владельца",
     "channel_trace": "журнал трассировки канала — производная, восстановима",
     "charoite_graph.graph_search": "кэш индекса поиска — производная, пересобирается",
@@ -654,6 +680,7 @@
     "scripts/memory_bench.py": "замер памяти на локальной модели: ничего не пишет в данные владельца",
     "scripts/morning_brief.py": "генерируемая сводка утра — производная, пересобирается ночью",
     "scripts/nightly_dossier.py": "генерация досье; перенос правок владельца — функцией run в mutation_critical",
-    "scripts/nightly_dossier_review.py": "оркестрация ревизии — производная; дверь записи _review_loop решена отдельно в mutation_critical"
+    "scripts/nightly_dossier_review.py": "оркестрация ревизии — производная; дверь записи _review_loop решена отдельно в mutation_critical",
+    "dossier_telemetry": "закрытые счётчики в памяти и stdout — производная; не допускают модель и не пишут данные графа"
   }
 }

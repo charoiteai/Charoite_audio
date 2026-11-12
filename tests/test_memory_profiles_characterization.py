@@ -258,6 +258,10 @@ class Harness:
         ns = dict(vars(daemon))
         ns.update(
             cfg=daemon_cfg,
+            # Captured policy defaults for a legacy config with no feed opt-in.
+            feed_on=False,
+            auto_expand_on=True,
+            grounded_feed=None,
             llm=self.llm,
             tr=FakeTranscript(log, size=size, tail_len=tail_len),
             thread=FakeThread(log, thread_added, last_topic_title),

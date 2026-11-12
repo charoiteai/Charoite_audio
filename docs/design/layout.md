@@ -1,18 +1,18 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 98.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 115.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 18): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `dossier_telemetry`, `exit_codes`, `file_locks`, `jsonl_log`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
+- **base** (зависит от: —; модулей 19): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `dossier_telemetry`, `exit_codes`, `feed_contract`, `file_locks`, `jsonl_log`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
 - **runtime** (зависит от: base; модулей 8): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`, `scratch_files`
-- **llm** (зависит от: base, runtime; модулей 6): `decision_gate`, `llm`, `llm_health`, `model_lease`, `model_ledger`, `nli`
+- **llm** (зависит от: base, runtime; модулей 7): `cancellable_http`, `decision_gate`, `llm`, `llm_health`, `model_lease`, `model_ledger`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 6): `cloud`, `night_cloud`, `pii_fake`, `pii_fake_pool`, `pii_mask`, `pii_ner`
 - **audio** (зависит от: base, runtime; модулей 13): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `speech_gate`, `stt`, `stt_runtime`, `voice_pitch`
-- **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 28): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `cloud_door`, `dossier_incremental`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_tail`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
+- **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 43): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `cloud_door`, `dossier_incremental`, `fact_check`, `graph_updater`, `graphs`, `grounded_feed`, `grounded_feed.accepted_source`, `grounded_feed.actor_core`, `grounded_feed.bridge`, `grounded_feed.events`, `grounded_feed.export`, `grounded_feed.local_runner`, `grounded_feed.publish`, `grounded_feed.render`, `grounded_feed.runtime`, `grounded_feed.semantic`, `grounded_feed.session`, `grounded_feed.source_actor`, `grounded_feed.thread`, `hint_guard`, `install_profile`, `lexicon`, `live_feed`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_tail`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
 - **app** (зависит от: base, runtime, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 
 ## Слой окружения и слои без него
@@ -138,6 +138,7 @@
 - `scripts/tasks_control.py` ← ручной запуск: контроль поручений: снятие старых и ничьих по правилам с откатом прогона (№366), ручной прогон и launchd; проба help
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py; проба help
 - `scripts/wait_for_idle.py` ← scripts/nightly.sh; проба help
+- `src/cancellable_http.py` ← ручной запуск: Task 859: internal HTTP worker launches its own file dynamically from ProcessResponse; not a user command; self-launch is not resolved by the static caller scan; проба help
 - `src/daemon.py` ← app/Sources/CharoiteApp/Models/AppSettings.swift, app/Sources/CharoiteApp/Services/SetupReadinessService.swift, app/Sources/CharoiteApp/Services/SuflerService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; проба refuse
 - `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом; проба refuse
 - `src/diarize_nemotron.py` ← scripts/lock_runtime_deps.py; проба help

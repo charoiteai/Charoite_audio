@@ -277,8 +277,15 @@ def nemotron_wiring_problems(source: str) -> list[str]:
                 and isinstance(before.value, ast.Attribute) and before.value.attr == "NO_SHADOW"):
             problems.append("перед подъёмом тени она не связана заглушкой NO_SHADOW (заглушка)")
     # №533: журнал тени дописывается даже если хаб упал — close в finally вокруг hub.stop
+    cutoff = _function(tree, "cut_stop_producers")
+    named_cutoff_stops_hub = cutoff is not None and any(
+        isinstance(statement, ast.Try)
+        and any(_call_name(node) == "hub.stop" for body in statement.body for node in ast.walk(body))
+        for statement in cutoff.body)
     closes = any(isinstance(t, ast.Try)
-                 and any(_call_name(n) == "hub.stop" for s in t.body for n in ast.walk(s))
+                 and any(_call_name(n) == "hub.stop" or
+                         (_call_name(n) == "cut_stop_producers" and named_cutoff_stops_hub)
+                         for s in t.body for n in ast.walk(s))
                  and any(_call_name(n) == "nemotron_shadow.close" for s in t.finalbody for n in ast.walk(s))
                  for t in ast.walk(main))
     if not closes:
@@ -335,8 +342,11 @@ def test_the_daemon_wires_the_nemotron_shadow():
      "    threads.spawn(stdin_loop, name='x', role='meeting')\n    # Всё после подъёма тени — под `finally`",
      "окно"),
     ("            nemotron_shadow.close(live_nemotron.STOP_GRACE_S)", "            pass", "закрытие"),
-    ("        try:\n            hub.stop()  # финализирует", "        hub.stop()\n        try:\n            pass  # финализирует",
+    ("        try:\n            cut_stop_producers(hub, grounded_feed)  #",
+     "        cut_stop_producers(hub, grounded_feed)\n        try:\n            pass  #",
      "закрытие"),
+    ("    try:\n        hub.stop()\n    except Exception as error:",
+     "    try:\n        pass\n    except Exception as error:", "закрытие"),
 ])
 def test_the_nemotron_guard_turns_red_on_a_broken_wiring(old, new, says):
     problems = nemotron_wiring_problems(_broken(old, new))

@@ -112,6 +112,8 @@ def failure_kind(e: BaseException) -> str:
 BUSY_WAIT_LIVE = 30.0
 BUSY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
 FIT_PART_BUSY_WAIT = 5.0   # сводка одной части длинных минуток (под hint_lock)
+LOCAL_FEED_BUSY_WAIT = 2.0
+_OPEN_STREAM_DEFAULT_TIMEOUT = 300
 
 # Сводки частей длинной встречи (№265). MCP-минутки строят новый LLM на каждый
 # вызов, и повтор после упавшей главной генерации заново платил за все части —
@@ -574,7 +576,7 @@ HOLD_EVERY_S = 180.0
 #: Ключи `sufler.*`, по которым встреча зовёт модель мимо `llm.*` (тезисы,
 #: разметка реплик). Тик срока держит их наравне с лестницей `llm.*`; новый
 #: ключ модели встречи — сюда, сторож `test_hold_knows_every_sufler_model_key`.
-MEETING_MODEL_KEYS = ("think_model", "markup_model")
+MEETING_MODEL_KEYS = ("think_model", "markup_model", "feed_model")
 #: Ключи `sufler.*_model`, которые не модели встречи: эмбеддер держит свой срок
 #: (`EMBED_KEEP_ALIVE`), 90m ему не нужны.
 NOT_MEETING_MODEL_KEYS = ("embed_model",)
@@ -817,6 +819,21 @@ class LLM:
             return self.mlx_model
         return self.cloud_model if self.cloud_ready else model
 
+    @staticmethod
+    def validate_local_model_tag(requested: object) -> str:
+        """Validate a local Ollama model reference and return its base tag without selector."""
+        if not isinstance(requested, str) or not requested or any(c.isspace() or not c.isprintable() for c in requested):
+            raise privacy.PrivacyRefused("invalid local Ollama model reference")
+        selectors = list(re.finditer(r":(local|cloud)(?=:|$)", requested, re.IGNORECASE))
+        if any(match[1].lower() == "cloud" for match in selectors):
+            raise privacy.PrivacyRefused("cloud model references are not allowed for local generation")
+        if selectors and (len(selectors) != 1 or selectors[0].end() != len(requested)):
+            raise privacy.PrivacyRefused("nested model selectors are not allowed")
+        base = requested[:selectors[0].start()] if selectors else requested
+        if not base or base.lower().endswith("-cloud"):
+            raise privacy.PrivacyRefused("legacy cloud model references are not allowed for local generation")
+        return base
+
     def require_local_ollama_model(self, model: str | None = None) -> str:
         """Force local manifest selection on a trusted compatible Ollama server.
 
@@ -828,17 +845,10 @@ class LLM:
         if self.engine != "ollama" or self.cloud_ready or not privacy.is_loopback_url(self.base):
             raise privacy.PrivacyRefused("local model selection requires loopback Ollama")
         requested = self.resolve_model() if model is None else model
-        if not isinstance(requested, str) or not requested or any(c.isspace() or not c.isprintable() for c in requested):
-            raise privacy.PrivacyRefused("invalid local Ollama model reference")
-        selectors = list(re.finditer(r":(local|cloud)(?=:|$)", requested, re.IGNORECASE))
-        if any(match[1].lower() == "cloud" for match in selectors):
-            raise privacy.PrivacyRefused("cloud model references are not allowed for local generation")
-        if selectors and (len(selectors) != 1 or selectors[0].end() != len(requested)):
-            raise privacy.PrivacyRefused("nested model selectors are not allowed")
-        base = requested[:selectors[0].start()] if selectors else requested
-        if not base or base.lower().endswith("-cloud"):
-            raise privacy.PrivacyRefused("legacy cloud model references are not allowed for local generation")
+        base = self.validate_local_model_tag(requested)
         reference = base + ":local"
+        if getattr(self, "_verified_ollama_local_base", None) == self.base:
+            return reference
         try:
             status, body = self._ollama_metadata("version")
         except ValueError as exc:
@@ -854,6 +864,7 @@ class LLM:
                               r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", version) if isinstance(version, str) else None
         if stable is None or tuple(map(int, stable.groups())) < (0, 34, 4):
             raise RuntimeError("Ollama local model contract requires a stable server version >= 0.34.4")
+        self._verified_ollama_local_base = self.base
         return reference
 
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
@@ -951,6 +962,128 @@ class LLM:
                 # оборвалась. Усечённый ответ не выдаём за целый — минутки
                 # без хвоста встречи внешне неотличимы от готовых.
                 raise self._fail(r.status_code, "стрим оборван без завершения")
+
+    def _iter_local_stream(self, response, *, allow_length: bool, label: str) -> Iterator[str]:
+        valid_sse = ("stop", "length") if allow_length else ("stop",)
+        valid_ndjson = ("stop", "length", None) if allow_length else ("stop",)
+        missing_msg = (f"{label} stream lacks terminal reason" if allow_length
+                       else f"{label} stream lacks a natural terminal reason")
+        bad_sse_reason = (f"{label} unsupported terminal reason" if allow_length
+                          else f"{label} stream has an unsupported terminal reason")
+        bad_ndjson_reason = (f"{label} unsupported terminal reason" if allow_length
+                             else f"{label} stream lacks a natural terminal reason")
+        finish_reason = None
+        for line in response.iter_lines():
+            if not line:
+                continue
+            if self.engine == "mlx-server":
+                if not line.startswith(b"data:"):
+                    continue
+                line = line[5:].strip()
+                if line == b"[DONE]":
+                    if finish_reason not in valid_sse:
+                        raise self._fail(response.status_code, missing_msg)
+                    self._ledger_note(response, {"finish_reason": finish_reason})
+                    return
+                data = self._json_line(response, line)
+                if data.get("error"):
+                    raise self._fail(response.status_code, str(data["error"]))
+                try:
+                    choice = data["choices"][0]
+                    chunk = choice.get("delta", {}).get("content") or ""
+                    reason = choice.get("finish_reason")
+                except (KeyError, IndexError, TypeError, AttributeError):
+                    raise self._fail(response.status_code, f"invalid {label} SSE") from None
+                if not isinstance(chunk, str):
+                    raise self._fail(response.status_code, f"invalid {label} token")
+                if chunk:
+                    self._ledger_first(response)
+                    yield chunk
+                if reason is not None:
+                    if not allow_length and reason == "length":
+                        raise self._fail(response.status_code, f"{label} stopped at token budget")
+                    if reason not in valid_sse:
+                        raise self._fail(response.status_code, bad_sse_reason)
+                    finish_reason = reason
+            else:
+                data = self._json_line(response, line)
+                if data.get("error"):
+                    raise self._fail(response.status_code, str(data["error"]))
+                chunk = self._ndjson_chunk(response, data, line)
+                if chunk:
+                    self._ledger_first(response)
+                    yield chunk
+                if data.get("done") is True:
+                    done_reason = data.get("done_reason")
+                    if not allow_length and done_reason == "length":
+                        raise self._fail(response.status_code, f"{label} stopped at token budget")
+                    if done_reason not in valid_ndjson:
+                        raise self._fail(response.status_code, bad_ndjson_reason)
+                    self._ledger_note(response, data)
+                    return
+        raise self._fail(response.status_code, f"{label} stream ended without completion")
+
+    def feed(self, speech: str, context: str, *, cancel_event,
+             system: str | None = None, model: str | None = None) -> Iterator[str]:
+        """Local feed only: explicit model role, no cloud or large-model retry."""
+        from feed_contract import feed_prompt, feed_system
+        if self.cloud_ready or not privacy.is_loopback_url(self.base):
+            raise ValueError("live feed requires a local model server")
+        feed_model = (self._cfg.get("sufler") or {}).get("feed_model")
+        selected = model or feed_model or (self.mlx_model if self.engine == "mlx-server" else self.model)
+        messages = [{"role": "system", "content": system or feed_system(self.lang)},
+                    {"role": "user", "content": feed_prompt(self.lang, context, speech)}]
+        if self.engine == "mlx-server":
+            if selected != self.mlx_model:
+                raise ValueError("live feed model does not match the local MLX server")
+            payload = self._mlx_payload(messages, think=False, num_predict=600,
+                                        temperature=0.7, stream=True)
+            payload.update(top_p=0.8, top_k=20, repetition_penalty=1.1)
+            url = f"{self.base}/v1/chat/completions"
+        else:
+            self.validate_local_model_tag(selected)
+            payload = {"model": selected, "messages": messages, "stream": True,
+                       "truncate": False, "shift": False,
+                       "think": False, "keep_alive": self._chat_keep_alive(),
+                       "options": {"temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                                   "repeat_penalty": 1.1, "num_ctx": self.num_ctx, "num_predict": 600}}
+            url = f"{self.base}/api/chat"
+        with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
+                               method="feed", cancel_event=cancel_event) as response:
+            yield from self._iter_local_stream(response, allow_length=False, label="feed")
+
+    def grounded_answer(self, prompt: str, *, system: str, cancel_event,
+                        num_predict: int = 400, model: str | None = None,
+                        temperature: float | None = None) -> Iterator[str]:
+        """Local grounded manual answer: cancellable loopback stream, zero cloud egress."""
+        if cancel_event is None:
+            raise ValueError("grounded answer requires a cancel_event")
+        if (self.cloud_ready or not privacy.is_loopback_url(self.base)
+                or self.engine not in ("ollama", "mlx-server")):
+            raise ValueError("grounded answer requires a local model server")
+        feed_model = (self._cfg.get("sufler") or {}).get("feed_model")
+        selected = model or feed_model or (
+            self.mlx_model if self.engine == "mlx-server" else self.model)
+        temp = self.temperature if temperature is None else float(temperature)
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": prompt}]
+        if self.engine == "mlx-server":
+            if selected != self.mlx_model:
+                raise ValueError("grounded answer model does not match the local MLX server")
+            payload = self._mlx_payload(messages, think=False, num_predict=num_predict,
+                                        temperature=temp, stream=True)
+            url = f"{self.base}/v1/chat/completions"
+        else:
+            selected = self.require_local_ollama_model(selected)
+            payload = {"model": selected, "messages": messages, "stream": True,
+                       "truncate": False, "shift": False,
+                       "think": False, "keep_alive": self._chat_keep_alive(),
+                       "options": {"temperature": temp, "num_ctx": self.num_ctx,
+                                   "num_predict": num_predict}}
+            url = f"{self.base}/api/chat"
+        with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
+                               method="grounded_answer", cancel_event=cancel_event) as response:
+            yield from self._iter_local_stream(response, allow_length=True, label="grounded answer")
 
     def _ndjson_chunk(self, r, data: dict, line: bytes) -> str:
         """Текст чанка NDJSON-строки Ollama; `message: null` — пустой чанк, иная
@@ -1217,16 +1350,25 @@ class LLM:
                 enter()
             return self
 
-        def __exit__(self, *exc) -> None:
+        def __exit__(self, exc_type=None, exc_val=None, exc_tb=None) -> None:
+            from cancellable_http import CleanupIncomplete
+            quarantined = False
             try:
                 leave = getattr(self._r, "__exit__", None)
                 if leave is not None:
-                    leave(*exc)
+                    leave(exc_type, exc_val, exc_tb)
+                else:
+                    self._r.close()
+            except CleanupIncomplete:
+                quarantined = True
+                self._r.quarantine(self._lease, self.call)
+                raise
             finally:
-                try:
-                    self._lease.__exit__(*exc)
-                finally:
-                    self._finish(exc[1] if len(exc) > 1 else None)
+                if not quarantined:
+                    try:
+                        self._lease.__exit__(exc_type, exc_val, exc_tb)
+                    finally:
+                        self._finish(exc_val)
 
         def _finish(self, err: BaseException | None) -> None:
             """Строка журнала — после снятия аренды (S-I5 входа №807). Потребитель
@@ -1245,19 +1387,23 @@ class LLM:
                 yield line
 
         def close(self) -> None:
-            try:
-                self._r.close()
-            finally:
-                try:
-                    self._lease.__exit__(None, None, None)
-                finally:
-                    self._finish(None)
+            self.__exit__(None, None, None)
 
         def __getattr__(self, name: str):
             return getattr(self._r, name)
 
+    @staticmethod
+    def _wait_busy_or_cancel(delay: float, cancel_event) -> None:
+        if cancel_event is not None:
+            if cancel_event.wait(delay):
+                from cancellable_http import StreamCancelled
+                raise StreamCancelled()
+        else:
+            time.sleep(delay)
+
     def _open_stream(self, url: str, payload: dict, busy_wait: float,
-                     timeout: float | tuple = 300, *, method: str = "stream"):
+                     timeout: float | tuple = _OPEN_STREAM_DEFAULT_TIMEOUT, *,
+                     method: str = "stream", cancel_event=None):
         """POST со стримом; занятый сервер (503/429, отказ соединения) —
         повторяем с растущей паузой, пока не выйдем за busy_wait. Аренда
         модели берётся, когда сервер ПРИНЯЛ запрос (200) — очередь за занятым
@@ -1270,18 +1416,25 @@ class LLM:
         try:
             for n, delay in enumerate(BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000):
                 try:
-                    r = requests.post(url, json=payload, stream=True, timeout=timeout,
-                                      **self._auth(), **privacy.proxies_for(url))
+                    if cancel_event is None:
+                        r = requests.post(url, json=payload, stream=True, timeout=timeout,
+                                          **self._auth(), **privacy.proxies_for(url))
+                    else:
+                        if not privacy.is_loopback_url(url) or self.cloud_ready:
+                            raise ValueError("cancellable feed transport requires a local server")
+                        from cancellable_http import ProcessResponse
+                        r = ProcessResponse(url, payload, timeout, cancel_event=cancel_event,
+                                            request_kwargs={**self._auth(), **privacy.proxies_for(url)})
                 except requests.ConnectionError:
                     if time.monotonic() + delay > deadline:
                         raise
                     call.busy(delay)
-                    time.sleep(delay)
+                    self._wait_busy_or_cancel(delay, cancel_event)
                     continue
                 if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
                     r.close()
                     call.busy(delay)
-                    time.sleep(delay)
+                    self._wait_busy_or_cancel(delay, cancel_event)
                     continue
                 if r.status_code != 200:
                     # закрыть до raise: with-блок вызывающего сюда не дойдёт, а
@@ -1292,7 +1445,12 @@ class LLM:
                 return self._LeasedStream(r, self._lease("stream", timeout).__enter__(), call)
             raise RuntimeError("unreachable")  # pragma: no cover
         except BaseException as e:
-            call.finish(_ledger_outcome(e))
+            from cancellable_http import CleanupIncomplete
+            if isinstance(e, CleanupIncomplete):
+                # No response/lease existed yet when cancellation failed before headers.
+                e.response.quarantine(self._lease("stream", timeout).__enter__(), call)
+            else:
+                call.finish(_ledger_outcome(e))
             raise
 
     def _mlx_payload(self, messages: list[dict], *, think: bool | None,
@@ -1545,12 +1703,13 @@ class LLM:
             if not done:
                 raise self._fail(r.status_code, "стрим оборван без завершения")
 
-    def warmup(self):
+    def warmup(self, model: str | None = None):
         """Гоним модель в память заранее — иначе первая подсказка ждёт ~20с загрузки."""
         try:
             # прямая цель нити: без метки стек назвал бы потребителем threading (выход n807-out2)
             with model_ledger.consumer("llm.warmup"):
-                for _ in self.stream("Ответь одним словом: готов", system="Ты просто отвечаешь: готов.",
+                for _ in self.stream("Ответь одним словом: готов", model=model,
+                                     system="Ты просто отвечаешь: готов.",
                                      _method="warmup"):
                     break
         except LLMHTTPError as e:

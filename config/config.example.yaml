@@ -61,6 +61,9 @@ llm:
   # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
+  # Только при следующем запуске MLX силами приложения: положительное целое.
+  # Без ключа classic сохраняет прежний argv; live_feed выбирает 128.
+  # mlx_prefill_step_size: 128  # null/строки/дроби/bool недопустимы
   # Журнал вызовов модели: строка на запрос — кто звал (подсказки, минутки,
   # разбор графа…), модель, токены, секунды, ожидание «занято». Текста нет.
   # Файл на день logs/model_calls-ГГГГ-ММ-ДД.jsonl, только дописывается: срока хранения
@@ -88,6 +91,12 @@ llm:
   num_ctx: 8192                      # обязательный: без него KV-кэш раздувается
 
 sufler:
+  # Живая локальная последовательная нить встречи (темы, факты, вопросы и ответы в одном полотне).
+  live_feed: true
+  # Optional local model role; omitted means llm.model. mlx-server uses llm.mlx_model.
+  feed_model: null
+  auto_hint: true
+  auto_expand: true
   # --- владелец ---
   user_name: ""           # ваше имя: метка вашего микрофона и обращение в подсказках
   user_context: ""        # 1-2 предложения о вас/вашей работе — контекст для ответов

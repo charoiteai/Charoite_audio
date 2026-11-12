@@ -11,6 +11,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
@@ -24,6 +26,40 @@ STAMP = "2026-08-24_183015"
 def make_transcript(tmp_path, monkeypatch) -> Transcript:
     monkeypatch.setattr(transcript.meeting_stamp, "now", lambda: STAMP)
     return Transcript(tmp_path / "transcripts")
+
+
+def test_accepted_portions_snapshot_keeps_only_post_dedup_speech(tmp_path, monkeypatch):
+    tr = make_transcript(tmp_path, monkeypatch)
+    assert tr.accepted_portions() == ()
+    tr.add("мы обсудили бюджет на квартал", "mic")
+    assert tr.add("бюджет на квартал и сроки запуска", "mic") == "и сроки запуска"
+    before = tr.accepted_portions()
+    assert [(p.index, p.speaker, p.body) for p in before] == [
+        (0, "mic", "мы обсудили бюджет на квартал"), (1, "mic", "и сроки запуска")]
+    assert tr.add("и сроки запуска", "mic") is None
+    assert tr.accepted_cursor().portion == 2
+    tr.add("новый вопрос", "other")
+    assert tr.accepted_portions(2) == (tr.accepted_portions()[2],)
+    assert len(before) == 2  # later speech cannot change the earlier snapshot
+
+
+def test_accepted_portions_ignore_retroactive_display_edits(tmp_path, monkeypatch):
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("A😀中", "Собеседник 1")
+    before = tr.accepted_portions(0, tr.accepted_cursor().portion)
+    tr.rename_speaker("Собеседник 1", "Алексей")
+    assert tr.update_block_text(0, "A😀中", "отредактированный блок") is True
+    assert tr.accepted_portions() == before
+    assert before[0].body == "A😀中" and before[0].speaker == "Собеседник 1"
+    assert len(before[0].body[:2].encode("utf-8")) == 5  # char offset 2 is byte offset 5
+
+
+@pytest.mark.parametrize("start,stop", [(-1, None), (1, None), (0, 1), (1, 0),
+                                             (True, None), (0, False), (0, 0.5)])
+def test_accepted_portions_reject_invalid_ranges(tmp_path, monkeypatch, start, stop):
+    tr = make_transcript(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="accepted portion range"):
+        tr.accepted_portions(start, stop)
 
 
 def test_creation_is_durable_and_collision_safe(tmp_path, monkeypatch):
@@ -338,3 +374,27 @@ def test_runtime_modules_do_not_import_the_legacy_cli():
             offenders.append(path.name)
 
     assert offenders == [], f"runtime снова зависит от legacy main.py: {offenders}"
+
+
+def test_accepted_portion_slots_frozen_and_range_validation(tmp_path):
+    import dataclasses
+    from feed_contract import SpeechCursor
+    from transcript import AcceptedPortion
+
+    ap = AcceptedPortion(0, "10:00", "Я", "привет")
+    assert not hasattr(ap, "__dict__")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ap.body = "другое"  # type: ignore[misc]
+
+    tr = Transcript(tmp_path)
+    assert tr.accepted_cursor() == SpeechCursor(0, 0)
+    tr.add("Первая принятая реплика.", "А")
+    tr.add("Вторая принятая реплика.", "Б")
+    assert tr.accepted_cursor() == SpeechCursor(2, 0)
+    assert [p.index for p in tr.accepted_portions()] == [0, 1]
+    assert tr.accepted_portions(1, 1) == ()
+    assert [p.index for p in tr.accepted_portions(0, 2)] == [0, 1]
+    for bad in ((True, 1), (0, False), (-1, 1), (2, 1), (0, 3)):
+        with pytest.raises(ValueError, match="accepted portion range"):
+            tr.accepted_portions(*bad)
+

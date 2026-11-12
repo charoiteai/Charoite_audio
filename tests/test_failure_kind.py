@@ -185,7 +185,58 @@ def _p_checked_body(status, text):
 
 #: (функция клиента, провокация, ожидаемый вид, начало причины). Строка на каждое
 #: место `_fail`; у мест со статусом сервера — по строке на каждую ветку статуса.
+def _p_feed(lines, engine="ollama"):
+    def provoke(tmp_path, monkeypatch, сеть=None):
+        import threading
+        c = llm.LLM({**LOCAL, "llm": {**LOCAL["llm"], "engine": engine}})
+        _stream_lines(monkeypatch, c, lines)
+        return _raised(lambda: list(c.feed("Synthetic speech", "{}", cancel_event=threading.Event())))
+    return provoke
+
+
+def _p_grounded_answer(lines, engine="ollama"):
+    def provoke(tmp_path, monkeypatch, сеть=None):
+        import threading
+        c = llm.LLM({**LOCAL, "llm": {**LOCAL["llm"], "engine": engine}})
+        if engine == "ollama":
+            monkeypatch.setattr(c, "require_local_ollama_model", lambda name: name)
+        _stream_lines(monkeypatch, c, lines)
+        return _raised(lambda: list(c.grounded_answer("Вопрос", system="Система", cancel_event=threading.Event())))
+    return provoke
+
+
 CATALOG = [
+    ("_iter_local_stream", _p_feed([b'data: [DONE]'], "mlx-server"), "broken", "feed stream lacks a natural terminal reason"),
+    ("_iter_local_stream", _p_feed([b'data: {"choices":[{"delta":{"content":"{\\"none\\":true}"},"finish_reason":"length"}]}'],
+                     "mlx-server"), "broken", "feed stopped at token budget"),
+    ("_iter_local_stream", _p_feed([b'data: {"choices":[{"delta":{"content":"{\\"none\\":true}"},"finish_reason":"unsupported"}]}'],
+                     "mlx-server"), "broken", "feed stream has an unsupported terminal reason"),
+    ("_iter_local_stream", _p_feed([b'{"message":{"content":"{\\"none\\":true}"},"done":true,"done_reason":"length"}']),
+     "broken", "feed stopped at token budget"),
+    ("_iter_local_stream", _p_feed([b'{"message":{"content":"{\\"none\\":true}"},"done":true}']),
+     "broken", "feed stream lacks a natural terminal reason"),
+    ("_iter_local_stream", _p_feed([b'data: {"error":"boom"}'], "mlx-server"), "broken", "boom"),
+    ("_iter_local_stream", _p_feed([b'data: {"choices":[]}'], "mlx-server"), "broken", "invalid feed SSE"),
+    ("_iter_local_stream", _p_feed([b'data: {"choices":[{"delta":{"content":1}}]}'], "mlx-server"), "broken", "invalid feed token"),
+    ("_iter_local_stream", _p_feed([b'{"error":"boom"}']), "broken", "boom"),
+    ("_iter_local_stream", _p_feed([]), "broken", "feed stream ended"),
+    ("_iter_local_stream", _p_grounded_answer([b"data: [DONE]"], "mlx-server"),
+     "broken", "grounded answer stream lacks terminal reason"),
+    ("_iter_local_stream", _p_grounded_answer([b'data: {"error":"boom"}'], "mlx-server"),
+     "broken", "boom"),
+    ("_iter_local_stream", _p_grounded_answer([b'data: {"choices":[]}'], "mlx-server"),
+     "broken", "invalid grounded answer SSE"),
+    ("_iter_local_stream", _p_grounded_answer([b'data: {"choices":[{"delta":{"content":1}}]}'], "mlx-server"),
+     "broken", "invalid grounded answer token"),
+    ("_iter_local_stream", _p_grounded_answer(
+        [b'data: {"choices":[{"delta":{"content":"a"},"finish_reason":"unsupported"}]}'], "mlx-server"),
+     "broken", "grounded answer unsupported terminal reason"),
+    ("_iter_local_stream", _p_grounded_answer([b'{"error":"boom"}']),
+     "broken", "boom"),
+    ("_iter_local_stream", _p_grounded_answer([b'{"message":{"content":"a"},"done":true,"done_reason":"unsupported"}']),
+     "broken", "grounded answer unsupported terminal reason"),
+    ("_iter_local_stream", _p_grounded_answer([]),
+     "broken", "grounded answer stream ended without completion"),
     ("stream", _p_stream_error, "broken", "boom"),
     ("stream", _p_stream_unterminated, "broken", "стрим оборван"),
     ("_ndjson_chunk", _p_ndjson_form, "broken", "неожиданная форма"),
@@ -235,10 +286,10 @@ def test_каталог_покрывает_каждое_место_отказа(
     мест, — по ветке на статус; остальные — строка на место."""
     sites = _fail_sites()
     rows = Counter(row[0] for row in CATALOG)
-    per_status = {"_open_stream": 1, "_checked_body": 1}   # у _checked_body второе место — поле error
+    per_status = {"_open_stream": 1, "_checked_body": 1, "_iter_local_stream": 8}
     expected_rows = Counter({fn: n + per_status.get(fn, 0) for fn, n in sites.items()})
     assert rows == expected_rows, (dict(sites), dict(rows))
-    assert sum(sites.values()) == 16
+    assert sum(sites.values()) == 26  # local-feed and grounded_answer share _iter_local_stream
 
 
 def test_явный_вид_только_у_синтетических_отказов():

@@ -18,12 +18,17 @@ AST по `src/` собирает вызовы `threads.spawn`/`threads.timer` с
 import ast
 import pathlib
 
+import pytest
+
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
 
 #: Утверждённые брошенные потоки, парами (путь от `src/`, имя потока).
 #: Пара повторяется столько раз, сколько вызовов: сторож авто-подсказок
-#: заводит `auto-hint` и в старте, и в перезапуске — один слой, два места.
+#: заводит `auto-hint` в старте и перезапуске; grounded вместо старта модели
+#: паркует отдельный `stop.wait` до того же конца встречи.
 DETACHED: tuple[tuple[str, str], ...] = (
+    # Task 859: quarantine must keep an unconfirmed child/lease after a cancelled step exits.
+    ("cancellable_http.py", "http-quarantine"),
     ("daemon.py", "import-prune"),
     ("daemon.py", "orphan-rebuild-chain"),
     ("daemon.py", "llm-warmup"),
@@ -34,6 +39,7 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("daemon.py", "fast-trigger-sender"),
     ("daemon.py", "hint-manual"),
     ("daemon.py", "answer-ask"),
+    ("daemon.py", "grounded-answer"),
     ("daemon.py", "topic-expand"),
     ("daemon.py", "summary-manual"),
     ("daemon.py", "stt-loop"),
@@ -49,6 +55,9 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("daemon.py", "stdin-loop"),
     ("daemon.py", "autostop-loop"),
     ("daemon.py", "auto-hint"),
+    ("daemon.py", "auto-hint"),
+    # Grounded's watchdog placeholder waits only for the meeting stop event;
+    # the contract below forbids treating a third model loop as this exemption.
     ("daemon.py", "auto-hint"),
     ("decision_gate.py", "gate-shadow"),
     # сторож родителя в ребёнке потока Nemotron (№540): живёт, пока жив процесс движка,
@@ -162,6 +171,37 @@ def test_список_detached_совпадает_с_кодом():
     пропали = [p for p in DETACHED if DETACHED.count(p) > pairs.count(p)]
     assert not лишние, f"брошены без решения (вне списка): {лишние}"
     assert not пропали, f"в списке, а в коде нет: {пропали}"
+
+
+def _auto_hint_layout_valid(source: str) -> bool:
+    calls = [node for node in _spawn_calls(ast.parse(source))
+             if any(keyword.arg == "name" and _literal(keyword.value) == "auto-hint"
+                    for keyword in node.keywords)]
+    if len(calls) != 3 or any(not node.args for node in calls):
+        return False
+    if sorted(ast.unparse(node.args[0]) for node in calls if node.args) != [
+            "auto_hint_loop", "auto_hint_loop", "stop.wait"]:
+        return False
+    parked = next(node for node in calls if ast.unparse(node.args[0]) == "stop.wait")
+    keywords = {keyword.arg: keyword.value for keyword in parked.keywords}
+    return (len(parked.args) == 1 and "args" not in keywords and "kwargs" not in keywords
+            and _literal(keywords.get("role")) == "meeting")
+
+
+def test_grounded_auto_hint_exemption_only_parks_until_meeting_stop():
+    assert _auto_hint_layout_valid((SRC / "daemon.py").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("replacement", [
+    'auto_hint_loop, name="auto-hint", role="meeting",',
+    'stop.wait, args=(0.1,), name="auto-hint", role="meeting",',
+    'stop.wait, name="auto-hint", role="process",',
+])
+def test_grounded_auto_hint_exemption_rejects_model_or_changed_lifetime(replacement):
+    source = (SRC / "daemon.py").read_text(encoding="utf-8")
+    original = 'stop.wait, name="auto-hint", role="meeting",'
+    assert source.count(original) == 1
+    assert not _auto_hint_layout_valid(source.replace(original, replacement))
 
 
 def test_у_detached_потока_роль_и_причина_на_месте():

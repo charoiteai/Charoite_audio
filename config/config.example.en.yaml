@@ -54,6 +54,9 @@ llm:
   # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
+  # App-managed MLX startup only: positive integer, never null/string/float/bool.
+  # Omitted: legacy classic argv; live_feed selects 128. No healthy-server restart.
+  # mlx_prefill_step_size: 128
   model: qwen3.6:35b-a3b             # main model (hints, summaries, names)
   small_model: qwen3.5:4b            # light model (theses, classification) — 3.4GB
   fallback_model: gemma4:latest
@@ -69,6 +72,12 @@ llm:
   # ledger_keep_days: 0
 
 sufler:
+  # Local sequential meeting feed (topics, facts, questions and answers in one live pane).
+  live_feed: true
+  # Optional local model role; omitted means llm.model. mlx-server uses llm.mlx_model.
+  feed_model: null
+  auto_hint: true
+  auto_expand: true
   # --- owner ---
   user_name: ""           # your name: labels your microphone and addresses you in hints
   user_context: ""        # 1-2 sentences about you/your work — context for answers
