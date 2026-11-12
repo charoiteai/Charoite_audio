@@ -1,0 +1,138 @@
+{
+  "status": "complete_local",
+  "code_sha": "18712e58d759bc3b72765260a3488f8c6e817bca",
+  "latest_fixture_sha": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+  "runtime_source_unchanged": true,
+  "before_new_tests": {
+    "failed": 11,
+    "passed": 0,
+    "warnings": 8,
+    "cause": "backup overwrites occupied names or publishes partial files; legacy cleanup warnings tracked separately"
+  },
+  "targeted_after": {
+    "passed": 283,
+    "duration_s": 6.15,
+    "files": [
+      "tests/test_dossier_backup_collision.py",
+      "tests/test_dossier.py",
+      "tests/test_dossier_queue.py",
+      "tests/test_nightly_cloud_reports.py",
+      "tests/test_safe_write.py"
+    ]
+  },
+  "full_before_fixture_adjustment": {
+    "passed": 11154,
+    "failed": 26,
+    "skipped": 8,
+    "xfailed": 7,
+    "duration_s": 210.95,
+    "failures": {
+      "same_timestamp_legacy_fixtures": 25,
+      "missing_probe_layout_rule": 1
+    }
+  },
+  "fixture_adjustment": {
+    "status": "PASS",
+    "description": "Separate logical timestamps, exact historical probe classification, valid two-topic index preservation check",
+    "tested_sha": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b"
+  },
+  "outstanding": [],
+  "manual_mutation_recipes": [
+    {
+      "name": "overwrite",
+      "from": "os.link(staged.name, dst)",
+      "to": "shutil.copy2(staged.name, dst)"
+    },
+    {
+      "name": "skip-publication",
+      "from": "os.link(staged.name, dst)",
+      "to": "pass"
+    },
+    {
+      "name": "swallow-collision",
+      "from": "        os.link(staged.name, dst)",
+      "to": "        try:\n            os.link(staged.name, dst)\n        except FileExistsError:\n            pass"
+    },
+    {
+      "name": "lose-metadata",
+      "from": "shutil.copy2(path, staged.name)",
+      "to": "shutil.copyfile(path, staged.name)"
+    },
+    {
+      "name": "leave-staging",
+      "from": "prefix=\".backup-\", suffix=\".tmp\")",
+      "to": "prefix=\".backup-\", suffix=\".tmp\", delete=False)"
+    }
+  ],
+  "mutant_test_targets": [
+    "tests/test_dossier_backup_collision.py",
+    "tests/test_dossier_queue.py::test_same_stamp_collision_keeps_current_dossier_and_index",
+    "tests/test_nightly_cloud_reports.py::test_same_stamp_backup_collision_refuses_only_affected_review"
+  ],
+  "mutation_execution": "PASS: baseline13 and all five intended fault failures on the tested snapshot; exact reasons independently read from JUnit/logs, no setup/collection errors. See fault-result.json.",
+  "tested_sha": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+  "regression_after": {
+    "tested_sha": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+    "passed": 459,
+    "failed": 0,
+    "duration_s": 76.31,
+    "junit_sha256": "31ac6ec206accc2aa4ff6056f4345170ce2ee30eac29e35208e588b7986aa3f5",
+    "files": [
+      "tests/test_dossier_parser_contract.py",
+      "tests/test_dossier_incremental.py",
+      "tests/test_nightly_cloud_reports.py",
+      "tests/test_import_boundaries.py"
+    ]
+  },
+  "full_after": {
+    "tested_sha": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+    "passed": 11180,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 8,
+    "xfailed": 7,
+    "duration_s": 193.88,
+    "junit_sha256": "d571f93a6365dc81dd9797fbbcde780d35b9f9aeb5e048f0be2a4e7095193d3f",
+    "skip_scope": "8 unrelated model/filesystem-dependent skips; 7 existing expected failures in decision merge/forgetting. No changed behavior test skipped."
+  },
+  "canonical_mutation": {
+    "tested_sha": "edde74f6b3e74ea6397de2bf6a192940e1dae1b7",
+    "base_sha": "4e17fb327f4be9ccf4f4f46086d21abf34e7c5dd",
+    "exit_code": 8,
+    "word": "unmutable",
+    "mutants": 0,
+    "unread_files": 0,
+    "changed_lines": 10,
+    "ast_nodes": 27,
+    "reuse_at": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+    "reuse_reason": "No diff in src/, scripts/, docs/design/layout.json; changed diagnostics classified history and tests/docs excluded. This is not a mutation score or a new execution."
+  },
+  "probe_reuse": {
+    "artifact": "after-result.json",
+    "tested_code_sha": "18712e58d759bc3b72765260a3488f8c6e817bca",
+    "verified_source_hashes_at": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+    "reason": "Both recorded production source hashes match current files; Python3.12.13/Darwin and synthetic inputs unchanged. No fresh probe execution claimed."
+  },
+  "delivery": {
+    "scope": "Local synthetic reproduction and verified fix",
+    "published": false,
+    "installed": false,
+    "ci_executed": false,
+    "note": "Publication and installation were not performed; future delivery retains project privacy/CI/install gates."
+  },
+  "review": {
+    "models": [
+      "gpt-6.1-terra",
+      "gpt-6-luna",
+      "gpt-6.1-sol"
+    ],
+    "runtime_output_sha": "18712e58d759bc3b72765260a3488f8c6e817bca",
+    "critical_findings": 0,
+    "accepted_important": [
+      "Real two-topic index oracle",
+      "Fault control preserves staging and requires intended failure reasons"
+    ],
+    "final_delta_sha": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+    "final_delta_review": "Luna static readback; actual regression/full/fault runs passed afterwards."
+  }
+}

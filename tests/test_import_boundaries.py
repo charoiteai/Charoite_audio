@@ -600,8 +600,11 @@ APPROVED_KINDS = (
     ("docs/design/layout.md", "out", "git"),
     ("docs/diagnostics/nightly-947/causal-control.py", "history", "git"),
     ("docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py", "history", "git"),
+    ("reports/handoff/tasks/1020_search_benchmark.py", "history", "git"),
     ("reports/handoff/tasks/818_baseline_probe.py", "history", "git"),
     ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git"),
+    ("reports/handoff/tasks/875_backup_collision/reproduce.py", "history", "git"),
+    ("reports/handoff/tasks/875_backup_collision/fault_controls.py", "history", "git"),
     ("tests/", "out", "git"),
     ("app/Tests/", "out", "git"),
     ("app-ios/", "out", "git"),
@@ -628,6 +631,7 @@ APPROVED_KINDS = (
 #: иначе. Ожидание независимо от `decide` (Important DS круга 6: сверка решения
 #: с самим собой не проверка).
 RULE_DEPENDENT = {
+    "reports/handoff/tasks/1020_search_benchmark.py": "history",
     "app-ios/README.md": "out", "app-ios/project.yml": "out", "app-android/README.md": "out",
     "app-android/gradle/libs.versions.toml": "out", "app/Tests/X.swift": "out", "tests/README.md": "out",
     "docs/reviews/2026-07-30-x.md": "history", "CHANGELOG.md": "history", "devlog/_posts/2026-08-19-x.md": "history",

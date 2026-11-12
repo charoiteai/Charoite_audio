@@ -37,6 +37,14 @@ def complete(body=BODY, manual="owner-note"):
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     nd = script("nightly_dossier")
+    from datetime import datetime, timedelta
+    from itertools import count
+    from types import SimpleNamespace
+    # These are separate logical nightly runs. Collision refusal is tested
+    # with deliberately frozen time in test_dossier_queue.
+    base, ticks = datetime.now(), count()
+    monkeypatch.setattr(nd, "datetime", SimpleNamespace(
+        now=lambda: base + timedelta(seconds=next(ticks))))
     graph = tmp_path / "graph"
     for folder in ("Ядра", "Встречи", "Досье"):
         (graph / folder).mkdir(parents=True)
@@ -355,8 +363,8 @@ def test_E01_P02_actual_review_splices_twice(world, monkeypatch, labels_only, ex
     fixed = BODY.replace("body-tail", "body-tail ⚠️ [[Source]]")
     monkeypatch.setattr(ndr, "review", lambda *a, **k: (fixed, ndr.LABELS_ONLY if labels_only else ""))
     cfg = {"sufler": {"cloud_enrich": True, "cloud_mask": False, "cloud_edit_graph": True}}
-    stamp = "2026-11-03_030000"
-    for _ in range(2):
+    for iteration in range(2):
+        stamp = f"2026-11-03_03000{iteration}"
         assert ndr._review_loop(graph, path.parent, {"Sample": members}, files, [path], stamp, "double", cfg,
                                 dry=False, limit=1, may_edit=True, lock_dir=graph / "locks") == 1
     text = path.read_bytes()

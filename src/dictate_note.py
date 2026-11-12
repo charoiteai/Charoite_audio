@@ -37,11 +37,7 @@ CODE = code_root(__file__)
 
 
 def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
-
-    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
-    входа успевала назвать корень (замер 21.09, №329).
-    """
+    """Resolve the data root at call time: configuration may change after import."""
     return resolve_root(__file__)
 
 SR = 16000
