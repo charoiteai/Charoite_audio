@@ -1,13 +1,13 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 97.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 98.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
 - **base** (зависит от: —; модулей 18): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `dossier_telemetry`, `exit_codes`, `file_locks`, `jsonl_log`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
-- **runtime** (зависит от: base; модулей 7): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`
+- **runtime** (зависит от: base; модулей 8): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `machine_power`, `privacy`, `scratch_files`
 - **llm** (зависит от: base, runtime; модулей 6): `decision_gate`, `llm`, `llm_health`, `model_lease`, `model_ledger`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 6): `cloud`, `night_cloud`, `pii_fake`, `pii_fake_pool`, `pii_mask`, `pii_ner`
@@ -278,6 +278,7 @@
 - `docs/design/layout.md` — out (git): карта — производная замера, не источник
 - `docs/diagnostics/nightly-947/causal-control.py` — history (git): сохранённый автономный контроль исторического опыта; не модуль и не точка входа продукта
 - `docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py` — history (git): первый автономный контроль исторического опыта, сохранён для воспроизводимости
+- `reports/handoff/tasks/1020_search_benchmark.py` — history (git): saved synthetic search benchmark for refactor verification; not a product entry point
 - `reports/handoff/tasks/818_baseline_probe.py` — history (git): синтетический снимок базового разбора №818: привязан к SHA и blob manifest, не точка входа продукта
 - `reports/handoff/tasks/818_out1_admission_probe.py` — history (git): синтетическое воспроизведение OUTPUT №818 с закреплёнными base/source SHA, не точка входа продукта
 - `tests/` — out (git): тесты строят синтетические деревья: пути в них — не факты о репозитории

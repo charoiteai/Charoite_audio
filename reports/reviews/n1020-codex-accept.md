@@ -74,3 +74,7 @@ The implementation is staged in the dedicated worktree and saved as a full patch
 No push, PR, merge, release or installed application change was performed.
 Range-based mutation/CI acceptance remains pending; the targeted cleanup mutant
 and complete local pytest result are real completed checks.
+
+## Publication and architecture registration follow-up
+
+Published candidate `ea47349c505baf6f72febc1b04065464821efa81` passed canonical privacy and ordinary commit/pre-push hooks. CI exposed missing tracked-file architecture registration that the earlier pre-commit local run did not detect. Register `scratch_files` in runtime: its default temporary directory consumes process environment, so base would be incorrect. Classify the exact saved benchmark path as history, update the independent classification contract, and regenerate the architecture map. Runtime code remains unchanged. Full CI and merge remain pending for this correction.
