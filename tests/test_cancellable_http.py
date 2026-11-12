@@ -281,11 +281,11 @@ def test_cancellable_http_cli_requires_worker_flag():
 
 
 @pytest.fixture
-def synthetic_worker(tmp_path, monkeypatch):
+def synthetic_worker(tmp_path, monkeypatch, request):
     """Real owned child/pipe; no socket, model, configuration or meeting data."""
     import os
 
-    root = tmp_path / "worker"
+    root = tmp_path / getattr(request, "param", "worker")
     script = root / "src" / "cancellable_http.py"
     script.parent.mkdir(parents=True)
     monkeypatch.setattr(cancellable_http.charoite_paths, "code_root", lambda _path: root)
@@ -566,3 +566,96 @@ def test_invalid_preheader_budget_does_not_spawn(monkeypatch, timeout):
             "http://127.0.0.1:1", {}, timeout,
             cancel_event=threading.Event(), request_kwargs={},
         )
+
+
+@pytest.mark.parametrize("synthetic_worker", ["Example.app", "Пример.app"], indirect=True)
+@pytest.mark.parametrize("locale", ["C", "C.UTF-8", "en_US.UTF-8"])
+def test_live_unicode_worker_closes_under_inherited_locale(synthetic_worker, monkeypatch, locale):
+    import os
+    import signal
+    import threading
+
+    monkeypatch.setenv("LC_ALL", locale)
+    children = synthetic_worker(
+        "sys.stdin.buffer.readline()\n"
+        "print(json.dumps({'kind': 'head', 'status': 200}), flush=True)\n"
+        "print(json.dumps({'kind': 'line', 'text': 'complete'}), flush=True)\n"
+        "print(json.dumps({'kind': 'end'}), flush=True)\n"
+        "time.sleep(7)\n"
+    )
+    with cancellable_http.ProcessResponse(
+        "http://127.0.0.1:1", {}, (2, 2),
+        cancel_event=threading.Event(), request_kwargs={},
+    ) as response:
+        assert list(response.iter_lines()) == [b"complete"]
+        assert children[0].poll() is None
+    # A live worker is identified and reaped, rather than waiting for its exit.
+    assert children[0].returncode == -signal.SIGTERM
+    assert children[0].stdin.closed and children[0].stdout.closed
+    assert os.environ["LC_ALL"] == locale
+
+
+@pytest.mark.parametrize("polls", [
+    [None, None, 0],
+    [None] * (2 * cancellable_http._PROBE_ATTEMPTS) + [0],
+])
+def test_unknown_exit_representation_is_reaped_before_refusal(monkeypatch, polls):
+    probes = []
+
+    def probe(argv, **_kwargs):
+        probes.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=b"(python3.12)\n")
+
+    monkeypatch.setattr(cancellable_http.subprocess, "run", probe)
+    monkeypatch.setattr(cancellable_http.time, "sleep", lambda _seconds: None)
+    assert response_with(FakeProc(polls))._check_owned_command() is False
+    assert 1 <= len(probes) <= cancellable_http._PROBE_ATTEMPTS
+
+
+@pytest.mark.parametrize("eventually_owned", [False, True])
+def test_unknown_command_never_gets_signalled_before_expected_command(monkeypatch, eventually_owned):
+    from types import SimpleNamespace
+
+    events = []
+    expected = str(cancellable_http.charoite_paths.code_root(cancellable_http.__file__)
+                   / "src/cancellable_http.py")
+
+    class Child:
+        pid = 4242
+        stdin = stdout = None
+        exited = False
+
+        def poll(self):
+            return 0 if self.exited else None
+
+        def terminate(self):
+            events.append("terminate")
+
+        def kill(self):
+            pytest.fail("normal confirmed shutdown must not need kill")
+
+        def wait(self, timeout=None):
+            events.append("wait")
+            self.exited = True
+            return 0
+
+    def probe(argv, **_kwargs):
+        owned = eventually_owned and "unknown" in events
+        events.append("owned" if owned else "unknown")
+        command = expected + " --http-worker" if owned else "/unrelated/worker --http-worker"
+        return subprocess.CompletedProcess(argv, 0, stdout=command.encode())
+
+    monkeypatch.setattr(cancellable_http.subprocess, "run", probe)
+    monkeypatch.setattr(cancellable_http.time, "sleep", lambda _seconds: None)
+    response = response_with(Child())
+    response._closed = response._quarantined = False
+    response._selector = SimpleNamespace(close=lambda: events.append("dispose"))
+    if eventually_owned:
+        response.close()
+        assert events == ["unknown", "owned", "terminate", "wait", "dispose"]
+        assert response._closed
+    else:
+        with pytest.raises(cancellable_http.CleanupIncomplete):
+            response.close()
+        assert events == ["unknown"] * cancellable_http._PROBE_ATTEMPTS
+        assert not response._closed
