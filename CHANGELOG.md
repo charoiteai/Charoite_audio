@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.105.0](https://github.com/charoiteai/Charoite_audio/compare/v0.104.0...v0.105.0) (2026-11-12)
+
+
+### Features
+
+* **sufler:** add local chronological meeting feed with bounded cancellable transport ([2cf1c54](https://github.com/charoiteai/Charoite_audio/commit/2cf1c5465406549432f2a9203cc72310e0253686))
+
+
+### Bug Fixes
+
+* preserve live feed on worker cleanup refusal ([#930](https://github.com/charoiteai/Charoite_audio/issues/930)) ([68b53e3](https://github.com/charoiteai/Charoite_audio/commit/68b53e31624e61ec7fda058d094969adc137cc9d))
+* preserve the first dossier backup on timestamp collision ([#927](https://github.com/charoiteai/Charoite_audio/issues/927)) ([e22118c](https://github.com/charoiteai/Charoite_audio/commit/e22118c30dec61dc109fd6932792d6ba05f88403))
+
 ## [0.104.0](https://github.com/charoiteai/Charoite_audio/compare/v0.103.1...v0.104.0) (2026-11-11)
 
 
