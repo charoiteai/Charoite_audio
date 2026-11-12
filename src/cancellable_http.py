@@ -155,6 +155,9 @@ class ProcessResponse:
             try:
                 result = subprocess.run(
                     ["/bin/ps", "-ww", "-p", str(proc.pid), "-o", "command="],
+                    # macOS ps escapes non-ASCII paths in the C locale.
+                    # Keep its rendering aligned with the UTF-8 decoder below.
+                    env={**os.environ, "LC_ALL": "en_US.UTF-8"},
                     capture_output=True, timeout=_PROBE_TIMEOUT_S)
             except (OSError, subprocess.TimeoutExpired):
                 if proc.poll() is not None:
@@ -170,8 +173,12 @@ class ProcessResponse:
             if result.returncode == 0:
                 if expected in command and "--http-worker" in command:
                     return True
-                raise CleanupIncomplete(self)
+                # ps may observe a short-lived exit representation before
+                # waitpid can reap it. Retry without trusting or signalling an
+                # unknown command; persistent mismatches still fail closed.
             time.sleep(_PROBE_RETRY_S)
+        if proc.poll() is not None:
+            return False
         raise CleanupIncomplete(self)
 
     def quarantine(self, lease, call):

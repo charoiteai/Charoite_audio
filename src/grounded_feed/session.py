@@ -128,6 +128,7 @@ class GroundedFeedSession:
         self._manual_gen_seq = 0
         self._active_manual: ManualGenerationToken | None = None
         self._auto_feed_enabled = True
+        self._local_generation_blocked = False
 
     # ---- legacy-compatible readonly facade ------------------------------
     @property
@@ -359,13 +360,33 @@ class GroundedFeedSession:
         with self._lock:
             if self.closed or self._closing or self.publisher.paused:
                 return None
-            if self._local_runner is None or not self._auto_feed_enabled:
+            if (self._local_runner is None or not self._auto_feed_enabled
+                    or self._local_generation_blocked):
                 return None
             local_runner = self._local_runner
             self._step_serial += 1
             request_id = f"feed_step_{self._step_serial}"
         # Model I/O must never hold the session/actor locks.
-        outcome = local_runner.run_next(request_id)
+        from cancellable_http import CleanupIncomplete
+
+        try:
+            outcome = local_runner.run_next(request_id)
+        except CleanupIncomplete:
+            # This boundary is outside the runner's model slot. The slot and
+            # lease must see the exception first and retain their quarantine.
+            # Keep accepting speech, but never retry generation in this session.
+            with self._lock:
+                first_failure = not self._local_generation_blocked
+                self._local_generation_blocked = True
+            if first_failure:
+                self.publisher.status(
+                    "Живая нить остановлена: завершение запроса к модели не подтверждено. "
+                    "Запись продолжается; после её остановки начните новую сессию."
+                    if getattr(local_runner.llm, "lang", "ru") == "ru" else
+                    "Live feed stopped: model request cleanup could not be confirmed. "
+                    "Recording continues; start a new session after stopping it."
+                )
+            return {"status": "quarantined", "reason": "cleanup_unconfirmed"}
         if isinstance(outcome, dict) and outcome.get("status") in ("committed", "skipped"):
             self.publish()
         return outcome
@@ -804,7 +825,7 @@ class GroundedFeedSession:
                     want = bool(enabled())
                     if want != self._auto_feed_enabled:
                         self.set_auto_feed_enabled(want)
-                if not self._auto_feed_enabled:
+                if not self._auto_feed_enabled and not self._local_generation_blocked:
                     stop.wait(self.interval_s)
                     continue
                 self.step()

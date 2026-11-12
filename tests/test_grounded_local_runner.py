@@ -1587,3 +1587,107 @@ def test_context_accepts_exact_empty_schema_budget():
     assert local_feed_context([], max_chars=len(empty)) == empty
     with pytest.raises(ValueError, match="context.*budget"):
         local_feed_context([], max_chars=len(empty) - 1)
+
+
+def test_cleanup_refusal_keeps_source_loop_and_poisoned_slot(tmp_path):
+    """Exercise the real daemon slot and session boundary without audio/model I/O."""
+    import ast
+    from pathlib import Path
+
+    daemon_path = Path(__file__).resolve().parents[1] / "src" / "daemon.py"
+    tree = ast.parse(daemon_path.read_text())
+    slot_node = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef) and node.name == "hint_slot")
+    lock = threading.Lock()
+    errors = []
+    events = []
+
+    def emit_error(text):
+        errors.append(text)
+        events.append({"type": "status", "error": True, "text": text})
+
+    scope = {"contextlib": contextlib, "hint_lock": lock,
+             "manual_evt": threading.Event(), "emit_error": emit_error,
+             "cancellable_http": cancellable_http}
+    exec(compile(ast.Module(body=[slot_node], type_ignores=[]), str(daemon_path), "exec"), scope)
+    slot = scope["hint_slot"]
+
+    session = GroundedFeedSession(events.append, interval_s=0.0)
+    transcript = Transcript(tmp_path)
+    bind_product_source(session, transcript, SourceProducerCutoff(lambda _t: True),
+                        source_only_notice=False, local_product_authority=True)
+    transcript.add("Первое синтетическое сообщение.", speaker="Ведущий")
+    stop = threading.Event()
+    calls = []
+    quarantine = []
+    lease_exits = []
+    lease = SimpleNamespace(__exit__=lambda *_args: lease_exits.append(True))
+
+    class Response:
+        def __exit__(self, *_args):
+            raise cancellable_http.CleanupIncomplete(self)
+
+        def quarantine(self, held_lease, call):
+            quarantine.append((held_lease, call))
+
+    def feed(*_args, **_kwargs):
+        calls.append(True)
+        with LLM._LeasedStream(Response(), lease):
+            yield '{"items":[{"topic":"План","text":"Не подтверждённый результат."}]}'
+
+    llm = _fake_llm(feed_fn=feed)
+    runner = LocalFeedRunner(
+        session._actor, transcript, llm, LocalLoopbackAuthority.verify(llm),
+        slot=slot, stop=stop, priority=threading.Event(),
+        enabled=lambda: True, interval_s=0.0,
+    )
+    session.attach_local_runner(runner)
+    enabled = [True]
+    waits = []
+    outcomes = []
+    real_step = session.step
+
+    def observed_step():
+        outcome = real_step()
+        outcomes.append(outcome)
+        return outcome
+
+    session.step = observed_step
+
+    def advance(_timeout=None):
+        waits.append(True)
+        if len(waits) == 1:
+            assert session._local_generation_blocked
+            assert outcomes == [{"status": "quarantined", "reason": "cleanup_unconfirmed"}]
+            enabled[0] = False
+            transcript.add("Второе синтетическое сообщение.", speaker="Ведущий")
+        elif len(waits) == 2:
+            assert session.source_ingested == 2
+            enabled[0] = True
+            transcript.add("Третье синтетическое сообщение.", speaker="Ведущий")
+        else:
+            stop.set()
+        return stop.is_set()
+
+    stop.wait = advance
+    session.run(stop, enabled=lambda: enabled[0])
+
+    assert len(calls) == 1
+    assert quarantine == [(lease, None)]
+    assert lease_exits == []
+    assert lock.locked()
+    assert session.source_ingested == 3
+    assert session._actor.semantic.state.local_speech_cursor == (0, 0)
+    assert not any("Не подтверждённый результат" in event.get("text", "") for event in events)
+    notices = [event for event in events if event.get("type") == "status"
+               and "завершение запроса" in event.get("text", "")]
+    assert len(notices) == 1
+    # The existing slot error and the localized recovery status share the wire.
+    cleanup_errors = [event for event in events if event.get("error") is True
+                      and "quarantined" in event.get("text", "")]
+    assert len(cleanup_errors) == 1
+    with slot("manual", timeout=0) as admitted:
+        assert admitted is False
+    assert any("занят" in error for error in errors)
+    assert len(calls) == 1
+    assert stop.is_set()
