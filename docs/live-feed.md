@@ -107,7 +107,7 @@ delivery and response headers; it does not impose a total generation deadline.
 | Channel loss/return during generation | System entries retained in all snapshots, transcript notes and sidecar |
 | Two manual requests and timeout of one | Separate pending registrations; manual answer works while chip is off |
 | Connect, headers, first token, read, busy backoff | Cancel client, reap child, close lease; verify actual server work separately |
-| Classic/opt-in configuration and local model role | Retain legacy defaults; suppress competing feed writers; no cloud calls |
+| Existing classic configuration, enabled examples and local model role | Retain legacy defaults; suppress competing feed writers; no cloud calls |
 | Launched isolated UI | Scroll up/down, ask a manual question, update feed, Stop and new meeting |
 | Three invented quality scenes, 18 criteria | Actual model inputs/outputs and human assessment; criteria never sent to model |
 
