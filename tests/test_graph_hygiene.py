@@ -56,12 +56,14 @@ def test_quote_check_rejects_unverifiable_chinese():
 
 
 @pytest.mark.parametrize("module", ["transcribe_file", "diarize"])
-def test_scratch_dir_is_removed_with_the_process(module):
+@pytest.mark.parametrize("removed_before_exit", [False, True])
+def test_scratch_dir_is_removed_with_the_process(module, removed_before_exit):
     """Копия полного аудио не должна пережить процесс."""
     code = (
         "import sys; sys.path.insert(0, 'src');"
         f"import {module} as tf;"
-        "d = tf._scratch_dir(); assert d.is_dir(); (d / 'probe.wav').write_bytes(b'x'); print(d)"
+        "d = tf._scratch_dir(); assert d.is_dir(); (d / 'probe.wav').write_bytes(b'x'); print(d);"
+        + ("import shutil; shutil.rmtree(d)" if removed_before_exit else "")
     )
     root = pathlib.Path(__file__).resolve().parent.parent
     out = subprocess.run([sys.executable, "-c", code], capture_output=True,
@@ -71,6 +73,7 @@ def test_scratch_dir_is_removed_with_the_process(module):
     path = pathlib.Path(lines[0])
     assert path.is_absolute() and path.name.startswith("charoite-")
     assert not path.exists(), f"временная копия аудио осталась в {path}"
+    assert "Exception ignored in atexit callback" not in out.stderr, out.stderr
 
 
 def test_canonical_does_not_glue_short_names_to_long_nodes(tmp_path):
