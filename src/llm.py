@@ -1043,6 +1043,7 @@ class LLM:
         else:
             self.validate_local_model_tag(selected)
             payload = {"model": selected, "messages": messages, "stream": True,
+                       "truncate": False, "shift": False,
                        "think": False, "keep_alive": self._chat_keep_alive(),
                        "options": {"temperature": 0.7, "top_p": 0.8, "top_k": 20,
                                    "repeat_penalty": 1.1, "num_ctx": self.num_ctx, "num_predict": 600}}
@@ -1075,6 +1076,7 @@ class LLM:
         else:
             selected = self.require_local_ollama_model(selected)
             payload = {"model": selected, "messages": messages, "stream": True,
+                       "truncate": False, "shift": False,
                        "think": False, "keep_alive": self._chat_keep_alive(),
                        "options": {"temperature": temp, "num_ctx": self.num_ctx,
                                    "num_predict": num_predict}}
