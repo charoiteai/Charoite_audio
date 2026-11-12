@@ -354,6 +354,7 @@ def synthetic_worker(tmp_path, monkeypatch, request):
         if child.poll() is None:
             command = subprocess.run(
                 ["/bin/ps", "-ww", "-p", str(child.pid), "-o", "command="],
+                env={**os.environ, "LC_ALL": "en_US.UTF-8"},
                 capture_output=True, text=True, timeout=1,
             ).stdout
             assert str(script) in command and "--http-worker" in command
@@ -657,5 +658,6 @@ def test_unknown_command_never_gets_signalled_before_expected_command(monkeypatc
     else:
         with pytest.raises(cancellable_http.CleanupIncomplete):
             response.close()
-        assert events == ["unknown"] * cancellable_http._PROBE_ATTEMPTS
+        assert events and set(events) == {"unknown"}
+        assert len(events) <= cancellable_http._PROBE_ATTEMPTS
         assert not response._closed

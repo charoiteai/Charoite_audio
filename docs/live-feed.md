@@ -94,6 +94,14 @@ local server request, including prefill, within five seconds. Reaping
 the HTTP client is measured separately and does not establish server completion.
 If cleanup cannot confirm its owned child, the model slot is quarantined rather
 than allowing an overlapping request.
+The process probe uses UTF-8 command rendering so Unicode application paths
+remain recognizable under the C locale. Unknown command representations are
+retried within a bounded interval; no signal is sent without confirming ownership.
+If cleanup still cannot be confirmed, the feed reports the failure and continues
+accepting source speech without publishing the unfinished response. Automatic
+generation stays blocked for that session, even after toggling the feed off and
+on; manual requests remain subject to the quarantined slot. Recording is
+independent: stop it normally, then start a new session to restore generation.
 Request delivery to the owned child uses nonblocking writes with cancellation
 polling. One connect-plus-read timeout budget covers child startup, request
 delivery and response headers; it does not impose a total generation deadline.
@@ -128,6 +136,14 @@ meetings. This implementation neither reads nor ships such data.
 запроса модели при остановке нет. При чтении выше лента сама не прокручивается.
 Примеры конфигурации включают ленту; без ключа сохраняется классический режим.
 Остановка серверного запроса проверяется отдельно для конкретной модели и профиля.
+Проверка процесса использует UTF-8, чтобы кириллица в пути приложения не вызывала
+ложный отказ при локали C. Неизвестное представление команды проверяется повторно
+ограниченное число раз; без подтверждения принадлежности сигнал не отправляется.
+Если завершение запроса подтвердить не удалось, нить показывает ошибку и
+продолжает принимать речь, не публикуя незавершённый ответ. Автогенерация остаётся
+заблокированной до конца сессии, включая выключение и включение плашки; ручные
+запросы также ограничены карантином слота. Запись работает независимо: завершите
+её штатно, затем начните новую сессию для восстановления генерации.
 Необязательный `llm.mlx_prefill_step_size` — положительное целое для следующего
 запуска MLX силами приложения. При отсутствии ключа classic сохраняет прежние
 аргументы, а лента выбирает 128. Явные null, bool, дробь, строка, ноль и
