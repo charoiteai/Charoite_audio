@@ -278,3 +278,170 @@ def test_cancellable_http_cli_requires_worker_flag():
     )
     assert cli.returncode == 2
 
+
+
+@pytest.fixture
+def synthetic_worker(tmp_path, monkeypatch):
+    """Real owned child/pipe; no socket, model, configuration or meeting data."""
+    root = tmp_path / "worker"
+    script = root / "src" / "cancellable_http.py"
+    script.parent.mkdir(parents=True)
+    monkeypatch.setattr(cancellable_http.charoite_paths, "code_root", lambda _path: root)
+    real_popen = subprocess.Popen
+    children = []
+
+    def record_child(argv, **kwargs):
+        child = real_popen(argv, **kwargs)
+        if len(argv) > 1 and argv[1] == str(script):
+            children.append(child)
+        return child
+
+    monkeypatch.setattr(cancellable_http.subprocess, "Popen", record_child)
+
+    def configure(body):
+        # Safety bound survives a regression in the parent's cancellation path.
+        script.write_text("import sys, os, signal, time, json, hashlib\n"
+                          "signal.alarm(8)\n" + body)
+        return children
+
+    yield configure
+    for child in children:
+        if child.poll() is None:
+            command = subprocess.run(
+                ["/bin/ps", "-ww", "-p", str(child.pid), "-o", "command="],
+                capture_output=True, text=True, timeout=1,
+            ).stdout
+            assert str(script) in command and "--http-worker" in command
+            child.terminate()
+            child.wait(timeout=2)
+        for stream in (child.stdin, child.stdout):
+            if stream is not None:
+                stream.close()
+
+
+def test_cancel_interrupts_backpressured_request(synthetic_worker):
+    import threading
+    import time
+
+    children = synthetic_worker("time.sleep(7)\n")
+    cancel = threading.Event()
+    timer = threading.Timer(0.2, cancel.set)
+    start = time.monotonic()
+    timer.start()
+    try:
+        with pytest.raises(cancellable_http.StreamCancelled):
+            cancellable_http.ProcessResponse(
+                "http://127.0.0.1:1", {"speech": "я" * 9000, "context": "я" * 3400},
+                (5, 5), cancel_event=cancel, request_kwargs={},
+            )
+    finally:
+        timer.cancel()
+        timer.join()
+    assert time.monotonic() - start < 2
+    assert len(children) == 1 and children[0].poll() is not None
+    assert children[0].stdin.closed and children[0].stdout.closed
+
+
+@pytest.mark.parametrize("phase", ["send", "headers", "shared_budget"])
+def test_one_deadline_covers_request_and_headers(synthetic_worker, phase):
+    import threading
+    import time
+    import requests
+
+    bodies = {
+        "send": "time.sleep(7)\n",
+        "headers": "sys.stdin.buffer.readline()\ntime.sleep(7)\n",
+        # A fresh budget after send would incorrectly accept these headers.
+        "shared_budget": ("time.sleep(0.2)\nsys.stdin.buffer.readline()\ntime.sleep(0.2)\n"
+                          "print(json.dumps({'kind': 'head', 'status': 200}), flush=True)\n"),
+    }
+    children = synthetic_worker(bodies[phase])
+    start = time.monotonic()
+    with pytest.raises(requests.Timeout, match="before headers"):
+        cancellable_http.ProcessResponse(
+            "http://127.0.0.1:1", {"speech": "я" * 12400}, (0.15, 0.15),
+            cancel_event=threading.Event(), request_kwargs={},
+        )
+    assert time.monotonic() - start < 2
+    assert len(children) == 1 and children[0].poll() is not None
+    assert children[0].stdin.closed and children[0].stdout.closed
+
+
+def test_partial_request_writes_preserve_every_byte(synthetic_worker, monkeypatch):
+    import hashlib
+    import json
+    import threading
+
+    children = synthetic_worker(
+        "data = sys.stdin.buffer.readline()\n"
+        "print(json.dumps({'kind': 'head', 'status': 200, 'text': hashlib.sha256(data).hexdigest()}), flush=True)\n"
+        "print(json.dumps({'kind': 'line', 'text': 'complete'}), flush=True)\n"
+        "print(json.dumps({'kind': 'end'}), flush=True)\n"
+    )
+    real_write = cancellable_http.os.write
+    writes = []
+
+    def partial_write(fd, data):
+        writes.append(len(data))
+        if len(writes) == 1:
+            raise BlockingIOError()
+        return real_write(fd, data[:1024])
+
+    monkeypatch.setattr(cancellable_http.os, "write", partial_write)
+    payload = {"speech": "я" * 20000}
+    expected = json.dumps({"url": "http://127.0.0.1:1", "payload": payload,
+                           "timeout": [2, 2], "kwargs": {}}).encode() + b"\n"
+    with cancellable_http.ProcessResponse(
+        "http://127.0.0.1:1", payload, (2, 2),
+        cancel_event=threading.Event(), request_kwargs={},
+    ) as response:
+        assert response.text == hashlib.sha256(expected).hexdigest()
+        assert list(response.iter_lines()) == [b"complete"]
+    assert len(writes) > 100
+    assert children[0].poll() is not None
+
+
+def test_header_deadline_does_not_limit_generation(synthetic_worker):
+    import threading
+
+    children = synthetic_worker(
+        "sys.stdin.buffer.readline()\n"
+        "print(json.dumps({'kind': 'head', 'status': 200}), flush=True)\n"
+        "time.sleep(0.5)\n"
+        "print(json.dumps({'kind': 'line', 'text': 'complete'}), flush=True)\n"
+        "print(json.dumps({'kind': 'end'}), flush=True)\n"
+    )
+    with cancellable_http.ProcessResponse(
+        "http://127.0.0.1:1", {}, (0.2, 0.2),
+        cancel_event=threading.Event(), request_kwargs={},
+    ) as response:
+        assert list(response.iter_lines()) == [b"complete"]
+    assert children[0].poll() is not None
+
+
+def test_child_exit_during_request_reaps_and_closes_pipes(synthetic_worker):
+    import threading
+
+    children = synthetic_worker("sys.exit(0)\n")
+    with pytest.raises((BrokenPipeError, ConnectionError)):
+        cancellable_http.ProcessResponse(
+            "http://127.0.0.1:1", {"speech": "я" * 12400}, (1, 1),
+            cancel_event=threading.Event(), request_kwargs={},
+        )
+    assert children[0].poll() is not None
+    assert children[0].stdin.closed and children[0].stdout.closed
+
+
+@pytest.mark.parametrize("timeout", [None, 0, -1, float("inf"), float("nan"), (1,), (1, 0), (1e308, 1e308)])
+def test_invalid_preheader_budget_does_not_spawn(monkeypatch, timeout):
+    import threading
+
+    def unexpected_spawn(*_args, **_kwargs):
+        pytest.fail("invalid timeout must be refused before spawning")
+
+    monkeypatch.setattr(cancellable_http.subprocess, "Popen", unexpected_spawn)
+    with pytest.raises(ValueError, match="finite positive"):
+        cancellable_http.ProcessResponse(
+            "http://127.0.0.1:1", {}, timeout,
+            cancel_event=threading.Event(), request_kwargs={},
+        )

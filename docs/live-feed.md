@@ -1,6 +1,6 @@
 # Experimental chronological meeting feed
 
-The opt-in grounded feed (`sufler.live_feed: true`) runs locally through
+The grounded feed (`sufler.live_feed: true`) runs locally through
 `grounded_feed.semantic.SemanticActor` and `grounded_feed.local_runner.LocalFeedRunner`
 under `LocalLoopbackAuthority` (loopback-only local Ollama `:local` or `mlx-server`).
 Accepted speech, open questions, pending spans and canvas entries commit in one
@@ -26,10 +26,11 @@ as complete. This is a finite storage bound, not a guarantee for unlimited sessi
 
 The feed appends short paragraphs in conversation order, keeps earlier text,
 and places answers under their questions. Recording channel events remain
-visible even when automatic generation is paused. Manual questions use their
-existing card and take priority over a feed step.
+visible even when automatic generation is paused. Manual questions and completed
+answers appear in the same thread and take priority over a feed step.
 
-Opt in explicitly in the local configuration:
+The example configurations enable the feed. Existing configurations without the
+key retain classic mode; set the key explicitly to choose the mode:
 
 ```yaml
 sufler:
@@ -57,19 +58,19 @@ The isolated cancellation evidence covers mlx-lm 0.31.3 and a cached public
 within 4.502 s after cancellation, with roughly 0.5 s margin. Hardware
 utilization was not measured. This is a model/profile-bound trial, not a
 universal deadline or evidence about an existing working installation.
-Default enablement remains false while the other acceptance gates are open.
+This evidence does not establish the same cancellation bound for every model.
 
-A step runs about every three minutes and drains an existing backlog in short
+A step runs about every fifteen seconds and drains an existing backlog in short
 successive steps. Even a short final utterance is eligible at the interval.
 The chip pauses automatic generation; manual questions and channel events still
 work. Stop cancels the active step and preserves the feed. Unprocessed speech
 remains in the transcript; Stop does not launch another model request.
 
 Scrolling follows updates only while the reader is near the bottom. Scrolling
-up suspends following; returning to the bottom resumes it. An open manual answer
-prevents a feed update from scrolling the reader away from that card.
-An explicit question reveals its card once; later streamed tokens preserve the
-reader's position. A newer scroll movement cancels an already queued card jump.
+up suspends following; returning to the bottom resumes it. An explicit question
+requests a jump to the thread bottom; its completed answer
+reveals the linked question. Streamed tokens do not trigger scrolling. A newer
+scroll movement cancels an already queued jump.
 
 The model context has a 3,500-character serialized JSON budget, including
 escaping. It retains up to twelve newest open questions and up to four latest
@@ -88,11 +89,14 @@ JSON or an empty object hiding the omissions. The default budget is unchanged.
 
 ## Release gates
 
-Default enablement remains blocked until cancellation of an actual local model
-server request, including prefill, is demonstrated within five seconds. Reaping
+The cancellation acceptance target for a model/profile is completion of an actual
+local server request, including prefill, within five seconds. Reaping
 the HTTP client is measured separately and does not establish server completion.
 If cleanup cannot confirm its owned child, the model slot is quarantined rather
 than allowing an overlapping request.
+Request delivery to the owned child uses nonblocking writes with cancellation
+polling. One connect-plus-read timeout budget covers child startup, request
+delivery and response headers; it does not impose a total generation deadline.
 
 | Scenario | Evidence required |
 | --- | --- |
@@ -104,7 +108,7 @@ than allowing an overlapping request.
 | Two manual requests and timeout of one | Separate pending registrations; manual answer works while chip is off |
 | Connect, headers, first token, read, busy backoff | Cancel client, reap child, close lease; verify actual server work separately |
 | Classic/opt-in configuration and local model role | Retain legacy defaults; suppress competing feed writers; no cloud calls |
-| Launched isolated UI | Scroll up/down, open manual answer, update feed, Stop and new meeting |
+| Launched isolated UI | Scroll up/down, ask a manual question, update feed, Stop and new meeting |
 | Three invented quality scenes, 18 criteria | Actual model inputs/outputs and human assessment; criteria never sent to model |
 
 Synthetic quality results do not establish equivalence on private historical
@@ -122,7 +126,8 @@ meetings. This implementation neither reads nor ships such data.
 короткая последняя реплика обрабатывается по таймеру. «Стоп» отменяет текущий
 шаг и сохраняет экран; необработанная речь остаётся в стенограмме. Нового
 запроса модели при остановке нет. При чтении выше лента сама не прокручивается.
-Включение по умолчанию ждёт проверки остановки реального серверного запроса.
+Примеры конфигурации включают ленту; без ключа сохраняется классический режим.
+Остановка серверного запроса проверяется отдельно для конкретной модели и профиля.
 Необязательный `llm.mlx_prefill_step_size` — положительное целое для следующего
 запуска MLX силами приложения. При отсутствии ключа classic сохраняет прежние
 аргументы, а лента выбирает 128. Явные null, bool, дробь, строка, ноль и
@@ -132,8 +137,9 @@ meetings. This implementation neither reads nor ships such data.
 с mlx-lm 0.31.3 и публичной 27B 4-bit моделью при 128 дал 4,502 с до окончания
 работы после отмены внутри prefill; запас около 0,5 с, загрузка GPU не измерялась.
 Это ограниченный опыт, а не гарантия для любых условий или рабочей установки.
-Ручной вопрос открывает карточку один раз; следующие токены сохраняют позицию
-чтения. Более поздняя прокрутка отменяет ещё ожидающий переход к карточке.
+Ручной вопрос запрашивает переход к низу нити; готовый ответ показывает связанный
+вопрос. Токены не запускают прокрутку; более позднее движение читателя отменяет
+ещё ожидающий переход.
 
 Контекст модели ограничен 3500 символами JSON с учётом экранирования. Он
 сохраняет до двенадцати новых открытых вопросов и до четырёх последних целых
@@ -156,5 +162,5 @@ Ollama 或 mlx-server，不会回退到云端。未设置新开关时保留原�
 
 上方开关可暂停自动生成，手动提问和录音状态事件仍然有效。短的最后一句
 也会按定时处理。停止会取消当前步骤并保留纪要；未处理的话语留在转录中，
-不会在停止时再发起模型请求。向上阅读时不会自动滚动。默认启用仍等待
-实际模型服务器请求取消的验证。
+不会在停止时再发起模型请求。向上阅读时不会自动滚动。示例配置启用纪要；
+缺少此开关时保留原有模式。服务器取消行为需要按模型和运行配置单独验证。

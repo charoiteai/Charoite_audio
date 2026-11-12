@@ -6,6 +6,7 @@ owner data.
 """
 
 import json
+import weakref
 
 import pytest
 
@@ -125,11 +126,13 @@ def test_publisher_sink_refusal_does_not_mark_version_delivered():
 
     def emit(event):
         calls.append(event)
-        return False  # explicit non-delivery, like a closed stdout
+        return len(calls) > 1  # first delivery is refused, like a closed stdout
 
     publisher = NdjsonPublisher(emit)
     assert publisher.publish("synthetic text", 4) is False
-    assert publisher.published_versions == [] and not publisher.emitted
+    assert publisher.publish("synthetic text", 4) is True
+    assert not publisher.publish("stale", 4)
+    assert [event["text"] for event in calls] == ["synthetic text", "synthetic text"]
 
 
 def test_publisher_delivery_failure_does_not_mark_version_delivered():
@@ -142,9 +145,27 @@ def test_publisher_delivery_failure_does_not_mark_version_delivered():
 
     publisher = NdjsonPublisher(emit)
     assert publisher.publish("first synthetic text", 5) is False
-    assert publisher.published_versions == []
     assert publisher.publish("first synthetic text", 5) is True
-    assert publisher.published_versions == [5]
+    assert not publisher.publish("stale", 5)
+    assert [event["text"] for event in calls] == ["first synthetic text", "first synthetic text"]
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_publisher_releases_delivered_frame_payload(paused):
+    class BlockPayload(dict):
+        pass
+
+    publisher = NdjsonPublisher(lambda event: None)
+    payload = BlockPayload(text="Synthetic fact.")
+    reference = weakref.ref(payload)
+    if paused:
+        publisher.pause()
+    assert publisher.publish("Synthetic fact.", 1, blocks=[payload]) is (not paused)
+    del payload
+    if paused:
+        assert reference() is not None  # the one undelivered snapshot is still needed
+        assert publisher.resume()
+    assert reference() is None
 
 
 def test_publisher_resume_failure_keeps_pending_for_retry():
@@ -160,7 +181,6 @@ def test_publisher_resume_failure_keeps_pending_for_retry():
     publisher.pause()
     assert publisher.publish("pending synthetic text", 7) is False
     assert publisher.resume() is False
-    assert publisher.pendings_still_available() if hasattr(publisher, "pendings_still_available") else True
     failing["value"] = False
     assert publisher.resume() is True
     assert [event["text"] for event in events if event["type"] == "thread"] == ["pending synthetic text"]

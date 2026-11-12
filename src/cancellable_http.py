@@ -7,6 +7,7 @@ lease. Closing a client is NOT evidence that a model server stopped computing.
 from __future__ import annotations
 
 import json
+import math
 import os
 import selectors
 import subprocess
@@ -47,21 +48,27 @@ class ProcessResponse:
         self._closed = False
         self._quarantined = False
         self._ended = False
-        self._selector = selectors.DefaultSelector()
         self._proc = None
         if cancel_event.is_set():
             raise StreamCancelled()
+        timeouts = timeout if isinstance(timeout, (tuple, list)) else (timeout, timeout)
+        if (len(timeouts) != 2 or any(type(t) not in (int, float) or not math.isfinite(t) or t <= 0
+                                     for t in timeouts) or not math.isfinite(sum(timeouts))):
+            raise ValueError("cancellable HTTP requires finite positive connect/read timeouts")
+        # One budget covers child startup, delivery and headers, not generation.
+        deadline = time.monotonic() + sum(timeouts)
+        self._selector = selectors.DefaultSelector()
         try:
             self._proc = subprocess.Popen(
                 [sys.executable, str(charoite_paths.code_root(__file__) / "src/cancellable_http.py"), "--http-worker"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                bufsize=0,
             )
             self._selector.register(self._proc.stdout, selectors.EVENT_READ)
             message = json.dumps({"url": url, "payload": payload, "timeout": timeout,
                                   "kwargs": request_kwargs}).encode() + b"\n"
-            self._proc.stdin.write(message)
-            self._proc.stdin.close()
-            head = self._message()
+            self._send_request(message, deadline)
+            head = self._message(deadline=deadline)
             if head.get("kind") != "head":
                 raise RuntimeError("HTTP worker did not return headers")
             self.status_code, self.text = head["status"], head.get("text", "")
@@ -69,10 +76,39 @@ class ProcessResponse:
             self.close()
             raise
 
-    def _message(self):
+    def _wait_timeout(self, deadline=None):
+        if self.cancel_event.is_set():
+            raise StreamCancelled()
+        if deadline is None:
+            return _SELECT_POLL_S
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            import requests
+            raise requests.Timeout("local HTTP worker timed out before headers")
+        return min(_SELECT_POLL_S, remaining)
+
+    def _send_request(self, message, deadline):
+        # FileIO has no buffered bytes for close() to flush after cancellation.
+        fd = self._proc.stdin.fileno()
+        os.set_blocking(fd, False)
+        remaining = memoryview(message)
+        with selectors.DefaultSelector() as writable:
+            writable.register(fd, selectors.EVENT_WRITE)
+            while remaining:
+                if not writable.select(timeout=self._wait_timeout(deadline)):
+                    continue
+                try:
+                    written = os.write(fd, remaining[:_READ_CHUNK_BYTES])
+                except BlockingIOError:
+                    continue
+                if not written:
+                    raise ConnectionError("HTTP worker input closed")
+                remaining = remaining[written:]
+        self._proc.stdin.close()
+
+    def _message(self, deadline=None):
         while True:
-            if self.cancel_event.is_set():
-                raise StreamCancelled()
+            wait = self._wait_timeout(deadline)
             if b"\n" in self._buffer:
                 line, _, rest = self._buffer.partition(b"\n")
                 self._buffer = bytearray(rest)
@@ -82,7 +118,7 @@ class ProcessResponse:
                     import requests
                     raise requests.ConnectionError("local HTTP worker failed")
                 return value
-            if not self._selector.select(timeout=_SELECT_POLL_S):
+            if not self._selector.select(timeout=wait):
                 continue
             data = os.read(self._proc.stdout.fileno(), _READ_CHUNK_BYTES)
             if not data:

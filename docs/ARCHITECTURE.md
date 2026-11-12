@@ -2482,15 +2482,3 @@ guarantee; its normal CLI supplies the required data root. No data migration is
 automatic. After writing
 to a new primary, rollback must retain the compatible reader and lock bridge;
 a bare old binary is not a safe write/forget rollback.
-
-
-## Grounded native admission
-
-The canonical actor/runner consumes opaque responses from the installed owner
-client. The factory verifies protected installation/proof, exact runtime/model
-identity and the Unix peer; caller callbacks or supported JSON cannot grant
-semantic authority. Exact planner/verifier source, body and visible bytes are
-bound to the existing actor CAS. Service replay reauthenticates committed private
-receipts through the same checker. Unconfirmed retirement retains job ownership.
-This source path requires installed evidence and remains unavailable without it;
-source tests do not certify installation, model quality or a second model profile.

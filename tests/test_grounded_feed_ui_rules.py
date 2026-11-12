@@ -1,123 +1,62 @@
-"""Mac UI rules against the grounded NDJSON frames (model-free).
+"""Python frame contract consumed by the Mac UI, without a simulated UI.
 
-follow only at the bottom; a manual card survives appends and blocks the jump;
-pause withholds a frame and resume publishes the pending one first; Stop keeps
-the last thread and a new meeting resets scroll/session; the additive `questions`
-projection reaches the consumer without breaking the legacy frame.
+Actual scroll, manual-correlation and decoding behavior belongs to Swift tests.
+These tests exercise emitted session frames, their typed projection and delivery
+across pause/resume using the real Python publisher and renderer.
 """
 
-import sys
-from pathlib import Path
+import json
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
-
-from grounded_feed.publish import NdjsonPublisher, ndjson_line  # noqa: E402
-from grounded_feed.render import render_blocks  # noqa: E402
-from grounded_feed.thread import ThreadCanvas  # noqa: E402
-from grounded_feed_ui_model import MacFeedConsumer, render_blocks_frame  # noqa: E402
+from grounded_feed.publish import NdjsonPublisher, ndjson_line
+from grounded_feed.render import render_blocks
+from grounded_feed.session import GroundedFeedSession
+from grounded_feed.thread import ThreadCanvas
 
 
 def _blocks_session():
-    from grounded_feed.session import GroundedFeedSession
-    session = GroundedFeedSession(lambda event: None)
+    events = []
+    session = GroundedFeedSession(events.append)
     session.manual_request("m1", "Synthetic manual question?")
     session.manual_answer("m1", "Synthetic manual answer.")
-    return session
+    return session, events
 
 
-def _wire():
-    consumer = MacFeedConsumer()
-    events = []
-    publisher = NdjsonPublisher(lambda event: (events.append(dict(event)),
-                                               consumer.consume(ndjson_line(event))))
-    consumer.consume(ndjson_line({"type": "feed_mode", "enabled": True}))
-    return consumer, publisher, events
+def test_session_emits_ordered_blocks_without_duplicates():
+    session, events = _blocks_session()
+    frame = [event for event in events if event["type"] == "thread"][-1]
+    assert frame["text"] == session.render()
+    assert [row["kind"] for row in frame["blocks"]] == ["question", "answer"]
+    assert [row["text"] for row in frame["blocks"]] == [
+        "Synthetic manual question?", "Synthetic manual answer."]
+    assert frame["text"].count("Synthetic manual answer.") == 1
+    question, answer = frame["blocks"]
+    assert answer["answer_to"] == question["question_id"]
+    assert frame["questions"][0]["id"] == question["question_id"]
+    assert frame["questions"][0]["state"] == "answered"
 
 
-def _publish(canvas, publisher, questions=None):
-    return publisher.publish(render_blocks(canvas.ordered()), canvas.version, questions=questions)
-
-
-def test_blocks_are_the_single_render_source_without_duplicates():
-    session = _blocks_session()
-    consumer = MacFeedConsumer()
-    frame = [event for event in session.publisher.emitted if event["type"] == "thread"][-1]
-    consumer.consume(ndjson_line(frame))
-    blocks = consumer.blocks
-    assert [row["kind"] for row in blocks] == ["question", "answer"]
-    assert consumer.thread == render_blocks_frame(blocks)
-    assert consumer.thread.count("Synthetic manual answer.") == 1
-    assert consumer.thread.index("Synthetic manual question?") < consumer.thread.index("Synthetic manual answer.")
-
-
-def test_manual_channel_frames_do_not_render_and_keep_thread_blocks():
-    session = _blocks_session()
-    consumer = MacFeedConsumer()
-    for event in session.publisher.emitted:
-        consumer.consume(ndjson_line(event))
-    frame = [event for event in session.publisher.emitted if event["type"] == "thread"][-1]
-    assert consumer.thread == render_blocks_frame(frame["blocks"])
-    assert consumer.thread.count("Synthetic manual answer.") == 1
-    manual = [e for e in session.publisher.emitted if e["type"] == "manual"]
-    assert manual and all("manual_id" in e for e in manual)
-
-
-def test_follow_only_at_bottom():
-    consumer, publisher, _ = _wire()
-    canvas = ThreadCanvas()
-    canvas.paragraph("topic-1", "Release", "Synthetic one.")
-    assert _publish(canvas, publisher)
-    assert consumer.thread_records[-1]["followed"] is True
-    consumer.user_scroll_up()
-    canvas.paragraph("topic-1", "Release", "Synthetic two.")
-    assert _publish(canvas, publisher)
-    assert consumer.thread_records[-1]["followed"] is False
-    consumer.user_scroll_to_bottom()
-    canvas.paragraph("topic-1", "Release", "Synthetic three.")
-    assert _publish(canvas, publisher)
-    assert consumer.thread_records[-1]["followed"] is True
-
-
-def test_manual_question_is_preserved_and_blocks_follow():
-    consumer, publisher, _ = _wire()
-    canvas = ThreadCanvas()
-    canvas.paragraph("topic-1", "Release", "Synthetic one.")
-    _publish(canvas, publisher)
-    consumer.ask_manual("Synthetic manual question?")
-    publisher.hint("Synthetic manual answer.", manual=True)
-    assert consumer.manual_card_open and consumer.manual_question == "Synthetic manual question?"
-    canvas.paragraph("topic-1", "Release", "Synthetic two.")
-    _publish(canvas, publisher)
-    assert consumer.thread_records[-1]["followed"] is False
-    assert consumer.manual_question == "Synthetic manual question?"
-    publisher.hint_done(manual=True)
-    assert not consumer.manual_card_open
-    assert consumer.manual_question == "Synthetic manual question?"  # not cleared by append
+def test_manual_channel_frames_preserve_identity_on_the_wire():
+    _session, events = _blocks_session()
+    decoded = [json.loads(ndjson_line(event)) for event in events]
+    assert decoded == events
+    manual = [event for event in decoded if event["type"] == "manual"]
+    assert [(event["manual_id"], event["state"], event["text"]) for event in manual] == [
+        ("m1", "question", "Synthetic manual question?"),
+        ("m1", "answer", "Synthetic manual answer."),
+    ]
 
 
 def test_pause_withholds_frame_and_resume_publishes_pending_first():
-    consumer, publisher, events = _wire()
+    events = []
+    publisher = NdjsonPublisher(events.append)
     canvas = ThreadCanvas()
     canvas.paragraph("topic-1", "Release", "Synthetic one.")
-    _publish(canvas, publisher)
-    before = len([e for e in events if e["type"] == "thread"])
+    assert publisher.publish(render_blocks(canvas.ordered()), canvas.version)
     publisher.pause()
     canvas.paragraph("topic-1", "Release", "Synthetic while paused.")
-    assert not _publish(canvas, publisher)
-    assert len([e for e in events if e["type"] == "thread"]) == before
+    assert not publisher.publish(render_blocks(canvas.ordered()), canvas.version)
+    assert len(events) == 1
     assert publisher.resume()
-    frames = [e for e in events if e["type"] == "thread"]
-    assert len(frames) == before + 1 and "Synthetic while paused." in frames[-1]["text"]
-
-
-def test_question_projection_reaches_consumer_and_stop_start_reset():
-    consumer, publisher, _ = _wire()
-    canvas = ThreadCanvas()
-    qid = canvas.question("topic-1", "Release", "Synthetic question?")
-    _publish(canvas, publisher, questions=[{"id": qid, "state": "open"}])
-    assert consumer.questions == [{"id": qid, "state": "open"}]
-    consumer.stop_meeting()
-    assert consumer.stopped and "Synthetic question?" in consumer.thread
-    consumer.reset_for_new_meeting()
-    assert consumer.thread == "" and consumer.near_bottom and not consumer.stopped
-    assert consumer.followed == 0 and consumer.questions == []
+    assert [event["type"] for event in events] == ["thread", "thread"]
+    assert events[-1]["text"] == render_blocks(canvas.ordered())
+    assert events[-1]["text"].count("Synthetic while paused.") == 1

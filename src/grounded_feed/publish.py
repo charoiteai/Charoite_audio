@@ -29,16 +29,12 @@ class NdjsonPublisher:
         self._pending_questions = None
         self._pending_blocks = None
         self._pending_source = None
-        self._manual_epoch = 0
-        self.emitted: list[dict] = []
-        self.published_versions: list[int] = []
 
     def _write(self, event: dict) -> bool:
         """Return False only when the sink explicitly reports non-delivery."""
         result = self._emit(dict(event))
         if result is False:
             return False
-        self.emitted.append(dict(event))
         return True
 
     def feed_mode(self, enabled: bool) -> None:
@@ -95,7 +91,6 @@ class NdjsonPublisher:
             except Exception:  # noqa: BLE001 - not delivered: keep no version marker
                 return False
             self._last_version = version
-            self.published_versions.append(version)
             return True
 
     def pause(self) -> None:
@@ -129,7 +124,6 @@ class NdjsonPublisher:
                 return False
             self._paused = False
             self._last_version = version
-            self.published_versions.append(version)
             self._pending = None
             self._pending_questions = None
             self._pending_blocks = None
@@ -139,15 +133,6 @@ class NdjsonPublisher:
     @property
     def paused(self) -> bool:
         return self._paused
-
-    def manual_request(self, question_id: str) -> int:
-        with self._lock:
-            self._manual_epoch += 1
-            return self._manual_epoch
-
-    @property
-    def manual_epoch(self) -> int:
-        return self._manual_epoch
 
 
 def ndjson_line(event: dict) -> str:
