@@ -39,6 +39,7 @@ import time
 import pathlib
 import re
 import shutil
+import tempfile
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -625,13 +626,20 @@ def backup(folder: pathlib.Path, stamp: str, path: pathlib.Path, keep: int = 40)
     до 13.09 копии не делала и стирала правки облачной ревизии (аудит 13.09,
     GLM C1). Нет файла — копировать нечего. OSError копии — наружу: без копии
     вызывающий не перезаписывает (круг-1 по #561, DS I2 / GLM I1). `keep` 40:
-    каталог общий у пересборки и ревизии, штатная ночь — два штампа (GLM M3)."""
+    каталог общий у пересборки и ревизии, штатная ночь — два штампа (GLM M3).
+    Занятое имя — FileExistsError: первая копия остаётся, вызывающий не пишет.
+    Полная копия публикуется атомарно; сбой до публикации не оставляет обрывок."""
     if not path.exists():
         return None
     bdir = folder / BACKUP_DIR / stamp
     bdir.mkdir(parents=True, exist_ok=True)
     dst = bdir / path.name
-    shutil.copy2(path, dst)
+    # link reserves the destination without replacing an existing entry, even
+    # when concurrent callers share a timestamp. Copy first so that a failed
+    # copy or metadata update never exposes a partial backup under its final name.
+    with tempfile.NamedTemporaryFile(dir=bdir, prefix=".backup-", suffix=".tmp") as staged:
+        shutil.copy2(path, staged.name)
+        os.link(staged.name, dst)
     try:
         backups = sorted((folder / BACKUP_DIR).iterdir(), reverse=True)
     except OSError:

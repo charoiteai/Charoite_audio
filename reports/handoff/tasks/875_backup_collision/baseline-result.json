@@ -1,0 +1,122 @@
+{
+  "python": "3.12.13",
+  "platform": "Darwin",
+  "scope": "production backup helper and review wrapper only",
+  "full_pipeline_executed": false,
+  "model_calls": 0,
+  "source_hashes": {
+    "src/charoite_graph/dossier.py": "de4ae30e15dc935a01e59718d55724fc964814dad555c1a5f28093748dc2f063",
+    "scripts/nightly_dossier_review.py": "fd1ea57faa7a974ebdb8e2b4664fa4fa9ae2767d37bab44cf0783bf1ad657014"
+  },
+  "cases": [
+    {
+      "wrapper_only": false,
+      "distinct_timestamps": false,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "paths_equal": true,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f",
+      "second_refusal": null,
+      "source_unchanged": true,
+      "restored_a": false,
+      "restored_b": true,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+        }
+      ],
+      "safe_retention": false
+    },
+    {
+      "wrapper_only": false,
+      "distinct_timestamps": true,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+      "paths_equal": false,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "second_refusal": null,
+      "source_unchanged": true,
+      "restored_a": true,
+      "restored_b": true,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7"
+        },
+        {
+          "path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+          "sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+        }
+      ],
+      "safe_retention": true
+    },
+    {
+      "wrapper_only": true,
+      "distinct_timestamps": false,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "paths_equal": true,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f",
+      "second_refusal": null,
+      "source_unchanged": true,
+      "restored_a": false,
+      "restored_b": true,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+        }
+      ],
+      "safe_retention": false
+    },
+    {
+      "wrapper_only": true,
+      "distinct_timestamps": true,
+      "first_path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+      "second_path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+      "paths_equal": false,
+      "preimage_sha256": [
+        "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+        "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+      ],
+      "first_backup_before_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "first_backup_after_second_sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7",
+      "second_refusal": null,
+      "source_unchanged": true,
+      "restored_a": true,
+      "restored_b": true,
+      "backups": [
+        {
+          "path": "dossiers/.backup/2030-01-01_010101/Sample.md",
+          "sha256": "afc0029ee4e1ca4f93a7ac36e7957051b1375fa1e1f5fd88019d845d738cb2f7"
+        },
+        {
+          "path": "dossiers/.backup/2030-01-01_010102/Sample.md",
+          "sha256": "e9fe722aaad47c692cf614ca62054fa37b247326cb91c4a4aacba99a96e8926f"
+        }
+      ],
+      "safe_retention": true
+    }
+  ],
+  "status": "collision_reproduced",
+  "tested_sha": "c178149a26660e79c6928d2248f9e4d60bededfa",
+  "exit_code": 1,
+  "host_gate": "quiet_guard exit0; heavy_run admitted; stderr empty",
+  "command": "python reports/handoff/tasks/875_backup_collision/reproduce.py"
+}

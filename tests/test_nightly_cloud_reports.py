@@ -486,6 +486,7 @@ def test_owner_edit_between_the_check_and_the_write_is_kept(tmp_path, monkeypatc
     ndr = _load("nightly_dossier_review")
     graph, folder = _edit_graph(tmp_path, ndr, monkeypatch)
     path = folder / "Одно.md"
+    before = path.read_bytes()
     body = _body(ndr)
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k: (body, ""))
     real_backup = ndr._backup
@@ -505,7 +506,7 @@ def test_owner_edit_between_the_check_and_the_write_is_kept(tmp_path, monkeypatc
     assert "Запись выключена" not in report
     # копия остаётся — текст до правки владельца (n853-out2 Sonnet M2)
     (copy,) = (folder / ".backup").rglob("Одно.md")
-    assert "правка владельца" not in copy.read_text(encoding="utf-8")
+    assert copy.read_bytes() == before
 
 
 def test_no_snapshot_before_the_write_means_no_write(tmp_path, monkeypatch):
@@ -1037,3 +1038,51 @@ def test_label_cleanup_alone_is_written_without_the_field(tmp_path, monkeypatch)
     text = dpath.read_text(encoding="utf-8")
     assert not ndr.dossier.revision(text) and "обещал письмо" in text
     assert ndr.LABELS_ONLY in _report(graph)
+
+
+def test_same_stamp_backup_collision_refuses_only_affected_review(tmp_path, monkeypatch):
+    import datetime as dt
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    frozen = dt.datetime.now()
+
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(ndr.dt, "datetime", Frozen)
+    path = folder / "Одно.md"
+    original = path.read_bytes()
+    stamp = frozen.strftime("%Y-%m-%d_%H%M%S")
+    copy = ndr.dossier.backup(folder, stamp, path)
+    path.write_text(path.read_text(encoding="utf-8").replace("Идёт пилот", "Идёт второй пилот"), encoding="utf-8")
+    current = path.read_bytes()
+    index = folder / ndr.dossier.INDEX_JSON
+    ndr.dossier.refresh_index(folder, [path.stem, "Два"])
+    entries_before = ndr.dossier.load_index(folder)
+    assert {entry["тема"] for entry in entries_before} == {path.stem, "Два"}
+    index_before = index.read_bytes()
+    other = folder / "Два.md"
+    other_before = other.read_bytes()
+    body = _body(ndr).replace("Идёт пилот", "Пилот завершён")
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (body, ""))
+    real_write = ndr.safe_write.write_text
+    attempted = []
+
+    def write(target, *args, **kwargs):
+        if target.name == path.name:
+            attempted.append(target)
+        return real_write(target, *args, **kwargs)
+
+    monkeypatch.setattr(ndr.safe_write, "write_text", write)
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
+    assert not attempted
+    assert path.read_bytes() == current and copy.read_bytes() == original
+    assert index.read_bytes() == index_before
+    assert ndr.dossier.load_index(folder) == entries_before
+    assert other.read_bytes() != other_before
+    assert (copy.parent / other.name).read_bytes() == other_before
+    assert set(p.name for p in copy.parent.iterdir()) == {path.name, other.name}
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "**Одно**" in report and "без копии не перезаписываю" in report
