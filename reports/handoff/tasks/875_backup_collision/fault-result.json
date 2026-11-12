@@ -1,0 +1,108 @@
+{
+  "head": "213b8ae87f4ba25ca9b3cf7b83fb1ac26a97a34b",
+  "source_sha256": "d6cb820eea359769dc5145715be6b5abc1b129933e3b16ed77410234889b66a0",
+  "status": "five_faults_detected",
+  "runs": [
+    {
+      "name": "baseline",
+      "returncode": 0,
+      "cases": 13,
+      "failures": [],
+      "errors": 0,
+      "valid": true,
+      "reason_matches": false,
+      "junit_sha256": "e5a871c19081cb190d5455cddd1c699237eeca18080c4ac6ebd5f3361853030a"
+    },
+    {
+      "name": "overwrite",
+      "returncode": 1,
+      "cases": 1,
+      "failures": [
+        "test_same_stamp_refuses_without_overwriting_preimage[first synthetic preimage\\n]"
+      ],
+      "errors": 0,
+      "valid": true,
+      "reason_matches": true,
+      "recipe": {
+        "name": "overwrite",
+        "from": "os.link(staged.name, dst)",
+        "to": "shutil.copy2(staged.name, dst)"
+      },
+      "mutant_sha256": "585df7b9f281fd1a81794c92851ebab521f62e9b4dfc64476ec0a7e993821800",
+      "junit_sha256": "04fee18769e5c10b38662fdf7a5a597b71fc4c66ba7d45db18bdd1d1dd492899"
+    },
+    {
+      "name": "skip-publication",
+      "returncode": 1,
+      "cases": 1,
+      "failures": [
+        "test_complete_copy_metadata_and_distinct_names"
+      ],
+      "errors": 0,
+      "valid": true,
+      "reason_matches": true,
+      "recipe": {
+        "name": "skip-publication",
+        "from": "os.link(staged.name, dst)",
+        "to": "pass"
+      },
+      "mutant_sha256": "6e2ed5279c92086bcd8c624a05434d58ba2245d0228e55e7b383cad549bc00a5",
+      "junit_sha256": "20f35e8233ad11e091d0bc3848583733e8256d7fa8e0e9aed065796126a04d0a"
+    },
+    {
+      "name": "swallow-collision",
+      "returncode": 1,
+      "cases": 1,
+      "failures": [
+        "test_same_stamp_refuses_without_overwriting_preimage[first synthetic preimage\\n]"
+      ],
+      "errors": 0,
+      "valid": true,
+      "reason_matches": true,
+      "recipe": {
+        "name": "swallow-collision",
+        "from": "        os.link(staged.name, dst)",
+        "to": "        try:\n            os.link(staged.name, dst)\n        except FileExistsError:\n            pass"
+      },
+      "mutant_sha256": "ae2a9308f668ffbaa3e3b7f1a31952f9617049bf7df4814cbda56b735e478135",
+      "junit_sha256": "b1fb060687e74527814873e1690dbe62676d3b5145065df47053a8a9fe914a80"
+    },
+    {
+      "name": "lose-metadata",
+      "returncode": 1,
+      "cases": 1,
+      "failures": [
+        "test_complete_copy_metadata_and_distinct_names"
+      ],
+      "errors": 0,
+      "valid": true,
+      "reason_matches": true,
+      "recipe": {
+        "name": "lose-metadata",
+        "from": "shutil.copy2(path, staged.name)",
+        "to": "shutil.copyfile(path, staged.name)"
+      },
+      "mutant_sha256": "525f8692f84e9cf7521ee8d18d611d71d0ef06f8867ec88a6bb793be5da3052a",
+      "junit_sha256": "9572d93150c5789dcbe9f61f07a62059a0fb3c971c100c13686aa843c6afb71b"
+    },
+    {
+      "name": "leave-staging",
+      "returncode": 1,
+      "cases": 1,
+      "failures": [
+        "test_complete_copy_metadata_and_distinct_names"
+      ],
+      "errors": 0,
+      "valid": true,
+      "reason_matches": true,
+      "recipe": {
+        "name": "leave-staging",
+        "from": "prefix=\".backup-\", suffix=\".tmp\")",
+        "to": "prefix=\".backup-\", suffix=\".tmp\", delete=False)"
+      },
+      "mutant_sha256": "f103dc35f481103a25bc2cf44d3f49cf474fa2d9b7ef6a48d0d00dedbf9461c2",
+      "junit_sha256": "d66041f9b2cc86d647059af04a054d4acc17f1f9e68d20642abe437313cbeb29"
+    }
+  ],
+  "source_restored_after_run": true
+}

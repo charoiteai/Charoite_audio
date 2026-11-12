@@ -117,7 +117,19 @@ def test_budget_stops_the_queue_and_keeps_the_index(nd, tmp_path, capsys):
     assert "бюджет шага досье вышел" in capsys.readouterr().out
 
 
-def test_full_without_budget_ignores_the_limit_and_takes_unchanged_themes(nd, tmp_path):
+def test_full_without_budget_ignores_the_limit_and_takes_unchanged_themes(nd, tmp_path, monkeypatch):
+    import datetime as dt
+    # Three logical runs occur at distinct instants; same-instant refusal has
+    # its own backup collision test.
+    base = dt.datetime.now()
+    ticks = iter(range(3))
+
+    class Advancing(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return base + dt.timedelta(seconds=next(ticks))
+
+    monkeypatch.setattr(nd, "datetime", Advancing)
     graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(4)})
     nd.run(graph, {}, full=False, dry=False, limit=None)          # отпечатки совпали
     nd.calls.clear()
@@ -411,6 +423,7 @@ def test_author_edit_between_check_and_write_is_not_overwritten(nd, tmp_path, mo
     """Выход out2 №621, DS C1: правка между сверкой и replace затиралась."""
     graph = _graph(tmp_path, "Г", {"тема": "2026-07-20"})
     path = graph / CHAROITE.dossier_dir / "тема.md"
+    before = path.read_bytes()
     real_backup = dossier.backup
 
     def backup(folder, stamp, p, **kw):
@@ -423,6 +436,9 @@ def test_author_edit_between_check_and_write_is_not_overwritten(nd, tmp_path, mo
     assert r["собрано"] == 0 and r["досье_изменилось"] == 1 and r["пропущено"] == 1, r
     assert "правка автора в окне" in path.read_text(encoding="utf-8")
     assert {e["тема"] for e in dossier.load_index(graph / CHAROITE.dossier_dir)} == {"тема"}
+
+    (copy,) = path.parent.glob(".backup/*/тема.md")
+    assert copy.read_bytes() == before
 
 
 def test_need_is_the_generation_not_the_lock_wait(nd, tmp_path, monkeypatch):
@@ -1164,3 +1180,44 @@ def test_generator_label_takes_the_model_that_answers(nd, monkeypatch, capsys):
     assert nd.generator_label({"llm": {"model": "q"}}) == ""
     out = capsys.readouterr().out
     assert "вход генератора не посчитан (" in out and "llm" in out, out
+
+
+def test_same_stamp_collision_keeps_current_dossier_and_index(nd, tmp_path, monkeypatch):
+    import datetime as dt
+    frozen = dt.datetime.now()
+
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(nd, "datetime", Frozen)
+    graph = _graph(tmp_path, "Synthetic", {"Sample": "2026-07-20"})
+    folder = graph / CHAROITE.dossier_dir
+    path = folder / "Sample.md"
+    original = path.read_bytes()
+    first = nd.run(graph, {}, full=True, dry=False, limit=None)
+    assert first["собрано"] == 1
+    current = path.read_bytes()
+    copy = folder / ".backup" / frozen.strftime("%Y-%m-%d_%H%M%S") / path.name
+    assert copy.read_bytes() == original and current != original
+    index = (folder / dossier.INDEX_JSON).read_bytes()
+    real_write = nd.safe_write.write_text
+    dossier_writes = []
+
+    def write(target, *args, **kwargs):
+        if target.name == path.name:
+            dossier_writes.append(target)
+        return real_write(target, *args, **kwargs)
+
+    monkeypatch.setattr(nd.safe_write, "write_text", write)
+    monkeypatch.setattr(nd, "generate", lambda *a, **kw: GOOD.replace("новое тело", "third version"))
+    second = nd.run(graph, {}, full=True, dry=False, limit=None)
+    assert second["собрано"] == 0 and second["отказы"] == 1
+    assert not dossier_writes
+    assert path.read_bytes() == current
+    assert copy.read_bytes() == original
+    assert (folder / dossier.INDEX_JSON).read_bytes() == index
+    restored = tmp_path / "restored.md"
+    shutil.copyfile(copy, restored)
+    assert restored.read_bytes() == original
