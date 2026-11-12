@@ -1015,7 +1015,7 @@ def test_cancel_combinators_authority_context_runner_and_llm_boundaries(tmp_path
             question_id=qid, manual_id=manual_id,
         )
 
-    assert local_feed_context([]) == '{"open_questions": [], "known_topics": []}'
+    assert json.loads(local_feed_context([])) == {"open_questions": [], "known_topics": []}
 
     q_only_raw = local_feed_context([blk(1, "question", text="Открытый?", topic="Пилот", qid="q1")])
     assert "Пилот" in q_only_raw
@@ -1061,35 +1061,37 @@ def test_cancel_combinators_authority_context_runner_and_llm_boundaries(tmp_path
     # Trim step 1: drop oldest fact in first topic when len(facts) > 1
     two_facts = [blk(1, "paragraph", text="Первый длинный факт", topic="Т"),
                  blk(2, "paragraph", text="Второй", topic="Т")]
-    one_fact_len = len(local_feed_context([two_facts[1]]))
+    one_fact_len = len(local_feed_context([two_facts[1]])) + len(',"omitted_facts":1')
     trimmed_fact = json.loads(local_feed_context(two_facts, max_chars=one_fact_len))
     assert trimmed_fact["known_topics"] == [{"topic": "Т", "facts": ["Второй"]}]
 
     # Trim step 2: drop oldest topic when len(kept_topics) > 1
     two_topics = [blk(1, "paragraph", text="Старая тема", topic="Т1"),
                   blk(2, "paragraph", text="Новая", topic="Т2")]
-    t2_only_len = len(local_feed_context([two_topics[1]]))
+    t2_only_len = len(local_feed_context([two_topics[1]])) + len(',"omitted_facts":1')
     trimmed_topic = json.loads(local_feed_context(two_topics, max_chars=t2_only_len))
     assert trimmed_topic["known_topics"] == [{"topic": "Т2", "facts": ["Новая"]}]
 
     # Trim step 3: clear last topic while keeping question
     q_and_t = [blk(1, "question", text="В?", topic="Т", qid="q1"),
                blk(2, "paragraph", text="Длинный факт темы", topic="Т")]
-    q1_only_len = len(local_feed_context([q_and_t[0]]))
+    q1_only_len = len(local_feed_context([q_and_t[0]])) + len(',"omitted_facts":1')
     trimmed_clear_t = json.loads(local_feed_context(q_and_t, max_chars=q1_only_len))
-    assert trimmed_clear_t == {"open_questions": [{"id": "q1", "topic": "Т", "question": "В?"}], "known_topics": []}
+    assert trimmed_clear_t == {"open_questions": [{"id": "q1", "topic": "Т", "question": "В?"}],
+                               "known_topics": [], "omitted_facts": 1}
 
     # Trim step 4: drop older question when len(kept_q) > 1
     two_qs = [blk(1, "question", text="Первый длинный вопрос?", topic="Т", qid="q1"),
               blk(2, "question", text="В2?", topic="Т", qid="q2")]
-    q2_only_len = len(local_feed_context([two_qs[1]]))
+    q2_only_len = len(local_feed_context([two_qs[1]])) + len(',"omitted_questions":1')
     trimmed_q = json.loads(local_feed_context(two_qs, max_chars=q2_only_len))
     assert [q["id"] for q in trimmed_q["open_questions"]] == ["q2"]
 
-    # Trim step 5: single oversized Cyrillic question sliced without ASCII escaping
+    # Trim step 5: omit a whole oversized question and retain a valid schema
     huge_q = [blk(1, "question", text="я" * 200, topic="Т", qid="q1")]
     sliced_q = local_feed_context(huge_q, max_chars=80)
-    assert len(sliced_q) == 80 and "я" in sliced_q
+    assert len(sliced_q) <= 80
+    assert json.loads(sliced_q) == {"open_questions": [], "known_topics": [], "omitted_questions": 1}
 
     # slice_ingested_speech cursor check & display_name
     with pytest.raises(ValueError, match="speech cursor"):
@@ -1376,3 +1378,212 @@ def test_cancel_combinators_authority_context_runner_and_llm_boundaries(tmp_path
 
 
 
+
+
+def _context_block(serial, kind, text, *, topic="T", qid=None):
+    return SimpleNamespace(position=serial, system_after=0, serial=serial, kind=kind,
+                           text=text, topic_label=topic, question_id=qid, manual_id=None)
+
+
+def test_context_oversized_question_is_omitted_whole_with_valid_json():
+    blocks = [_context_block(1, "question", "not before 22:00 " * 100, qid="q17")]
+    raw = local_feed_context(blocks, max_chars=100)
+    value = json.loads(raw)
+    assert len(raw) <= 100
+    assert value == {"open_questions": [], "known_topics": [], "omitted_questions": 1}
+
+
+@pytest.mark.parametrize("budget", [True, 80.5, "80", None, -1, 0, 2])
+def test_context_rejects_invalid_or_too_small_budget(budget):
+    with pytest.raises(ValueError, match="context.*budget"):
+        local_feed_context([], max_chars=budget)
+
+
+@pytest.mark.parametrize("language,labels", [
+    ("en", ("Current account", "New speech")),
+    ("ru", ("Уже сохранённая лента", "Новые реплики")),
+    ("zh", ("已保存纪要", "新发言")),
+])
+def test_feed_sends_exact_context_and_speech_payload(monkeypatch, language, labels):
+    from feed_contract import feed_system
+    client = LLM({"llm": {"model": "test-model"}, "sufler": {"language": language, "role": "assistant"}})
+    monkeypatch.setattr(client, "cloud_ready", False)
+    monkeypatch.setattr(client, "base", "http://127.0.0.1:11434")
+    captured = []
+
+    @contextlib.contextmanager
+    def stream(url, payload, *args, **kwargs):
+        captured.append(payload)
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(client, "_open_stream", stream)
+    monkeypatch.setattr(client, "_iter_local_stream", lambda *_a, **_kw: iter(['{"none":true}']))
+    assert list(client.feed("SPEECH 22:00", '{"q":"q17"}', cancel_event=threading.Event())) == ['{"none":true}']
+    assert captured[0]["messages"] == [
+        {"role": "system", "content": feed_system(language)},
+        {"role": "user", "content": labels[0] + ':\n{"q":"q17"}\n\n' + labels[1] + ':\nSPEECH 22:00'},
+    ]
+
+
+def test_combined_cancel_future_wait_and_exact_timeout(monkeypatch):
+    import grounded_feed.local_runner as module
+    now = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    sleeps = []
+
+    def sleep(step):
+        sleeps.append(step)
+        assert len(sleeps) < 10, "cancellation wait must make progress"
+        now[0] += step
+
+    monkeypatch.setattr(module.time, "sleep", sleep)
+
+    class Event:
+        def __init__(self, signal_after=None):
+            self.signal_after = signal_after
+            self.waits = 0
+            self.flag = False
+
+        def is_set(self):
+            return self.flag
+
+        def wait(self, step):
+            self.waits += 1
+            assert self.waits < 10, "wait must honor its deadline"
+            now[0] += step
+            if self.signal_after == self.waits:
+                self.flag = True
+            return self.flag
+
+    primary = Event(signal_after=2)
+    assert module.combine_cancel(primary).wait(None)
+    assert primary.flag
+    primary = Event()
+    start = now[0]
+    assert module.combine_cancel(primary).wait(0.05) is False
+    assert now[0] == pytest.approx(start + 0.05)
+    for timeout in (0, -1):
+        start = now[0]
+        assert module.combine_cancel(primary).wait(timeout) is False
+        assert now[0] == start
+    secondary = Event()
+    secondary.flag = True
+    assert module.combine_cancel(primary, secondary).wait(0)
+
+
+@pytest.mark.parametrize("url,cloud_ready,allowed", [
+    ("http://127.0.0.1:11434/api/chat", False, True),
+    ("http://127.0.0.1:11434/api/chat", True, False),
+    ("https://remote.example.com/api/chat", False, False),
+    ("https://remote.example.com/api/chat", True, False),
+])
+def test_direct_cancellable_transport_refuses_before_network(monkeypatch, url, cloud_ready, allowed):
+    client = LLM({"llm": {"model": "test-model"}, "sufler": {"role": "assistant"}})
+    monkeypatch.setattr(client, "cloud_ready", cloud_ready)
+    monkeypatch.setattr(client, "_call", lambda *_: SimpleNamespace(finish=lambda *_: None))
+    calls = []
+
+    class Admitted(Exception):
+        pass
+
+    def transport(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise Admitted()
+
+    monkeypatch.setattr(cancellable_http, "ProcessResponse", transport)
+    with pytest.raises(Admitted if allowed else ValueError):
+        client._open_stream(url, {"model": "test-model"}, 0, cancel_event=threading.Event())
+    assert bool(calls) is allowed
+
+
+@pytest.mark.parametrize("raw", [
+    '{"items":[{"topic":"T","text":"fact"}],"extra":true}',
+    '{"items":1}', '{"items":{}}', '{"items":[]}',
+    '{"items":[{"topic":"T","text":"fact","extra":"bad"}]}',
+    '{"items":["bad"]}', '{"items":[1]}',
+])
+def test_invalid_parser_shapes_do_not_acknowledge_speech(tmp_path, raw):
+    session = GroundedFeedSession(lambda _e: None)
+    tr = Transcript(tmp_path)
+    actor = bind_product_source(session, tr, SourceProducerCutoff(lambda _t: True),
+                                source_only_notice=False, local_product_authority=True)
+    tr.add("Synthetic speech 22:00.", speaker="Speaker")
+    session.ingest_source_once(limit=16)
+    llm = _fake_llm(feed_fn=lambda *_a, **_kw: (piece for piece in [raw]))
+    runner = LocalFeedRunner(actor, tr, llm, LocalLoopbackAuthority.verify(llm),
+                             slot=_always_slot, stop=threading.Event(), priority=threading.Event(),
+                             enabled=lambda: True)
+    before = actor.snapshot()
+    result = runner.run_next("invalid-shape", force=True)
+    assert result == {"status": "rejected", "reason": "ValueError", "attempt": 1}
+    assert actor.snapshot() == before
+    assert actor.semantic.state.local_speech_cursor == (0, 0)
+
+
+def test_two_poison_windows_with_same_request_keep_distinct_skips_and_bounded_progress(tmp_path):
+    session = GroundedFeedSession(lambda _e: None)
+    tr = Transcript(tmp_path)
+    actor = bind_product_source(session, tr, SourceProducerCutoff(lambda _t: True),
+                                source_only_notice=False, local_product_authority=True)
+    tr.add("x" * 3500, speaker="Speaker")
+    session.ingest_source_once(limit=16)
+    llm = _fake_llm(feed_fn=lambda *_a, **_kw: (piece for piece in ["malformed"]))
+    runner = LocalFeedRunner(actor, tr, llm, LocalLoopbackAuthority.verify(llm),
+                             slot=_always_slot, stop=threading.Event(), priority=threading.Event(),
+                             enabled=lambda: True)
+    previous = (0, 0)
+    for _ in range(2):
+        for _attempt in range(LocalFeedRunner.MAX_WINDOW_REJECTIONS - 1):
+            assert runner.run_next("same-request", force=True)["status"] == "rejected"
+            assert actor.semantic.state.local_speech_cursor == previous
+        result = runner.run_next("same-request", force=True)
+        assert result["status"] == "skipped"
+        current = actor.semantic.state.local_speech_cursor
+        assert current[0] == previous[0] == 0
+        assert 0 < current[1] - previous[1] <= LocalFeedRunner.MAX_POISON_SKIP_CHARS
+        previous = current
+    ids = actor.semantic.state.local_speech_window_ids
+    assert len(ids) == len(set(ids)) == 2
+    assert len([b for b in session.projection_blocks() if b["kind"] == "system"]) == 2
+
+
+def test_context_limits_count_every_omitted_whole_item_and_keep_newest():
+    questions = [_context_block(i, "question", f"Question {i}: not before 22:00?", qid=f"q{i}")
+                 for i in range(15)]
+    facts = [_context_block(20 + t * 6 + f, "paragraph", f"Fact {t}.{f}: exactly 700", topic=f"T{t}")
+             for t in range(10) for f in range(6)]
+    value = json.loads(local_feed_context(questions + facts, max_chars=9000))
+    assert [q["id"] for q in value["open_questions"]] == [f"q{i}" for i in range(3, 15)]
+    assert value["omitted_questions"] == 3
+    assert value["omitted_facts"] == 28
+    assert [t["topic"] for t in value["known_topics"]] == [f"T{i}" for i in range(2, 10)]
+    for t in value["known_topics"]:
+        number = int(t["topic"][1:])
+        assert t["facts"] == [f"Fact {number}.{f}: exactly 700" for f in range(2, 6)]
+
+
+def test_context_budget_boundary_never_truncates_ids_or_facts():
+    blocks = [_context_block(1, "question", "Not before 22:00?", qid="q17"),
+              _context_block(2, "paragraph", "Exactly 700; never 70.")]
+    questions = [{"id": "q17", "topic": "T", "question": "Not before 22:00?"}]
+    for budget in range(39, 201):
+        try:
+            raw = local_feed_context(blocks, max_chars=budget)
+        except ValueError:
+            minimum = '{"open_questions":[],"known_topics":[],"omitted_questions":1,"omitted_facts":1}'
+            assert budget < len(minimum)
+            continue
+        value = json.loads(raw)
+        assert len(raw) <= budget
+        assert value["open_questions"] in ([], questions)
+        assert value.get("omitted_questions", 0) + len(value["open_questions"]) == 1
+        kept = [fact for topic in value["known_topics"] for fact in topic["facts"]]
+        assert kept in ([], ["Exactly 700; never 70."])
+        assert value.get("omitted_facts", 0) + len(kept) == 1
+
+
+def test_context_accepts_exact_empty_schema_budget():
+    empty = '{"open_questions":[],"known_topics":[]}'
+    assert local_feed_context([], max_chars=len(empty)) == empty
+    with pytest.raises(ValueError, match="context.*budget"):
+        local_feed_context([], max_chars=len(empty) - 1)

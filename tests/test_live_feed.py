@@ -103,3 +103,41 @@ def test_feed_contract_immutability_fences_and_slice_boundaries():
     long_spk = [("10:00", "S" * 200, "ok")]
     assert len(slice_speech_entries(long_spk, max_chars=1000).text.split("] ", 1)[1].split(": ", 1)[0]) == 128
     assert len(slice_speech_entries(long_spk, max_chars=200).text.split("] ", 1)[1].split(": ", 1)[0]) == 50
+
+
+def test_cursor_ordering_and_multi_entry_speech_budget():
+    assert SpeechCursor(0, 1) < SpeechCursor(1, 0) < SpeechCursor(1, 1)
+    entries = [("10:00", "A", "x" * 41), ("10:01", "B", "y" * 10)]
+    chunk = slice_speech_entries(entries, max_chars=64)
+    assert chunk == SpeechChunk("[10:00] A: " + "x" * 41, SpeechCursor(1, 0), 41)
+    entries = [("t", "s", text) for text in ("one", "two", "three", "z" * 70)]
+    chunk = slice_speech_entries(entries, max_chars=64)
+    assert len(chunk.text) <= 64
+    assert chunk.text == "[t] s: one\n[t] s: two\n[t] s: three\n[t] s: " + "z" * 22
+    assert chunk.next_cursor == SpeechCursor(3, 22)
+    tail = slice_speech_entries(entries, chunk.next_cursor, max_chars=64)
+    assert tail.text == "[t] s: " + "z" * 48
+    assert tail.next_cursor == SpeechCursor(4, 0)
+
+
+@pytest.mark.parametrize("raw", [
+    '{"items":[{"topic":"T","text":"fact"}],"extra":true}',
+    '{"items":1}', '{"items":{}}', '{"items":[]}',
+    '{"items":[{"topic":"T","text":"fact","extra":"bad"}]}',
+    '{"items":["bad"]}', '{"items":[1]}',
+])
+def test_parser_rejects_invalid_shapes_explicitly(raw):
+    with pytest.raises(ValueError):
+        parse_feed(raw)
+
+
+def test_every_nonempty_speech_slice_strictly_advances_its_cursor():
+    entries = [("t", "s", ""), ("t", "s", "x" * 80), ("t", "s", "a b c"), ("t", "s", "")]
+    for portion, (_, _, body) in enumerate(entries):
+        for offset in range(len(body) + 1):
+            cursor = SpeechCursor(portion, offset)
+            for budget in (64, 65, 90):
+                chunk = slice_speech_entries(entries, cursor, max_chars=budget)
+                assert len(chunk.text) <= budget
+                if chunk.body_chars:
+                    assert chunk.next_cursor > cursor

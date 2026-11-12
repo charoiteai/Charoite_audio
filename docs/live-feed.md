@@ -72,21 +72,19 @@ An explicit question reveals its card once; later streamed tokens preserve the
 reader's position. A newer scroll movement cancels an already queued card jump.
 
 The model context has a 3,500-character serialized JSON budget, including
-escaping. It admits whole open questions newest first, then up to two recent
-whole paragraphs, then the latest whole paragraph for other known topics.
-Every element retains its exact topic identity. Identical facts in different
-topics remain distinct; a selected paragraph replaces only its own identical
-topic anchor. Questions retain separate IDs. Feed equality preserves case,
-punctuation, numbers and negation; classic fuzzy matching is unchanged.
+escaping. It retains up to twelve newest open questions and up to four latest
+whole facts for each of the last eight topics in first-appearance order.
+When the budget is exceeded, oldest topic facts are removed first, then oldest
+questions. Questions keep their IDs and topic labels; retained facts, numbers,
+negation and punctuation are never cut. Nonzero `omitted_questions` and
+`omitted_facts` count all items excluded by these limits or by the budget.
 
-An oversized element is skipped, and smaller subsequent elements are still
-considered. Omission counts describe unrepresented open questions, the two
-eligible recent paragraphs, and topics whose latest fact was not represented
-in either paragraphs or anchors. Omitted old questions may remain unanswered:
-the context does not search unavailable IDs after their answer speech is
-acknowledged. This bound does not guarantee removal of semantic repetitions.
-Custom budgets below two characters raise an error; budgets too small for the
-empty counted schema return `{}`. The production budget always includes counts.
+An omitted question may remain unanswered: the context does not search
+unavailable IDs after answer speech is acknowledged. This bound does not
+guarantee removal of semantic repetitions. A custom budget must be an integer
+(not a boolean) and fit the complete empty schema with the actual omission
+counts. Otherwise the builder raises `ValueError`; it never returns partial
+JSON or an empty object hiding the omissions. The default budget is unchanged.
 
 ## Release gates
 
@@ -137,14 +135,17 @@ meetings. This implementation neither reads nor ships such data.
 Ручной вопрос открывает карточку один раз; следующие токены сохраняют позицию
 чтения. Более поздняя прокрутка отменяет ещё ожидающий переход к карточке.
 
-Контекст модели ограничен 3500 символами JSON с учётом экранирования. Сначала
-помещаются целые открытые вопросы от новых к старым, затем два последних
-абзаца и последние целые факты остальных тем. Принадлежность теме и ID вопроса
-сохраняются; отрицания, даты, числа и знаки не обрезаются. Пропущенные элементы
-показаны счётчиками. Старый вопрос вне контекста может остаться без ответа:
-поиска недоступных ID нет. Это ограничение не гарантирует устранения смысловых
-повторов. Бюджет менее двух символов вызывает ошибку; если даже пустая схема
-со счётчиками не помещается, результат — `{}`.
+Контекст модели ограничен 3500 символами JSON с учётом экранирования. Он
+сохраняет до двенадцати новых открытых вопросов и до четырёх последних целых
+фактов последних восьми тем в порядке первого появления. При переполнении уходят
+старые факты тем, затем старые вопросы. ID вопросов, названия тем, числа,
+отрицания и знаки внутри сохранённых элементов не обрезаются. Ненулевые
+`omitted_questions` и `omitted_facts` учитывают все пропуски из-за лимитов и
+бюджета. Старый вопрос вне контекста может остаться без ответа: поиска
+недоступных ID нет; устранение смысловых повторов не гарантируется.
+Бюджет должен быть целым числом (не bool) и вмещать полную пустую схему с
+фактическими счётчиками пропусков; иначе возникает `ValueError`. Неполный JSON
+и пустой объект, скрывающий пропуски, не возвращаются. Обычный бюджет прежний.
 
 ## 中文
 

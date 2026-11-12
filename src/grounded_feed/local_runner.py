@@ -63,19 +63,15 @@ class _CombinedCancelEvent:
     def wait(self, timeout: float | None = None) -> bool:
         if self.is_set():
             return True
-        if timeout is not None and timeout <= 0:
-            return False
         primary = self._events[0] if self._events else None
         deadline = None if timeout is None else time.monotonic() + float(timeout)
         while not self.is_set():
+            step = _CANCEL_POLL_S
             if deadline is not None:
-                left = deadline - time.monotonic()
-                if left <= 0:
+                step = min(step, max(0.0, deadline - time.monotonic()))
+                if not step:
                     return False
-                step = min(_CANCEL_POLL_S, left)
-            else:
-                step = _CANCEL_POLL_S
-            if primary is not None and hasattr(primary, "wait"):
+            if hasattr(primary, "wait"):
                 primary.wait(step)
             else:
                 time.sleep(step)
@@ -211,6 +207,8 @@ def local_feed_system(language: str) -> str:
 
 def local_feed_context(blocks, *, max_chars: int = _DEFAULT_CONTEXT_CHARS) -> str:
     """Bounded structured account for single-pass local feed without internal IDs."""
+    if type(max_chars) is not int or max_chars < len('{"open_questions":[],"known_topics":[]}'):
+        raise ValueError("context budget cannot fit the complete schema")
     ordered = sorted(blocks, key=lambda b: (b.position, b.system_after, b.serial))
     answered = {b.question_id for b in ordered if b.kind == "answer" and b.question_id}
     open_q: list[dict] = []
@@ -230,29 +228,31 @@ def local_feed_context(blocks, *, max_chars: int = _DEFAULT_CONTEXT_CHARS) -> st
                 topics_order.append(block.topic_label)
                 facts_by_topic[block.topic_label] = []
             facts_by_topic[block.topic_label].append(block.text)
-    if not open_q and not topics_order:
-        return json.dumps({"open_questions": [], "known_topics": []})
+    total_facts = sum(len(facts) for facts in facts_by_topic.values())
     kept_q = open_q[-_MAX_OPEN_QUESTIONS:]
     kept_topics = [
         {"topic": t, "facts": facts_by_topic[t][-_MAX_TOPIC_FACTS:]}
         for t in topics_order[-_MAX_KNOWN_TOPICS:]
     ]
     while True:
-        raw = json.dumps({"open_questions": kept_q, "known_topics": kept_topics},
-                         ensure_ascii=False, separators=(",", ":"))
+        value = {"open_questions": kept_q, "known_topics": kept_topics}
+        omitted_q = len(open_q) - len(kept_q)
+        omitted_facts = total_facts - sum(len(t["facts"]) for t in kept_topics)
+        if omitted_q:
+            value["omitted_questions"] = omitted_q
+        if omitted_facts:
+            value["omitted_facts"] = omitted_facts
+        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         if len(raw) <= max_chars:
             return raw
-        if kept_topics and len(kept_topics[0]["facts"]) > 1:
-            kept_topics[0]["facts"] = kept_topics[0]["facts"][1:]
-        elif len(kept_topics) > 1:
-            kept_topics.pop(0)
-        elif kept_topics:
-            kept_topics = []
-        elif len(kept_q) > 1:
+        if kept_topics:
+            kept_topics[0]["facts"].pop(0)
+            if not kept_topics[0]["facts"]:
+                kept_topics.pop(0)
+        elif kept_q:
             kept_q.pop(0)
         else:
-            return json.dumps({"open_questions": kept_q, "known_topics": []},
-                              ensure_ascii=False, separators=(",", ":"))[:max_chars]
+            raise ValueError("context budget cannot fit omission counts")
 
 
 def slice_ingested_speech(portions, speaker_labels: dict[str, str],
@@ -447,7 +447,7 @@ class LocalFeedRunner:
         bounded_pair = (bounded.next_cursor.portion, bounded.next_cursor.offset)
         skip_cursor = (
             min(next_cursor, bounded_pair)
-            if bounded.body_chars and bounded_pair > expected_cursor
+            if bounded.body_chars
             else next_cursor
         )
         self._window_seq += 1
