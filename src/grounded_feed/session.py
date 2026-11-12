@@ -327,7 +327,7 @@ class GroundedFeedSession:
                 self._active_manual = None
             return still_current
 
-    def cancel_live_generation(self, *, timeout_s: float = 2.0) -> bool:
+    def cancel_live_generation(self, *, timeout_s: float) -> bool:
         """Cancel any active manual answer or local feed stream and wait boundedly."""
         done_ev = None
         with self._lock:

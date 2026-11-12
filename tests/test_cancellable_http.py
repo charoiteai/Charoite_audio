@@ -283,22 +283,67 @@ def test_cancellable_http_cli_requires_worker_flag():
 @pytest.fixture
 def synthetic_worker(tmp_path, monkeypatch):
     """Real owned child/pipe; no socket, model, configuration or meeting data."""
+    import os
+
     root = tmp_path / "worker"
     script = root / "src" / "cancellable_http.py"
     script.parent.mkdir(parents=True)
     monkeypatch.setattr(cancellable_http.charoite_paths, "code_root", lambda _path: root)
     real_popen = subprocess.Popen
     children = []
+    backpressured_stdin = False
+
+    def full_pipe_with_write_space():
+        """Writable pipe with only PIPE_BUF free: a 64 KiB blocking write stalls.
+
+        Fill using the same write size as the transport, allowing macOS pipe
+        growth before EAGAIN. Linux pipe capacity need not match macOS capacity.
+        The child never reads this synthetic prefix or the request afterwards.
+        """
+        read_fd, write_fd = os.pipe()
+        try:
+            os.set_blocking(write_fd, False)
+            chunk = b"x" * 65536
+            filled = 0
+            while filled < 2 * 1024 * 1024:
+                try:
+                    filled += os.write(write_fd, chunk)
+                except BlockingIOError:
+                    break
+            else:
+                pytest.fail("synthetic pipe did not reach bounded backpressure")
+            free = os.fpathconf(write_fd, "PC_PIPE_BUF")
+            assert 0 < free < len(chunk) and filled >= free
+            assert len(os.read(read_fd, free)) == free
+            return read_fd, write_fd
+        except BaseException:
+            os.close(read_fd)
+            os.close(write_fd)
+            raise
 
     def record_child(argv, **kwargs):
-        child = real_popen(argv, **kwargs)
-        if len(argv) > 1 and argv[1] == str(script):
+        owned = len(argv) > 1 and argv[1] == str(script)
+        if owned and backpressured_stdin:
+            read_fd, write_fd = full_pipe_with_write_space()
+            try:
+                child = real_popen(argv, **{**kwargs, "stdin": read_fd})
+            except BaseException:
+                os.close(write_fd)
+                raise
+            finally:
+                os.close(read_fd)
+            child.stdin = os.fdopen(write_fd, "wb", buffering=0)
+        else:
+            child = real_popen(argv, **kwargs)
+        if owned:
             children.append(child)
         return child
 
     monkeypatch.setattr(cancellable_http.subprocess, "Popen", record_child)
 
-    def configure(body):
+    def configure(body, *, backpressure=False):
+        nonlocal backpressured_stdin
+        backpressured_stdin = backpressure
         # Safety bound survives a regression in the parent's cancellation path.
         script.write_text("import sys, os, signal, time, json, hashlib\n"
                           "signal.alarm(8)\n" + body)
@@ -319,15 +364,25 @@ def synthetic_worker(tmp_path, monkeypatch):
                 stream.close()
 
 
-def test_cancel_interrupts_backpressured_request(synthetic_worker):
+def test_cancel_interrupts_backpressured_request(synthetic_worker, monkeypatch):
     import threading
     import time
 
-    children = synthetic_worker("time.sleep(7)\n")
+    children = synthetic_worker("time.sleep(7)\n", backpressure=True)
     cancel = threading.Event()
     timer = threading.Timer(0.2, cancel.set)
-    start = time.monotonic()
-    timer.start()
+    started = []
+    real_write = cancellable_http.os.write
+
+    def observed_write(fd, data):
+        # Arm cancellation at the actual transport write, after pipe setup and
+        # Popen. A slow CI spawn must not cancel before the defective call.
+        if not started and children and fd == children[0].stdin.fileno():
+            started.append(time.monotonic())
+            timer.start()
+        return real_write(fd, data)
+
+    monkeypatch.setattr(cancellable_http.os, "write", observed_write)
     try:
         with pytest.raises(cancellable_http.StreamCancelled):
             cancellable_http.ProcessResponse(
@@ -336,8 +391,49 @@ def test_cancel_interrupts_backpressured_request(synthetic_worker):
             )
     finally:
         timer.cancel()
-        timer.join()
-    assert time.monotonic() - start < 2
+        if started:
+            timer.join()
+    assert started and time.monotonic() - started[0] < 2
+    assert len(children) == 1 and children[0].poll() is not None
+    assert children[0].stdin.closed and children[0].stdout.closed
+
+
+def test_cancel_interrupts_silent_stream_after_headers(synthetic_worker, monkeypatch):
+    import threading
+    import time
+
+    children = synthetic_worker(
+        "sys.stdin.buffer.readline()\n"
+        "print(json.dumps({'kind': 'head', 'status': 200}), flush=True)\n"
+        "time.sleep(7)\n"
+    )
+    cancel = threading.Event()
+    timer = threading.Timer(0.2, cancel.set)
+    started = []
+    try:
+        with cancellable_http.ProcessResponse(
+            "http://127.0.0.1:1", {}, (2, 2),
+            cancel_event=cancel, request_kwargs={},
+        ) as response:
+            assert response.status_code == 200
+            real_select = response._selector.select
+
+            def observed_select(timeout=None):
+                # No pre-header deadline now. Cancellation starts only once
+                # the real stream selector is entered with an empty pipe.
+                if not started:
+                    started.append(time.monotonic())
+                    timer.start()
+                return real_select(timeout)
+
+            monkeypatch.setattr(response._selector, "select", observed_select)
+            with pytest.raises(cancellable_http.StreamCancelled):
+                list(response.iter_lines())
+    finally:
+        timer.cancel()
+        if started:
+            timer.join()
+    assert started and time.monotonic() - started[0] < 2
     assert len(children) == 1 and children[0].poll() is not None
     assert children[0].stdin.closed and children[0].stdout.closed
 
@@ -363,6 +459,31 @@ def test_one_deadline_covers_request_and_headers(synthetic_worker, phase):
             cancel_event=threading.Event(), request_kwargs={},
         )
     assert time.monotonic() - start < 2
+    assert len(children) == 1 and children[0].poll() is not None
+    assert children[0].stdin.closed and children[0].stdout.closed
+
+
+def test_request_at_exact_deadline_times_out_and_reaps(synthetic_worker, monkeypatch):
+    import threading
+    import time
+    from types import SimpleNamespace
+    import requests
+
+    children = synthetic_worker(
+        "sys.stdin.buffer.readline()\n"
+        "print(json.dumps({'kind': 'head', 'status': 200}), flush=True)\n"
+    )
+    # Constructor sets deadline=100+1+1; request delivery starts exactly at102.
+    # Replace only this module's clock, not subprocess/threading real clocks.
+    ticks = iter([100.0])
+    monkeypatch.setattr(cancellable_http, "time", SimpleNamespace(
+        monotonic=lambda: next(ticks, 102.0), sleep=time.sleep))
+    with pytest.raises(requests.Timeout, match="before headers"):
+        with cancellable_http.ProcessResponse(
+            "http://127.0.0.1:1", {}, (1, 1),
+            cancel_event=threading.Event(), request_kwargs={},
+        ):
+            pass
     assert len(children) == 1 and children[0].poll() is not None
     assert children[0].stdin.closed and children[0].stdout.closed
 
