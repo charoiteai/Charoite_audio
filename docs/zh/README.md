@@ -4,7 +4,9 @@
 
 [![CI](https://github.com/charoiteai/Charoite_audio/actions/workflows/ci.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/ci.yml) [![swift-tests](https://github.com/charoiteai/Charoite_audio/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/swift-tests.yml) [![CodeQL](https://github.com/charoiteai/Charoite_audio/actions/workflows/codeql.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/codeql.yml) ![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey) ![Local](https://img.shields.io/badge/cloud-none%20by%20default-success) [![Release](https://img.shields.io/github/v/release/charoiteai/Charoite_audio)](https://github.com/charoiteai/Charoite_audio/releases)
 
-**完全本地运行的 AI 会议助手：说话人分离 + 自更新知识图谱。任何数据都不会离开您的 Mac。**
+**本地优先的 AI 会议助手：说话人分离 + 自更新知识图谱。会议处理默认在本机进行。**
+
+启用云端或远程模型功能后，逐字稿或图谱文本会发送到 Mac 之外。更新检查和模型下载也会使用网络。接收方、设置与限制见 [PRIVACY.md](PRIVACY.md)。
 
 *[English](../../README.md) · [Русский](../ru/README.md)*
 
@@ -39,12 +41,14 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 | 说话人分离 | ✓ | 少见 | ✓ |
 | 会议进行中的实时提示 | ✓ | ✗ | ✓ |
 | 跨会议记忆（知识图谱） | ✗ | ✗ | ✓ |
-| 完全离线可用 | ✗ | ✓ | ✓ |
+| 完全离线可用¹ | ✗ | ✓ | ✓ |
 | 开源 | 少见 | 视情况 | ✓ |
 
+¹ 请先安装模型，保持模型地址为本机地址，关闭云端功能和更新检查，并且不要启动下载。
+
 云端助手很聪明，但您的对话存放在别人的服务器上。本地转写工具保护隐私，
-却在会议结束的那一刻就忘掉它。Charoite 同时守住两个承诺：一切留在 Mac 上，
-而且每场会议都让下一场更聪明。
+却在会议结束的那一刻就忘掉它。Charoite 将默认本地处理与跨会议记忆结合起来。
+启用可选的云端或远程模型处理会改变会议文本的接收方；详见 [PRIVACY.md](PRIVACY.md)。
 
 ## 系统要求
 
@@ -196,7 +200,7 @@ Siri、快捷指令或操作按钮做同样的事。录音途中来电是暂停�
 
 ## 隐私
 
-见 [PRIVACY.md](PRIVACY.md)。简而言之：无遥测，除本机 localhost 服务（Ollama）外无任何网络调用——代码开源，可自行验证。云层之外有两个明确列出的例外：向 GitHub 公共 API 查询版本（不发送任何关于你的信息；`sufler.check_updates: false` 可关闭）以及模型下载；`CHAROITE_NO_CLOUD=1` 会跳过版本检查，并拒绝守护进程在运行中自行下载权重（你亲自发起的安装属于你的明确操作）。录音在 `record_keep_days` 天后自动删除。声纹向量只存在于会议进行时的内存中——不保存任何声纹。
+见 [PRIVACY.md](PRIVACY.md)。简而言之：无遥测；会议处理默认使用本地服务。明确启用云端功能或 `llm.allow_remote: true` 后，逐字稿或图谱文本可以发送到 Mac 之外。云层之外有两个明确列出的例外：向 GitHub 公共 API 查询版本（不发送会议内容，但请求会暴露 IP 和使用 Charoite 这一事实；`sufler.check_updates: false` 可关闭）以及模型下载；`CHAROITE_NO_CLOUD=1` 会跳过版本检查，并拒绝守护进程在运行中自行下载权重（你亲自发起的安装属于你的明确操作）。录音在 `record_keep_days` 天后自动删除。声纹向量只存在于会议进行时的内存中——不保存任何声纹。
 
 ## 状态
 
