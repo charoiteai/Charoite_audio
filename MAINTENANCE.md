@@ -63,8 +63,11 @@ pipeline, at any hour.
 
 Follow the [reproducible privacy protocol](docs/PRIVACY_CHECKS.md) before publication.
 
-The product's promise — nothing leaves your machine — extends to how it
-is built:
+Meeting processing is local by default; enabled cloud and remote-model
+features can send text off the machine, as described in [PRIVACY.md](PRIVACY.md).
+The development process has a separate boundary: user meeting data and
+private local state must not enter the public repository or external review.
+The safeguards below apply to that boundary:
 
 - A **pre-commit anonymization gate** (`scripts/check_private_markers.py`)
   blocks names, employers, internal system names, and transcript
