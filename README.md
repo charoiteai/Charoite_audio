@@ -4,7 +4,9 @@ The experimental [chronological meeting feed](docs/live-feed.md) runs locally an
 
 [![CI](https://github.com/charoiteai/Charoite_audio/actions/workflows/ci.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/ci.yml) [![swift-tests](https://github.com/charoiteai/Charoite_audio/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/swift-tests.yml) [![CodeQL](https://github.com/charoiteai/Charoite_audio/actions/workflows/codeql.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/codeql.yml) ![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey) ![Local](https://img.shields.io/badge/cloud-none%20by%20default-success) [![Release](https://img.shields.io/github/v/release/charoiteai/Charoite_audio)](https://github.com/charoiteai/Charoite_audio/releases)
 
-**Fully local AI meeting assistant with speaker diarization and a self-updating knowledge graph. Nothing ever leaves your Mac.**
+**Local-first AI meeting assistant with speaker diarization and a self-updating knowledge graph. Meeting processing is local by default.**
+
+Enabling cloud or remote-model features sends transcript or graph text off your Mac. Update checks and model downloads also use the network. See [PRIVACY.md](PRIVACY.md) for destinations, controls and limitations.
 
 Charoite listens to your meetings (microphone + system audio, no bots joining calls), transcribes them locally, tells speakers apart, answers questions mid-meeting, and after each meeting builds an Obsidian knowledge graph that remembers people, systems, decisions and recurring topics — across all your meetings.
 
@@ -25,7 +27,7 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 - **Speaker diarization that ships.** Live "Speaker 1/2/…" labels during the meeting, plus an offline re-pass over the full recording after the meeting for clean paragraphs per speaker. Names are assigned automatically when someone introduces themselves — never guessed.
 - **A knowledge graph, not a pile of notes.** Meetings become episodes; people, systems and decisions become nodes; recurring topics become "Cores" with status and history. During a meeting Charoite whispers "⏮ this was discussed on Jul 15, status was …".
 - **Topic dossiers.** At night a local model builds a summary per cross-cutting topic: current state, chronology, decisions, open questions, who is involved — each point linked to its source node. Search consults the dossier index **first**, so "where does this topic stand" is answered by a written summary instead of a dozen scattered fragments. Rebuilds are incremental: a dossier carries a fingerprint of its sources, and an unchanged topic never wakes the model. Hand-written additions live in the "Author edits" section and survive rebuilds.
-- **Cloud models — optional, at every step.** All six switches are off by default and enabled one by one: post-meeting review (`cloud_enrich`), a second opinion at conversation speed (`cloud_live`), refinement of every hint (`cloud_hints`), dossier review with the right to edit (`cloud_edit_graph`) — these run through the Claude CLI on a subscription, with no API key in the environment. The sixth, `cloud_engine`, moves the whole chat to an OpenAI-compatible gateway you name (its key lives in a separate file), so the laptop no longer holds a large model. What leaves for the cloud and what never does — see [PRIVACY.md](PRIVACY.md).
+- **Cloud models — optional, at every step.** All five permission switches are off by default and enabled one by one: post-meeting review (`cloud_enrich`), a second opinion at conversation speed (`cloud_live`), refinement of every hint (`cloud_hints`), dossier review with the right to edit (`cloud_edit_graph`) — these run through the Claude CLI on a subscription, with no API key in the environment. The fifth, `cloud_engine`, moves the whole chat to an OpenAI-compatible gateway you name (its key lives in a separate file), so the laptop no longer holds a large model. What leaves for the cloud and what never does — see [PRIVACY.md](PRIVACY.md).
 - **Layered output per meeting**: one-minute Summary (with links to what changed since past meetings) → Minutes → Debrief → full Transcript. Read as deep as you need.
 - **Real-time help**: the meeting thread on screen, an instant local answer when the other side asks you a question (⚡), a digest of the last minutes on demand, live draft minutes, voice notes and dictation.
 - **Claude Code tools.** An MCP server (`src/mcp_server.py`) gives Claude Code the live meeting: status, transcript, hints, minutes and a graph update. It works only with the data folder named at registration (`CHAROITE_ROOT`) — see [Setup](docs/SETUP.md).
@@ -39,13 +41,16 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 | Speaker diarization | ✓ | rarely | ✓ |
 | Live hints during the meeting | ✓ | ✗ | ✓ |
 | Memory across meetings (graph) | ✗ | ✗ | ✓ |
-| Works fully offline | ✗ | ✓ | ✓ |
+| Works fully offline¹ | ✗ | ✓ | ✓ |
 | Open source | rarely | sometimes | ✓ |
+
+¹ Install models first, keep model endpoints local, disable cloud features and update checks, and do not start downloads.
 
 Cloud assistants are smart but your conversations live on someone else's
 servers. Local transcribers keep audio private but forget each meeting the
-moment it ends. Charoite keeps both promises: everything stays on the Mac,
-and every meeting makes the next one smarter.
+moment it ends. Charoite combines local-by-default meeting processing with
+memory across meetings. Optional cloud and remote-model processing changes
+where meeting text is sent; see [PRIVACY.md](PRIVACY.md).
 
 ## Requirements
 
@@ -227,7 +232,7 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 
 ## Privacy
 
-See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls except to your own localhost services (Ollama) — verify it yourself, it's all here. Two named exceptions outside the cloud layer: a version check against GitHub's public API (nothing about you is sent; `sufler.check_updates: false` turns it off) and model downloads; `CHAROITE_NO_CLOUD=1` skips the version check and refuses the daemon's own on-demand download (an install you start yourself is your explicit action). Recordings auto-delete after `record_keep_days`. Voice embeddings live only in RAM during a meeting; no voice prints are stored.
+See [PRIVACY.md](PRIVACY.md). Short version: no telemetry; meeting processing uses local services by default. Explicitly enabled cloud features or `llm.allow_remote: true` can send transcript or graph text off this Mac. Two named exceptions outside the cloud layer: a version check against GitHub's public API (no meeting content is sent, but the request reveals your IP and use of Charoite; `sufler.check_updates: false` turns it off) and model downloads; `CHAROITE_NO_CLOUD=1` skips the version check and refuses the daemon's own on-demand download (an install you start yourself is your explicit action). Recordings auto-delete after `record_keep_days`. Voice embeddings live only in RAM during a meeting; no voice prints are stored.
 
 ## Status
 
