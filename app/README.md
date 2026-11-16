@@ -107,7 +107,11 @@ failure recovery.
 ## Main window and menu bar
 
 One window with a sidebar; the menu bar, the meeting card and prep switch
-sections instead of opening windows of their own.
+sections instead of opening windows of their own. The sidebar groups current
+work and the library, with External recording below. Today stacks its preparation
+and recent results in narrow windows. In Meeting, recording and status stay
+visible; **More** holds the meeting library, tasks, the Finder folder and the
+separate chat window. The local chat pane stays one click away.
 
 - **Today** — a record button with readiness, the state of the current
   meeting (recording, processing, result ready), prep for the next calendar

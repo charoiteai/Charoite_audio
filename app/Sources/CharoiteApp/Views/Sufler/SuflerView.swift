@@ -490,210 +490,205 @@ struct SuflerView: View {
     // MARK: - Header
 
     private var header: some View {
-        // Тулбар шире окна не должен ТЕРЯТЬ кнопки: сегмент действий встречи
-        // уезжал за правый край — «включаешь, а кнопок не видно». Скролл
-        // делает переполнение видимым, а не обрезанным.
-        ScrollView(.horizontal, showsIndicators: false) {
-            headerRow
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                recordingControl
+                recordingClock
+                Spacer(minLength: 8)
+                meetingMenu
+            }
+            // Status has its own width: recovery and Stop confirmation must
+            // remain readable even at the smallest workspace size.
+            recordingStatus
+                .frame(maxWidth: .infinity, alignment: .leading)
+            recoveryActions
+            HStack(spacing: 12) {
+                layerControls
+                Spacer(minLength: 8)
+                chatToggle
+            }
+            legacyActions
         }
+        .padding(16)
+        .background(.bar)
         .animation(.easeInOut(duration: 0.2), value: sufler.isRunning)
     }
 
-    private var headerRow: some View {
-        HStack(spacing: 12) {
-            Button {
-                sufler.toggle()
-            } label: {
-                Label {
-                    Text(sufler.isRunning ? L.t("Стоп", "Stop", "停止") : L.t("Слушать встречу", "Listen to meeting", "聆听会议"))
-                } icon: {
-                    Image(systemName: sufler.isRunning ? "stop.circle.fill" : "waveform.circle.fill")
-                        // живая волна на записи — видно СРАЗУ, что слушаем,
-                        // без мигающих лампочек
-                        .symbolEffect(.variableColor.iterative, options: .repeating,
-                                      isActive: sufler.isRunning)
+    private var recordingControl: some View {
+        Button {
+            sufler.toggle()
+        } label: {
+            Label {
+                Text(sufler.isRunning ? L.t("Стоп", "Stop", "停止") : L.t("Слушать встречу", "Listen to meeting", "聆听会议"))
+            } icon: {
+                Image(systemName: sufler.isRunning ? "stop.circle.fill" : "waveform.circle.fill")
+                    // живая волна на записи — видно СРАЗУ, что слушаем,
+                    // без мигающих лампочек
+                    .symbolEffect(.variableColor.iterative, options: .repeating,
+                                  isActive: sufler.isRunning)
+            }
+            .font(.headline)
+            // не переносить: в тесном тулбаре главная кнопка ломалась
+            // в «Слу-шать встр ечу» на три строки
+            .fixedSize()
+            .foregroundStyle(.white)
+            // Форма и высота от шкалы (32 pt, радиус 7), а не капсула:
+            // в одном ряду с кнопками шкалы капсула читалась как чужая.
+            // Заливка ручная — «идёт запись» ролью шкалы не описывается.
+            .frame(height: 32)
+            .padding(.horizontal, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(sufler.isRunning
+                          ? AnyShapeStyle(Color.red)
+                          : AnyShapeStyle(Theme.brand))
+                    .shadow(color: Theme.accent.opacity(sufler.isRunning ? 0 : 0.4),
+                            radius: 8, y: 3)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(sufler.isTransitioning)
+        .keyboardShortcut(.space, modifiers: [.command, .shift])
+        .accessibilityIdentifier("meeting.record")
+    }
+
+    @ViewBuilder
+    private var recordingClock: some View {
+        if sufler.isRunning {
+            RecordingClock(startedAt: sufler.recordingStartedAt)
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.red)
+                .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
+        }
+    }
+
+    private var recordingStatus: some View {
+        Text(displayedStatus)
+            .font(statusNeedsAttention ? .caption.weight(.medium) : .caption)
+            .foregroundStyle(statusColor)
+            .lineLimit(Self.statusLineLimit(running: sufler.isRunning, problems: sufler.stickyProblemCount,
+                                            needsAttention: statusNeedsAttention, hasInfo: showsStickyInfo))
+            .fixedSize(horizontal: false, vertical: statusNeedsAttention || showsStickyInfo)
+            .help(displayedStatus)
+            .textSelection(.enabled)
+            .accessibilityIdentifier("meeting.status")
+    }
+
+    @ViewBuilder
+    private var recoveryActions: some View {
+        if !sufler.isRunning,
+           processing.isProcessing || processing.actionTitle != nil || processing.canRetry || processing.retryInFlight {
+            HStack(spacing: 10) {
+                if processing.isProcessing {
+                    ProgressView().controlSize(.small)
                 }
-                .font(.headline)
-                // не переносить: в тесном тулбаре главная кнопка ломалась
-                // в «Слу-шать встр ечу» на три строки
-                .fixedSize()
-                .foregroundStyle(.white)
-                // Форма и высота от шкалы (32 pt, радиус 7), а не капсула:
-                // в одном ряду с кнопками шкалы капсула читалась как чужая.
-                // Заливка ручная — «идёт запись» ролью шкалы не описывается.
-                .frame(height: 32)
-                .padding(.horizontal, 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(sufler.isRunning
-                              ? AnyShapeStyle(Color.red)
-                              : AnyShapeStyle(Theme.brand))
-                        .shadow(color: Theme.accent.opacity(sufler.isRunning ? 0 : 0.4),
-                                radius: 8, y: 3)
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(sufler.isTransitioning)
-            .keyboardShortcut(.space, modifiers: [.command, .shift])
-
-            // Часы записи. Пульсирующая волна говорит «работает», но не
-            // говорит «сколько уже» — а человек, вернувшийся к ноутбуку,
-            // спрашивает именно это. Моноширинные цифры, чтобы строка не
-            // дёргалась каждую секунду.
-            if sufler.isRunning {
-                RecordingClock(startedAt: sufler.recordingStartedAt)
-                    .font(.headline.monospacedDigit())
-                    .foregroundStyle(.red)
-                    .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
-            }
-
-            // Сбой записи нельзя показывать так же, как «Готов к запуску»:
-            // мелкий серый текст в одну строку человек на встрече не заметит, а
-            // сообщение «нажмите ещё раз» вдобавок обрезалось на полуслове.
-            Text(displayedStatus)
-                .font(statusNeedsAttention ? .caption.weight(.medium) : .caption)
-                .foregroundStyle(statusColor)
-                .lineLimit(Self.statusLineLimit(running: sufler.isRunning, problems: sufler.stickyProblemCount,
-                                                needsAttention: statusNeedsAttention, hasInfo: showsStickyInfo))
-                .fixedSize(horizontal: false, vertical: statusNeedsAttention || showsStickyInfo)
-                .help(displayedStatus)
-                .textSelection(.enabled)
-
-            if !sufler.isRunning, processing.isProcessing {
-                ProgressView().controlSize(.small)
-            }
-            if !sufler.isRunning, let actionTitle = processing.actionTitle {
-                Button(actionTitle) { processing.openResult() }
+                if let actionTitle = processing.actionTitle {
+                    Button(actionTitle) { processing.openResult() }
+                        .charoite(.regular, .m)
+                }
+                if processing.canRetry || processing.retryInFlight {
+                    Button(L.t("Повторить обработку", "Retry processing", "重新处理")) {
+                        processing.retry()
+                    }
                     .charoite(.regular, .m)
-            }
-            // Ошибка — не тупик: стенограмма цела, конвейер перезапускаем
-            // отсюда же. Раньше повтор существовал лишь как скрипт в терминале.
-            if !sufler.isRunning, processing.canRetry || processing.retryInFlight {
-                Button(L.t("Повторить обработку", "Retry processing", "重新处理")) {
-                    processing.retry()
-                }
-                .charoite(.regular, .m)
-                // пока прошлый повтор жив — кнопка гаснет, но остаётся на
-                // месте: исчезающая кнопка под курсором читается как сбой,
-                // а два конвейера на одну встречу пишут один статус и лог
-                .disabled(processing.retryInFlight)
-            }
-
-            // Действия встречи — сразу за кнопкой записи, ДО навигации: во
-            // время записи это главные кнопки и они обязаны быть видны первыми.
-            // В режиме живой локальной нити ручные вопросы идут через поле внизу
-            // прямо в нить — классический блок «Конспект / Claude / Протокол» скрыт.
-            if sufler.isRunning, !sufler.liveFeed {
-                CharoiteSegment {
-                    // «Конспект», не «Подсказка»: рядом в LayerBar живёт чип
-                    // «Подсказки», и две одинаковые надписи читались как дубль
-                    // (слова владельца 24.08: «почему сверху две кнопки подсказки»).
-                    Button(L.t("Конспект", "Digest", "摘要")) { sufler.requestHint() }
-                        .charoite(.quiet, .m)
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(sufler.isHinting)
-                        .help(L.t("Конспект последних минут разговора (⌘⏎)", "A digest of the last minutes (⌘⏎)", "最近几分钟的摘要（⌘⏎）"))
-
-                    Button("Claude") { sufler.requestCloud() }
-                        .charoite(.quiet, .m)
-                        .keyboardShortcut(.return, modifiers: [.command, .shift])
-                        // isClouding из условия ушёл вместе с лентой (№53):
-                        // демон cloud_start не эмитит с #232, флаг был вечно
-                        // false и кнопку не блокировал ни разу.
-                        .disabled(!sufler.cloudOn)
-                        .help(sufler.cloudOn
-                              ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
-                              : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
-
-                    Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
-                        .charoite(.quiet, .m)
-                        .disabled(sufler.isHinting)
-                        .help(L.t("Собрать протокол встречи прямо сейчас", "Build the meeting minutes right now", "立即生成会议纪要"))
+                    // Keep retry in place, disabled while its previous run is active.
+                    .disabled(processing.retryInFlight)
                 }
             }
+        }
+    }
 
-            // Живые тумблеры: выключил на этой встрече — станет дефолтом следующих.
-            // Подписи текстом, а не эмодзи: «⚡» и «☁️» в Toggle(.switch) на маке
-            // не рисуются — оставались три одинаковых переключателя без подписей.
-            // accessibilityLabel обязателен отдельно от видимой подписи: VoiceOver
-            // читает Toggle как безымянный «флажок», текст рядом в озвучку не
-            // попадает (проверено обходом AX-дерева). fixedSize обязателен: в
-            // узкой панели SwiftUI ломал подписи по буквам — «По-дс-ка-зки» в
-            // четыре строки. Чипы вместо системных свитчей (UI_REVISION_2026-08,
-            // правило 1): свитчи красили полосу системным синим и спорили с
-            // фирменной кнопкой. Чип несёт цвет слоя: индиго — локальное,
-            // sky — единственный слой, который уходит с машины.
-            LayerBar {
-                LayerChip(title: sufler.liveFeed ? L.t("Лента", "Feed", "纪要") : L.t("Подсказки", "Hints", "提示"),
-                          isOn: $sufler.hintsOn, shortcut: "l")
-                    .help(sufler.liveFeed ? L.t("Дополнять пересказ встречи (⌘⇧L); ручной вопрос доступен и при паузе", "Append the meeting account (⌘⇧L); manual questions remain available while paused", "追加会议纪要（⌘⇧L）；暂停时仍可手动提问") : L.t("Подсказки и мгновенные ответы на вопросы собеседника (⌘⇧L)", "Hints and instant answers to the other side's questions (⌘⇧L)", "提示与对方提问的即时回答（⌘⇧L）"))
-                    .accessibilityLabel(sufler.liveFeed ? L.t("Лента встречи", "Meeting feed", "会议纪要") : L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
-                    .accessibilityHint(sufler.liveFeed ? L.t("Приостановить или возобновить пересказ", "Pause or resume the meeting account", "暂停或继续会议纪要") : L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
-                if !sufler.liveFeed {
+    @ViewBuilder
+    private var legacyActions: some View {
+        if sufler.isRunning, !sufler.liveFeed {
+            CharoiteSegment {
+                // «Конспект», не «Подсказка»: рядом в LayerBar живёт чип
+                // «Подсказки», и две одинаковые надписи читались как дубль
+                // (слова владельца 24.08: «почему сверху две кнопки подсказки»).
+                Button(L.t("Конспект", "Digest", "摘要")) { sufler.requestHint() }
+                    .charoite(.quiet, .m)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(sufler.isHinting)
+                    .help(L.t("Конспект последних минут разговора (⌘⏎)", "A digest of the last minutes (⌘⏎)", "最近几分钟的摘要（⌘⏎）"))
+
+                Button("Claude") { sufler.requestCloud() }
+                    .charoite(.quiet, .m)
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+                    // isClouding из условия ушёл вместе с лентой (№53):
+                    // демон cloud_start не эмитит с #232, флаг был вечно
+                    // false и кнопку не блокировал ни разу.
+                    .disabled(!sufler.cloudOn)
+                    .help(sufler.cloudOn
+                          ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
+                          : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
+
+                Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
+                    .charoite(.quiet, .m)
+                    .disabled(sufler.isHinting)
+                    .help(L.t("Собрать протокол встречи прямо сейчас", "Build the meeting minutes right now", "立即生成会议纪要"))
+            }
+        }
+    }
+
+    private var layerControls: some View {
+        LayerBar {
+            LayerChip(title: sufler.liveFeed ? L.t("Лента", "Feed", "纪要") : L.t("Подсказки", "Hints", "提示"),
+                      isOn: $sufler.hintsOn, shortcut: "l")
+                .help(sufler.liveFeed ? L.t("Дополнять пересказ встречи (⌘⇧L); ручной вопрос доступен и при паузе", "Append the meeting account (⌘⇧L); manual questions remain available while paused", "追加会议纪要（⌘⇧L）；暂停时仍可手动提问") : L.t("Подсказки и мгновенные ответы на вопросы собеседника (⌘⇧L)", "Hints and instant answers to the other side's questions (⌘⇧L)", "提示与对方提问的即时回答（⌘⇧L）"))
+                .accessibilityLabel(sufler.liveFeed ? L.t("Лента встречи", "Meeting feed", "会议纪要") : L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
+                .accessibilityHint(sufler.liveFeed ? L.t("Приостановить или возобновить пересказ", "Pause or resume the meeting account", "暂停或继续会议纪要") : L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
+            if !sufler.liveFeed {
                 LayerChip(title: "Claude", isOn: $sufler.cloudOn, tint: Theme.sky)
                     .help(L.t("Параллельные ответы Claude на вопросы собеседника", "Parallel Claude answers to the other side's questions", "Claude 并行回答对方的提问"))
                     .accessibilityLabel(L.t("Ответы Claude", "Claude answers", "Claude 回答"))
                     .accessibilityHint(L.t("Параллельные ответы облачной модели", "Parallel answers from the cloud model", "云端模型的并行回答"))
-                }
             }
-            .fixedSize(horizontal: true, vertical: false)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
 
-            Button {
-                showChat.toggle()
-            } label: {
-                Label(L.t("Чат", "Chat", "聊天"), systemImage: showChat ? "message.fill" : "message")
+    private var chatToggle: some View {
+        Button {
+            showChat.toggle()
+        } label: {
+            Label(L.t("Чат", "Chat", "聊天"), systemImage: showChat ? "message.fill" : "message")
+        }
+        .charoite(.regular, .m)
+        .help(L.t("Локальный чат с памятью — панель прямо в окне суфлёра", "Local chat with memory — a pane right in the copilot window", "带记忆的本地聊天——直接嵌在提词窗口"))
+        .accessibilityValue(showChat ? L.t("Открыт", "Open", "已打开") : L.t("Закрыт", "Closed", "已关闭"))
+        .accessibilityIdentifier("meeting.chat")
+    }
+
+    private var meetingMenu: some View {
+        Menu {
+            Button { openChatWindow() } label: {
+                Label(L.t("Чат в отдельном окне", "Chat in a separate window", "在独立窗口中聊天"),
+                      systemImage: "arrow.up.forward.square")
             }
-            .charoite(.regular, .m)
-            .help(L.t("Локальный чат с памятью — панель прямо в окне суфлёра", "Local chat with memory — a pane right in the copilot window", "带记忆的本地聊天——直接嵌在提词窗口"))
-
-            Button {
-                openChatWindow()  // не просто открыть, а вынести вперёд
-            } label: {
-                Image(systemName: "arrow.up.forward.square")
+            Divider()
+            Button { navigation.open(.meetings) } label: {
+                Label(L.t("Библиотека встреч", "Meeting library", "会议资料库"), systemImage: "rectangle.stack")
             }
-            .charoite(.icon, .m)
-            .help(L.t("Чат отдельным окном (история общая с панелью)", "Chat in its own window (history shared with the pane)", "聊天独立窗口(与面板共用历史)"))
-
-            // Результат вчерашней записи не должен исчезать в секунду, когда
-            // начата новая.
-            if !processing.history.isEmpty {
-                Button {
-                    navigation.open(.meetings)
-                } label: {
-                    Label(L.t("Встречи", "Meetings", "会议"),
-                          systemImage: "clock.arrow.circlepath")
-                }
-                .charoite(.regular, .m)
-                .help(L.t("Последние записи: состояние, результат, повтор обработки",
-                          "Recent recordings: state, result, retry processing",
-                          "最近的录音：状态、结果、重新处理"))
-            }
-
             Button {
                 TasksService.shared.rescan()
                 navigation.open(.tasks)
             } label: {
-                // бейдж открытых поручений: видно, что по встречам есть хвосты
-                if tasksOpen > 0 {
-                    Label(L.t("Задачи · \(tasksOpen)", "Tasks · \(tasksOpen)", "任务 · \(tasksOpen)"), systemImage: "checklist")
-                } else {
-                    Label(L.t("Задачи", "Tasks", "任务"), systemImage: "checklist")
-                }
+                Label(tasksOpen > 0
+                      ? L.t("Задачи · \(tasksOpen)", "Tasks · \(tasksOpen)", "任务 · \(tasksOpen)")
+                      : L.t("Задачи", "Tasks", "任务"), systemImage: "checklist")
             }
-            .charoite(.regular, .m)
-            .help(L.t("Поручения со встреч (чекбоксы из минуток и заметок графа)", "Meeting action items (checkboxes from minutes and graph notes)", "会议行动项（来自纪要和图谱笔记的复选框）"))
-
-            Button {
-                openMeetingsFolder()
-            } label: {
-                Label(L.t("Встречи", "Meetings", "会议"), systemImage: "folder")
+            Button { openMeetingsFolder() } label: {
+                Label(L.t("Папка встреч в Finder", "Meetings folder in Finder", "在 Finder 中打开会议文件夹"),
+                      systemImage: "folder")
             }
-            .charoite(.regular, .m)
-            .help(L.t("Открыть встречи в Finder (стенограммы, тезисы, минутки, разборы)", "Open meetings in Finder (transcripts, theses, minutes, debriefs)", "在 Finder 打开会议（逐字稿、要点、纪要、复盘）"))
-
+        } label: {
+            Label(tasksOpen > 0
+                  ? L.t("Ещё · \(tasksOpen)", "More · \(tasksOpen)", "更多 · \(tasksOpen)")
+                  : L.t("Ещё", "More", "更多"), systemImage: "ellipsis")
         }
+        .fixedSize()
+        .help(L.t("Библиотека, задачи и дополнительные окна", "Library, tasks and additional windows", "资料库、任务和其他窗口"))
+        .accessibilityIdentifier("meeting.more")
     }
 
     // MARK: - Левая панель: стенограмма
