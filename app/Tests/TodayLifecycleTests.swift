@@ -41,4 +41,26 @@ final class TodayLifecycleTests: XCTestCase {
         XCTAssertEqual(phase(.stopping, processing: true, ready: true),
                        .transitioning(stopping: true))
     }
+
+    func testWideContentLayoutScrollsColumnsIndependentlyWithoutOuterScroll() {
+        let spec = TodayWorkspaceView.contentLayout(for: CGSize(width: 920, height: 500))
+        XCTAssertTrue(spec.isWide)
+        XCTAssertEqual(spec.outerScrollAxes, [])
+        XCTAssertEqual(spec.columnScrollAxes, .vertical)
+        XCTAssertEqual(spec.columnHeight, 500)
+        XCTAssertEqual(spec.dividerWidth, 1)
+        XCTAssertEqual(spec.dividerHeight, 500)
+        XCTAssertEqual(spec.recentWidth, 300)
+    }
+
+    func testNarrowContentLayoutUsesSingleOuterScrollWithoutNestedScrollTrap() {
+        let spec = TodayWorkspaceView.contentLayout(for: CGSize(width: 680, height: 500))
+        XCTAssertFalse(spec.isWide)
+        XCTAssertEqual(spec.outerScrollAxes, .vertical)
+        XCTAssertEqual(spec.columnScrollAxes, [])
+        XCTAssertNil(spec.columnHeight)
+        XCTAssertNil(spec.dividerWidth)
+        XCTAssertEqual(spec.dividerHeight, 1)
+        XCTAssertNil(spec.recentWidth)
+    }
 }

@@ -15,6 +15,37 @@ final class LibrarySelectionTests: XCTestCase {
                                        id: { $0.id }, date: { $0.date }, calendar: calendar)
     }
 
+    func testEmptyOrUnrelatedSearchDoesNotShowPreviousMeeting() {
+        for matches in [[], ["other"]] as [[String]] {
+            XCTAssertFalse(LibraryScreenPolicy.showsSelectedDetail(
+                searchActive: true, isSearching: false, searchBlocked: false,
+                selectedID: "previous", matchingIDs: matches))
+        }
+    }
+
+    func testMatchingSearchResultShowsSelectedMeeting() {
+        XCTAssertTrue(LibraryScreenPolicy.showsSelectedDetail(
+            searchActive: true, isSearching: false, searchBlocked: false,
+            selectedID: "chosen", matchingIDs: ["other", "chosen"]))
+        XCTAssertFalse(LibraryScreenPolicy.showsSelectedDetail(
+            searchActive: true, isSearching: false, searchBlocked: false,
+            selectedID: nil, matchingIDs: ["chosen"]))
+    }
+
+    func testPendingOrBlockedSearchDoesNotTrustStaleMatches() {
+        for (pending, blocked) in [(true, false), (false, true), (true, true)] {
+            XCTAssertFalse(LibraryScreenPolicy.showsSelectedDetail(
+                searchActive: true, isSearching: pending, searchBlocked: blocked,
+                selectedID: "chosen", matchingIDs: ["chosen"]))
+        }
+    }
+
+    func testClearingSearchRestoresDetailWithoutChangingSavedSelection() {
+        XCTAssertTrue(LibraryScreenPolicy.showsSelectedDetail(
+            searchActive: false, isSearching: false, searchBlocked: false,
+            selectedID: "previous", matchingIDs: []))
+    }
+
     func testDaySwitchDoesNotKeepAnUnrelatedDetail() {
         let records = [Record(id: "other", date: day.addingTimeInterval(-86_400)),
                        Record(id: "selected-day", date: day.addingTimeInterval(3600))]

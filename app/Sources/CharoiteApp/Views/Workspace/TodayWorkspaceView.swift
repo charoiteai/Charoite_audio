@@ -3,6 +3,36 @@ import SwiftUI
 #if os(macOS)
 
 /// Домашний экран меняется вместе с жизненным циклом встречи.
+struct TodayContentLayout: Equatable {
+    let isWide: Bool
+    let outerScrollAxes: Axis.Set
+    let columnScrollAxes: Axis.Set
+    let columnHeight: CGFloat?
+    let dividerWidth: CGFloat?
+    let dividerHeight: CGFloat
+    let recentWidth: CGFloat?
+
+    static func resolve(for size: CGSize) -> TodayContentLayout {
+        let wide = size.width >= 780
+        let columnHeight = max(380, size.height)
+        return TodayContentLayout(
+            isWide: wide,
+            outerScrollAxes: wide ? [] : .vertical,
+            columnScrollAxes: wide ? .vertical : [],
+            columnHeight: wide ? columnHeight : nil,
+            dividerWidth: wide ? 1 : nil,
+            dividerHeight: wide ? columnHeight : 1,
+            recentWidth: wide ? 300 : nil
+        )
+    }
+}
+
+extension TodayWorkspaceView {
+    static func contentLayout(for size: CGSize) -> TodayContentLayout {
+        TodayContentLayout.resolve(for: size)
+    }
+}
+
 struct TodayWorkspaceView: View {
     @ObservedObject private var sufler = SuflerService.shared
     @ObservedObject private var processing = MeetingProcessingService.shared
@@ -27,15 +57,33 @@ struct TodayWorkspaceView: View {
         VStack(spacing: 0) {
             lifecycle
             Divider()
-            HSplitView {
-                PrepView()
-                    .frame(minWidth: 380, maxWidth: .infinity)
-                recent
-                    // Колонка недавних встреч сжимается первой: подготовка к
-                    // встрече важнее списка, а раньше сумма минимумов не
-                    // влезала в окно и обе колонки резались краем.
-                    .frame(minWidth: 210, idealWidth: 300, maxWidth: 340)
-                    .layoutPriority(-1)
+            GeometryReader { geometry in
+                let spec = Self.contentLayout(for: geometry.size)
+                let layout = spec.isWide
+                    ? AnyLayout(HStackLayout(alignment: .top, spacing: 0))
+                    : AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
+                // Preserve child identity across resizing: Prep owns a task
+                // and transient search state, so an if/else must not recreate it.
+                // Wide mode disables the outer scroll and scrolls each column
+                // independently; narrow mode disables inner column scroll so one
+                // outer ScrollView scrolls the stacked page without a scroll trap.
+                ScrollView(spec.outerScrollAxes) {
+                    layout {
+                        PrepView(scrollable: spec.isWide)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: spec.columnHeight)
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(width: spec.dividerWidth,
+                                   height: spec.dividerHeight)
+                        ScrollView(spec.columnScrollAxes) {
+                            recent
+                        }
+                        .frame(width: spec.recentWidth,
+                               height: spec.columnHeight)
+                    }
+                    .frame(minHeight: geometry.size.height, alignment: .topLeading)
+                }
             }
         }
         .onAppear {
@@ -95,18 +143,66 @@ struct TodayWorkspaceView: View {
     }
 
     private var lifecycle: some View {
-        HStack(spacing: 14) {
-            Image(systemName: lifecycleIcon)
-                .font(.title2).foregroundStyle(Theme.accent)
-                .frame(width: 34)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(lifecycleTitle).font(.headline)
-                Text(lifecycleDetail).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+        VStack(alignment: .leading, spacing: 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 24) {
+                    lifecycleSummary.frame(minWidth: 240)
+                    Spacer(minLength: 0)
+                    lifecycleActions.fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    lifecycleSummary
+                    lifecycleActions
+                }
             }
-            Spacer()
+            // Confirmation must not change the action row's intrinsic width:
+            // the second Stop press should land on the same button.
+            if phase == .recording && sufler.stopConfirmPending {
+                Text(L.t("«Стоп» ещё раз, чтобы точно остановить",
+                         "Press Stop again to confirm",
+                         "再按一次停止以确认"))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.warning)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if phase == .record || phase == .readyPlusRecord {
+                Divider()
+                recordingReadiness
+            }
+        }
+        .padding(20)
+        .background(Theme.accent.opacity(0.045))
+        .onAppear { refreshReadinessIfIdle() }
+        .onChange(of: phase) { _, _ in refreshReadinessIfIdle() }
+    }
+
+    private var lifecycleSummary: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: lifecycleIcon)
+                .font(.title2)
+                .foregroundStyle(Theme.accent)
+                .frame(width: 44, height: 44)
+                .background(Theme.accent.opacity(0.10),
+                            in: RoundedRectangle(cornerRadius: Theme.radiusCard))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(lifecycleTitle).font(.title2.weight(.semibold))
+                Text(lifecycleDetail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var lifecycleActions: some View {
+        HStack(spacing: 12) {
             switch phase {
             case .record:
-                capsuleWithReadiness
+                recordButton
             case .transitioning(let stopping):
                 RecordCapsule(isRecording: stopping,
                               isTransitioning: true,
@@ -116,20 +212,9 @@ struct TodayWorkspaceView: View {
                     navigation.open(.meeting)
                 }
                 .charoite(.link)
-                VStack(alignment: .trailing, spacing: 6) {
-                    RecordCapsule(isRecording: true,
-                                  clockFrom: sufler.recordingStartedAt,
-                                  action: { sufler.toggle() })
-                    if sufler.stopConfirmPending {
-                        // двухшаговый стоп короткой записи: подтверждение
-                        // видно там, где нажали, а не в статусе суфлёра
-                        Text(L.t("«Стоп» ещё раз, чтобы точно остановить",
-                                 "Press Stop again to confirm",
-                                 "再按一次停止以确认"))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Theme.warning)
-                    }
-                }
+                RecordCapsule(isRecording: true,
+                              clockFrom: sufler.recordingStartedAt,
+                              action: { sufler.toggle() })
             case .processing:
                 ProgressView().controlSize(.small)
                 Button(L.t("Показать статус", "Show status", "查看状态")) {
@@ -143,16 +228,9 @@ struct TodayWorkspaceView: View {
                     }
                 }
                 .charoite(.regular)
-                capsuleWithReadiness
+                recordButton
             }
         }
-        .padding(.horizontal, 18).padding(.vertical, 14)
-        .background(Theme.accent.opacity(0.055))
-        .onAppear { refreshReadinessIfIdle() }
-        // onAppear не срабатывает при смене фазы внутри открытого «Сегодня»:
-        // запись остановилась — статус готовности не должен остаться
-        // вчерашним (ревью 15.08 ×3); от лишних probe защищает TTL сервиса
-        .onChange(of: phase) { _, _ in refreshReadinessIfIdle() }
     }
 
     /// Готовность нужна только там, где есть капсула старта; во время
@@ -164,31 +242,32 @@ struct TodayWorkspaceView: View {
         }
     }
 
-    /// Капсула старта со строкой готовности под ней — от реальных проверок
-    /// SetupReadinessService, а не от самочувствия интерфейса.
-    private var capsuleWithReadiness: some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            RecordCapsule(isRecording: false, clockFrom: nil) {
-                navigation.open(.meeting)
-                // первый запуск: онбординг-sheet суфлёра сам предложит старт
-                if firstRunSeen { sufler.toggle() }
-            }
-            HStack(spacing: 8) {
-                // Тот же предикат, что у мастера: набор неполон — кнопка видна,
-                // в том числе без эмбеддингов, когда проверки в снимке нет.
+    private var recordButton: some View {
+        RecordCapsule(isRecording: false, clockFrom: nil) {
+            navigation.open(.meeting)
+            // The Meeting sheet owns first-run setup before recording.
+            if firstRunSeen { sufler.toggle() }
+        }
+    }
+
+    private var recordingReadiness: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ReadinessLine(snapshot: readiness.snapshot,
+                          isChecking: readiness.isChecking)
+            // Keep installation failures and recovery actions visible, but
+            // separate these utilities from the primary recording action.
+            HStack(alignment: .top, spacing: 12) {
                 if !ModelPullService.diarizationInstalled {
-                    DiarizationInstallButton(alignment: .trailing)
+                    DiarizationInstallButton(alignment: .leading)
                 }
-                // Nemotron — по действию или беде, само действие в поповере.
                 NemotronTodayButton()
-                ReadinessLine(snapshot: readiness.snapshot,
-                              isChecking: readiness.isChecking)
+                Spacer(minLength: 0)
             }
         }
     }
 
     private var recent: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text(L.t("Недавние встречи", "Recent meetings", "近期会议"))
                     .font(.headline)
@@ -223,9 +302,13 @@ struct TodayWorkspaceView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(RoundedRectangle(cornerRadius: Theme.radiusCard)
-                            .fill(Color(nsColor: .quaternarySystemFill)))
+                        .padding(14)
+                        .background(.background,
+                                    in: RoundedRectangle(cornerRadius: Theme.radiusCard))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: Theme.radiusCard)
+                                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                        }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -236,7 +319,9 @@ struct TodayWorkspaceView: View {
             nightlyRow
             if version.needsAttention { versionRow }
         }
-        .padding(14)
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.primary.opacity(0.025))
         .onAppear {
             // свежесть ночи — у планировщика владельцев, не у вью (второй путь
             // мимо коалесценции — Important DS круга 3 по №139)

@@ -9,6 +9,7 @@ import SwiftUI
 /// раз обещали по этой теме, какие поручения висят. Этот экран собирает
 /// ответы в одном месте за минуту до начала.
 struct PrepView: View {
+    var scrollable: Bool = true
     @ObservedObject private var calendar = CalendarService.shared
     @ObservedObject private var tasks = TasksService.shared
     @ObservedObject private var processing = MeetingProcessingService.shared
@@ -38,7 +39,7 @@ struct PrepView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            ScrollView {
+            ScrollView(scrollable ? .vertical : []) {
                 VStack(alignment: .leading, spacing: 16) {
                     todaySection
                     topicSection
@@ -50,7 +51,7 @@ struct PrepView: View {
                 .padding(14)
             }
         }
-        .frame(minWidth: 460, minHeight: 380)
+        .frame(minWidth: scrollable ? 460 : nil, minHeight: scrollable ? 380 : nil)
         .task {
             tasks.rescan()
             loadTopicTrail()
