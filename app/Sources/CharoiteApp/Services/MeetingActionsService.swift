@@ -4,50 +4,41 @@ import Foundation
 #if os(macOS)
 
 struct MeetingActionCommand: Equatable, Sendable {
-    let root: URL
-    let codeRoot: URL
-    let executable: URL
+    let python: AppSettings.PythonScope
     let arguments: [String]
+
+    var root: URL { python.dataRoot }
+    var codeRoot: URL { python.codeRoot }
+    var executable: URL { python.executable }
 
     static func participantProtocol(
         root: URL,
         meetingID: String,
         graph: URL
     ) -> MeetingActionCommand {
-        let normalizedRoot = MeetingForgetScope.normalizedDirectory(root)
-        let resolvedCodeRoot = MeetingForgetScope.normalizedDirectory(
-            AppSettings.codeRoot(dataRoot: normalizedRoot))
+        let python = AppSettings.PythonScope.resolve(root: root)
         return MeetingActionCommand(
-            root: normalizedRoot,
-            codeRoot: resolvedCodeRoot,
-            executable: MeetingForgetScope.normalizedFile(
-                AppSettings.pythonExecutable(root: normalizedRoot)),
+            python: python,
             arguments: [
-                AppSettings.scriptPath("scripts/protocol.py", root: normalizedRoot),
+                python.codeRoot.appendingPathComponent("scripts/protocol.py").path,
                 archiveTarget(meetingID),
                 "--graph", MeetingForgetScope.normalizedDirectory(graph).path,
                 "--style", "plain",
             ])
     }
 
-    static func forget(
-        root: URL,
-        meetingID: String,
-        graph: URL,
-        apply: Bool,
-        importFolder: String? = nil
+    static func forgetDryRun(
+        scope: MeetingForgetScope,
+        meetingID: String
     ) -> MeetingActionCommand {
-        let normalizedRoot = root.standardizedFileURL
-        let scope = MeetingForgetScope(
-            root: normalizedRoot,
-            codeRoot: AppSettings.codeRoot(dataRoot: normalizedRoot),
-            executable: AppSettings.pythonExecutable(root: normalizedRoot),
-            graph: graph,
-            importFolder: importFolder)
-        return forget(scope: scope, meetingID: meetingID, apply: apply)
+        forget(scope: scope, meetingID: meetingID, apply: false)
     }
 
-    static func forget(
+    fileprivate static func forgetApply(_ planned: PlannedForget) -> MeetingActionCommand {
+        forget(scope: planned.scope, meetingID: planned.meeting.meetingID, apply: true)
+    }
+
+    private static func forget(
         scope: MeetingForgetScope,
         meetingID: String,
         apply: Bool
@@ -63,11 +54,7 @@ struct MeetingActionCommand: Equatable, Sendable {
             args += ["--import-folder", importFolder]
         }
         if apply { args.append("--yes") }
-        return MeetingActionCommand(
-            root: scope.root,
-            codeRoot: scope.codeRoot,
-            executable: scope.executable,
-            arguments: args)
+        return MeetingActionCommand(python: scope.python, arguments: args)
     }
 
     /// Цель «забыть»: посекундный штамп, если ID его несёт («2026-08-03_113012»,
@@ -96,32 +83,37 @@ struct MeetingActionCommand: Equatable, Sendable {
 
 /// Нормализованный снимок папок и интерпретатора, при которых строился сухой план удаления.
 struct MeetingForgetScope: Equatable, Sendable {
-    let root: URL
-    let codeRoot: URL
-    let executable: URL
+    let python: AppSettings.PythonScope
     let graph: URL
     let importFolder: String?
 
+    var root: URL { python.dataRoot }
+    var codeRoot: URL { python.codeRoot }
+    var executable: URL { python.executable }
+
     init(
-        root: URL,
-        codeRoot: URL,
-        executable: URL,
+        python: AppSettings.PythonScope,
         graph: URL,
         importFolder: String? = nil
     ) {
-        self.root = Self.normalizedDirectory(root)
-        self.codeRoot = Self.normalizedDirectory(codeRoot)
-        self.executable = Self.normalizedFile(executable)
+        self.python = python
         self.graph = Self.normalizedDirectory(graph)
         self.importFolder = Self.normalizedImportFolder(importFolder)
     }
 
-    static func normalizedDirectory(_ url: URL) -> URL {
-        URL(fileURLWithPath: url.standardizedFileURL.path, isDirectory: true)
+    init(
+        root: URL,
+        graph: URL,
+        importFolder: String? = nil
+    ) {
+        self.init(
+            python: AppSettings.PythonScope.resolve(root: root),
+            graph: graph,
+            importFolder: importFolder)
     }
 
-    static func normalizedFile(_ url: URL) -> URL {
-        URL(fileURLWithPath: url.standardizedFileURL.path, isDirectory: false)
+    static func normalizedDirectory(_ url: URL) -> URL {
+        URL(fileURLWithPath: url.standardizedFileURL.path, isDirectory: true)
     }
 
     static func normalizedImportFolder(_ raw: String?) -> String? {
@@ -133,12 +125,10 @@ struct MeetingForgetScope: Equatable, Sendable {
 
     @MainActor
     static func current() -> MeetingForgetScope? {
-        let root = AppSettings.charoiteRoot.standardizedFileURL
-        guard let graph = AppSettings.graphDir(root: root) else { return nil }
+        let python = AppSettings.PythonScope.resolve()
+        guard let graph = AppSettings.graphDir(root: python.dataRoot) else { return nil }
         return MeetingForgetScope(
-            root: root,
-            codeRoot: AppSettings.codeRoot(dataRoot: root),
-            executable: AppSettings.pythonExecutable(root: root),
+            python: python,
             graph: graph,
             importFolder: ImportService.configuredDir)
     }
@@ -203,10 +193,9 @@ enum MeetingActionsService {
         guard let scope else {
             return .failed(graphNotConfiguredText)
         }
-        let result = await runner(.forget(
+        let result = await runner(.forgetDryRun(
             scope: scope,
-            meetingID: snapshot.meetingID,
-            apply: false))
+            meetingID: snapshot.meetingID))
         guard result.succeeded else {
             return .failed(result.text)
         }
@@ -217,10 +206,7 @@ enum MeetingActionsService {
         _ planned: PlannedForget,
         runner: @Sendable (MeetingActionCommand) async -> MeetingActionResult = execute
     ) async -> MeetingActionResult {
-        await runner(.forget(
-            scope: planned.scope,
-            meetingID: planned.meeting.meetingID,
-            apply: true))
+        await runner(.forgetApply(planned))
     }
 
     static func confirmForget(
@@ -246,7 +232,7 @@ enum MeetingActionsService {
     }
 
     @Sendable
-    static func execute(_ command: MeetingActionCommand) async -> MeetingActionResult {
+    fileprivate static func execute(_ command: MeetingActionCommand) async -> MeetingActionResult {
         await Task.detached(priority: .userInitiated) { run(command) }.value
     }
 
@@ -261,11 +247,7 @@ enum MeetingActionsService {
         let process = Process()
         let output = Pipe()
         process.arguments = command.arguments
-        AppSettings.preparePython(
-            process,
-            root: command.root,
-            codeRootOverride: command.codeRoot,
-            executable: command.executable)
+        AppSettings.preparePython(process, scope: command.python)
         process.standardOutput = output
         process.standardError = output
         do {
@@ -337,6 +319,7 @@ final class MeetingCardActionController: ObservableObject {
     }
 
     func dismissForgetSheet() {
+        guard !actionBusy else { return }
         showForget = false
         plannedForget = nil
     }
@@ -422,7 +405,8 @@ final class MeetingCardActionController: ObservableObject {
         case .ignore:
             return
         case .scopeChanged(let message):
-            dismissForgetSheet()
+            showForget = false
+            plannedForget = nil
             actionMessage = message
         case .proceed(let planned):
             let id = UUID()
@@ -436,7 +420,8 @@ final class MeetingCardActionController: ObservableObject {
                 guard accepts(id, for: planned.meeting.meetingID) else { return }
                 actionID = nil
                 actionBusy = false
-                dismissForgetSheet()
+                showForget = false
+                plannedForget = nil
                 if result.succeeded {
                     onCloseCard()
                 } else {

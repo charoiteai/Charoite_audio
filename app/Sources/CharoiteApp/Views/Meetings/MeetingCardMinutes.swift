@@ -77,24 +77,19 @@ struct DepthTaskID: Equatable {
 }
 
 extension MeetingCardView {
-    var depth: MeetingCardDepth {
+    func depth(in available: [MeetingCardDepth]) -> MeetingCardDepth {
         let wanted = MeetingCardDepth(rawValue: depthRaw) ?? .summary
-        let available = MeetingCardDepth.available(card: card, meeting: meeting)
         return available.contains(wanted) ? wanted : .summary
     }
 
-    var depthTaskID: DepthTaskID {
-        DepthTaskID(
-            depth: depth,
-            meetingID: meeting.meetingID,
-            url: depth.file(card: card, meeting: meeting))
+    var depth: MeetingCardDepth {
+        depth(in: MeetingCardDepth.available(card: card, meeting: meeting))
     }
 
     /// Сегмент глубин показывается, когда глубин больше одной: у встречи
     /// без минуток и стенограммы выбирать нечего.
     @ViewBuilder
-    var depthPicker: some View {
-        let available = MeetingCardDepth.available(card: card, meeting: meeting)
+    func depthPicker(available: [MeetingCardDepth], depth: MeetingCardDepth) -> some View {
         if available.count > 1 {
             // Метка черновика — под сегментом, не рядом: четыре русских
             // сегмента плюс метка в одном ряду не влезали в панель 440.
@@ -118,7 +113,7 @@ extension MeetingCardView {
 
     /// Содержимое выбранной глубины.
     @ViewBuilder
-    var depthContent: some View {
+    func depthContent(depth: MeetingCardDepth, targetURL: URL?) -> some View {
         switch depth {
         case .summary:
             section(L.t("Решили", "Decided", "决定"), mark: "⚑", items: card.decisions)
@@ -131,30 +126,30 @@ extension MeetingCardView {
             // показать Минутки.md, которых кэш ещё не видел (круг-3, DS+Codex).
             if let minutes = card.minutes, !minutes.isEmpty {
                 minutesSections(minutes)
-            } else if loadedCurrentDepthFile,
+            } else if loadedDepthFile(depth: depth, targetURL: targetURL),
                       let fileMinutes, !fileMinutes.isEmpty {
                 minutesSections(fileMinutes)
             } else {
                 // Файл не парсится в минутки — показываем его строками, как
                 // стенограмму: содержимое честнее пустоты.
-                fileView
+                fileView(depth: depth, targetURL: targetURL)
             }
         case .analysis, .transcript:
-            fileView
+            fileView(depth: depth, targetURL: targetURL)
         }
     }
 
-    private var loadedCurrentDepthFile: Bool {
+    private func loadedDepthFile(depth: MeetingCardDepth, targetURL: URL?) -> Bool {
         fileDepth == depth
             && fileMeetingID == meeting.meetingID
-            && fileURL == depth.file(card: card, meeting: meeting)
+            && fileURL == targetURL
     }
 
     /// Разбор и стенограмма читаются с диска лениво и показываются на месте.
     /// Стенограмма длинной встречи — сотни абзацев: LazyVStack, не один Text.
     @ViewBuilder
-    private var fileView: some View {
-        if !loadedCurrentDepthFile || fileLines == nil {
+    private func fileView(depth: MeetingCardDepth, targetURL: URL?) -> some View {
+        if !loadedDepthFile(depth: depth, targetURL: targetURL) || fileLines == nil {
             HStack(spacing: 7) {
                 ProgressView().controlSize(.small)
                 Text(L.t("Читаю…", "Reading…", "正在读取…"))
@@ -223,11 +218,6 @@ extension MeetingCardView {
     /// Откуда это: файл ОТКРЫТОЙ глубины и время его последней записи —
     /// у каждого текста есть источник (правило 3 ревизии). Путь — от папки
     /// графа, иначе от папки данных, иначе последние два звена.
-    var sourceLine: String? {
-        guard let url = depth.file(card: card, meeting: meeting) else { return nil }
-        return Self.sourceLine(for: url, graph: AppSettings.graphDir, root: AppSettings.charoiteRoot)
-    }
-
     static func sourceLine(for url: URL, graph: URL?, root: URL, now: Date = Date()) -> String {
         let rel: String
         if let graph, url.path.hasPrefix(graph.path + "/") {

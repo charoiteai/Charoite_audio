@@ -11,12 +11,15 @@ import SwiftUI
 struct MeetingCardView: View {
     let meeting: MeetingProcessingSnapshot
     var embedded = false
+    var preloadedCard: MeetingCard?
     @ObservedObject private var processing = MeetingProcessingService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
     @ObservedObject private var tasks = TasksService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var loadedCard = MeetingCard()
     @State private var loadedSnapshot: MeetingProcessingSnapshot?
+    @State private var sourceRootDir: URL?
+    @State private var sourceGraphDir: URL?
     @StateObject private var cardActions = MeetingCardActionController()
     @State private var renaming = false
     @State private var newTitle = ""
@@ -40,17 +43,22 @@ struct MeetingCardView: View {
     @State var fileURL: URL?
 
     var card: MeetingCard {
-        loadedSnapshot?.meetingID == meeting.meetingID ? loadedCard : MeetingCard()
+        loadedSnapshot?.meetingID == meeting.meetingID
+            ? loadedCard
+            : (preloadedCard ?? MeetingCard())
     }
 
     var body: some View {
+        let availableDepths = MeetingCardDepth.available(card: card, meeting: meeting)
+        let activeDepth = depth(in: availableDepths)
+        let activeFile = activeDepth.file(card: card, meeting: meeting)
         VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    depthPicker
-                    if depth == .summary || depth == .minutes {
+                    depthPicker(available: availableDepths, depth: activeDepth)
+                    if activeDepth == .summary || activeDepth == .minutes {
                         if let gist = card.gist {
                             Text(gist).font(.body)
                         } else if card.summaryMissing {
@@ -60,13 +68,17 @@ struct MeetingCardView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                     }
-                    depthContent
+                    depthContent(depth: activeDepth, targetURL: activeFile)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
             }
             // Откуда это: путь заметки от графа и время последней записи.
-            if let source = sourceLine {
+            if let url = activeFile {
+                let source = Self.sourceLine(
+                    for: url,
+                    graph: sourceGraphDir,
+                    root: sourceRootDir ?? AppSettings.charoiteRoot)
                 Text(source)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -85,7 +97,7 @@ struct MeetingCardView: View {
                     .lineLimit(2)
             }
             Divider()
-            actions
+            actions(depth: activeDepth, file: activeFile)
         }
         .padding(14)
         .frame(minWidth: 420, minHeight: 400)
@@ -94,13 +106,18 @@ struct MeetingCardView: View {
         // фоновом обновлении той же встречи actionMessage и открытый лист не сбрасываются.
         .task(id: meeting) {
             let previousID = loadedSnapshot?.meetingID
-            loadedCard = MeetingCardLoader.load(for: meeting)
+            loadedCard = preloadedCard ?? MeetingCardLoader.load(for: meeting)
             loadedSnapshot = meeting
+            let root = AppSettings.charoiteRoot
+            sourceRootDir = root
+            sourceGraphDir = AppSettings.graphDir(root: root)
             if previousID != meeting.meetingID {
                 tasks.rescan()
             }
         }
-        .task(id: depthTaskID) { await loadDepthFile() }
+        .task(id: DepthTaskID(depth: activeDepth, meetingID: meeting.meetingID, url: activeFile)) {
+            await loadDepthFile()
+        }
         // Привычка «Подробно» из прежнего ключа — в «Минутки», один раз.
         .onAppear {
             Self.migrateDepthPreference()
@@ -160,7 +177,7 @@ struct MeetingCardView: View {
                         // и случайный клик по карандашу стоил темы.
                         .onExitCommand { renaming = false }
                     Button(L.t("Сохранить", "Save", "保存")) { runRename() }
-                        .disabled(renameBusy)
+                        .disabled(renameBusy || cardActions.actionBusy || cardActions.showForget)
                     Button {
                         renaming = false
                     } label: {
@@ -184,6 +201,7 @@ struct MeetingCardView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .disabled(cardActions.actionBusy || cardActions.showForget)
                     .help(L.t("Переименовать встречу — тема поменяется во всех файлах и в графе",
                               "Rename the meeting — the topic changes in every file and in the graph",
                               "重命名会议——主题将在所有文件和图谱中更新"))
@@ -301,12 +319,12 @@ struct MeetingCardView: View {
         item.replacingOccurrences(of: "**", with: "")
     }
 
-    private var actions: some View {
+    private func actions(depth: MeetingCardDepth, file: URL?) -> some View {
         HStack(spacing: 10) {
             // Одна дверь во внешний редактор — для той глубины, что открыта.
             // Раньше «Открыть», «Стенограмма» и «Исправить стенограмму…»
             // стояли рядом, и две из них звали одно и то же.
-            if let file = depth.file(card: card, meeting: meeting),
+            if let file,
                FileManager.default.fileExists(atPath: file.path) {
                 Button(L.t("Открыть в редакторе", "Open in editor", "在编辑器中打开")) {
                     NSWorkspace.shared.open(file)
@@ -352,7 +370,7 @@ struct MeetingCardView: View {
             .menuStyle(.button)
             .charoite(.regular, .s)
             .fixedSize()
-            .disabled(cardActions.actionBusy)
+            .disabled(cardActions.actionBusy || renameBusy)
             Spacer()
             if cardActions.actionBusy { ProgressView().controlSize(.small) }
             if copied {
@@ -363,10 +381,11 @@ struct MeetingCardView: View {
             // Удаление — на виду, но тихое: красный текст без заливки.
             // Убранное в меню «Забыть» находили дольше, чем боялись нажать.
             Button(L.t("Забыть встречу…", "Forget meeting…", "忘记会议…")) {
+                renaming = false
                 cardActions.prepareForget(for: meeting)
             }
             .charoite(.destructive, .s)
-            .disabled(cardActions.actionBusy)
+            .disabled(cardActions.actionBusy || renameBusy)
         }
     }
 
@@ -397,6 +416,7 @@ struct MeetingCardView: View {
                 Button(L.t("Отмена", "Cancel", "取消")) { cardActions.dismissForgetSheet() }
                     .charoite(.quiet, .l)
                     .keyboardShortcut(.cancelAction)
+                    .disabled(cardActions.actionBusy)
                 Button(L.t("Удалить безвозвратно", "Delete permanently", "永久删除"),
                        role: .destructive) { confirmAndRunForget() }
                     .charoite(.destructiveFilled, .l)
@@ -405,6 +425,7 @@ struct MeetingCardView: View {
         }
         .padding(16)
         .frame(width: 600, height: 430)
+        .interactiveDismissDisabled(cardActions.actionBusy)
     }
 
     private var dateText: String {
@@ -451,7 +472,10 @@ struct MeetingCardView: View {
     }
 
     private func runRename() {
-        guard !renameBusy, cardActions.displayedMeeting?.meetingID == meeting.meetingID else { return }
+        guard !renameBusy,
+              !cardActions.actionBusy,
+              !cardActions.showForget,
+              cardActions.displayedMeeting?.meetingID == meeting.meetingID else { return }
         let snapshot = meeting
         let title = newTitle
         let id = UUID()

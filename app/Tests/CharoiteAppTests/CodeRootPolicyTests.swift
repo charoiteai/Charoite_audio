@@ -150,6 +150,15 @@ final class CodeRootPolicyTests: XCTestCase {
         XCTAssertEqual(wrapped.currentDirectoryURL, direct.currentDirectoryURL)
         XCTAssertEqual(wrapped.environment, direct.environment)
         XCTAssertEqual(wrapped.arguments, arguments)
+
+        let scope = AppSettings.PythonScope.resolve(root: root)
+        let scoped = Process()
+        scoped.arguments = arguments
+        AppSettings.preparePython(scoped, scope: scope)
+        XCTAssertEqual(scoped.executableURL?.standardizedFileURL, scope.executable)
+        XCTAssertEqual(scoped.currentDirectoryURL?.standardizedFileURL, scope.codeRoot)
+        XCTAssertEqual(scoped.environment, expectedEnvironment)
+        XCTAssertEqual(scoped.arguments, arguments)
     }
 
     /// Страж партии G-П2: все три известных запуска обязаны делегировать
@@ -223,5 +232,7 @@ final class CodeRootPolicyTests: XCTestCase {
         XCTAssertTrue(cwdWire.firstMatch(in: settings,
                           range: NSRange(settings.startIndex..., in: settings)) != nil,
                       "preparePython больше не делегирует cwd в codeRoot(dataRoot:)")
+        XCTAssertFalse(settings.contains("codeRootOverride"),
+                       "preparePython не должен принимать произвольный обход codeRoot")
     }
 }

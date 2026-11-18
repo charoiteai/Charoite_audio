@@ -176,19 +176,63 @@ enum AppSettings {
     /// (`/usr/bin/nice`) или была собрана до перехода в detached-задачу.
     /// `extraEnvironment` ложится до `CHAROITE_ROOT`: перекрыть корень данных
     /// параметром нельзя (установщик Nemotron, №622).
+    /// Захваченный контракт запуска Python-скрипта: `codeRoot` строится только
+    /// внутри `AppSettings.codeRoot(dataRoot:)`, без произвольной подмены снаружи.
+    struct PythonScope: Equatable, Sendable {
+        let dataRoot: URL
+        let codeRoot: URL
+        let executable: URL
+
+        fileprivate init(dataRoot: URL, codeRoot: URL, executable: URL) {
+            self.dataRoot = dataRoot
+            self.codeRoot = codeRoot
+            self.executable = executable
+        }
+
+        static func resolve(root: URL? = nil) -> PythonScope {
+            let resolvedData = URL(
+                fileURLWithPath: (root ?? AppSettings.charoiteRoot).standardizedFileURL.path,
+                isDirectory: true)
+            let resolvedCode = URL(
+                fileURLWithPath: AppSettings.codeRoot(dataRoot: resolvedData).standardizedFileURL.path,
+                isDirectory: true)
+            let resolvedExec = URL(
+                fileURLWithPath: AppSettings.pythonExecutable(root: resolvedData).standardizedFileURL.path,
+                isDirectory: false)
+            return PythonScope(
+                dataRoot: resolvedData,
+                codeRoot: resolvedCode,
+                executable: resolvedExec)
+        }
+    }
+
     static func preparePython(
         _ process: Process,
         root: URL? = nil,
-        codeRootOverride: URL? = nil,
         executable: URL? = nil,
         extraEnvironment: [String: String] = [:]
     ) {
         let dataRoot = root ?? charoiteRoot
         process.executableURL = executable ?? pythonExecutable(root: dataRoot)
         process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)
-        if let codeRootOverride {
-            process.currentDirectoryURL = codeRootOverride
-        }
+        applyPythonEnvironment(process, dataRoot: dataRoot, extraEnvironment: extraEnvironment)
+    }
+
+    static func preparePython(
+        _ process: Process,
+        scope: PythonScope,
+        extraEnvironment: [String: String] = [:]
+    ) {
+        process.executableURL = scope.executable
+        process.currentDirectoryURL = scope.codeRoot
+        applyPythonEnvironment(process, dataRoot: scope.dataRoot, extraEnvironment: extraEnvironment)
+    }
+
+    private static func applyPythonEnvironment(
+        _ process: Process,
+        dataRoot: URL,
+        extraEnvironment: [String: String]
+    ) {
         var env = ProcessInfo.processInfo.environment
         env.merge(extraEnvironment) { _, new in new }
         env["CHAROITE_ROOT"] = dataRoot.path

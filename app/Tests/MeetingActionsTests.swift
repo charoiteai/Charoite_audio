@@ -24,15 +24,11 @@ final class MeetingActionsTests: XCTestCase {
 
     private func makeScope(
         root: String = "/tmp/charoite-root",
-        codeRoot: String = "/tmp/charoite-code",
-        executable: String = "/tmp/charoite-code/.venv/bin/python",
         graph: String = "/tmp/charoite-graph",
         importFolder: String? = "/tmp/charoite-inbox"
     ) -> MeetingForgetScope {
         MeetingForgetScope(
             root: URL(fileURLWithPath: root),
-            codeRoot: URL(fileURLWithPath: codeRoot),
-            executable: URL(fileURLWithPath: executable),
             graph: URL(fileURLWithPath: graph),
             importFolder: importFolder)
     }
@@ -76,17 +72,26 @@ final class MeetingActionsTests: XCTestCase {
         XCTAssertFalse(command.arguments.contains { $0.contains("transcripts") })
     }
 
-    func testForgetIsDryRunUntilApplyIsExplicit() {
-        let root = URL(fileURLWithPath: "/tmp/charoite")
-        let graph = URL(fileURLWithPath: "/tmp/graph")
-        let preview = MeetingActionCommand.forget(
-            root: root, meetingID: "2026-08-03_113012", graph: graph, apply: false)
-        let apply = MeetingActionCommand.forget(
-            root: root, meetingID: "2026-08-03_113012", graph: graph, apply: true)
-
-        XCTAssertFalse(preview.arguments.contains("--yes"))
-        XCTAssertEqual(apply.arguments.last, "--yes")
-        XCTAssertEqual(preview.arguments[1], "2026-08-03_113012")
+    func testForgetIsDryRunUntilApplyIsExplicit() async {
+        let scope = makeScope(root: "/tmp/charoite", graph: "/tmp/graph", importFolder: nil)
+        let target = snapshot(id: "2026-08-03_113012")
+        var executed: [MeetingActionCommand] = []
+        let outcome = await MeetingActionsService.forgetPlan(target, scope: scope) { command in
+            await MainActor.run { executed.append(command) }
+            return MeetingActionResult(succeeded: true, text: "план")
+        }
+        guard case .ready(let planned) = outcome else {
+            return XCTFail("ожидали сухой план, получили \(outcome)")
+        }
+        let applyResult = await MeetingActionsService.forget(planned) { command in
+            await MainActor.run { executed.append(command) }
+            return MeetingActionResult(succeeded: true, text: "удалено")
+        }
+        XCTAssertTrue(applyResult.succeeded)
+        XCTAssertEqual(executed.count, 2)
+        XCTAssertFalse(executed[0].arguments.contains("--yes"))
+        XCTAssertEqual(executed[0].arguments[1], "2026-08-03_113012")
+        XCTAssertEqual(executed[1].arguments.last, "--yes")
     }
 
     /// Критика DS r3 по #499: посекундный ID уходит скрипту целиком —
@@ -103,19 +108,31 @@ final class MeetingActionsTests: XCTestCase {
 
     /// Аудит 05.09: копия импортированной встречи живёт в папке импорта —
     /// «забыть» получает её путь от приложения, без папки флага нет.
-    func testForgetPassesTheImportFolderWhenKnown() {
-        let root = URL(fileURLWithPath: "/tmp/charoite")
-        let graph = URL(fileURLWithPath: "/tmp/graph")
-        let withFolder = MeetingActionCommand.forget(
-            root: root, meetingID: "2026-08-03_113012", graph: graph, apply: true,
-            importFolder: "~/Charoite_inbox")
-        XCTAssertTrue(withFolder.arguments.contains("--import-folder"))
-        let idx = withFolder.arguments.firstIndex(of: "--import-folder")!
-        XCTAssertFalse(withFolder.arguments[idx + 1].hasPrefix("~"), "тильда раскрыта для скрипта")
-        XCTAssertEqual(withFolder.arguments.last, "--yes")
-        let without = MeetingActionCommand.forget(
-            root: root, meetingID: "2026-08-03_113012", graph: graph, apply: false, importFolder: "")
-        XCTAssertFalse(without.arguments.contains("--import-folder"))
+    func testForgetPassesTheImportFolderWhenKnown() async {
+        let withFolderScope = makeScope(root: "/tmp/charoite", graph: "/tmp/graph", importFolder: "~/Charoite_inbox")
+        let target = snapshot(id: "2026-08-03_113012")
+        var withFolderCommands: [MeetingActionCommand] = []
+        let outcome = await MeetingActionsService.forgetPlan(target, scope: withFolderScope) { cmd in
+            await MainActor.run { withFolderCommands.append(cmd) }
+            return MeetingActionResult(succeeded: true, text: "план")
+        }
+        guard case .ready(let planned) = outcome else {
+            return XCTFail("ожидали сухой план")
+        }
+        _ = await MeetingActionsService.forget(planned) { cmd in
+            await MainActor.run { withFolderCommands.append(cmd) }
+            return MeetingActionResult(succeeded: true, text: "удалено")
+        }
+        XCTAssertEqual(withFolderCommands.count, 2)
+        let applyArgs = withFolderCommands[1].arguments
+        XCTAssertTrue(applyArgs.contains("--import-folder"))
+        let idx = applyArgs.firstIndex(of: "--import-folder")!
+        XCTAssertFalse(applyArgs[idx + 1].hasPrefix("~"), "тильда раскрыта для скрипта")
+        XCTAssertEqual(applyArgs.last, "--yes")
+
+        let withoutFolderScope = makeScope(root: "/tmp/charoite", graph: "/tmp/graph", importFolder: "")
+        let dryRunWithout = MeetingActionCommand.forgetDryRun(scope: withoutFolderScope, meetingID: "2026-08-03_113012")
+        XCTAssertFalse(dryRunWithout.arguments.contains("--import-folder"))
     }
 
     func testPrepareForgetDropsDelayedPlanAfterSwitchingToAnotherMeeting() async {
@@ -279,8 +296,6 @@ final class MeetingActionsTests: XCTestCase {
         let changedScopes: [MeetingForgetScope?] = [
             nil,
             makeScope(root: "/tmp/other-root"),
-            makeScope(codeRoot: "/tmp/other-code"),
-            makeScope(executable: "/tmp/other-python"),
             makeScope(graph: "/tmp/other-graph"),
             makeScope(importFolder: "/tmp/other-inbox"),
         ]
@@ -312,8 +327,6 @@ final class MeetingActionsTests: XCTestCase {
         // Тот же путь с хвостовым слэшем / ненормализованным .. считается неизменным.
         let equivalentScope = makeScope(
             root: "/tmp/charoite-root/",
-            codeRoot: "/tmp/charoite-code/./",
-            executable: "/tmp/charoite-code/.venv/bin/python",
             graph: "/tmp/charoite-graph/",
             importFolder: "/tmp/charoite-inbox/")
         XCTAssertEqual(initialScope, equivalentScope)
@@ -341,16 +354,12 @@ final class MeetingActionsTests: XCTestCase {
         XCTAssertEqual(capturedCommand?.executable, initialScope.executable)
 
         let process = Process()
-        AppSettings.preparePython(
-            process,
-            root: initialScope.root,
-            codeRootOverride: initialScope.codeRoot,
-            executable: initialScope.executable)
+        AppSettings.preparePython(process, scope: initialScope.python)
         XCTAssertEqual(process.environment?["CHAROITE_ROOT"], initialScope.root.path)
         XCTAssertEqual(process.currentDirectoryURL?.standardizedFileURL, initialScope.codeRoot)
     }
 
-    func testConfirmedForgetStillNotifiesRepositoryWhenCardClosesMidFlight() async {
+    func testConfirmedForgetIgnoresDismissWhileBusyAndNotifiesRepositoryOnSwitch() async {
         let meetingA = snapshot(id: "2030-01-15_100000_A", title: "Встреча A")
         let meetingB = snapshot(id: "2030-01-15_110000_B", title: "Встреча B")
         let scope = makeScope()
@@ -387,6 +396,9 @@ final class MeetingActionsTests: XCTestCase {
                 onDeleted: { deleted.append($0.meetingID) },
                 onCloseCard: { closeCount += 1 })
         }
+
+        controller.dismissForgetSheet()
+        XCTAssertTrue(controller.showForget, "Esc/Отмена не должны закрывать диалог во время --yes")
 
         // Пользователь переключился на B во время выполнения --yes.
         controller.meetingChanged(to: meetingB)
@@ -464,14 +476,29 @@ final class MeetingActionsTests: XCTestCase {
             try body.write(to: file, atomically: true, encoding: .utf8)
         }
 
-        let scope = MeetingForgetScope(
-            root: dataRoot,
-            codeRoot: ConfigEditCheck.repo,
-            executable: python,
-            graph: graphDir)
+        // Выполняем команду сухого плана через реальный scripts/forget_meeting.py
+        // и проверяем, что AppSettings.preparePython с PythonScope пробрасывает CHAROITE_ROOT.
+        let scope = MeetingForgetScope(root: dataRoot, graph: graphDir)
         let target = snapshot(id: "2030-01-15_100000_Первая", title: "Первая")
-
-        let outcome = await MeetingActionsService.forgetPlan(target, scope: scope)
+        let outcome = await MeetingActionsService.forgetPlan(target, scope: scope) { command in
+            let scriptPath = ConfigEditCheck.repo.appendingPathComponent("scripts/forget_meeting.py").path
+            var args = command.arguments
+            args[0] = scriptPath
+            let p = Process()
+            let pipe = Pipe()
+            p.arguments = args
+            AppSettings.preparePython(p, scope: command.python)
+            p.executableURL = python
+            p.currentDirectoryURL = ConfigEditCheck.repo
+            p.standardOutput = pipe
+            p.standardError = pipe
+            try? p.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return MeetingActionResult(
+                succeeded: p.terminationStatus == 0,
+                text: (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         guard case .ready(let planned) = outcome else {
             return XCTFail("ожидали сухой план, получили \(outcome)")
         }
