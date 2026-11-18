@@ -51,6 +51,7 @@ Time Machine, и вычистить чужие устройства. Об это
 from __future__ import annotations
 
 import json
+import hashlib
 import argparse
 import contextlib
 import dataclasses
@@ -205,6 +206,9 @@ class Plan:
     # Повторный обход под замками дополняет план новыми путями; старые снимки сохраняются.
     rescan: typing.Callable[[], Plan] | None = None
     data_root: pathlib.Path | None = None
+    # Set only by the two-process confirmation protocol; legacy CLI stays compatible.
+    expected_token: str | None = None
+    confirmation_context: tuple[str, ...] = ()
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
@@ -224,6 +228,65 @@ class Plan:
             out.append("  проверь сам (не тронуто):")
             out += [f"    {line}" for line in self.check]
         return "\n".join(out)
+
+
+def confirmation_token(p: Plan, context: tuple[str, ...] = ()) -> str:
+    """Fingerprint effects and target identities, including recursive directory contents.
+
+    lstat never follows a final symlink (unlink removes the link). Ancestor identity
+    and resolved paths detect retargeting. ctime also catches same-size writes with
+    restored mtime; atime is deliberately excluded so preview reads are harmless.
+    This is a stale-consent guard, not an authentication credential or a filesystem lock.
+    """
+    def state(path: pathlib.Path) -> list:
+        st = path.lstat()  # unreadable/missing targets fail closed
+        result = [str(path), str(path.parent.resolve()), st.st_dev, st.st_ino,
+                  st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+        if stat.S_ISLNK(st.st_mode):
+            result.append(os.readlink(path))
+        elif stat.S_ISDIR(st.st_mode):
+            result.append([state(child) for child in sorted(path.iterdir())])
+        return result
+
+    paths = sorted(set(p.delete) | set(p.edit) | set(p.copy_first))
+    for path, seen in p.snaps.items():
+        if safe_write.stat_snapshot(path) != seen:
+            raise ValueError("файл сменился во время построения плана")
+    # Parent timestamps change when unrelated files/locks appear, so bind only
+    # their identities. This also detects replacing an ancestor with a symlink.
+    ancestors = {parent for path in paths for parent in path.parents}
+    ancestors.update(p.graph_scope or ())
+    if p.data_root is not None:
+        ancestors.add(p.data_root)
+    identities = []
+    for path in sorted(ancestors):
+        try:
+            st = path.lstat()
+        except FileNotFoundError:
+            identities.append([str(path), None])
+        else:
+            identities.append([str(path), st.st_dev, st.st_ino, st.st_mode,
+                               os.readlink(path) if stat.S_ISLNK(st.st_mode) else None])
+    payload = {
+        "ancestors": identities,
+        "version": 1, "context": context, "stamp": p.stamp,
+        "root": str(p.data_root), "graphs": sorted(map(str, p.graph_scope or ())),
+        "locks": sorted((str(k), str(v)) for k, v in p.lock_dirs.items()),
+        "delete": sorted(map(str, p.delete)),
+        "edit": sorted((str(k), v) for k, v in p.edit.items()),
+        "copy": sorted(map(str, p.copy_first)),
+        "brain": sorted(p.brain_keys), "sent": sorted(p.brain_sent),
+        "notes": p.notes, "check": p.check, "beyond": p.beyond_reach,
+        "errors": sorted((str(k), v) for k, v in p.graph_errors.items()),
+        "states": [state(path) for path in paths],
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=True, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def _check_confirmation(p: Plan, fresh: Plan) -> None:
+    if p.expected_token is not None and confirmation_token(fresh, p.confirmation_context) != p.expected_token:
+        raise ValueError("план или состояние файлов изменились — откройте «Забыть встречу…» заново")
 
 
 def _link_re(stamps: str | list[str]) -> re.Pattern[str]:
@@ -1454,6 +1517,12 @@ def _plan_locks(p: Plan) -> list[pathlib.Path]:
 def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_explicit: bool = False) -> bool:
     """Выполнить план. Без yes — только показать; вернёт False, что не делал."""
     print(p.describe())
+    if yes and p.expected_token is not None:
+        try:
+            _check_confirmation(p, p)
+        except (OSError, ValueError) as e:
+            _refuse_graph_plan(p, f"ничего не сделано: {e}")
+            return False
     if not p.delete and not p.edit and (not yes or p.rescan is None):
         return False
     if not yes:
@@ -1541,7 +1610,9 @@ def _refresh_graph_plan(p: Plan, needed: list[pathlib.Path]) -> None:
         return
     try:
         fresh = p.rescan()
+        _check_confirmation(p, fresh)
         accepted = _compatible_plan(p, fresh, needed)
+        _check_confirmation(p, accepted)
     except (OSError, ValueError, TypeError, AttributeError, RuntimeError) as e:
         _refuse_graph_plan(p, f"ничего не сделано: план не подтверждён ({e}) — запустите снова")
         return
@@ -1782,7 +1853,13 @@ def main() -> int:
                     help="папка импорта приложения: копия аудио в done/ уходит вместе со встречей")
     ap.add_argument("--keep-graph", action="store_true",
                     help="только стенограмма и запись; граф не трогать")
+    ap.add_argument("--plan-json", action="store_true", help="план одной встречи и отпечаток для подтверждения")
+    ap.add_argument("--expected-plan", help="с --yes: отказ, если показанный план или файлы изменились")
     args = ap.parse_args()
+    if (args.plan_json and args.yes) or (args.expected_plan is not None and not args.yes):
+        ap.error("--plan-json несовместим с --yes; --expected-plan требует --yes")
+    if args.expected_plan is not None and not re.fullmatch(r"[0-9a-f]{64}", args.expected_plan):
+        ap.error("неверный отпечаток --expected-plan")
 
     graph = args.graph.expanduser() if args.graph else None
     found = resolve(args.target, _root(), graph)
@@ -1805,6 +1882,9 @@ def main() -> int:
         print(f"неоднозначно: {', '.join(found)}")
         return 1
 
+    if len(found) > 1 and (args.plan_json or args.expected_plan is not None):
+        print("подтверждение плана требует точный штамп одной встречи")
+        return 1
     if len(found) > 1:
         print(f"за {args.target} встреч несколько: {', '.join(found)}\n")
     brain = _brain_flags(_root())
@@ -1813,6 +1893,19 @@ def main() -> int:
     for stamp in found:
         p = plan(stamp, _root(), graph, keep_graph=args.keep_graph,
                  import_folder=args.import_folder, day_named=day_named)
+        p.confirmation_context = (
+            str(_root().absolute()), str(graph.absolute()) if graph else "",
+            str(args.import_folder.expanduser().absolute()) if args.import_folder else "",
+            str(args.keep_graph), json.dumps(brain, sort_keys=True))
+        p.expected_token = args.expected_plan
+        if args.plan_json:
+            try:
+                token = confirmation_token(p, p.confirmation_context)
+            except (OSError, ValueError) as e:
+                print(f"план не подтверждён ({e}) — запустите снова")
+                return 1
+            print(json.dumps({"text": p.describe(), "token": token}, ensure_ascii=False))
+            return 0
         done |= apply(p, yes=args.yes, **brain)
         refused |= p.refused     # отказ одной встречи дня не прячется за успехом другой (out3 Haiku I1)
         print()
