@@ -31,3 +31,22 @@ Charoite is built local-first. Concretely:
 - **The model call ledger holds numbers, not words.** Every request to the model writes one line to `logs/model_calls-YYYY-MM-DD.jsonl` (mode 600): the time, which part of the code asked (hints, minutes, graph extraction…), the engine and model, token counts, seconds and the outcome as one fixed word. No prompt, answer, error text or meeting name goes there — so forgetting a meeting has nothing to remove from it, but the times of calls during a meeting stay until you delete the file: the ledger only appends and has no retention term yet, so old days are yours to remove. Exactly `0` in `llm.ledger_keep_days` of your own `config/config.yaml` stops writing (earlier days stay); if that file is missing, unreadable or not understood, the ledger keeps writing.
 - **Forgetting during a nightly build.** Forget waits for the current graph writer and checks the graph again before making changes, including dossiers created since the preview. Before changing files, Forget compares the entire confirmed plan with a fresh plan: a dropped deletion or backup, changed edit text, memory target or data root makes it refuse and ask you to repeat. Both dossier indexes are rebuilt from the current graph after forgetting, including when the previous JSON index is missing or broken or no dossiers remain. If publication fails, the result reports incomplete cleanup and prints an index repair command using the existing nightly CLI with `--limit 0`; this updates the indexes without calling the model or needing the deleted meeting ID. Nightly model generation stays outside the write lock. The index rebuild scans graph sources while holding that lock; its duration depends on the graph. Every graph discovered for the plan is locked even when its preview has no changes; a newly discovered graph requires a fresh plan. Only new changes within the already locked graph or graph-data area can be added automatically; new transcript, import, log or memory actions require a new plan. External writers can still change ownership metadata after the check, so the check does not make all external files atomic. If a source or dossier cannot be read, or a directory needed for the index cannot be enumerated, index rebuilding stops before publishing either file. The recovery command returns a nonzero status when its explicit graph path is missing or unusable, the lock is busy or publication fails; retry it after resolving the cause.
 - **Your data is plain files.** Transcripts, summaries and the knowledge graph are Markdown in folders you choose. Delete them, sync them, encrypt them — they are yours.
+
+### Confirming a meeting deletion
+
+The app keeps a fingerprint with the displayed deletion plan. Confirmation passes
+that fingerprint back to Python; a changed operation, file identity/state, or
+recursive archive-directory entry refuses the whole operation before deletion.
+The check runs again after the final scan under the existing graph locks. Reopen
+**Forget meeting…** to review a changed plan. Missing or malformed fingerprints
+are not accepted by the app.
+
+For scripted two-step confirmation, use `forget_meeting.py <exact-stamp> --plan-json`
+and pass the returned `token` with `--yes --expected-plan <token>`, keeping the
+same data root, graph, import-folder and keep-graph options. This protocol accepts
+one meeting at a time. Existing plain previews and `--yes` commands retain their
+behavior (including date-wide CLI deletion). The fingerprint is a stale-plan
+guard, not authentication. It checks filesystem metadata (including inode and
+nanosecond modification/change times), rather than reading entire audio files.
+Graph locks coordinate cooperating writers; they cannot make deletion atomic
+against unrelated processes writing files after the final check.
