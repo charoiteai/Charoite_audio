@@ -30,7 +30,8 @@ enum AppSettings {
     /// Папка, выбранная человеком в Настройках (`charoite.root`); пусто — не выбрана.
     static var explicitRoot: URL? {
         guard let s = UserDefaults.standard.string(forKey: "charoite.root"), !s.isEmpty else { return nil }
-        return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+        let standardizedPath = URL(fileURLWithPath: (s as NSString).expandingTildeInPath).standardizedFileURL.path
+        return URL(fileURLWithPath: standardizedPath, isDirectory: true)
     }
 
     /// Клон репозитория в домашней папке — установка через терминал.
@@ -175,6 +176,36 @@ enum AppSettings {
     /// (`/usr/bin/nice`) или была собрана до перехода в detached-задачу.
     /// `extraEnvironment` ложится до `CHAROITE_ROOT`: перекрыть корень данных
     /// параметром нельзя (установщик Nemotron, №622).
+    /// Захваченный контракт запуска Python-скрипта: `codeRoot` строится только
+    /// внутри `AppSettings.codeRoot(dataRoot:)`, без произвольной подмены снаружи.
+    struct PythonScope: Equatable, Sendable {
+        let dataRoot: URL
+        let codeRoot: URL
+        let executable: URL
+
+        fileprivate init(dataRoot: URL, codeRoot: URL, executable: URL) {
+            self.dataRoot = dataRoot
+            self.codeRoot = codeRoot
+            self.executable = executable
+        }
+
+        static func resolve(root: URL? = nil) -> PythonScope {
+            let resolvedData = URL(
+                fileURLWithPath: (root ?? AppSettings.charoiteRoot).standardizedFileURL.path,
+                isDirectory: true)
+            let resolvedCode = URL(
+                fileURLWithPath: AppSettings.codeRoot(dataRoot: resolvedData).standardizedFileURL.path,
+                isDirectory: true)
+            let resolvedExec = URL(
+                fileURLWithPath: AppSettings.pythonExecutable(root: resolvedData).standardizedFileURL.path,
+                isDirectory: false)
+            return PythonScope(
+                dataRoot: resolvedData,
+                codeRoot: resolvedCode,
+                executable: resolvedExec)
+        }
+    }
+
     static func preparePython(
         _ process: Process,
         root: URL? = nil,
@@ -184,6 +215,24 @@ enum AppSettings {
         let dataRoot = root ?? charoiteRoot
         process.executableURL = executable ?? pythonExecutable(root: dataRoot)
         process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)
+        applyPythonEnvironment(process, dataRoot: dataRoot, extraEnvironment: extraEnvironment)
+    }
+
+    static func preparePython(
+        _ process: Process,
+        scope: PythonScope,
+        extraEnvironment: [String: String] = [:]
+    ) {
+        process.executableURL = scope.executable
+        process.currentDirectoryURL = scope.codeRoot
+        applyPythonEnvironment(process, dataRoot: scope.dataRoot, extraEnvironment: extraEnvironment)
+    }
+
+    private static func applyPythonEnvironment(
+        _ process: Process,
+        dataRoot: URL,
+        extraEnvironment: [String: String]
+    ) {
         var env = ProcessInfo.processInfo.environment
         env.merge(extraEnvironment) { _, new in new }
         env["CHAROITE_ROOT"] = dataRoot.path
@@ -290,14 +339,18 @@ enum AppSettings {
     static let graphDirEnvNames = ["CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"]
 
     static var graphDir: URL? {
+        graphDir(root: charoiteRoot)
+    }
+
+    static func graphDir(root: URL) -> URL? {
         for name in graphDirEnvNames {
             if let env = ProcessInfo.processInfo.environment[name],
                !env.trimmingCharacters(in: .whitespaces).isEmpty {
-                return resolvePath(env, relativeTo: charoiteRoot)
+                return resolvePath(env, relativeTo: root)
             }
         }
-        if let v = configValue("graph_dir") {
-            return resolvePath(v, relativeTo: charoiteRoot)
+        if let v = configValue("graph_dir", root: root) {
+            return resolvePath(v, relativeTo: root)
         }
         return nil
     }
@@ -308,10 +361,13 @@ enum AppSettings {
     /// приложение искало граф относительно случайной текущей папки .app.
     static func resolvePath(_ raw: String, relativeTo root: URL) -> URL {
         let expanded = (raw as NSString).expandingTildeInPath
+        let resolved: URL
         if (expanded as NSString).isAbsolutePath {
-            return URL(fileURLWithPath: expanded)
+            resolved = URL(fileURLWithPath: expanded).standardizedFileURL
+        } else {
+            resolved = root.appendingPathComponent(expanded).standardizedFileURL
         }
-        return root.appendingPathComponent(expanded).standardizedFileURL
+        return URL(fileURLWithPath: resolved.path)
     }
 
     /// Язык интерфейса: та же настройка, что у документов встреч

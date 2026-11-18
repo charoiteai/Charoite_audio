@@ -11,20 +11,22 @@ import SwiftUI
 struct MeetingCardView: View {
     let meeting: MeetingProcessingSnapshot
     var embedded = false
+    var preloadedCard: MeetingCard?
     @ObservedObject private var processing = MeetingProcessingService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
     @ObservedObject private var tasks = TasksService.shared
     @Environment(\.dismiss) private var dismiss
-    @State var card = MeetingCard()
+    @State private var loadedCard = MeetingCard()
+    @State private var loadedSnapshot: MeetingProcessingSnapshot?
+    @State private var sourceRootDir: URL?
+    @State private var sourceGraphDir: URL?
+    @StateObject private var cardActions = MeetingCardActionController()
     @State private var renaming = false
     @State private var newTitle = ""
+    @State private var renameID: UUID?
     @State private var renameBusy = false
     @State private var renameFailed = false
     @State private var copied = false
-    @State private var actionBusy = false
-    @State private var actionMessage = ""
-    @State private var forgetPlan = ""
-    @State private var showForget = false
     /// Глубина чтения — привычка, а не разовый фильтр: помним между
     /// запусками (сегмент Резюме · Минутки · Разбор · Стенограмма).
     @AppStorage("meetingCardDepth") var depthRaw = MeetingCardDepth.summary.rawValue
@@ -38,15 +40,25 @@ struct MeetingCardView: View {
     /// Минутки, распарсенные из файла, когда кэша карточки нет (см. loadDepthFile).
     @State var fileMinutes: MeetingMinutes?
     @State var fileMeetingID: String?
+    @State var fileURL: URL?
+
+    var card: MeetingCard {
+        loadedSnapshot?.meetingID == meeting.meetingID
+            ? loadedCard
+            : (preloadedCard ?? MeetingCard())
+    }
 
     var body: some View {
+        let availableDepths = MeetingCardDepth.available(card: card, meeting: meeting)
+        let activeDepth = depth(in: availableDepths)
+        let activeFile = activeDepth.file(card: card, meeting: meeting)
         VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    depthPicker
-                    if depth == .summary || depth == .minutes {
+                    depthPicker(available: availableDepths, depth: activeDepth)
+                    if activeDepth == .summary || activeDepth == .minutes {
                         if let gist = card.gist {
                             Text(gist).font(.body)
                         } else if card.summaryMissing {
@@ -56,51 +68,79 @@ struct MeetingCardView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                     }
-                    depthContent
+                    depthContent(depth: activeDepth, targetURL: activeFile)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
             }
             // Откуда это: путь заметки от графа и время последней записи.
-            if let source = sourceLine {
+            if let url = activeFile {
+                let source = Self.sourceLine(
+                    for: url,
+                    graph: sourceGraphDir,
+                    root: sourceRootDir ?? AppSettings.charoiteRoot)
                 Text(source)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1).truncationMode(.middle)
                     .textSelection(.enabled)
             }
-            if !actionMessage.isEmpty {
+            if !cardActions.actionMessage.isEmpty {
                 // Процесс стартовал, но умер с кодом ≠ 0: сервис это знает
                 // (retryFailedToStart), а карточка иначе держала бы
                 // «запущена» навсегда (GLM Min-5 по #484).
                 Text(processing.retryFailedToStart
                      ? MeetingProcessingPolicy.rebuildMessage(.launchFailed)
-                     : actionMessage)
+                     : cardActions.actionMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
             Divider()
-            actions
+            actions(depth: activeDepth, file: activeFile)
         }
         .padding(14)
         .frame(minWidth: 420, minHeight: 400)
         .frame(width: embedded ? nil : 500, height: embedded ? nil : 460)
-        // task(id:) — embedded-карточка в библиотеке живёт одной вью на все
-        // встречи: без id смена выбора оставляла решения и участников от
-        // прошлой встречи под новым заголовком (найдено живым прогоном 04.08).
-        .task(id: meeting.meetingID) {
-            card = MeetingCardLoader.load(for: meeting)
-            tasks.rescan()
-            // Одна карточка на все встречи: строка про встречу A иначе
-            // висела под B («стенограммы нет» при живой стенограмме B —
-            // DS M1 по #484).
-            actionMessage = ""
+        // task(id:) — обновление содержимого при смене снимка встречи; при
+        // фоновом обновлении той же встречи actionMessage и открытый лист не сбрасываются.
+        .task(id: meeting) {
+            let previousID = loadedSnapshot?.meetingID
+            loadedCard = preloadedCard ?? MeetingCardLoader.load(for: meeting)
+            loadedSnapshot = meeting
+            let root = AppSettings.charoiteRoot
+            sourceRootDir = root
+            sourceGraphDir = AppSettings.graphDir(root: root)
+            if previousID != meeting.meetingID {
+                tasks.rescan()
+            }
         }
-        .task(id: depth.rawValue + "|" + meeting.meetingID) { await loadDepthFile() }
+        .task(id: DepthTaskID(depth: activeDepth, meetingID: meeting.meetingID, url: activeFile)) {
+            await loadDepthFile()
+        }
         // Привычка «Подробно» из прежнего ключа — в «Минутки», один раз.
-        .onAppear { Self.migrateDepthPreference() }
-        .sheet(isPresented: $showForget) { forgetSheet }
+        .onAppear {
+            Self.migrateDepthPreference()
+            cardActions.appear(with: meeting)
+        }
+        .onChange(of: meeting) { _, snapshot in
+            let sameMeeting = cardActions.displayedMeeting?.meetingID == snapshot.meetingID
+            cardActions.meetingChanged(to: snapshot)
+            if !sameMeeting {
+                resetRenameState()
+            }
+        }
+        .onDisappear {
+            cardActions.disappear()
+            resetRenameState()
+        }
+        .sheet(isPresented: Binding(
+            get: { cardActions.isForgetSheetPresented(for: meeting) },
+            set: { if !$0 { cardActions.dismissForgetSheet() } })) {
+            if let planned = cardActions.plannedForget {
+                forgetSheet(for: planned)
+            }
+        }
     }
 
     /// Пометка готовой встречи под заголовком (№500): «имена не определены»,
@@ -115,7 +155,7 @@ struct MeetingCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if MeetingProcessingPolicy.offersRebuild(for: meeting) {
                     Button(L.t("Пересобрать результат", "Rebuild result", "重建结果")) {
-                        actionMessage = MeetingProcessingPolicy.rebuildMessage(processing.rebuild(meeting))
+                        cardActions.actionMessage = MeetingProcessingPolicy.rebuildMessage(processing.rebuild(meeting))
                     }
                     .charoite(.quiet, .s)
                     .disabled(processing.rebuildingID == meeting.meetingID)
@@ -137,7 +177,7 @@ struct MeetingCardView: View {
                         // и случайный клик по карандашу стоил темы.
                         .onExitCommand { renaming = false }
                     Button(L.t("Сохранить", "Save", "保存")) { runRename() }
-                        .disabled(renameBusy)
+                        .disabled(renameBusy || cardActions.actionBusy || cardActions.showForget)
                     Button {
                         renaming = false
                     } label: {
@@ -161,6 +201,7 @@ struct MeetingCardView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .disabled(cardActions.actionBusy || cardActions.showForget)
                     .help(L.t("Переименовать встречу — тема поменяется во всех файлах и в графе",
                               "Rename the meeting — the topic changes in every file and in the graph",
                               "重命名会议——主题将在所有文件和图谱中更新"))
@@ -278,12 +319,12 @@ struct MeetingCardView: View {
         item.replacingOccurrences(of: "**", with: "")
     }
 
-    private var actions: some View {
+    private func actions(depth: MeetingCardDepth, file: URL?) -> some View {
         HStack(spacing: 10) {
             // Одна дверь во внешний редактор — для той глубины, что открыта.
             // Раньше «Открыть», «Стенограмма» и «Исправить стенограмму…»
             // стояли рядом, и две из них звали одно и то же.
-            if let file = depth.file(card: card, meeting: meeting),
+            if let file,
                FileManager.default.fileExists(atPath: file.path) {
                 Button(L.t("Открыть в редакторе", "Open in editor", "在编辑器中打开")) {
                     NSWorkspace.shared.open(file)
@@ -303,7 +344,7 @@ struct MeetingCardView: View {
                 Button(L.t("Скопировать протокол для участников",
                            "Copy the protocol for participants",
                            "复制参会者纪要")) {
-                    copyParticipantProtocol()
+                    cardActions.copyParticipantProtocol(for: meeting) { copy($0) }
                 }
                 Divider()
                 Button(L.t("Копировать резюме", "Copy summary", "复制摘要")) {
@@ -322,16 +363,16 @@ struct MeetingCardView: View {
                 // отказ (повтор ещё идёт, файла нет, python не стартовал)
                 // раньше выглядел как «запущена» (№131).
                 Button(L.t("Пересобрать результат", "Rebuild result", "重建结果")) {
-                    actionMessage = MeetingProcessingPolicy.rebuildMessage(processing.rebuild(meeting))
+                    cardActions.actionMessage = MeetingProcessingPolicy.rebuildMessage(processing.rebuild(meeting))
                 }
                 .disabled(processing.rebuildingID == meeting.meetingID)
             }
             .menuStyle(.button)
             .charoite(.regular, .s)
             .fixedSize()
-            .disabled(actionBusy)
+            .disabled(cardActions.actionBusy || renameBusy)
             Spacer()
-            if actionBusy { ProgressView().controlSize(.small) }
+            if cardActions.actionBusy { ProgressView().controlSize(.small) }
             if copied {
                 Text(L.t("Скопировано", "Copied", "已复制"))
                     .font(.caption).foregroundStyle(.secondary)
@@ -340,24 +381,27 @@ struct MeetingCardView: View {
             // Удаление — на виду, но тихое: красный текст без заливки.
             // Убранное в меню «Забыть» находили дольше, чем боялись нажать.
             Button(L.t("Забыть встречу…", "Forget meeting…", "忘记会议…")) {
-                prepareForget()
+                renaming = false
+                cardActions.prepareForget(for: meeting)
             }
             .charoite(.destructive, .s)
-            .disabled(actionBusy)
+            .disabled(cardActions.actionBusy || renameBusy)
         }
     }
 
-    private var forgetSheet: some View {
+    private func forgetSheet(for planned: PlannedForget) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(L.t("Забыть встречу", "Forget meeting", "忘记会议"),
                   systemImage: "trash")
                 .font(.headline).foregroundStyle(Theme.danger)
+            Text(planned.meeting.title)
+                .font(.subheadline.weight(.medium))
             Text(L.t("Будут удалены перечисленные ниже следы. Это действие нельзя отменить.",
                      "The traces listed below will be deleted. This cannot be undone.",
                      "下列痕迹将被删除。此操作无法撤销。"))
                 .font(.callout).foregroundStyle(.secondary)
             ScrollView {
-                Text(forgetPlan)
+                Text(planned.planText)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -369,17 +413,19 @@ struct MeetingCardView: View {
                 Spacer()
                 // Отмена именно тихая: заметная в диалоге тянет курсор к
                 // себе, а Escape и так закрывает.
-                Button(L.t("Отмена", "Cancel", "取消")) { showForget = false }
+                Button(L.t("Отмена", "Cancel", "取消")) { cardActions.dismissForgetSheet() }
                     .charoite(.quiet, .l)
                     .keyboardShortcut(.cancelAction)
+                    .disabled(cardActions.actionBusy)
                 Button(L.t("Удалить безвозвратно", "Delete permanently", "永久删除"),
-                       role: .destructive) { runForget() }
+                       role: .destructive) { confirmAndRunForget() }
                     .charoite(.destructiveFilled, .l)
-                    .disabled(actionBusy)
+                    .disabled(cardActions.actionBusy || !cardActions.isForgetSheetPresented(for: meeting))
             }
         }
         .padding(16)
         .frame(width: 600, height: 430)
+        .interactiveDismissDisabled(cardActions.actionBusy)
     }
 
     private var dateText: String {
@@ -399,79 +445,62 @@ struct MeetingCardView: View {
         }
     }
 
-    private func copyParticipantProtocol() {
-        guard !actionBusy else { return }
-        actionBusy = true
-        actionMessage = ""
-        Task {
-            let result = await MeetingActionsService.participantProtocol(meeting)
-            actionBusy = false
-            if result.succeeded {
-                copy(result.text)
-                actionMessage = L.t("Безопасный протокол скопирован — стенограммы в нём нет.",
-                                    "Safe protocol copied — it contains no transcript.",
-                                    "安全纪要已复制——其中不含逐字稿。")
-            } else {
-                actionMessage = result.text
-            }
-        }
-    }
-
-    private func prepareForget() {
-        guard !actionBusy else { return }
-        actionBusy = true
-        actionMessage = ""
-        Task {
-            let result = await MeetingActionsService.forgetPlan(meeting)
-            actionBusy = false
-            if result.succeeded {
-                forgetPlan = result.text
-                showForget = true
-            } else {
-                actionMessage = result.text
-            }
-        }
-    }
-
-    private func runForget() {
-        guard !actionBusy else { return }
-        actionBusy = true
-        Task {
-            let result = await MeetingActionsService.forget(meeting)
-            actionBusy = false
-            if result.succeeded {
-                showForget = false
-                navigation.selectedMeetingID = nil
+    private func confirmAndRunForget() {
+        cardActions.runForget(
+            for: meeting,
+            onDeleted: { deleted in
+                if navigation.selectedMeetingID == deleted.meetingID {
+                    navigation.selectedMeetingID = nil
+                }
                 processing.reload()
                 tasks.rescan()
+            },
+            onCloseCard: {
                 if embedded {
                     navigation.open(.meetings)
                 } else {
                     dismiss()
                 }
-            } else {
-                actionMessage = result.text
-                showForget = false
-            }
-        }
+            })
+    }
+
+    private func resetRenameState() {
+        renameID = nil
+        renameBusy = false
+        renaming = false
+        renameFailed = false
     }
 
     private func runRename() {
-        guard !renameBusy else { return }
+        guard !renameBusy,
+              !cardActions.actionBusy,
+              !cardActions.showForget,
+              cardActions.displayedMeeting?.meetingID == meeting.meetingID else { return }
+        let snapshot = meeting
+        let title = newTitle
+        let id = UUID()
+        renameID = id
         renameBusy = true
         renameFailed = false
         Task {
-            let ok = await processing.rename(meeting, to: newTitle)
+            let ok = await processing.rename(snapshot, to: title)
+            if ok {
+                processing.reload()
+                tasks.rescan()
+            }
+            guard renameID == id,
+                  cardActions.displayedMeeting?.meetingID == snapshot.meetingID else { return }
+            renameID = nil
             renameBusy = false
             renaming = false
             renameFailed = !ok
             // Список обновится сам через refresh(); карточка закрывается,
             // потому что её snapshot держит старый путь и заголовок.
             if ok {
-                processing.reload()
-                tasks.rescan()
                 if embedded {
-                    navigation.selectedMeetingID = nil
+                    if navigation.selectedMeetingID == snapshot.meetingID {
+                        navigation.selectedMeetingID = nil
+                    }
                     navigation.open(.meetings)
                 } else {
                     dismiss()

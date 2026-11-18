@@ -597,7 +597,8 @@ struct MeetingLibraryView: View {
                                       "请从左侧结果中选择会议。若没有结果，请修改或清除查询；搜索状态显示在旁边。")))
         } else if let record = repository.record(id: navigation.selectedMeetingID) {
             if record.state == .ready {
-                MeetingCardView(meeting: record.snapshot, embedded: true)
+                MeetingCardView(meeting: record.snapshot, embedded: true, preloadedCard: record.card)
+                    .id(record.id)
             } else {
                 processingDetail(record)
             }
