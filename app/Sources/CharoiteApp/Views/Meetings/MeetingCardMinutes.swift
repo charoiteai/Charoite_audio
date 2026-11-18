@@ -70,11 +70,24 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
     }
 }
 
+struct DepthTaskID: Equatable {
+    let depth: MeetingCardDepth
+    let meetingID: String
+    let url: URL?
+}
+
 extension MeetingCardView {
     var depth: MeetingCardDepth {
         let wanted = MeetingCardDepth(rawValue: depthRaw) ?? .summary
         let available = MeetingCardDepth.available(card: card, meeting: meeting)
         return available.contains(wanted) ? wanted : .summary
+    }
+
+    var depthTaskID: DepthTaskID {
+        DepthTaskID(
+            depth: depth,
+            meetingID: meeting.meetingID,
+            url: depth.file(card: card, meeting: meeting))
     }
 
     /// Сегмент глубин показывается, когда глубин больше одной: у встречи
@@ -118,7 +131,7 @@ extension MeetingCardView {
             // показать Минутки.md, которых кэш ещё не видел (круг-3, DS+Codex).
             if let minutes = card.minutes, !minutes.isEmpty {
                 minutesSections(minutes)
-            } else if fileDepth == depth, fileMeetingID == meeting.meetingID,
+            } else if loadedCurrentDepthFile,
                       let fileMinutes, !fileMinutes.isEmpty {
                 minutesSections(fileMinutes)
             } else {
@@ -131,11 +144,17 @@ extension MeetingCardView {
         }
     }
 
+    private var loadedCurrentDepthFile: Bool {
+        fileDepth == depth
+            && fileMeetingID == meeting.meetingID
+            && fileURL == depth.file(card: card, meeting: meeting)
+    }
+
     /// Разбор и стенограмма читаются с диска лениво и показываются на месте.
     /// Стенограмма длинной встречи — сотни абзацев: LazyVStack, не один Text.
     @ViewBuilder
     private var fileView: some View {
-        if fileDepth != depth || fileMeetingID != meeting.meetingID || fileLines == nil {
+        if !loadedCurrentDepthFile || fileLines == nil {
             HStack(spacing: 7) {
                 ProgressView().controlSize(.small)
                 Text(L.t("Читаю…", "Reading…", "正在读取…"))
@@ -180,11 +199,15 @@ extension MeetingCardView {
         }.value
         // .task(id:) отменяет прежнюю задачу при смене глубины или встречи;
         // второй сторож — на случай смены между await и записью.
-        guard !Task.isCancelled, depth == wanted, meeting.meetingID == meetingID else { return }
+        guard !Task.isCancelled,
+              depth == wanted,
+              meeting.meetingID == meetingID,
+              wanted.file(card: card, meeting: meeting) == url else { return }
         fileLines = lines
         fileMinutes = minutes
         fileDepth = wanted
         fileMeetingID = meetingID
+        fileURL = url
     }
 
     /// Прежний ключ meetingCardDetailed (Bool, «Подробно») — в глубину

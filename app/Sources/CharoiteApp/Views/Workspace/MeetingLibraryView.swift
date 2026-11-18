@@ -598,6 +598,7 @@ struct MeetingLibraryView: View {
         } else if let record = repository.record(id: navigation.selectedMeetingID) {
             if record.state == .ready {
                 MeetingCardView(meeting: record.snapshot, embedded: true)
+                    .id(record.id)
             } else {
                 processingDetail(record)
             }

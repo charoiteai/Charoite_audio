@@ -129,6 +129,8 @@ separate chat window. The local chat pane stays one click away.
   participants, gist, decisions and action items at four depths (Summary ·
   Minutes · Analysis · Transcript), with copy actions, transcript and Obsidian
   links, coherent renaming across meeting files and retry for a failed run.
+  Forgetting a meeting builds a dry-run deletion plan first and binds
+  confirmation to that meeting and the folder paths shown in the dialog.
   The feed is a status history of up to 20 runs from the last 14 days, not a
   replacement for the full graph archive.
 - **External recording** — drop a phone recording, someone else's call
