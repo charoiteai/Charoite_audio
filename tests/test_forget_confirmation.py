@@ -169,3 +169,108 @@ def test_unrelated_file_does_not_invalidate_confirmation(tmp_path):
     result = _cli(root, graph, "--yes", "--expected-plan", preview["token"])
     assert result.returncode == 0, result.stdout + result.stderr
     assert unrelated.read_text() == "another meeting"
+
+
+@pytest.mark.parametrize("scope", ["root", "graph"])
+def test_empty_plan_binds_directory_identity_even_without_file_actions(tmp_path, scope):
+    root, graph = tmp_path / "data", tmp_path / "graph"
+    root.mkdir()
+    graph.mkdir()
+    p = forget.Plan(STAMP, data_root=root, graph_scope=(graph,))
+    token = forget.confirmation_token(p)
+    directory = root if scope == "root" else graph
+    directory.rename(directory.with_name(directory.name + "-old"))
+    directory.mkdir()
+    assert forget.confirmation_token(p) != token
+
+
+def test_graph_scope_is_part_of_consent_even_when_root_and_actions_match(tmp_path):
+    p = forget.Plan(STAMP, data_root=tmp_path, graph_scope=())
+    local_only = forget.confirmation_token(p)
+    p.graph_scope = (tmp_path,)
+    assert forget.confirmation_token(p) != local_only
+
+
+def test_v1_token_wire_compatibility():
+    # A filesystem-independent protocol vector. Previously issued tokens must
+    # keep their meaning across interpreters/processes, including Unicode and
+    # reordered caller dictionaries. Change this vector only with a protocol bump.
+    p = forget.Plan("2030-01-01_1000", notes=["Встреча"],
+                    edit={}, graph_scope=())
+    assert forget.confirmation_token(p, ("scope",)) == "3c429cc3ddabeb8e84984d3b31731d156a77ae7a34bf66ff87f3395c5971f77b"
+
+
+@pytest.mark.parametrize("yes", [False, True])
+def test_stale_plan_is_rejected_before_locks_only_when_applying(tmp_path, monkeypatch, yes):
+    root, graph = _world(tmp_path)
+    charoite_paths.use_data_root(root, replace=True)
+    p = forget.plan(STAMP, root, graph)
+    p.expected_token = forget.confirmation_token(p)
+    path = root / "transcripts" / f"{STAMP}.md"
+    path.write_text("changed after preview")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("stale consent must not wait for locks or perform mutations")
+
+    monkeypatch.setattr(forget.file_locks, "graph_locks", forbidden)
+    monkeypatch.setattr(forget, "_apply_locked", forbidden)
+    assert forget.apply(p, yes=yes) is False
+    assert p.refused is yes
+    assert path.read_text() == "changed after preview"
+
+
+def _main(root, graph, monkeypatch, *args, target=STAMP):
+    charoite_paths.use_data_root(root, replace=True)
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", target, "--graph", str(graph), *args])
+    return forget.main()
+
+
+@pytest.mark.parametrize("mode", ["preview", "apply"])
+def test_two_step_protocol_refuses_a_day_with_multiple_meetings(tmp_path, monkeypatch, capsys, mode):
+    root, graph = _world(tmp_path)
+    preview = _preview(root, graph)
+    (root / "transcripts" / f"{STAMP[:10]}_1500.md").write_text("second meeting that day")
+    before = _files(root, graph)
+    flags = ("--plan-json",) if mode == "preview" else ("--yes", "--expected-plan", preview["token"])
+    assert _main(root, graph, monkeypatch, *flags, target=STAMP[:10]) == 1
+    assert "точный штамп одной встречи" in capsys.readouterr().out
+    assert _files(root, graph) == before
+
+
+def test_preview_snapshot_failure_returns_failure_and_no_token(tmp_path, monkeypatch, capsys):
+    root, graph = _world(tmp_path)
+    before = _files(root, graph)
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError("synthetic target cannot be inspected")
+
+    monkeypatch.setattr(forget, "confirmation_token", unreadable)
+    assert _main(root, graph, monkeypatch, "--plan-json") == 1
+    output = capsys.readouterr().out
+    assert "план не подтверждён" in output
+    assert '"token"' not in output
+    assert _files(root, graph) == before
+
+
+def test_json_preview_returns_success_and_readable_text_without_mutations(tmp_path, monkeypatch, capsys):
+    root, graph = _world(tmp_path)
+    before = _files(root, graph)
+    assert _main(root, graph, monkeypatch, "--plan-json") == 0
+    output = capsys.readouterr().out
+    preview = json.loads(output)
+    assert f"Встреча {STAMP}" in output
+    assert f"Встреча {STAMP}" in preview["text"]
+    assert len(preview["token"]) == 64
+    assert _files(root, graph) == before
+
+
+def test_equivalent_brain_options_do_not_change_confirmation(tmp_path, monkeypatch, capsys):
+    root, graph = _world(tmp_path)
+    flags = {"brain_enabled": False, "brain_explicit": True}
+    monkeypatch.setattr(forget, "_brain_flags", lambda root: flags)
+    assert _main(root, graph, monkeypatch, "--plan-json") == 0
+    first = json.loads(capsys.readouterr().out)
+    flags = dict(reversed(list(flags.items())))
+    assert _main(root, graph, monkeypatch, "--plan-json") == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second == first
