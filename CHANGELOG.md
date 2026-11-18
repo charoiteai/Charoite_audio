@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.105.1](https://github.com/charoiteai/Charoite_audio/compare/v0.105.0...v0.105.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **app:** bind meeting forget confirmation to planned snapshot and scope ([#936](https://github.com/charoiteai/Charoite_audio/issues/936)) ([2b61b8a](https://github.com/charoiteai/Charoite_audio/commit/2b61b8a871f8eaf53adb063af0243aede72df3f6))
+
 ## [0.105.0](https://github.com/charoiteai/Charoite_audio/compare/v0.104.0...v0.105.0) (2026-11-16)
 
 
