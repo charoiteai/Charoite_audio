@@ -178,7 +178,7 @@ review gates, and who answers for what — is documented in
   times), so under any of the three the harness refuses the run before
   collection with exit code 17 (`EXIT_BACKGROUND_QOS`), and
   `scripts/mutate_check.py` and `scripts/preflight.sh` refuse to start the same
-  way (№817). preflight asks again before every heavy step and ends a refusal
+  way. preflight asks again before every heavy step and ends a refusal
   with the last line `отказ — фоновый режим процесса` ("refused — background
   process mode"); the mutator does not count a run that failed while the
   process got throttled.
@@ -341,7 +341,7 @@ values from that call, looks for copies of those names among the string literals
 of the graph package (the same closure the package probe copies) and holds each
 copy as `folder_literals` debt with a ticket; `folder_literal_exemptions` forgives
 one copy with a written reason. A hit without a ticket, or a declared hit the
-measurement no longer finds, is red. Since PR B of №422 the debt is zero: the
+measurement no longer finds, is red. The boundary debt is zero: the
 package asks the schema's role predicates and keeps no name constants, and
 `tests/test_graph_schema_roles.py` rotates the schema (every name of `CHAROITE`
 becomes an ASCII token) and requires the same observable behaviour of search,

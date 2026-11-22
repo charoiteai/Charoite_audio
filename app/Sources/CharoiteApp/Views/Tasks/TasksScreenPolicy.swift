@@ -24,8 +24,7 @@ enum TasksMineStale {
     }
 }
 
-/// Чистая политика экрана задач (макет docs/design/MOBILE_2026-08.md,
-/// раздел «macOS: доделки»): сводка трёх чисел и корзины сроков —
+/// Чистая политика экрана задач (см. docs/DESIGN.md): сводка трёх чисел и корзины сроков —
 /// тестируются без UI и без TasksService.
 enum TasksScreenPolicy {
     /// All query words may match task text or its source, in any order.

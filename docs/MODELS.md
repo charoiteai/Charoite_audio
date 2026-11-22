@@ -322,8 +322,7 @@ into `models/nli/` under the data root, for example with
 from it, never guessed. A missing `config.json` or generic `LABEL_0…` names
 switch the judge off, as if the model were absent: the daemon log says why once
 (`тезис-дедуп выключен: …`), the core revision after a meeting prints
-`tier3: пропущен — …`, the nightly one says it in its own log. The contract:
-[NLI_LABEL_CONTRACT_2026-10.md](design/NLI_LABEL_CONTRACT_2026-10.md).
+`tier3: пропущен — …`, the nightly one (`scripts/tier3_cores.py`) says it in its own log, and a malformed non-3-logit output raises `SeamTransportError` (treated as "not a duplicate" by the thesis dedup).
 Without it theses are not deduplicated by meaning and the core revision does
 not run (it says why in its log); everything else works as before.
 

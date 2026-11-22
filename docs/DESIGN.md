@@ -112,18 +112,14 @@ that sits next to your work, not a showcase.
   blue (prominent is `brand`, a link is `accent`); a button with no label
   must carry `.help` and an accessibility label. The button radius follows
   its height rather than the surface radii above — a 21 pt control with a
-  12 pt radius is a capsule, not a button. Full rules and the handoff
-  package: [BUTTONS_2026-08.md](design/BUTTONS_2026-08.md).
-- **Phone companion** (iPhone, August 2026): recording, meetings, the meeting
+  12 pt radius is a capsule, not a button.
+- **Phone companion** (iPhone): recording, meetings, the meeting
   card, tasks and the delivery queue — the same tokens and rules as on the
-  Mac, minus sky: the companion talks to nothing but iCloud folders. Spec and
-  mockup: [MOBILE_2026-08.md](design/MOBILE_2026-08.md); it also covers the
-  three macOS screens the revision marked "not started" — Memory, Tasks,
-  Meeting library — all three shipped in August. On the phone, the record
-  screen and the queue sheet follow the mockup; the meetings feed, the
-  meeting card and tasks are still simpler than it (a plain list, a card
-  built from the minutes without the four depths, tasks without the summary
-  or the "By due date" view).
+  Mac, minus sky: the companion talks to nothing but iCloud folders. On macOS,
+  the Memory, Tasks and Meeting library screens share the same token set. On
+  the phone, the record screen and the queue sheet follow the full spec; the
+  meetings feed, the meeting card and tasks stay intentionally simpler (a plain
+  list, a card built from minutes, and flat task checkboxes).
 
 ## UI copy tone
 
