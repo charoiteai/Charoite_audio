@@ -22,6 +22,7 @@ import pathlib
 import shutil
 import stat
 import uuid
+from collections.abc import Callable
 
 
 #: Версия файла для expect-гейта: `(st_mtime_ns, st_size, st_ino)`.
@@ -60,7 +61,8 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
                expect: Snapshot | None = None,
                expect_absent: bool = False,
                times: tuple[int, int] | None = None,
-               mode: int | None = None) -> bool:
+               mode: int | None = None,
+               before_replace: Callable[[os.stat_result], None] | None = None) -> bool:
     """Записать текст так, чтобы обрыв не уничтожил прежнее содержимое.
 
     `expect` — снимок `stat_snapshot`, взятый ДО чтения исходника: если к
@@ -81,6 +83,9 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
     umask процесса), а не перенесённые со старого: кэш пакета графа хранит пути
     заметок, и старый 0644 пережил бы любую маску (входной круг 1 по №323 PR 2,
     I7). Атрибуты Finder переносятся и тогда. Без `mode` — права старого файла.
+    `before_replace` получает stat временного файла после CAS: вызывающий может
+    сохранить его точную идентичность для восстановления после обрыва. Исключение
+    отменяет запись; после callback CAS проверяется повторно.
     """
     # Симлинк в графе ведёт к настоящему файлу, и писать надо в него: иначе
     # `replace` подменил бы саму ссылку обычным файлом, а цель осталась со
@@ -107,6 +112,12 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
             return False
         if expect_absent and path.exists():
             return False
+        if before_replace is not None:
+            before_replace(tmp.stat())
+            if expect is not None and stat_snapshot(path) != expect:
+                return False
+            if expect_absent and path.exists():
+                return False
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)   # replace уже унёс файл — это не ошибка
