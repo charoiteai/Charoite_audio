@@ -1060,33 +1060,80 @@ def _tail(*parts: object, lines: int = 30) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+#: Потолок RSS группы процессов одного прогона pytest (КиБ): нормальный прогон
+#: держится в 120–250 МиБ, а бесконечный цикл с аллокацией у мутанта иначе за
+#: секунды съедает RAM/swap машины и роняет CI-раннер по OOM (exit 143).
+MAX_MUTANT_RSS_KB = 1_500_000
+RSS_POLL_S = 0.25
+
+
+def _group_rss_kb(pgid: int) -> int:
+    try:
+        r = subprocess.run(["ps", "-o", "rss=", "-g", str(pgid)],
+                           capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    return sum(int(tok) for tok in r.stdout.split() if tok.isdigit())
+
+
+def _kill_group(pgid: int) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(pgid, signal.SIGKILL)
+
+
+def _run_subprocess(cmd: list[str], *, cwd: pathlib.Path, env: dict[str, str],
+                    timeout: float) -> subprocess.CompletedProcess:
+    """Запуск pytest в собственной группе процессов с потолком времени и RSS."""
+    deadline = time.monotonic() + timeout
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=out_f, stderr=err_f,
+                                start_new_session=True)
+        oom_note = ""
+        timed_out = False
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    _kill_group(proc.pid)
+                    proc.wait()
+                    break
+                try:
+                    proc.wait(timeout=min(RSS_POLL_S, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    rss_kb = _group_rss_kb(proc.pid)
+                    if MAX_MUTANT_RSS_KB > 0 and rss_kb > MAX_MUTANT_RSS_KB:
+                        oom_note = f"killed: RSS {rss_kb // 1024} MiB > {MAX_MUTANT_RSS_KB // 1024} MiB"
+                        _kill_group(proc.pid)
+                        proc.wait()
+                        break
+        finally:
+            if proc.poll() is None:
+                _kill_group(proc.pid)
+                proc.wait()
+        out_f.seek(0)
+        err_f.seek(0)
+        out_b, err_b = out_f.read(), err_f.read()
+    if timed_out:
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout, output=out_b, stderr=err_b)
+    if oom_note:
+        return subprocess.CompletedProcess(cmd, -signal.SIGKILL, "", oom_note)
+    return subprocess.CompletedProcess(cmd, proc.returncode,
+                                       out_b.decode("utf-8", errors="replace"),
+                                       err_b.decode("utf-8", errors="replace"))
+
+
 def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int, cap: float) -> RunResult:
-    """Прогон набора с потолком `cap` секунд: `passed` — зелёный (мутант выжил,
-    тесты его не заметили), `failed` — красный, `timeout` — не уложился в потолок."""
-    # Без байткода. Python сверяет .pyc с исходником по mtime (секунды) и
-    # размеру: два мутанта одной длины, записанные в одну секунду, для него
-    # один файл — второй исполняется байткодом первого, и вердикт достаётся
-    # чужому коду. Так 21.08 «выжил» мутант 6.0→0 в stt_runtime, под который
-    # тест написан и который вручную падает. Врёт в обе стороны: убитый сосед
-    # прикрывает выжившего и наоборот. Переменная окружения, а не только
-    # `-B`: тесты запускают демон подпроцессом, ему тоже нельзя писать .pyc.
-    # Корень данных мутатора набору не передаётся: дверь канона опубликовала
-    # его в окружение (№440), а набор называет свой. Снимает его и conftest, но
-    # мутант самой обвязки открыл бы тестам живые данные владельца (выходной
-    # круг 1 по №440, M2).
+    """Прогон набора с потолком `cap` секунд и потолком RSS: `passed` — зелёный
+    (мутант выжил, тесты его не заметили), `failed` — красный (включая OOM-убийство
+    мутанта), `timeout` — не уложился в потолок времени."""
     env = {**{k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"},
            "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        # Без `-x`: он останавливал прогон на первой ошибке, и упавший по
-        # окружению тест выдавал бы «мутант убит» независимо от мутации.
-        # `-p no:xdist`: прогон мутанта — один процесс. Полные прогоны идут с
-        # `-n` (№453), и `-n` из `addopts` или `PYTEST_ADDOPTS` молча сделал бы
-        # параллельным каждый прогон мутанта; с выключенным плагином такой `-n` —
-        # громкий отказ разбора (код 4), база краснеет, мутатор останавливается.
-        r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
-                            "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", str(timeout)],
-                           cwd=cwd, env=env, capture_output=True, text=True,
-                           timeout=cap)
+        r = _run_subprocess([sys.executable, "-B", "-m", "pytest", *targets, "-q",
+                             "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", str(timeout)],
+                            cwd=cwd, env=env, timeout=cap)
     except subprocess.TimeoutExpired as e:
         return RunResult(TIMEOUT, tail=_tail(e.stdout, e.stderr))
     return RunResult(PASSED if r.returncode == 0 else FAILED, rc=r.returncode,

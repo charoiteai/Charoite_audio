@@ -1,6 +1,6 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 115.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 117.
 
 ## Слои и направление стрелок
 
@@ -12,7 +12,7 @@
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 6): `cloud`, `night_cloud`, `pii_fake`, `pii_fake_pool`, `pii_mask`, `pii_ner`
 - **audio** (зависит от: base, runtime; модулей 13): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `speech_gate`, `stt`, `stt_runtime`, `voice_pitch`
-- **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 43): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `cloud_door`, `dossier_incremental`, `fact_check`, `graph_updater`, `graphs`, `grounded_feed`, `grounded_feed.accepted_source`, `grounded_feed.actor_core`, `grounded_feed.bridge`, `grounded_feed.events`, `grounded_feed.export`, `grounded_feed.local_runner`, `grounded_feed.publish`, `grounded_feed.render`, `grounded_feed.runtime`, `grounded_feed.semantic`, `grounded_feed.session`, `grounded_feed.source_actor`, `grounded_feed.thread`, `hint_guard`, `install_profile`, `lexicon`, `live_feed`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_tail`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
+- **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 45): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `cloud_door`, `debrief_links`, `debrief_refinement`, `dossier_incremental`, `fact_check`, `graph_updater`, `graphs`, `grounded_feed`, `grounded_feed.accepted_source`, `grounded_feed.actor_core`, `grounded_feed.bridge`, `grounded_feed.events`, `grounded_feed.export`, `grounded_feed.local_runner`, `grounded_feed.publish`, `grounded_feed.render`, `grounded_feed.runtime`, `grounded_feed.semantic`, `grounded_feed.session`, `grounded_feed.source_actor`, `grounded_feed.thread`, `hint_guard`, `install_profile`, `lexicon`, `live_feed`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_tail`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
 - **app** (зависит от: base, runtime, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 
 ## Слой окружения и слои без него

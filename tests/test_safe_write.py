@@ -355,3 +355,40 @@ def test_rewrite_file_writes_an_untouched_file(tmp_path):
     node.write_text("старое\n", encoding="utf-8")
     assert safe_write.rewrite_file(node, lambda t: (t.replace("старое", "новое"), 1), "проверка") == 1
     assert node.read_text(encoding="utf-8") == "новое\n"
+
+
+def test_before_replace_observes_exact_installed_identity(tmp_path):
+    path = tmp_path / "document.md"
+    path.write_text("old")
+    captured = []
+    def observe(snapshot):
+        assert path.read_text() == "old"
+        captured.append(snapshot)
+    assert safe_write.write_text(path, "new", expect=safe_write.stat_snapshot(path), before_replace=observe)
+    actual = path.stat()
+    assert (actual.st_dev, actual.st_ino, actual.st_mtime_ns, actual.st_size) == (
+        captured[0].st_dev, captured[0].st_ino, captured[0].st_mtime_ns, captured[0].st_size)
+
+
+def test_before_replace_failure_leaves_previous_destination(tmp_path):
+    path = tmp_path / "document.md"
+    path.write_text("old")
+    def refuse(_snapshot):
+        raise OSError("synthetic journal failure")
+    with pytest.raises(OSError, match="synthetic journal"):
+        safe_write.write_text(path, "new", before_replace=refuse)
+    assert path.read_text() == "old"
+    assert not list(tmp_path.glob("*.tmp*"))
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_before_replace_rechecks_destination_cas(tmp_path, existed):
+    path = tmp_path / "document.md"
+    if existed:
+        path.write_text("old")
+    before = safe_write.stat_snapshot(path)
+    def concurrent_writer(_snapshot):
+        path.write_text("human edit")
+    assert not safe_write.write_text(path, "new", expect=before, expect_absent=not existed,
+                                     before_replace=concurrent_writer)
+    assert path.read_text() == "human edit"

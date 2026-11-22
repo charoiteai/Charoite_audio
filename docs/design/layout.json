@@ -73,6 +73,8 @@
       "meeting_source",
       "meeting_thread",
       "meeting_processing",
+      "debrief_refinement",
+      "debrief_links",
       "meeting_archive",
       "transcript",
       "live_sidecar",
@@ -660,7 +662,8 @@
     "llm::LLM.feed": "отправляет окно стенограммы живой нити строго на loopback-модель: ошибка выпускает стенограмму встречи за машину",
     "llm::LLM.grounded_answer": "отправляет ручной вопрос и контекст встречи строго на loopback-модель: ошибка выпускает стенограмму встречи за машину",
     "llm::LLM.stream": "сериализует явные запреты truncate/shift и обрабатывает поток: ошибка принимает усечённый результат или теряет отказ сервера",
-    "grounded_feed.local_runner": "локальный раннер живой нити и ручного ответа: loopback-проверка и отказ от облачного шлюза — ошибка выпускает стенограмму встречи за машину"
+    "grounded_feed.local_runner": "локальный раннер живой нити и ручного ответа: loopback-проверка и отказ от облачного шлюза — ошибка выпускает стенограмму встречи за машину",
+    "debrief_refinement::local_request": "Local-only transport admission for final meeting speech; cloud fallback is forbidden"
   },
   "mutation_not_critical": {
     "busy_signals": "сторож занятости: в сеть — только GET переписи моделей Ollama на loopback (№595); пишет лишь свой замок мутатора, не данные владельца",
@@ -681,6 +684,7 @@
     "scripts/morning_brief.py": "генерируемая сводка утра — производная, пересобирается ночью",
     "scripts/nightly_dossier.py": "генерация досье; перенос правок владельца — функцией run в mutation_critical",
     "scripts/nightly_dossier_review.py": "оркестрация ревизии — производная; дверь записи _review_loop решена отдельно в mutation_critical",
-    "dossier_telemetry": "закрытые счётчики в памяти и stdout — производная; не допускают модель и не пишут данные графа"
+    "dossier_telemetry": "закрытые счётчики в памяти и stdout — производная; не допускают модель и не пишут данные графа",
+    "debrief_links": "Pure chronological link validation and rendering; no storage or transport authority, local request admission belongs to debrief_refinement::local_request"
   }
 }

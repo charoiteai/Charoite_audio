@@ -222,7 +222,7 @@ def test_прогон_дольше_потолка_исход_timeout_с_хвос
         raise subprocess.TimeoutExpired(cmd="pytest", timeout=1, output=b"collected 6\n\xff",
                                         stderr=None)
 
-    monkeypatch.setattr(subprocess, "run", hang)
+    monkeypatch.setattr(mc, "_run_subprocess", hang)
     r = mc.run_tests(tmp_path, ["tests"], timeout=1, cap=4)
     assert r.status == mc.TIMEOUT and r.rc is None, r
     assert r.tail.startswith("collected 6"), r.tail
@@ -233,11 +233,29 @@ def test_красный_прогон_несёт_код_и_хвост(tmp_path, m
     базы видна в логе шага, а не угадывается (№661, вход in1)."""
     import subprocess
 
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+    monkeypatch.setattr(mc, "_run_subprocess", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 1, "строка 1\nFAILED tests/test_x.py::test_a\n", "ошибка\n"))
     r = mc.run_tests(tmp_path, ["tests"], timeout=1, cap=4)
     assert (r.status, r.rc) == (mc.FAILED, 1), r
     assert "FAILED tests/test_x.py::test_a" in r.tail and "ошибка" in r.tail, r.tail
+
+
+def test_утечка_памяти_мутанта_убивается_по_rss(tmp_path, monkeypatch):
+    """Бесконечная аллокация у мутанта обрывается по потолку RSS, не доходя до OOM/swap."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_leak.py").write_text(
+        "import time\n"
+        "def test_leak():\n"
+        "    buf = bytearray(90 * 1024 * 1024)\n"
+        "    for i in range(0, len(buf), 4096):\n"
+        "        buf[i] = 1\n"
+        "    time.sleep(5)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mc, "MAX_MUTANT_RSS_KB", 40_000)
+    monkeypatch.setattr(mc, "RSS_POLL_S", 0.1)
+    r = mc.run_tests(tmp_path, ["tests/test_leak.py"], timeout=10, cap=10)
+    assert r.status == mc.FAILED and "RSS" in r.tail, r
 
 
 def test_исход_прогона_не_читается_как_bool():
@@ -258,7 +276,7 @@ def test_прогон_мутанта_без_xdist(tmp_path, monkeypatch):
         seen.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(mc, "_run_subprocess", run)
     assert mc.run_tests(tmp_path, ["tests"], timeout=3, cap=3 * mc.WORST_RUN_FACTOR).status == mc.PASSED
     argv = seen[0]
     assert any(argv[i:i + 2] == ["-p", "no:xdist"] for i in range(len(argv))), argv
@@ -288,7 +306,7 @@ def test_потолок_прогона_уходит_в_subprocess(tmp_path, monk
         seen["timeout"], seen["cmd"] = kw["timeout"], cmd
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(mc, "_run_subprocess", run)
     assert mc.run_tests(tmp_path, ["tests"], timeout=3, cap=17).status == mc.PASSED
     assert seen["timeout"] == 17
     assert seen["cmd"][seen["cmd"].index("--timeout") + 1] == "3"
