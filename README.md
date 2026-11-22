@@ -74,12 +74,11 @@ Semantic search adds `bge-m3` (~1.2 GB) — recommended at 16 GB+.
 | **32 GB** | `qwen3.8:27b-mlx` (16.9 GB) | `qwen3.5:4b` | yes | More accurate quotes (96%); extraction is three times slower, and it runs in the background |
 | **64 GB+** | `qwen3.6:35b-mlx` (20.4 GB) | `qwen3.5:4b` | yes | The working set: 42 decisions and 39 cores per meeting, 57 s median |
 
-The numbers come from the 19.08 benchmark on three real meetings
-(`scripts/bench_extract.py`, the 14.08 method). It also retired the old rule
-"below 16 GB the graph is off": `qwen3.5:4b` parsed all three meetings
+The numbers come from local benchmarks on three real meetings
+(`scripts/bench_extract.py`). `qwen3.5:4b` parsed all three meetings
 (31 decisions, 30 cores, 96% quotes) — more findings than `gemma4:12b`, and
 three times faster. What breaks the JSON schema is not the size class but
-particular models: `GigaChat3.1-10B` returned no parse in five parts out of
+particular models: `GigaChat3.1-10B` failed to parse in five parts out of
 six and did not make the table. On 4 GB run STT only; `llm.base_url` may point at another machine you own only with an explicit `llm.allow_remote: true` (transcripts leave this device; refused under `CHAROITE_NO_CLOUD` — see `docs/MODELS.md`).
 
 **Phones**: today they run no models — the iPhone and Android companions
@@ -217,18 +216,22 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 
 ## Documentation
 
-- [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
+- [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Maintenance](MAINTENANCE.md) · [Releasing](docs/RELEASING.md)
 
 - [Manifesto](MANIFESTO.md) — why local models run the conveyor and a strong model runs the graph
 - [Setup](docs/SETUP.md) — install, config, system audio, permissions, first run
 - [Practical user guide](docs/USER_GUIDE.md) — the complete path from readiness to a result card and retry
 - [Data and recovery](docs/DATA_AND_RECOVERY.md) — storage, retention, backups and safe recovery
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
-- [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
+- [Experimental live feed](docs/live-feed.md) — chronological grounded meeting feed and release gates
+- [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline, layer boundaries
+- [Live invariants](docs/INVARIANTS.md) — audio buffer accounting and honest device degradation contracts
 - [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (8/16/32/64 GB; on 4 GB — STT only) and iOS**
+- [Privacy](PRIVACY.md) · [Privacy checks](docs/PRIVACY_CHECKS.md) — what stays local, opt-in cloud switches and reproducible pre-publication checks
 - [Security](SECURITY.md) — the threat model: what leaves the machine, prompt-injection isolation, supply chain
-- [Diarization](docs/DIARIZATION.md) — embeddings, segmentation and tuning
+- [Diarization](docs/DIARIZATION.md) — embeddings, segmentation, Nemotron and tuning
 - [Design](docs/DESIGN.md) — shared tokens and UI conventions for macOS and iOS
+- [Packages](packages/README.md) · [Scripts](scripts/README.md) · [Tests](tests/README.md) · [Devlog](devlog/README.md)
 
 ## Privacy
 

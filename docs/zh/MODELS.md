@@ -249,8 +249,7 @@ nemotron` 从固定修订以 sha256 校验下载到 `models/diar/nemotron`;安�
 `neutral`、`contradiction`（顺序不限）：蕴含的 logit 按它读取，绝不猜测。缺少
 `config.json` 或标签是通用的 `LABEL_0…` 时，裁判会关闭，效果同没有模型：守护进程
 日志只写一次原因（`тезис-дедуп выключен: …`），会后的核心复核输出
-`tier3: пропущен — …`，夜间复核写在自己的日志里。契约：
-[NLI_LABEL_CONTRACT_2026-10.md](../design/NLI_LABEL_CONTRACT_2026-10.md)。
+`tier3: пропущен — …`，夜间复核（`scripts/tier3_cores.py`）写在自己的日志里；输出不是三个有限 logit 时抛出 `SeamTransportError`（要点去重视作不重复）。
 没有它时，要点不做语义去重，核心复核不会运行（会在自己的日志里说明原因）；
 其他一切照常。
 

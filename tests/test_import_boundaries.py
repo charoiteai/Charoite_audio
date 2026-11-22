@@ -598,18 +598,10 @@ APPROVED_PYTHON_AREAS = ("src/", "scripts/")
 
 APPROVED_KINDS = (
     ("docs/design/layout.md", "out", "git"),
-    ("docs/diagnostics/nightly-947/causal-control.py", "history", "git"),
-    ("docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py", "history", "git"),
-    ("reports/handoff/tasks/1020_search_benchmark.py", "history", "git"),
-    ("reports/handoff/tasks/818_baseline_probe.py", "history", "git"),
-    ("reports/handoff/tasks/818_out1_admission_probe.py", "history", "git"),
-    ("reports/handoff/tasks/875_backup_collision/reproduce.py", "history", "git"),
-    ("reports/handoff/tasks/875_backup_collision/fault_controls.py", "history", "git"),
     ("tests/", "out", "git"),
     ("app/Tests/", "out", "git"),
     ("app-ios/", "out", "git"),
     ("app-android/", "out", "git"),
-    ("docs/reviews/", "history", "git"),
     ("devlog/_posts/", "history", "git"),
     ("CHANGELOG.md", "history", "git"),
     ("app/build/", "out", "walk"),
@@ -631,14 +623,11 @@ APPROVED_KINDS = (
 #: иначе. Ожидание независимо от `decide` (Important DS круга 6: сверка решения
 #: с самим собой не проверка).
 RULE_DEPENDENT = {
-    "reports/handoff/tasks/1020_search_benchmark.py": "history",
     "app-ios/README.md": "out", "app-ios/project.yml": "out", "app-android/README.md": "out",
     "app-android/gradle/libs.versions.toml": "out", "app/Tests/X.swift": "out", "tests/README.md": "out",
-    "docs/reviews/2026-07-30-x.md": "history", "CHANGELOG.md": "history", "devlog/_posts/2026-08-19-x.md": "history",
+    "CHANGELOG.md": "history", "devlog/_posts/2026-08-19-x.md": "history",
     "app/Sources/A.swift": "code", ".github/workflows/ci.yml": "code", ".pre-commit-config.yaml": "code",
     "docs/design/layout.md": "out",
-    "docs/diagnostics/nightly-947/causal-control.py": "history",
-    "docs/diagnostics/nightly-947/intermediate/b7a73b57/causal-control.py": "history",
 }
 
 #: Пути, вид которых даёт суффиксный фолбэк без всякого правила — он был злодеем
@@ -1261,7 +1250,6 @@ def test_one_inventory_one_policy_for_every_file(tmp_path):
     assert lm.kind_of("app-ios/Sources/A.swift") == "out"
     assert lm.kind_of("app-android/app/build.gradle.kts") == "out"
     assert lm.kind_of("tests/test_x.py") == "out"
-    assert lm.kind_of("docs/reviews/2026-07-30-x.md") == "history"
     assert lm.kind_of("CHANGELOG.md") == "history" and lm.kind_of("devlog/_posts/2026-08-19-x.md") == "history"
     assert lm.kind_of("release.sh") == "code", "корневой .sh — цель ENTRY_TARGETS, значит код"
     assert lm.kind_of("docs/design/layout.md") == "out"
@@ -1414,7 +1402,7 @@ def test_scanner_reads_code_not_prose(tmp_path):
     (tmp_path / "scripts").mkdir()
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
-    (tmp_path / "docs" / "reviews").mkdir(parents=True)
+    (tmp_path / "devlog" / "_posts").mkdir(parents=True)
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / "app" / "Sources" / "S.swift").write_text(
         '/// см. src/comment.py\n// и src/comment2.py\n/* src/block.py */\n'
@@ -1439,7 +1427,7 @@ def test_scanner_reads_code_not_prose(tmp_path):
     (tmp_path / "README.md").write_text("Запуск: `scripts/setup.sh` или ./deploy.sh, см. src/lib.py. "
                                         "Не бэкап src/lib.py.bak\n", encoding="utf-8")
     (tmp_path / "CHANGELOG.md").write_text("## 1.0\n- src/released.py\n", encoding="utf-8")
-    (tmp_path / "docs" / "reviews" / "2026-07-30-x.md").write_text("тогда был src/old.py\n", encoding="utf-8")
+    (tmp_path / "devlog" / "_posts" / "2026-08-19-x.md").write_text("тогда был src/old.py\n", encoding="utf-8")
     (tmp_path / "scripts" / "get_models.py").write_text("x = 1\n", encoding="utf-8")
     inv = lm.inventory(tmp_path)
     scanned = lm.scan(inv)

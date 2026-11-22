@@ -185,18 +185,22 @@ Siri、快捷指令或操作按钮做同样的事。录音途中来电是暂停�
 
 ## 文档
 
-- [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md)
+- [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md) · [维护说明](MAINTENANCE.md) · [发布流程](RELEASING.md)
 
 - [宣言](MANIFESTO.md) — 为什么流水线交给本地模型、图谱交给强模型
 - [安装](SETUP.md) — 依赖、配置、系统音频、权限、首次运行
 - [用户实用指南](USER_GUIDE.md) — 从就绪检查到结果卡片与重试的完整流程
 - [数据与恢复](DATA_AND_RECOVERY.md) — 存储位置、保留期、备份与安全恢复
 - [功能](FEATURES.md) — Charoite 在会议中和会后能做的一切
-- [架构](ARCHITECTURE.md) — 守护进程、两遍说话人分离、图谱流水线
+- [实验性时间线动态](../live-feed.md) — 本地时间线会议动态与发布门槛
+- [架构](ARCHITECTURE.md) — 守护进程、两遍说话人分离、图谱流水线、分层边界
+- [实时链路不变量](INVARIANTS.md) — 音频缓冲区完整性与设备异常降级契约
 - [模型](MODELS.md) — 为什么是这些默认值，附基准测试；**macOS（4/8/16/32/64 GB）与 iOS 的内存预设**
+- [隐私](PRIVACY.md) · [隐私校验](../PRIVACY_CHECKS.md) — 本地默认边界、可选云端开关与可复现发布前检查
 - [安全](SECURITY.md) — 威胁模型：什么会离开本机、prompt injection 隔离、供应链
-- [说话人分离](DIARIZATION.md) — 嵌入与分段模型的安装和调优
+- [说话人分离](DIARIZATION.md) — 嵌入与分段模型、Nemotron 和调优
 - [设计](DESIGN.md) — macOS 与 iOS 共用的设计令牌和界面约定
+- [包](../../packages/README.md) · [脚本](scripts/README.md) · [测试](tests/README.md) · [开发日志](../../devlog/README.md)
 
 ## 隐私
 

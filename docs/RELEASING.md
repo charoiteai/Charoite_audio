@@ -303,7 +303,7 @@ acceptance.
 ## Signing the update manifest (after every release)
 
 The updater refuses any build whose manifest is not signed with the owner's
-key — an anchor independent of GitHub (card #24): the checksum sits next to
+key — an anchor independent of GitHub: the checksum sits next to
 the archive, and whoever could replace the archive could replace the checksum
 too. The key never enters CI.
 

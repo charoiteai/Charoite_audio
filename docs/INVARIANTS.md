@@ -1,72 +1,41 @@
-# Инварианты живого контура
+# Live Pipeline Invariants
 
-Сформулированы ДО тестов и приняты независимо (решение 21.08: сначала
-формулировка и её проверка другой головой, потом hypothesis-покрытие).
-Инвариант — не описание кода, а обещание, нарушение которого — авария,
-даже если все существующие тесты зелёные.
+***English** · [Русский](ru/INVARIANTS.md) · [中文](zh/INVARIANTS.md)*
 
-## И-1. Целостность аудиобуфера
+These invariants are stated **before** tests and reviewed independently against the specification rather than the implementation. An invariant is not a description of code; it is a promise whose violation is an incident even if every existing test is green.
 
-Ни один сэмпл, принятый `AudioHub._append`, не исчезает молча.
+## I-1. Audio buffer integrity
 
-Для каждого канала в любой момент времени:
+No sample accepted by `AudioHub._append` disappears silently.
 
-    принято = выдано pull'ом + осталось в буфере + заявлено потерянным
+For every channel at any moment:
 
-с двумя оговорками, обе — по контракту, не по недосмотру:
-перекрытие (`overlap_s`) выдаётся дважды на границе соседних чанков;
-`stop()` вправе не выдать хвост короче минимального чанка, но обязан
-оставить его в записи на диске.
+    accepted = pulled + remaining_in_buffer + reported_lost
 
-Следствия, каждое проверяемо:
-- буфер канала никогда не длиннее `BUF_CAP_S`;
-- любая обрезка буфера увеличивает счётчик потерь ровно на объём
-  обрезанного — потеря без счётчика или счётчик без потери запрещены;
-- заявленные потери доходят до человека: суммарный отчёт не меньше
-  порога отчётности и не теряется при `stop()`.
+with two explicit contract clauses:
+- overlap (`overlap_s`) is delivered twice at the boundary of adjacent chunks;
+- `stop()` may omit a trailing tail shorter than the minimum chunk, but must keep it in the on-disk recording.
 
-## И-2. Честная деградация без устройства
+Testable consequences:
+- a channel buffer never exceeds `BUF_CAP_S`;
+- every buffer trim increments the loss counter by the exact trimmed amount — neither silent drops nor phantom counts are allowed;
+- reported losses reach the user: the cumulative report meets the reporting threshold and is flushed on `stop()`.
 
-Смерть любого источника (канала захвата или sink записи) не убивает
-конвейер и не остаётся немой.
+## I-2. Honest degradation without a device
 
-- Живые каналы продолжают обслуживаться: отказ одного источника не
-  останавливает `_pump` и не портит данные соседей.
-- Факт деградации наблюдаем снаружи не позже 30 секунд: через статус
-  и/или `health_snapshot` (`recording_ok`, рост возраста канала).
-- Возраст мёртвого канала растёт монотонно до фактического оживления;
-  никакие служебные действия (попытки рестарта, анти-шторм, отчёты) не
-  омолаживают его. Нарушение ровно этого пункта 21.08 делало третий
-  контур watchdog слепым.
-- Обратное тоже инвариант: канал, непрерывно приносящий кадры, не
-  объявляется мёртвым, и деградация не включается от одного медленного
-  чанка (гистерезис).
+Failure of any source (capture channel or recording sink) neither kills the pipeline nor stays silent.
 
-## Сверка с кодом (27.09.2026)
+- Surviving channels continue to be served: failure of one source never stops `_pump` or corrupts neighbouring channels.
+- Degradation is observable externally within 30 seconds via status events and/or `health_snapshot` (`recording_ok`, rising channel age).
+- The age of a dead channel grows monotonically until real recovery; housekeeping actions (restart attempts, anti-storm backoff, status reports) never reset its age.
+- The converse is also an invariant: a channel delivering frames continuously is never declared dead, and degradation does not trip on a single slow chunk (hysteresis).
 
-Формулировки выше не менялись; сверено, что код и тесты держат их сегодня.
+## Verification against code
 
-- **И-1** — `AudioHub._append` в `src/audio.py`: потолок `BUF_CAP_S`
-  (60 с) режет ровно излишек, выброшенное возвращается вызывающему и
-  копится в счётчике потерь (`_note_drop`); строка о потере — не чаще раза
-  в 30 с и не раньше заметной секунды, хвост досказывается на `stop()`
-  (`_say_last_drops`). Тесты — `tests/test_audio_buffer_drop.py`: потолок,
-  излишек, кусок длиннее потолка, порядок для потребителя, хвост на стопе,
-  «запись на диск не идёт».
-- **И-2** — `_pump` переживает сбой одного канала и сторожа
-  (`tests/test_audio_capture.py`: плохой блок одного канала не морит
-  соседа, исключение сторожа не убивает поток); `health_snapshot()` несёт
-  `recording_ok`, возраст каждого канала и с 0.82 — `pump_alive` /
-  `pump_failures`; неудачный рестарт не омолаживает возраст, повтор — не
-  чаще раза в 30 с (там же); гистерезис разгрузки диаризации —
-  `tests/test_stt_runtime.py`.
-- **hypothesis-покрытия пока нет**: `hypothesis` не в зависимостях,
-  свойства выше держат обычные тесты на примерах. Порядок работы ниже от
-  этого не меняется.
+- **I-1** — `AudioHub._append` in `src/audio.py`: the `BUF_CAP_S` (60 s) cap trims only the excess, returns the dropped count and accumulates it via `_note_drop`; loss notices emit at most once per 30 s once noticeable, and the tail is flushed on `stop()` (`_say_last_drops`). Covered by `tests/test_audio_buffer_drop.py`.
+- **I-2** — `_pump` survives a single-channel or watchdog failure (`tests/test_audio_capture.py`); `health_snapshot()` exposes `recording_ok`, per-channel age, `pump_alive` and `pump_failures`; failed restarts never reset age and retry at most once per 30 s; diarization shedding hysteresis is covered by `tests/test_stt_runtime.py`.
+- **Property-based coverage:** `hypothesis` is not a dependency yet; the properties above are enforced by example-based tests.
 
-## Порядок работы с этим файлом
+## Change policy
 
-Новый инвариант попадает сюда только после независимого принятия
-формулировки (вторая голова читает ТЕКСТ, не код, и ищет слепоту
-замысла). hypothesis-покрытие пишется по принятому тексту; правка
-формулировки — новое принятие.
+A new invariant enters this file only after independent review of the wording itself (checking for blind spots in the contract before code). Any edit to an invariant wording requires a new review.

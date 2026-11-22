@@ -7,8 +7,7 @@ switched on, how audio flows between them, what they promise each other, where
 the thresholds live and what is known not to work. Everything here is read off
 the code on `main`; file and function names are the source of truth. Why a
 threshold has its value and which bug it paid for is in the fix log,
-[research/diarization-log.md](research/diarization-log.md). The Russian and
-Chinese pages are still in the older, chronicle form.
+[research/diarization-log.md](research/diarization-log.md).
 
 Diarization answers one question per piece of speech: *which voice is this*.
 Who the owner is, and what a voice is called, are decided on top of it by
@@ -304,8 +303,6 @@ number next to the new one.
   in one slot. Judge it on real recordings only.
 - **Russian** is not among Nemotron's training languages; checked as a
   voice count on two calls, not as DER.
-- **Translations** (`ru/`, `zh/`) still describe the older form; the Russian
-  page also holds the test contract of the app's install offer.
 
 ## 9. How to measure
 

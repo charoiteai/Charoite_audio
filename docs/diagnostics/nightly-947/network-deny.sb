@@ -1,4 +1,0 @@
-(version 1)
-(allow default)
-(deny network*)
-(deny process-fork)

@@ -393,7 +393,7 @@ set, the bench prints the exact folder):
 mlx-audio 0.5.6, `mlx-community/Nemotron-3-Diarization` (bf16), time includes
 model loading. The post-meeting pass below is the production `diarize.diarize()`
 (clustering threshold 0.8, shard merging at 0.60), not the bench's `sherpa`
-engine, which runs sherpa-onnx with other settings (card №472).
+engine, which runs sherpa-onnx with other settings.
 
 **Real meetings with a reference.** Two AMI test meetings (Mix-Headset, four
 speakers, English), reference from pyannote's AMI-diarization-setup
@@ -691,7 +691,7 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   merged into its nearest neighbour (sherpa: 25 s — it shatters voices into
   shards, Nemotron does not). Measured on five recordings of 28.09: voices with
   10–22 s are real people with a reply or two, 2–4 s is noise; recalibration
-  after a week of real meetings is card №476. The mic channel keeps its 10 s.
+  after a week of real meetings is deferred as a follow-up. The mic channel keeps its 10 s.
 - **Speaker echo in the mic.** A mic segment more than half covered by call
   speech is dropped as echo, and the share is taken over the *union* of the
   call segments, not one at a time: Nemotron cuts a turn into pieces, and echo
@@ -805,7 +805,7 @@ nothing in the transcript (default `off`).
   shifted silently. More than 10 s of audio queued for the child stops it too:
   that is the answer "it does not keep up", not a reason to buffer.
 - **Memory.** The stream yields for its own footprint, not for the machine's
-  pressure (#579). Every 5 s, on a child's `front`, it writes the pressure level,
+  pressure. Every 5 s, on a child's `front`, it writes the pressure level,
   the swap in use (`sysctlbyname`, no process) and the child's footprint
   (`phys_mb` from that `front`) into a `mem` line. The child's footprint above
   2048 MB on two checks in a row stops the stream (a leak, or the MLX cache cap
@@ -1022,7 +1022,7 @@ one. The live naming and the after-meeting pass go through the same guards
   decides nothing. The pitch lives in the meeting's memory and is never
   written to the transcript, the graph or any document.
 
-The graph adds two rules of its own (see [FEATURES.md](FEATURES.md)): a vocative
+The graph adds two rules of its own (see [FEATURES.md](../FEATURES.md)): a vocative
 does not create a second person node, and a person who never spoke and is
 mentioned at most once — a name called out in the background of a recording —
 does not become a meeting participant: the note keeps the name as a line
