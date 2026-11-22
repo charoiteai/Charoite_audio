@@ -111,9 +111,19 @@ def test_daemon_wires_local_grounded_feed_seam_and_checks_authority_before_trans
         "local_authority, local_defer_err = LocalLoopbackAuthority.verify_or_defer(llm)",
         "channel_sink = grounded_feed.add_system if grounded_feed is not None else thread.add_system",
         'if grounded_feed is not None:\n            grounded_feed.run(stop, enabled=lambda: toggles["hints"])',
-        "grounded_feed.close(export_path=export_path, session_epoch=tr.stamp,",
     ):
         assert needle in source, needle
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+    closes = [node for node in ast.walk(main) if isinstance(node, ast.Assign)
+              and isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "close_grounded_export"]
+    assert len(closes) == 1
+    close = closes[0]
+    assert [ast.unparse(target) for target in close.targets] == ["export_complete"]
+    assert [ast.unparse(arg) for arg in close.value.args] == ["grounded_feed", "tr"]
+    receipts = [node for node in ast.walk(main) if isinstance(node, ast.Call)
+                and ast.unparse(node.func) == "debrief_pipeline.finish_stop"]
+    assert len(receipts) == 1 and close.lineno < receipts[0].lineno
+    assert {kw.arg: ast.unparse(kw.value) for kw in receipts[0].keywords}["complete"] == "export_complete"
     select_at = source.index("grounded_feed_bridge.select(feed_policy, emit)")
     authority_at = source.index("LocalLoopbackAuthority.verify_or_defer(llm)")
     transcript_at = source.index("tr = Transcript(")

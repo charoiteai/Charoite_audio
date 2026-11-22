@@ -27,7 +27,7 @@ import sys
 import typing
 
 from charoite_paths import resolve_root
-from meeting_stamp import (archive_time, derivative_path, files_with_stamp, graph_key, publishable,
+from meeting_stamp import (DEBRIEF_FILE_SUFFIX, archive_time, derivative_path, files_with_stamp, graph_key, publishable,
                            started_at, stamp_of)
 import channel_trace
 import live_sidecar
@@ -51,7 +51,7 @@ CANON_KIND = live_sidecar.ARCHIVE_KINDS[CANON_NAME]
 NICE = [
     ("_minutes.md", CANON_NAME),
     ("_hints.md", "Подсказки и ответы.md"),
-    ("_разбор.md", "Разбор.md"),
+    (DEBRIEF_FILE_SUFFIX, "Разбор.md"),
     ("_ревизия_claude.md", "Ревизия Claude.md"),
     ("_спикеры.md", "Голоса и спикеры.md"),
     ("_live.md", "Черновик (live).md"),
@@ -296,7 +296,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
                     files_key: str | None = None, *,
                     mode: SummaryMode = SummaryMode.AUTO,
                     extra: typing.Mapping[str, pathlib.Path] | None = None,
-                    unhide: bool = True) -> Archived | None:
+                    unhide: bool = True, exclude_debrief: bool = False) -> Archived | None:
     """Собирает/обновляет папку встречи; возвращает папку и исход саммари
     (None — встреча исключена). `mode` — режим прохода по саммари
     (`SummaryMode`); дефолт — в сигнатуре, архивация режим не интерпретирует и
@@ -371,6 +371,8 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
         expected_debrief = None
     canon = None
     for dest, src in plan_materials(tdir, files_key or stamp, expected_debrief, extra).items():
+        if exclude_debrief and dest == "Разбор.md":
+            continue
         if dest == CANON_NAME:
             canon = lay_canon(src, folder / dest, main)
         else:

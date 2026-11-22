@@ -66,7 +66,7 @@ import meeting_tail  # noqa: E402
 from diarize import VETO_BELOW, diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from diarize_live import LIVE_MAX_SPEAKERS  # noqa: E402 — потолок мест канала живого трекера
 import diarize_nemotron  # noqa: E402 — Nemotron процессом чужого интерпретатора (№473)
-from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
+from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH, EXIT_SHORT_REFINED  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import Transcript, is_noise  # noqa: E402
@@ -2158,6 +2158,8 @@ def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     # Хеш — по тем байтам, что ушли на диск: следующая пересборка отличит
     # свой текст от правленного руками (№131).
     _remember_sha(live, "transcript_sha256", _sha(text))
+    import debrief_pipeline
+    debrief_pipeline.final_written(live, text)
     return live
 
 
@@ -2778,6 +2780,21 @@ def main():
             log(f"статус обработки не записан ({type(e).__name__}: {e})")
             return None
 
+    import debrief_pipeline
+    handoff = debrief_pipeline.from_arguments(sys.argv[2:])
+    refine_attempted = (handoff is not None or debrief_pipeline.binding_path(live).exists()
+                        or debrief_pipeline.handoff_path(live).exists()
+                        or "--refinement-unbound" in sys.argv[2:])
+    refinement_error = None
+    parent_proof = None
+    try:
+        if handoff is not None:
+            debrief_pipeline.remember_handoff(live, handoff)
+        elif not debrief_pipeline.binding_path(live).exists():
+            handoff = debrief_pipeline.pending_handoff(live)
+    except Exception as error:  # noqa: BLE001 — canonical rebuild still runs on identity storage failure
+        refinement_error = f"Уточнение разбора не завершено: {type(error).__name__}: {error}"
+
     publish(status.processing, live, "waiting_for_audio")
     # Живая встреча важнее пересборки целиком, включая STT и диаризацию:
     # 18.08 пересборка держала модель, а Whisper — GPU, пока шла встреча.
@@ -2787,7 +2804,8 @@ def main():
         cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
         publish(status.processing, live, "rebuilding_transcript")
         try:
-            outcome = rebuild(live, cfg)
+            with debrief_pipeline.capture_final(live) as final_proof:
+                outcome = rebuild(live, cfg)
         except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
             log(f"пересборка не удалась ({type(e).__name__}: {e}) — граф по живой версии")
             outcome = RebuildSkipped(RebuildSkipped.FAILED)
@@ -2797,6 +2815,17 @@ def main():
         skipped = (outcome.reason
                    if isinstance(outcome, RebuildSkipped) and not live_sidecar.machine_final(live)
                    else None)
+        graph_refinement_args = ["--skip-legacy-debrief", "--refinement-refused"] if refine_attempted else []
+        if refine_attempted and refinement_error is None:
+            try:
+                parent_proof = debrief_pipeline.prepare_for_graph(
+                    live, cfg, handoff=handoff,
+                    final_sha=final_proof["sha256"] if isinstance(outcome, pathlib.Path) else None)
+                graph_refinement_args = ["--skip-legacy-debrief", "--refine-before-archive",
+                                         parent_proof, "--debrief-parent-ack"]
+            except Exception as error:  # noqa: BLE001 — preserve the canonical rebuild and archive
+                refinement_error = f"Уточнение разбора не завершено: {type(error).__name__}: {error}"
+                log(refinement_error)
         # Профиль мог выключить узлы графа (`sufler.graph: false`). Сам
         # graph_updater при этом всё равно нужен: архив встречи, копии в
         # vault и post_meeting_hook живут там же и от модели не зависят.
@@ -2807,21 +2836,28 @@ def main():
         publish(status.processing, live, "updating_graph")
         _yield_to_live("разбор графа")   # graph_updater ждёт и сам — здесь ради честного лога
         result = subprocess.run(
-            [sys.executable, str(CODE / "src" / "graph_updater.py"), str(live)],
+            [sys.executable, str(CODE / "src" / "graph_updater.py"), str(live)]
+            + graph_refinement_args,
             check=False,
         )
         if result.returncode == EXIT_NO_SPEECH:
+            if parent_proof is not None:
+                debrief_pipeline.parent_publication(live, parent_proof, reject=True)
             # Тишину повторять бессмысленно: статус честно говорит, что речи
             # в записи нет, и подбор незавершённых сюда больше не вернётся.
             log("в записи нет речи — граф не трогаем")
             publish(status.no_speech, live)
             return
+        if refinement_error is not None:
+            raise RuntimeError(refinement_error)
         if result.returncode == EXIT_NO_GRAPH:
             # Архив, копии и хук собраны, а узлов графа нет: статус — ошибка,
             # чтобы retry_unfinished вернулся, когда модель оживёт.
             raise RuntimeError("модель не дала разбор — граф не обновлён "
                                "(архив встречи собран, повторим позже)")
-        if result.returncode:
+        if refine_attempted and result.returncode == EXIT_SHORT_REFINED:
+            graph_on = False
+        elif result.returncode:
             raise RuntimeError(f"graph_updater завершился с кодом {result.returncode}")
         # Заметку встречи создаёт разбор в узлы: выключен профилем — её нет
         # и быть не должно, и требовать её значило бы ронять готовую встречу.
@@ -2835,8 +2871,25 @@ def main():
         # исходного пути уже нет, а плашка — в файле с темой. Флаг через
         # пайплайн врал бы в обе стороны (№501). Код отказа пересборки — иное:
         # это факт прогона, а не содержимое файла, и знает его только конвейер.
+        if parent_proof is not None:
+            accepted = debrief_pipeline.parent_publication(live, parent_proof)
+            try:
+                # Only the accepted derivative is delivered here: the child has
+                # already copied the transcript/minutes and other artifacts.
+                from graph_updater import publish_accepted_debrief
+                delivery_graph = note.parent.parent if note is not None else graphs.graph_dir(cfg)
+                delivery_stamp = (note.stem if note is not None else
+                                  meeting_stamp.graph_key(accepted.parent, accepted.stem, delivery_graph))
+                publish_accepted_debrief(accepted, delivery_graph, delivery_stamp)
+            except Exception as delivery_error:  # noqa: BLE001 — optional copies cannot invalidate acceptance
+                log(f"копии принятого разбора не обновлены ({type(delivery_error).__name__})")
         publish(status.ready, live, note, skipped)
     except Exception as e:  # noqa: BLE001 — статус ошибки обязан пережить процесс
+        if parent_proof is not None:
+            try:
+                debrief_pipeline.parent_publication(live, parent_proof, reject=True)
+            except Exception as rollback_error:  # noqa: BLE001 — preserve the original processing error
+                log(f"откат уточнённого разбора отложен ({type(rollback_error).__name__})")
         log(f"обработка не завершена ({type(e).__name__}: {e})")
         publish(status.failed, live, f"{type(e).__name__}: {e}")
         raise

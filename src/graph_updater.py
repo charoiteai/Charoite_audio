@@ -114,7 +114,7 @@ BUSY_WAIT = 600
 
 # Коды возврата живут в exit_codes (без импортов): их читают и пересборка, и
 # импорт, которому верхний уровень этого модуля не по карману (№173).
-from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402,F401
+from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH, EXIT_SHORT_REFINED  # noqa: E402,F401
 
 
 # Куда докладывать о прогрессе. Ставится в main(), когда известна стенограмма:
@@ -122,13 +122,13 @@ from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402,F401
 _progress: tuple[object, pathlib.Path] | None = None
 
 
-def _report(part: int, parts: int) -> None:
+def _report(part: int | None, parts: int | None, *, stage: str = "updating_graph") -> None:
     """Сказать статусу, какая часть разбирается. Молча, если некому."""
     if _progress is None:
         return
     store, transcript = _progress
     try:
-        store.processing(transcript, "updating_graph", part=part, parts=parts)
+        store.processing(transcript, stage, part=part, parts=parts)
     except Exception as e:  # noqa: BLE001 — прогресс не смеет ронять разбор
         print(f"граф: прогресс не записан ({type(e).__name__}: {e})")
 
@@ -1398,7 +1398,8 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
 def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.Path | None = None,
                        canon_source: pathlib.Path | None = None,
                        exclude: typing.Collection[pathlib.Path] = (),
-                       log: typing.Callable[[str], object] = print) -> pathlib.Path | None:
+                       log: typing.Callable[[str], object] = print, *,
+                       exclude_debrief: bool = False) -> pathlib.Path | None:
     """Файлы встречи → «Документация/Стенограммы встреч» графа; путь папки или
     None, если «Документации» в графе нет.
 
@@ -1428,7 +1429,7 @@ def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.
         canon = None
     matched = False
     for f in publishable(files_with_stamp(tpath.parent, tpath.stem, suffix=".md")):
-        if f in exclude:
+        if f in exclude or (exclude_debrief and f.name.endswith(meeting_stamp.DEBRIEF_FILE_SUFFIX)):
             continue
         if canon is not None and canon_source is not None and f.name == canon_source.name:
             matched = True
@@ -1445,7 +1446,8 @@ def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.
     return vdocs
 
 
-def archive_and_publish(tpath: pathlib.Path, graph: pathlib.Path, stamp: str) -> None:
+def archive_and_publish(tpath: pathlib.Path, graph: pathlib.Path, stamp: str, *,
+                        exclude_debrief: bool = False) -> None:
     """Архив встречи для Finder, затем копии в «Документацию» графа.
 
     Порядок — архив первым (№366): копия минуток в «Документации» — байты
@@ -1464,8 +1466,9 @@ def archive_and_publish(tpath: pathlib.Path, graph: pathlib.Path, stamp: str) ->
         # ревизия старит через минутки; легаси без паспорта живой путь не трогает (№314)
         # Название папки — из стема, как у облачной ревизии: иначе каждая смена
         # вызывающего переименовывала папку и переписывала манифест (№361).
+        archive_options = {"exclude_debrief": True} if exclude_debrief else {}
         archived = archive_meeting(graph, tpath.parent, stamp, title_from_stem(tpath.stem),
-                                   files_key=tpath.stem)
+                                   files_key=tpath.stem, **archive_options)
         print(f"архив встречи: {archived.folder.name}" if archived else "архив встречи: исключена")
         if archived is not None:
             for line in archive_alarms(archived):
@@ -1475,11 +1478,41 @@ def archive_and_publish(tpath: pathlib.Path, graph: pathlib.Path, stamp: str) ->
 
     # 4б) артефакты встречи → vault (iCloud): симлинки iCloud не синкает, копируем
     try:
-        vdocs = copy_to_vault_docs(tpath, graph, *canon_of(archived))
+        vault_options = {"exclude_debrief": True} if exclude_debrief else {}
+        vdocs = copy_to_vault_docs(tpath, graph, *canon_of(archived), **vault_options)
         if vdocs is not None:
             print(f"артефакты скопированы в vault: {vdocs}")
     except Exception as e:  # noqa: BLE001
         print(f"копирование в vault не удалось: {e}")
+
+
+def publish_accepted_debrief(tpath: pathlib.Path, graph: pathlib.Path | None, stamp: str) -> None:
+    """Deliver only the accepted derivative, without replaying archive side effects."""
+    if graph is None or not graph.parent.is_dir():
+        return
+    import debrief_pipeline
+    import meeting_archive
+    source = debrief_pipeline.verify_publication(tpath)
+
+    def copy(destination):
+        # Do not follow an externally substituted copy into another document.
+        if destination.is_symlink() or destination.parent.is_symlink():
+            raise ValueError("debrief copy destination is a symlink")
+        safe_write.copy_if_changed(source, destination)
+
+    try:
+        if stamp not in meeting_archive._excluded(graph):
+            folders = meeting_archive._folders_for(graph, stamp)
+            if folders:
+                copy(folders[0] / "Разбор.md")
+    except (OSError, ValueError) as error:
+        print(f"копия принятого разбора в архив не обновлена: {error}")
+    try:
+        docs = graph / "Документация" / "Стенограммы встреч"
+        if docs.parent.exists():
+            copy(docs / source.name)
+    except (OSError, ValueError) as error:
+        print(f"копия принятого разбора в vault не обновлена: {error}")
 
 
 def canon_of(archived) -> tuple[pathlib.Path | None, pathlib.Path | None]:
@@ -1512,7 +1545,8 @@ def theme_slug(title: str) -> str:
     return meeting_stamp.guard_slug(re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50])
 
 
-def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.Path:
+def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str, *,
+            refinement_errors: list[str] | None = None) -> pathlib.Path:
     """Дать файлам встречи имя «штамп_тема»; вернуть новый путь стенограммы.
 
     Посекундный главный файл получает МИНУТНОЕ имя — как назвал бы его
@@ -1522,8 +1556,16 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     свои файлы, а файлы соседней встречи той же минуты. Занятое имя — сторож
     от затирания: файл остаётся как есть, тема идёт только в шапку.
     """
+    import debrief_pipeline
+    original_tpath = tpath
     slug = theme_slug(title)
     new_t = tpath.with_name(f"{stamp}_{slug}.md")
+    # Dedicated identities are never inherited from an orphan or a nearby filename.
+    if not debrief_pipeline.can_retitle(tpath, new_t):
+        print("граф: привязка разбора не допускает переименование — оставляю исходное имя", file=sys.stderr)
+        if refinement_errors is not None:
+            refinement_errors.append("привязка разбора не допускает переименование")
+        return tpath
     # Занятое имя сайдкара — тоже занятое имя: migrate при занятой цели
     # молча не переносит пару, а remember дальше сливал бы наши ключи в
     # чужую сироту — прямой сайдкар встречи с чужими именами/хешами
@@ -1533,9 +1575,24 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     foreign_twin = taken_sidecar.exists() and not live_sidecar.claims(taken_sidecar, bare)
     if not new_t.exists() and foreign_twin:
         print(f"граф: имя {new_t.name} занято сайдкаром {taken_sidecar.name} без нашего штампа — файл не переименован", file=sys.stderr)
-    if not new_t.exists() and not foreign_twin:
+    bound = debrief_pipeline.binding_path(tpath).exists()
+    resume_move = (bound and new_t != tpath and new_t.exists() and tpath.samefile(new_t)
+                   and debrief_pipeline.binding_path(new_t).exists())
+    move = (not os.path.lexists(new_t) or resume_move) and not foreign_twin
+    if bound:
+        try:
+            debrief_pipeline.prepare_retitle(tpath, new_t if move else tpath,
+                header=(f"# Встреча {bare}", f"# Встреча {stamp} — {title}"))
+        except (OSError, ValueError) as error:
+            if refinement_errors is None:
+                raise
+            refinement_errors.append(f"привязка разбора не подготовлена: {type(error).__name__}")
+            return tpath
+    if move:
         for extra in tpath.parent.glob(f"{bare}_*.md"):  # _minutes, _hints…
             suffix = extra.name[len(bare):]  # "_minutes.md"
+            if bound and suffix.casefold() == meeting_stamp.DEBRIEF_FILE_SUFFIX.casefold():
+                continue  # the binding transfers its exact owned derivative
             if suffix[:-3].lower() not in meeting_stamp.AUX_SUFFIXES:
                 continue    # главный файл соседней встречи той же минуты (хвост 20.08, GLM)
             if _starts_like_meeting(extra):
@@ -1543,8 +1600,19 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
             target = extra.with_name(f"{stamp}_{slug}{suffix}")
             if not target.exists():         # чужой файл затирать нельзя
                 extra.rename(target)
-        tpath.rename(new_t)
+        if bound:
+            debrief_pipeline.move_retitle_file(tpath, new_t)
+        else:
+            tpath.rename(new_t)
         tpath = new_t
+    if bound:
+        try:
+            debrief_pipeline.retitle_binding(original_tpath, tpath)
+        except Exception as error:  # noqa: BLE001 — keep archiving the final transcript
+            if refinement_errors is None:
+                raise
+            refinement_errors.append(f"привязка разбора не перенесена: {type(error).__name__}")
+        return tpath
     body = tpath.read_text(encoding="utf-8")
     # Машинным файл был, если записанный хеш совпадает с байтами ДО правки
     # шапки; правку руками накат темы узаконивать не должен — следующая
@@ -1555,7 +1623,8 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
         # воссоединение со своим близнецом: хеш последней машинной записи —
         # в нём, иначе шапка с темой навсегда сойдёт за правку руками (GLM r2 M1)
         prev = live_sidecar.read(tpath) or {}
-    machine = live_sidecar.valid_sha(prev.get("transcript_sha256")) == live_sidecar.sha(body)
+    before_header_sha = live_sidecar.sha(body)
+    machine = live_sidecar.valid_sha(prev.get("transcript_sha256")) == before_header_sha
     # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
     # и замена по короткому штампу оставляла бы хвост «19» после темы.
     body = body.replace(f"# Встреча {bare}", f"# Встреча {stamp} — {title}", 1)
@@ -3664,14 +3733,48 @@ def _revise_meeting_cores(cfg: dict, graph: pathlib.Path, cores: list[dict]) -> 
         print(f"tier3: пропущен ({e})")
 
 
+def _finish_refinement(tpath: pathlib.Path, cfg: dict, options: list[str], *, before_commit=None) -> None:
+    """Publish against the final graph name and source, immediately before archival."""
+    import debrief_pipeline
+    if "--refine-before-archive" not in options:
+        if before_commit is not None:
+            before_commit()
+        debrief_pipeline.verify_publication(tpath)
+        return
+
+    def heartbeat(_event=None):
+        _report(None, None, stage="refining_debrief")
+
+    proof = options[options.index("--refine-before-archive") + 1]
+    heartbeat()
+    debrief_pipeline.run(tpath, cfg, handoff=None, final_sha=None, before_request=_yield_to_live,
+                        progress=heartbeat, before_commit=before_commit, graph_input_sha=proof,
+                        defer_finalization="--debrief-parent-ack" in options)
+
+
 def main():
     harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     cfg = load_cfg()
-    tpath = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else latest_transcript()
+    arguments = sys.argv[1:]
+    if arguments:
+        transcript_path, *options = arguments
+        tpath = pathlib.Path(transcript_path)
+    else:
+        options = []
+        tpath = latest_transcript()
     if not tpath or not tpath.exists():
         print("нет стенограммы")
         return
     _open_progress(tpath)
+    refined = "--skip-legacy-debrief" in options
+    refine_before_archive = "--refine-before-archive" in options
+    refinement_errors = ["уточнение разбора отклонено до графа"] if "--refinement-refused" in options else []
+    if refined:
+        import debrief_pipeline
+        try:
+            debrief_pipeline.recover_publication(tpath)
+        except Exception as error:  # noqa: BLE001 — exclude the candidate but preserve the transcript archive
+            refinement_errors.append(f"восстановление разбора не завершено: {type(error).__name__}")
     graph = graphs.graph_dir(cfg)   # None — не настроен (пустая/пробельная строка)
     # РАЗДЕЛЕНЫ намеренно. `speech` — то, что реально прозвучало; `context` —
     # то же плюс живые минутки, которые пишет МОДЕЛЬ по ходу встречи.
@@ -3709,6 +3812,14 @@ def main():
         # ошибку конвейер обязан повторить, а тишину повторять бессмысленно,
         # сколько ни пробуй. 03.08 запись без речи получила статус «ошибка» и
         # ушла бы в три бесполезных прогона.
+        if refined:
+            from transcript import speech_of
+            if speech_of(speech).strip():
+                if refinement_errors:
+                    raise RuntimeError("; ".join(refinement_errors))
+                if refine_before_archive:
+                    _finish_refinement(tpath, cfg, options)
+                    sys.exit(EXIT_SHORT_REFINED)
         print("стенограмма слишком короткая — граф не трогаем")
         sys.exit(EXIT_NO_SPEECH)
     # Пустой или пробельный graph_dir — это None из единой точки (раньше
@@ -3718,7 +3829,21 @@ def main():
         # Без папки графа узлов не будет, но всё остальное встречу не теряет:
         # хук пользователя обязан отработать и здесь (ревью 19.08).
         print(f"graph_dir не настроен/не существует: {graph}")
-        run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
+        hook_ran = False
+
+        def post_hook():
+            nonlocal hook_ran
+            hook_ran = True
+            run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
+
+        try:
+            if refined and not refinement_errors:
+                _finish_refinement(tpath, cfg, options, before_commit=post_hook)
+        finally:
+            if not hook_ran:
+                post_hook()
+        if refinement_errors:
+            raise RuntimeError("; ".join(refinement_errors))
         return
 
     known = [] if graphs.env_override() else known_graphs(graph)
@@ -3783,7 +3908,7 @@ def main():
         tw.pop()  # обрезка не должна кончаться висящим союзом/предлогом
     title = " ".join(tw).rstrip(",;:")
     if title and not already_titled:  # переименовать логи: дата + о чём общались
-        tpath = retitle(tpath, stamp, bare, title)
+        tpath = retitle(tpath, stamp, bare, title, refinement_errors=refinement_errors)
         _repath(tpath)
     meeting_link = f"Встречи/{stamp}"
     # 26b на длинных встречах иногда роняет ключи в JSON — битые записи пропускаем,
@@ -3960,6 +4085,8 @@ def main():
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что
     # только что промолчала, а таймаут разбора — минуты.
     try:
+        if refined:
+            raise _DebriefKept()
         if not graph_ok:
             raise RuntimeError("модель не отвечала — разбор пропущен")
         # Владение — ДО вызова модели: разбор правлен человеком → не
@@ -4068,7 +4195,31 @@ def main():
 
     # 4б, 4в) архив встречи, затем копии в vault — канон минуток архива раньше
     # своей копии в «Документации» (№366)
-    archive_and_publish(tpath, graph, stamp)
+    hook_ran = False
+
+    def final_hook():
+        nonlocal hook_ran
+        if hook_ran:
+            return
+        hook_ran = True
+        run_post_hook(cfg, tpath, stamp)
+
+    graph_failed = not graph_ok and not graph_off and refine_before_archive
+    if refined and not refinement_errors and not graph_failed:
+        try:
+            _finish_refinement(tpath, cfg, options, before_commit=final_hook)
+        except Exception as error:  # noqa: BLE001 — failure is terminal only after preserving the archive
+            refinement_errors.append(f"уточнённый разбор не подтверждён: {type(error).__name__}: {error}")
+    if refinement_errors or (refined and graph_failed):
+        archive_and_publish(tpath, graph, stamp, exclude_debrief=True)
+    else:
+        archive_options = {"exclude_debrief": True} if "--debrief-parent-ack" in options else {}
+        # A failed child exits here; the parent owns rejection of its pending publication.
+        archive_and_publish(tpath, graph, stamp, **archive_options)
+    if refinement_errors:
+        print("; ".join(refinement_errors), file=sys.stderr)
+        final_hook()
+        raise RuntimeError("; ".join(refinement_errors))
 
     # 5) уровень 4 — авто-доработка облачным Claude (решение владельца 17.07.2026).
     # Стенограмма уходит в Anthropic API! Выключатель: sufler.cloud_enrich,
@@ -4091,7 +4242,7 @@ def main():
                      if r.stat().st_mtime >= tpath.stat().st_mtime]
             if fresh:
                 print(f"cloud-enrich: ревизия уже есть ({fresh[0].name}) — повтор не запускаем")
-                run_post_hook(cfg, tpath, stamp)
+                final_hook()
                 if not graph_ok and not graph_off:
                     sys.exit(EXIT_NO_GRAPH)
                 return
@@ -4112,7 +4263,7 @@ def main():
         except Exception as e:  # noqa: BLE001 — облачное обогащение необязательно: отказ в журнал
             print(f"cloud-enrich не запустился: {e}")
 
-    run_post_hook(cfg, tpath, stamp)
+    final_hook()
     reindex_memory(cfg, graph)
     # Выключенный профилем граф — не отказ модели: код 0, статус «готово».
     # EXIT_NO_GRAPH означал бы ошибку и повтор каждой встречи по кругу.

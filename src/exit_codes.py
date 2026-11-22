@@ -19,6 +19,9 @@ EXIT_NO_SPEECH = 3
 #: ошибкой и вернётся к ней (retry_unfinished), а не пишет «готово».
 EXIT_NO_GRAPH = 4
 
+#: Bound short Stop produced a verified debrief without running graph extraction.
+EXIT_SHORT_REFINED = 18
+
 #: Точка входа не получила корня данных: запускавший не сказал, где они
 #: лежат. Не «упал», а «не начал» — повтор без правки окружения бесполезен,
 #: и launchd с KeepAlive обязан видеть это кодом, а не нулём (№332). Не 2:

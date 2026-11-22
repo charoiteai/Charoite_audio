@@ -11,9 +11,12 @@ rename_meeting.py. Здесь — распознавание голого шта
 
 from __future__ import annotations
 
+import errno
 import pathlib
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -254,7 +257,7 @@ def test_status_is_repathed_right_after_the_retitle():
     """Сторож проводки: новый путь уходит в статус сразу после переименования,
     а не с `ready` — иначе приложение до конца разбора видит мёртвый путь."""
     text = (Path(__file__).resolve().parent.parent / "src" / "graph_updater.py").read_text(encoding="utf-8")
-    call = text.index("tpath = retitle(tpath, stamp, bare, title)\n")
+    call = text.index("tpath = retitle(tpath, stamp, bare, title, refinement_errors=refinement_errors)\n")
     assert text[call:].split("\n", 2)[1].strip() == "_repath(tpath)"
     assert text.index("    _open_progress(tpath)\n") < call, "ключ статуса — под исходным именем, до наката темы"
 
@@ -347,3 +350,93 @@ def test_repath_tries_again_while_the_status_lock_is_busy(monkeypatch, capsys):
     assert store.calls == gu.REPATH_TRIES and store.args == {(Path("x.md"), Path("y.md"))}
     assert "не записан (TimeoutError: замок занят)" in out
     assert out.count("замок статусов занят, попытка") == gu.REPATH_TRIES - 1
+
+
+@pytest.mark.parametrize("failure", ["prepare", "prepared", "after_link", "header", "passport", "final_binding"])
+def test_bound_retitle_disk_error_is_recoverable_without_legacy(tmp_path, monkeypatch, failure):
+    import debrief_pipeline as pipeline
+    import live_sidecar
+    import meeting_stamp
+    from test_debrief_pipeline import CFG, STAMP, make_meeting, previous_debrief
+
+    old, handoff = make_meeting(tmp_path)
+    _, original_debrief = previous_debrief(old)
+    proof = pipeline.prepare_for_graph(old, CFG, handoff=handoff, final_sha=live_sidecar.sha(old.read_text()))
+    stamp = meeting_stamp.minute_of(STAMP)
+    target = old.with_name(f"{stamp}_Тема.md")
+    fields = {"header": target, "passport": target.with_name(target.name + ".live.json"),
+              "final_binding": pipeline.binding_path(target)}
+    errors = []
+
+    def no_space():
+        raise OSError(errno.ENOSPC, "synthetic disk full")
+
+    with monkeypatch.context() as patch:
+        if failure in {"prepare", "prepared"}:
+            create = pipeline._exclusive_json
+            def create_marker(path, data):
+                if path != pipeline.binding_path(target):
+                    return create(path, data)
+                if failure == "prepared":
+                    create(path, data)
+                no_space()
+            patch.setattr(pipeline, "_exclusive_json", create_marker)
+        elif failure == "after_link":
+            link = pipeline.os.link
+            def interrupt_link(source, dest, **kwargs):
+                link(source, dest, **kwargs)
+                if source == old and dest == target:
+                    no_space()
+            patch.setattr(pipeline.os, "link", interrupt_link)
+        else:
+            write = pipeline.safe_write.write_text
+            def interrupt_write(path, text, **kwargs):
+                if path == fields[failure]:
+                    no_space()
+                return write(path, text, **kwargs)
+            patch.setattr(pipeline.safe_write, "write_text", interrupt_write)
+        if failure == "after_link":
+            with pytest.raises(OSError, match="disk full"):
+                gu.retitle(old, stamp, STAMP, "Тема")
+            assert old.samefile(target)
+        else:
+            result = gu.retitle(old, stamp, STAMP, "Тема", refinement_errors=errors)
+            assert errors and result == (old if failure in {"prepare", "prepared"} else target)
+
+    if failure in {"prepare", "prepared"}:
+        assert old.exists() and not target.exists() and pipeline.binding_path(old).is_file()
+        assert gu.retitle(old, stamp, STAMP, "Тема") == target
+    assert pipeline.binding_path(target).is_file()
+    # Same entry as an ordinary no-handoff rebuild, including receipt and passport checks.
+    assert pipeline.prepare_for_graph(target, CFG, handoff=None, final_sha=None) == proof
+    assert pipeline.prepare_for_graph(target, CFG, handoff=None, final_sha=None) == proof
+    assert pipeline._read_json(pipeline.binding_path(target))["handoff"] == handoff
+    assert not old.exists() and not pipeline.binding_path(old).exists()
+    assert target.read_text().startswith(f"# Встреча {stamp} — Тема\n")
+    assert meeting_stamp.derivative_path(target, "debrief").read_bytes() == original_debrief
+
+
+def test_bound_retitle_retry_keeps_foreign_derivative(tmp_path, monkeypatch):
+    import debrief_pipeline as pipeline
+    import live_sidecar
+    import meeting_stamp
+    from test_debrief_pipeline import CFG, STAMP, make_meeting, previous_debrief
+
+    old, handoff = make_meeting(tmp_path)
+    original, data = previous_debrief(old)
+    pipeline.prepare_for_graph(old, CFG, handoff=handoff, final_sha=live_sidecar.sha(old.read_text()))
+    stamp = meeting_stamp.minute_of(STAMP)
+    with monkeypatch.context() as patch:
+        def interrupted(*args, **kwargs):
+            raise OSError(errno.ENOSPC, "synthetic disk full")
+        patch.setattr(pipeline, "retitle_binding", interrupted)
+        errors = []
+        target = gu.retitle(old, stamp, STAMP, "Тема", refinement_errors=errors)
+        assert errors and target != old
+    foreign = meeting_stamp.derivative_path(target, "debrief")
+    assert foreign != original
+    foreign.write_bytes(b"foreign")
+    with pytest.raises(pipeline.refinement.RefinementRefused, match="retitle_file_conflict"):
+        pipeline.prepare_for_graph(target, CFG, handoff=None, final_sha=None)
+    assert foreign.read_bytes() == b"foreign" and original.read_bytes() == data
+    assert pipeline.binding_path(target).exists()
