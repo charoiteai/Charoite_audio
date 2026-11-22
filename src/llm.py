@@ -987,7 +987,8 @@ class LLM:
                     return
                 data = self._json_line(response, line)
                 if data.get("error"):
-                    raise self._fail(response.status_code, str(data["error"]))
+                    raise self._fail(response.status_code, str(data["error"]),
+                                     body=line.decode("utf-8", "replace"))
                 try:
                     choice = data["choices"][0]
                     chunk = choice.get("delta", {}).get("content") or ""
@@ -1008,7 +1009,8 @@ class LLM:
             else:
                 data = self._json_line(response, line)
                 if data.get("error"):
-                    raise self._fail(response.status_code, str(data["error"]))
+                    raise self._fail(response.status_code, str(data["error"]),
+                                     body=line.decode("utf-8", "replace"))
                 chunk = self._ndjson_chunk(response, data, line)
                 if chunk:
                     self._ledger_first(response)
@@ -1090,16 +1092,19 @@ class LLM:
             if sends_format:
                 payload["format"] = output_schema
             url = f"{self.base}/api/chat"
+        yielded = False
         try:
             with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
                                    method="grounded_answer", cancel_event=cancel_event) as response:
-                if sends_format:
-                    _strict_json_restored(strict_key)
-                yield from self._iter_local_stream(response, allow_length=allow_length, label="grounded answer")
+                for chunk in self._iter_local_stream(response, allow_length=allow_length, label="grounded answer"):
+                    yielded = True
+                    yield chunk
+            if sends_format:
+                _strict_json_restored(strict_key)
             return
         except LLMHTTPError as e:
             verdict, reason = strict_json_verdict(e.status, e.body)
-            if not sends_format or verdict != STRICT_NO:
+            if not sends_format or yielded or verdict != STRICT_NO:
                 raise
             _strict_json_record(strict_key, reason)
             _strict_json_announce(strict_key, selected, self.base, reason)
@@ -1462,9 +1467,10 @@ class LLM:
                 if r.status_code != 200:
                     # закрыть до raise: with-блок вызывающего сюда не дойдёт, а
                     # ответ открыт как стрим; ошибка — в контракте модуля LLMHTTPError
-                    detail = r.text[:500]
+                    raw_body = r.text
+                    detail = raw_body[:500]
                     r.close()
-                    raise self._fail(r.status_code, detail)
+                    raise self._fail(r.status_code, detail, body=raw_body)
                 return self._LeasedStream(r, self._lease("stream", timeout).__enter__(), call)
             raise RuntimeError("unreachable")  # pragma: no cover
         except BaseException as e:

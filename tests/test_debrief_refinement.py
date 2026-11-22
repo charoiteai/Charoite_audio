@@ -365,6 +365,7 @@ def test_grounded_answer_falls_back_when_structured_output_unavailable(monkeypat
     payloads = []
 
     class FakeResponse:
+        status_code = 200
         def __init__(self, lines):
             self._lines = lines
         def iter_lines(self):
@@ -395,6 +396,63 @@ def test_grounded_answer_falls_back_when_structured_output_unavailable(monkeypat
     assert payloads[0]["format"] == schema
     assert "format" not in payloads[1]
     assert "format" not in payloads[2]
+
+
+def test_grounded_answer_http200_error_fallback_and_no_midstream_retry(monkeypatch):
+    import contextlib
+    import threading
+    import llm
+
+    class FakeResponse:
+        status_code = 200
+        def __init__(self, lines):
+            self._lines = lines
+        def iter_lines(self):
+            return iter(self._lines)
+
+    client = llm.LLM({
+        "llm": {"engine": "ollama", "base_url": "http://127.0.0.1:11434", "model": "qwen3.6:35b-mlx"},
+        "sufler": {"language": "ru", "role": "test"},
+    })
+    monkeypatch.setattr(client, "require_local_ollama_model", lambda m: m)
+    schema = {"type": "object", "properties": {"verdict": {"type": "string"}}, "required": ["verdict"]}
+
+    # Case 1: HTTP 200 NDJSON error before any chunk falls back without format
+    payloads = []
+    @contextlib.contextmanager
+    def fake_open_200(self, url, payload, *args, **kwargs):
+        payloads.append(dict(payload))
+        if "format" in payload:
+            yield FakeResponse([b'{"error":"structured output is unavailable"}'])
+        else:
+            yield FakeResponse([b'{"message":{"content":"{\\"verdict\\":\\"supported\\"}"},"done":true,"done_reason":"stop"}'])
+
+    llm._strict_json_clear()
+    monkeypatch.setattr(llm.LLM, "_open_stream", fake_open_200)
+    try:
+        out = "".join(client.grounded_answer("p", system="s", cancel_event=threading.Event(), output_schema=schema))
+        assert out == '{"verdict":"supported"}'
+        assert len(payloads) == 2 and "format" in payloads[0] and "format" not in payloads[1]
+    finally:
+        llm._strict_json_clear()
+
+    # Case 2: once a chunk is yielded, do NOT retry and concatenate a second stream
+    payloads.clear()
+    @contextlib.contextmanager
+    def fake_open_midstream(self, url, payload, *args, **kwargs):
+        payloads.append(dict(payload))
+        yield FakeResponse([
+            b'{"message":{"content":"{\\"verdict\\":"},"done":false}',
+            b'{"error":"structured output is unavailable"}',
+        ])
+
+    monkeypatch.setattr(llm.LLM, "_open_stream", fake_open_midstream)
+    try:
+        with pytest.raises(llm.LLMHTTPError):
+            "".join(client.grounded_answer("p", system="s", cancel_event=threading.Event(), output_schema=schema))
+        assert len(payloads) == 1
+    finally:
+        llm._strict_json_clear()
 
 
 def test_duplicate_json_keys_refused():
