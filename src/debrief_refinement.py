@@ -347,11 +347,15 @@ def _dump(value: dict) -> str:
 
 def _windows(speech: str, size: int) -> list[dict]:
     """Lossless character ledger; split at lines/words, retaining speaker metadata."""
+    if size <= 0:
+        raise ValueError("window size must be positive")
     from transcript import BLOCK_RE
     headers = list(BLOCK_RE.finditer(speech))
     result = []
     start = 0
-    while start < len(speech):
+    for _ in range(len(speech)):
+        if start >= len(speech):
+            break
         end = min(len(speech), start + size)
         if end < len(speech):
             boundary = speech.rfind("\n", start + size // 2, end)
@@ -359,6 +363,8 @@ def _windows(speech: str, size: int) -> list[dict]:
                 boundary = speech.rfind(" ", start + size // 2, end)
             if boundary != -1:
                 end = boundary + 1
+        if end <= start:
+            raise ValueError("window progress stalled")
         speaker = None
         for header in headers:
             if header.start() > start:
@@ -401,7 +407,9 @@ def _owned_anchor(quote: str, window: dict) -> bool:
     owned_start = len(window.get("context_before", ""))
     owned_end = owned_start + len(window["text"])
     offset = source.find(quote)
-    while offset >= 0:
+    for _ in range(len(source) + 1):
+        if offset < 0:
+            break
         overlap = source[max(offset, owned_start):min(offset + len(quote), owned_end)]
         if len(overlap.strip()) >= 12:
             return True
@@ -457,14 +465,14 @@ class _AmbiguousAnchors(UnverifiedReply):
 
 def _anchor_feedback(rows: list[dict], indices: list[int]) -> dict:
     # Bound serialized excerpts even when model text contains JSON escape characters.
-    width = 200
-    while True:
+    examples = []
+    for width in (200, 100, 50, 25, 12, 6, 3, 1, 0):
         examples = [{"index": i, "text_excerpt": rows[i]["text"][:width],
                      "quote_excerpts": [q[:width // 2] for q in rows[i]["quotes"][:3]]}
                     for i in indices[:4]]
         if len(_dump(examples)) <= 1600:
-            return {"reason": "ambiguous_source_anchor", "rejected_count": len(indices), "examples": examples}
-        width //= 2
+            break
+    return {"reason": "ambiguous_source_anchor", "rejected_count": len(indices), "examples": examples}
 
 
 def _check_order(rows: list[dict], source: str) -> None:

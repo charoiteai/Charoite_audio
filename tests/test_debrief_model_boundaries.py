@@ -602,3 +602,9 @@ def test_refine_window_receives_new_speaker_at_exact_header_boundary(monkeypatch
     assert model_input["source_window"]["context_speaker"] == target["context_speaker"]
     leaves = [window["text"] for window in received if len(window["text"]) == 512]
     assert "".join(leaves) == speech
+
+
+@pytest.mark.parametrize("size", [0, -10])
+def test_windows_refuses_non_positive_size(size):
+    with pytest.raises(ValueError, match="positive"):
+        ref._windows("Участник A: Привет.", size)
