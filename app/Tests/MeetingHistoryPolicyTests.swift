@@ -189,7 +189,7 @@ final class ProcessingProgressTests: XCTestCase {
     }
 
     func testEarlyStagesStillSpeakHumanLanguage() {
-        for stage in ["waiting_for_audio", "rebuilding_transcript", "неизвестная"] {
+        for stage in ["waiting_for_audio", "rebuilding_transcript", "refining_debrief", "неизвестная"] {
             let text = MeetingProcessingPolicy.stageText(
                 for: snapshot(stage: stage, part: nil, parts: nil))
             XCTAssertFalse(text.isEmpty)

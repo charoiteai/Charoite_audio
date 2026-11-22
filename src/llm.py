@@ -1054,7 +1054,8 @@ class LLM:
 
     def grounded_answer(self, prompt: str, *, system: str, cancel_event,
                         num_predict: int = 400, model: str | None = None,
-                        temperature: float | None = None) -> Iterator[str]:
+                        temperature: float | None = None,
+                        allow_length: bool = True, output_schema: dict | None = None) -> Iterator[str]:
         """Local grounded manual answer: cancellable loopback stream, zero cloud egress."""
         if cancel_event is None:
             raise ValueError("grounded answer requires a cancel_event")
@@ -1067,6 +1068,10 @@ class LLM:
         temp = self.temperature if temperature is None else float(temperature)
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": prompt}]
+        if output_schema is not None and (self.engine != "ollama" or not isinstance(output_schema, dict)):
+            raise ValueError("grounded output schema requires an Ollama JSON schema object")
+        sends_format = False
+        strict_key = (self.base, selected)
         if self.engine == "mlx-server":
             if selected != self.mlx_model:
                 raise ValueError("grounded answer model does not match the local MLX server")
@@ -1075,15 +1080,33 @@ class LLM:
             url = f"{self.base}/v1/chat/completions"
         else:
             selected = self.require_local_ollama_model(selected)
+            strict_key = (self.base, selected)
             payload = {"model": selected, "messages": messages, "stream": True,
                        "truncate": False, "shift": False,
                        "think": False, "keep_alive": self._chat_keep_alive(),
                        "options": {"temperature": temp, "num_ctx": self.num_ctx,
                                    "num_predict": num_predict}}
+            sends_format = output_schema is not None and _strict_json_known(strict_key) is None
+            if sends_format:
+                payload["format"] = output_schema
             url = f"{self.base}/api/chat"
+        try:
+            with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
+                                   method="grounded_answer", cancel_event=cancel_event) as response:
+                if sends_format:
+                    _strict_json_restored(strict_key)
+                yield from self._iter_local_stream(response, allow_length=allow_length, label="grounded answer")
+            return
+        except LLMHTTPError as e:
+            verdict, reason = strict_json_verdict(e.status, e.body)
+            if not sends_format or verdict != STRICT_NO:
+                raise
+            _strict_json_record(strict_key, reason)
+            _strict_json_announce(strict_key, selected, self.base, reason)
+            del payload["format"]
         with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
                                method="grounded_answer", cancel_event=cancel_event) as response:
-            yield from self._iter_local_stream(response, allow_length=True, label="grounded answer")
+            yield from self._iter_local_stream(response, allow_length=allow_length, label="grounded answer")
 
     def _ndjson_chunk(self, r, data: dict, line: bytes) -> str:
         """Текст чанка NDJSON-строки Ollama; `message: null` — пустой чанк, иная

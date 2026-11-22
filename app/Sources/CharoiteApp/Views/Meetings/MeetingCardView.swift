@@ -17,7 +17,8 @@ struct MeetingCardView: View {
     @ObservedObject private var tasks = TasksService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var loadedCard = MeetingCard()
-    @State private var loadedSnapshot: MeetingProcessingSnapshot?
+    @State var loadedSnapshot: MeetingProcessingSnapshot?
+    @State private var conversation: (url: URL, text: String)?
     @State private var sourceRootDir: URL?
     @State private var sourceGraphDir: URL?
     @StateObject private var cardActions = MeetingCardActionController()
@@ -33,25 +34,32 @@ struct MeetingCardView: View {
     /// Разбор и стенограмма читаются с диска по требованию — строками, чтобы
     /// не резать мегабайтный текст на каждом рендере. Привязаны к встрече:
     /// встроенная карточка живёт одной вью на все встречи, и без
-    /// fileMeetingID текст встречи A показывался под заголовком B до конца
+    /// снимка текст встречи A показывался под заголовком B до конца
     /// чтения (ревью 22.08, DeepSeek — Critical).
-    @State var fileLines: [String]?
+    @State var fileParts: [MeetingCardFilePart]?
     @State var fileDepth: MeetingCardDepth?
     /// Минутки, распарсенные из файла, когда кэша карточки нет (см. loadDepthFile).
     @State var fileMinutes: MeetingMinutes?
-    @State var fileMeetingID: String?
+    @State var fileSnapshot: MeetingProcessingSnapshot?
     @State var fileURL: URL?
 
     var card: MeetingCard {
-        loadedSnapshot?.meetingID == meeting.meetingID
-            ? loadedCard
-            : (preloadedCard ?? MeetingCard())
+        Self.cardForSnapshot(loadedCard, loaded: loadedSnapshot, current: meeting, preloaded: preloadedCard)
+    }
+
+    static func cardForSnapshot(_ card: MeetingCard, loaded: MeetingProcessingSnapshot?,
+                                current: MeetingProcessingSnapshot, preloaded: MeetingCard? = nil) -> MeetingCard {
+        loaded == current ? card : (preloaded ?? MeetingCard())
+    }
+
+    var resolvedConversation: (url: URL, text: String)? {
+        loadedSnapshot == meeting ? conversation : nil
     }
 
     var body: some View {
-        let availableDepths = MeetingCardDepth.available(card: card, meeting: meeting)
+        let availableDepths = self.availableDepths
         let activeDepth = depth(in: availableDepths)
-        let activeFile = activeDepth.file(card: card, meeting: meeting)
+        let activeFile = depthFile(activeDepth)
         VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
@@ -106,8 +114,16 @@ struct MeetingCardView: View {
         // фоновом обновлении той же встречи actionMessage и открытый лист не сбрасываются.
         .task(id: meeting) {
             let previousID = loadedSnapshot?.meetingID
-            loadedCard = preloadedCard ?? MeetingCardLoader.load(for: meeting)
-            loadedSnapshot = meeting
+            let snapshot = meeting
+            let preloaded = preloadedCard
+            let (loaded, verified) = await Task.detached(priority: .userInitiated) {
+                let loaded = preloaded ?? MeetingCardLoader.load(for: snapshot)
+                return (loaded, MeetingCardDepth.verifiedConversation(card: loaded, meeting: snapshot))
+            }.value
+            guard !Task.isCancelled, meeting == snapshot else { return }
+            loadedCard = loaded
+            conversation = verified
+            loadedSnapshot = snapshot
             let root = AppSettings.charoiteRoot
             sourceRootDir = root
             sourceGraphDir = AppSettings.graphDir(root: root)
@@ -115,7 +131,7 @@ struct MeetingCardView: View {
                 tasks.rescan()
             }
         }
-        .task(id: DepthTaskID(depth: activeDepth, meetingID: meeting.meetingID, url: activeFile)) {
+        .task(id: DepthTaskID(depth: activeDepth, snapshot: meeting, url: activeFile)) {
             await loadDepthFile()
         }
         // Привычка «Подробно» из прежнего ключа — в «Минутки», один раз.

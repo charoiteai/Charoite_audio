@@ -14,8 +14,8 @@ import exit_codes  # noqa: E402
 #: (демон) и `EXIT_NOTHING_TO_CHECK` (мутатор) остались бы вне гейта, хотя их
 #: читают через границу процесса — launchd, приёмка, CI (круг 2 по №339, DS M5).
 READERS = {
-    "src/graph_updater.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
-    "src/rebuild_transcript.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
+    "src/graph_updater.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH", "EXIT_SHORT_REFINED"},
+    "src/rebuild_transcript.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH", "EXIT_SHORT_REFINED"},
     "scripts/import_meeting.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
     "src/daemon.py": {"EXIT_PRIVACY_REFUSED", "EXIT_ROOT_UNNAMED"},
     "src/charoite_paths.py": {"EXIT_ROOT_UNNAMED"},   # дверь точки входа (№340)
@@ -37,7 +37,7 @@ VALUES = {"EXIT_NO_SPEECH": 3, "EXIT_NO_GRAPH": 4, "EXIT_ROOT_UNNAMED": 5, "EXIT
           "EXIT_PARTIAL": 7, "EXIT_UNMUTABLE": 8, "EXIT_UNJUDGED": 9, "EXIT_ENGINE_UNAVAILABLE": 10,
           "EXIT_PRIVACY_REFUSED": 11, "EXIT_INSTALL_BUSY": 12, "EXIT_INSTALL_CANCELLED": 13,
           "EXIT_ATTESTATION_FAILED": 14, "EXIT_PROVIDER_UNAVAILABLE": 15, "EXIT_STAGE_PENDING": 16,
-          "EXIT_BACKGROUND_QOS": 17}
+          "EXIT_BACKGROUND_QOS": 17, "EXIT_SHORT_REFINED": 18}
 #: Имена — не рукописный список, а всё, что объявил модуль: пятая константа
 #: без снимка значения иначе прошла бы мимо гейта (круг 3 по №339, DS I3).
 NAMES = {n for n in dir(exit_codes) if n.startswith("EXIT_")}
@@ -57,7 +57,7 @@ def test_exit_codes_module_has_no_imports():
     assert {v: exit_codes.outcome(v) for v in (0, 1, *VALUES.values())} == {
         0: "ok", 1: "fail", 3: "fail", 4: "fail", 5: "fail",
         6: "nothing", 7: "partial", 8: "unmutable", 9: "unjudged", 10: "fail",
-        11: "fail", 12: "fail", 13: "fail", 14: "fail", 15: "fail", 16: "fail", 17: "fail"}
+        11: "fail", 12: "fail", 13: "fail", 14: "fail", 15: "fail", 16: "fail", 17: "fail", 18: "fail"}
 
 
 def _imports_from_exit_codes(tree: ast.AST) -> set[str]:

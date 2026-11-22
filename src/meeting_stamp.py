@@ -35,8 +35,9 @@ _RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?$")
 # Хвосты производных файлов конвейера. Список согласован с
 # meeting_processing._AUX_SUFFIXES и rename_meeting.SUFFIXES: расхождение
 # уже стоило темы «… разбор» в списке встреч (инцидент 04.08).
+DEBRIEF_FILE_SUFFIX = "_разбор.md"
 AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
-                "_разбор", "_ревизия_claude", "_спикеры", "_после_звонка")
+                DEBRIEF_FILE_SUFFIX.removesuffix(".md"), "_ревизия_claude", "_спикеры", "_после_звонка")
 # Запись после конца звонка (№733): пересборка кладёт её рядом со стенограммой,
 # не в неё — речь встречи, производные и читатели хвоста не видят. В граф, архив
 # и облако файл не публикуется (`publishable`).
@@ -216,7 +217,8 @@ def derivative_path(tpath: pathlib.Path, kind: str, graph: pathlib.Path | None =
         bare = stamp_of(stem)
         key = graph_key(tpath.parent, stem, graph) if bare else stem
         slug = stem[len(bare) + 1:] if bare and stem != bare else ""
-        return tpath.with_name(f"{key}_{slug}_разбор.md" if slug else f"{key}_разбор.md")
+        base = f"{key}_{slug}" if slug else key
+        return tpath.with_name(base + DEBRIEF_FILE_SUFFIX)
     raise ValueError(f"неизвестный вид производной: {kind}")
 
 

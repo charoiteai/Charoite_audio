@@ -185,6 +185,7 @@ class WriteOutcome(typing.NamedTuple):
 def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
                      source_sha: str, *, expect: safe_write.Snapshot | None = None,
                      expect_absent: bool = False, cut: bool | None = None,
+                     before_replace=None,
                      log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
     """Записать производную и выдать ей паспорт — единственный машинный
     писатель производных с паспортом. Прежняя версия — в `.prev/` рядом со
@@ -219,7 +220,8 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
         except OSError as e:
             log(f"прежняя версия {path.name} не сохранена ({e}) — не перезаписываю")
             return WriteOutcome(None, WriteOutcome.PREV)
-    if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
+    write_options = {"before_replace": before_replace} if before_replace is not None else {}
+    if not safe_write.write_text(path, body, expect=before, expect_absent=before is None, **write_options):
         log(f"{path.name} изменился под рукой — не перезаписываю")
         return WriteOutcome(None, WriteOutcome.RACE)
     if not live.is_file():
