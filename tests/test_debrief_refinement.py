@@ -460,6 +460,25 @@ def test_duplicate_json_keys_refused():
         ref._json('{"paragraphs":[],"paragraphs":[]}')
 
 
+def test_grounded_answer_rejects_invalid_output_schema():
+    import threading
+    import llm
+
+    mlx_client = llm.LLM({
+        "llm": {"engine": "mlx-server", "mlx_base_url": "http://127.0.0.1:8080", "mlx_model": "m", "model": "m"},
+        "sufler": {"language": "ru", "role": "test"},
+    })
+    with pytest.raises(ValueError, match="output schema"):
+        list(mlx_client.grounded_answer("p", system="s", cancel_event=threading.Event(), output_schema={"type": "object"}))
+
+    ollama_client = llm.LLM({
+        "llm": {"engine": "ollama", "base_url": "http://127.0.0.1:11434", "model": "m"},
+        "sufler": {"language": "ru", "role": "test"},
+    })
+    with pytest.raises(ValueError, match="output schema"):
+        list(ollama_client.grounded_answer("p", system="s", cancel_event=threading.Event(), output_schema="json"))
+
+
 @pytest.mark.parametrize("repair", [True, False])
 def test_missing_uncertainty_requires_explicit_model_repair_and_audit(repair):
     quote = "Проверка пока не назначена."

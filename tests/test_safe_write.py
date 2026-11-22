@@ -389,6 +389,6 @@ def test_before_replace_rechecks_destination_cas(tmp_path, existed):
     before = safe_write.stat_snapshot(path)
     def concurrent_writer(_snapshot):
         path.write_text("human edit")
-    assert not safe_write.write_text(path, "new", expect=before, expect_absent=not existed,
-                                     before_replace=concurrent_writer)
+    assert safe_write.write_text(path, "new", expect=before, expect_absent=not existed,
+                                 before_replace=concurrent_writer) is False
     assert path.read_text() == "human edit"
