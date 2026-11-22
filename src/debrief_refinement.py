@@ -363,8 +363,6 @@ def _windows(speech: str, size: int) -> list[dict]:
                 boundary = speech.rfind(" ", start + size // 2, end)
             if boundary != -1:
                 end = boundary + 1
-        if end <= start:
-            raise ValueError("window progress stalled")
         speaker = None
         for header in headers:
             if header.start() > start:
@@ -407,7 +405,7 @@ def _owned_anchor(quote: str, window: dict) -> bool:
     owned_start = len(window.get("context_before", ""))
     owned_end = owned_start + len(window["text"])
     offset = source.find(quote)
-    for _ in range(len(source) + 1):
+    for _ in range(len(source)):
         if offset < 0:
             break
         overlap = source[max(offset, owned_start):min(offset + len(quote), owned_end)]
@@ -466,7 +464,8 @@ class _AmbiguousAnchors(UnverifiedReply):
 def _anchor_feedback(rows: list[dict], indices: list[int]) -> dict:
     # Bound serialized excerpts even when model text contains JSON escape characters.
     examples = []
-    for width in (200, 100, 50, 25, 12, 6, 3, 1, 0):
+    for shift in range(9):
+        width = 200 >> shift
         examples = [{"index": i, "text_excerpt": rows[i]["text"][:width],
                      "quote_excerpts": [q[:width // 2] for q in rows[i]["quotes"][:3]]}
                     for i in indices[:4]]

@@ -4199,6 +4199,8 @@ def main():
 
     def final_hook():
         nonlocal hook_ran
+        if hook_ran:
+            return
         hook_ran = True
         run_post_hook(cfg, tpath, stamp)
 
@@ -4216,8 +4218,7 @@ def main():
         archive_and_publish(tpath, graph, stamp, **archive_options)
     if refinement_errors:
         print("; ".join(refinement_errors), file=sys.stderr)
-        if not hook_ran:
-            final_hook()
+        final_hook()
         raise RuntimeError("; ".join(refinement_errors))
 
     # 5) уровень 4 — авто-доработка облачным Claude (решение владельца 17.07.2026).
@@ -4241,8 +4242,7 @@ def main():
                      if r.stat().st_mtime >= tpath.stat().st_mtime]
             if fresh:
                 print(f"cloud-enrich: ревизия уже есть ({fresh[0].name}) — повтор не запускаем")
-                if not hook_ran:
-                    final_hook()
+                final_hook()
                 if not graph_ok and not graph_off:
                     sys.exit(EXIT_NO_GRAPH)
                 return
@@ -4263,8 +4263,7 @@ def main():
         except Exception as e:  # noqa: BLE001 — облачное обогащение необязательно: отказ в журнал
             print(f"cloud-enrich не запустился: {e}")
 
-    if not hook_ran:
-        final_hook()
+    final_hook()
     reindex_memory(cfg, graph)
     # Выключенный профилем граф — не отказ модели: код 0, статус «готово».
     # EXIT_NO_GRAPH означал бы ошибку и повтор каждой встречи по кругу.

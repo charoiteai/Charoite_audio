@@ -1072,8 +1072,6 @@ class LLM:
                     {"role": "user", "content": prompt}]
         if output_schema is not None and (self.engine != "ollama" or not isinstance(output_schema, dict)):
             raise ValueError("grounded output schema requires an Ollama JSON schema object")
-        sends_format = False
-        strict_key = (self.base, selected)
         if self.engine == "mlx-server":
             if selected != self.mlx_model:
                 raise ValueError("grounded answer model does not match the local MLX server")
@@ -1082,16 +1080,16 @@ class LLM:
             url = f"{self.base}/v1/chat/completions"
         else:
             selected = self.require_local_ollama_model(selected)
-            strict_key = (self.base, selected)
             payload = {"model": selected, "messages": messages, "stream": True,
                        "truncate": False, "shift": False,
                        "think": False, "keep_alive": self._chat_keep_alive(),
                        "options": {"temperature": temp, "num_ctx": self.num_ctx,
                                    "num_predict": num_predict}}
-            sends_format = output_schema is not None and _strict_json_known(strict_key) is None
-            if sends_format:
+            if output_schema is not None and _strict_json_known((self.base, selected)) is None:
                 payload["format"] = output_schema
             url = f"{self.base}/api/chat"
+        strict_key = (self.base, selected)
+        sends_format = "format" in payload
         yielded = False
         try:
             with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
