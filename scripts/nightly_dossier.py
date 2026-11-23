@@ -498,10 +498,10 @@ def _append_sequential(theme: str, loaded: dossier.DossierLoad, accepted: list[s
     current = loaded
     body = ""
     for idx, name in enumerate(accepted):
-        body = dossier_incremental.append(theme, current, [name], files, c)
-        if idx + 1 < len(accepted):
+        if idx:
             step_text = loaded.replace_body(body)
             current = dossier.DossierLoad("ok", step_text, raw=step_text.encode("utf-8"))
+        body = dossier_incremental.append(theme, current, [name], files, c)
     return body
 
 
@@ -583,8 +583,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             try:
                 with telemetry.stage(telemetry.Stage.REBUILD):
                     raw_body = generate(theme, supplied, g.files, c, temperature=temperature, fell_back=fell_back)
-                body = "" if dossier.DossierLoad("ok", raw_body).parsed.protected else graph_names.unlabel_speakers(
-                    dossier.trim_to_format(raw_body))
+                    body = "" if dossier.DossierLoad("ok", raw_body).parsed.protected else graph_names.unlabel_speakers(
+                        dossier.trim_to_format(raw_body))
             except Exception as e:  # noqa: BLE001
                 telemetry.request_refusal(telemetry.exception_reason(e))
                 print(f"  ⚠️ {theme}: сборка не завершена ({type(e).__name__}: {e})")
