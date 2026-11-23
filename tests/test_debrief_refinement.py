@@ -147,7 +147,10 @@ def test_quote_repair_keeps_full_input_and_still_requires_audit(monkeypatch, win
     assert len(calls) == len(gates) == (4 if windowed and not audit_passes else 3)
     original, retried = [json.loads(prompt) for prompt, _ in calls[:2]]
     if bad_quote:
-        assert calls[0][0] == calls[1][0]
+        assert retried.pop("quote_feedback") == {
+            "reason": "unsupported_quote",
+            "examples": [{"index": 1, "kind": "not_in_source",
+                          "quote_excerpt": "Такого утверждения в источнике нет."}]}
     else:
         assert retried.pop("anchor_feedback") == {
             "reason": "ambiguous_source_anchor", "rejected_count": 1,

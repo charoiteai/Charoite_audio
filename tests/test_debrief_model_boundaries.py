@@ -26,7 +26,7 @@ def test_neighbor_only_quote_cannot_establish_an_owned_occurrence(side):
 def test_repeated_twelve_character_anchor_cannot_be_published_as_unique():
     quote = "abcdefghijkl"
     late_quote = "mnopqrstuvwx"
-    unique = "ABCDEFGHIJKL"
+    unique = "zyxwvutsrqpo"
     early_window = {"text": quote + "\n" + quote + "\n" + unique}
     late_window = {"text": late_quote}
     early = {"text": "Повторённая реплика с отдельной уникальной опорой.",
