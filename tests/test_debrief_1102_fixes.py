@@ -19,6 +19,9 @@ def test_find_quote_spans_normalizes_case_yo_nfd_dashes_quotes_whitespace_and_he
     s, e = spans[0]
     assert source[s:e].startswith("Участник A** [00:01:02")
     assert source[s:e].endswith("Нужна двухфазная схема")
+    # Single-line quote keeping ** around speaker header also matches
+    spans_bold = ref._find_quote_spans("**Участник A** [00:01:02 – 00:01:30]: Нужна двухфазная схема", source)
+    assert spans_bold == spans
 
 
 def test_find_quote_spans_handles_casefold_expansion_exact_source_offsets():
@@ -57,6 +60,15 @@ def test_header_only_quote_rejected_unless_paired_with_speech_quote():
         "uncertain": False,
     }]})
     assert len(ref._paragraphs(paired, source)) == 1
+
+    # Regular speech ending with a timestamp in brackets must NOT be treated as header_only
+    speech_with_time = "Созвон перенесли на [15:00]"
+    valid_time = json.dumps({"paragraphs": [{
+        "text": "Созвон перенесли на 15:00.",
+        "quotes": [speech_with_time],
+        "uncertain": False,
+    }]})
+    assert len(ref._paragraphs(valid_time, speech_with_time)) == 1
 
 
 def test_merge_repair_uses_projected_source_spans_not_quote_length():
@@ -153,7 +165,29 @@ def test_unsupported_quote_retry_passes_bounded_quote_feedback_and_respects_budg
     assert "p0:ellipsis" in seen[1][1]
     assert "Релиз перенесли..." not in seen[1][1]
 
-    # When budget is tight, quote_feedback is omitted instead of overflowing context.
+    # When budget allows short suffix only, quote_feedback is omitted and not referenced in system.
+    seen_mid = []
+    replies_mid = iter([
+        json.dumps({"paragraphs": [{
+            "text": "Релиз перенесли.",
+            "quotes": ["Релиз перенесли... после проверки"],
+            "uncertain": False,
+        }]}),
+        json.dumps({"paragraphs": [{
+            "text": "Релиз перенесли на пятницу.",
+            "quotes": [speech],
+            "uncertain": False,
+        }]}),
+    ])
+    mid_budget = len(prompt) + len(ref.SYSTEM) + 250
+    ref._draft(prompt, ref.SYSTEM, 3000, speech,
+               lambda p, s, pr: (seen_mid.append((p, s)), next(replies_mid))[1],
+               max_input=mid_budget)
+    assert seen_mid[1][0] == prompt
+    assert len(seen_mid[1][0]) + len(seen_mid[1][1]) <= mid_budget
+    assert "quote_feedback" not in seen_mid[1][1]
+
+    # When budget is tighter than minimal suffix, neither prompt nor system exceeds max_input.
     seen_tight = []
     replies_tight = iter([
         json.dumps({"paragraphs": [{
@@ -167,10 +201,13 @@ def test_unsupported_quote_retry_passes_bounded_quote_feedback_and_respects_budg
             "uncertain": False,
         }]}),
     ])
+    tight_budget = len(prompt) + len(ref.SYSTEM) + 50
     ref._draft(prompt, ref.SYSTEM, 3000, speech,
                lambda p, s, pr: (seen_tight.append((p, s)), next(replies_tight))[1],
-               max_input=len(prompt) + len(ref.SYSTEM) + 50)
+               max_input=tight_budget)
     assert seen_tight[1][0] == prompt
+    assert seen_tight[1][1] == ref.SYSTEM
+    assert len(seen_tight[1][0]) + len(seen_tight[1][1]) <= tight_budget
 
 
 def test_output_schema_covers_all_debrief_systems_and_refuses_bad_prompt(monkeypatch):
@@ -193,10 +230,14 @@ def test_output_schema_covers_all_debrief_systems_and_refuses_bad_prompt(monkeyp
     cfg = {"llm": {"engine": "ollama"}}
 
     ref.local_request(cfg, json.dumps({"final_speech": "x"}), ref.SYSTEM, 500)
-    assert calls[-1]["output_schema"] == ref._draft_schema()
+    assert calls[-1]["output_schema"] == ref._draft_schema(min_items=1)
+    ref.local_request(cfg, json.dumps({"final_speech": "x"}), ref.SYSTEM + " retry", 500)
+    assert calls[-1]["output_schema"] == ref._draft_schema(min_items=1)
 
     ref.local_request(cfg, json.dumps({"final_speech": "x"}), ref.WINDOW_SYSTEM, 500)
-    assert calls[-1]["output_schema"] == ref._draft_schema()
+    assert calls[-1]["output_schema"] == ref._draft_schema(min_items=0)
+    ref.local_request(cfg, json.dumps({"final_speech": "x"}), ref.WINDOW_SYSTEM + " retry", 500)
+    assert calls[-1]["output_schema"] == ref._draft_schema(min_items=0)
 
     ref.local_request(cfg, json.dumps({"paragraphs": [{}]}), ref.AUDIT_SYSTEM, 500)
     assert calls[-1]["output_schema"] == ref._short_audit_schema(1)
@@ -207,7 +248,20 @@ def test_output_schema_covers_all_debrief_systems_and_refuses_bad_prompt(monkeyp
     ref.local_request(cfg, json.dumps({"early_paragraphs": []}), links.DISCOVERY_AUDIT_SYSTEM, 500)
     assert calls[-1]["output_schema"]["required"] == ["checked_ids", "status", "missing_relations", "uncertain_ids"]
 
+    ref.local_request(cfg, json.dumps({}), links.ANCHOR_AUDIT_SYSTEM, 100)
+    assert calls[-1]["output_schema"]["required"] == ["verdict"]
+
+    pair_payload = {
+        "relation": {"early_id": "e:p0", "late_id": "l:p0", "kind": "clarifies"},
+        "early_anchors": [{"index": 0, "quote": "Первая уникальная опора речи."}],
+        "late_anchors": [{"index": 0, "quote": "Вторая уникальная опора речи."}],
+    }
+    ref.local_request(cfg, json.dumps(pair_payload), links.PAIR_AUDIT_SYSTEM, 500)
+    assert calls[-1]["output_schema"]["properties"]["kind"] == {"const": "clarifies"}
+
     ref.local_request(cfg, json.dumps({"final_speech": "x"}), ref.WINDOW_REPAIR_SYSTEM, 500)
+    assert calls[-1]["output_schema"] == ref._repair_schema()
+    ref.local_request(cfg, json.dumps({"final_speech": "x"}), ref.WINDOW_REPAIR_SYSTEM + " retry", 500)
     assert calls[-1]["output_schema"] == ref._repair_schema()
 
     with pytest.raises(ref.RefinementRefused, match="schema_input"):
@@ -215,6 +269,12 @@ def test_output_schema_covers_all_debrief_systems_and_refuses_bad_prompt(monkeyp
 
     with pytest.raises(ref.RefinementRefused, match="audit_input"):
         ref.local_request(cfg, json.dumps({"paragraphs": "bad"}), ref.AUDIT_SYSTEM, 500)
+
+    with pytest.raises(ref.RefinementRefused, match="window_audit_input"):
+        ref.local_request(cfg, json.dumps({"paragraphs": "bad"}), ref.WINDOW_AUDIT_SYSTEM, 500)
+
+    with pytest.raises(ref.RefinementRefused, match="pair_audit_input"):
+        ref.local_request(cfg, json.dumps({}), links.PAIR_AUDIT_SYSTEM, 500)
 
 
 def test_progress_reports_closed_reason_for_short_and_windowed_paths():
