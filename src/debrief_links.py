@@ -138,12 +138,10 @@ def _owned_occurrences(quote, window):
     source = ref._source_context(window)
     start = len(window.get("context_before", ""))
     end = start + len(window["text"])
-    count, offset = 0, source.find(quote)
-    while offset >= 0:
-        if len(source[max(start, offset):min(end, offset + len(quote))].strip()) >= 12:
-            count += 1
-        offset = source.find(quote, offset + 1)
-    return count
+    return sum(
+        1 for pos, pos_end in ref._find_quote_spans(quote, source)
+        if ref._normalized_len(source[max(start, pos):min(end, pos_end)]) >= 12
+    )
 
 
 def _unique_owned_anchors(anchors, source):
@@ -155,11 +153,37 @@ def _unique_owned_anchors(anchors, source):
     return max((_owned_occurrences(entry["quote"], window) for entry in anchors), default=0) == 1
 
 
+def _relation_item_schema():
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["early_id", "late_id", "kind", "status"],
+        "properties": {
+            "early_id": {"type": "string"},
+            "late_id": {"type": "string"},
+            "kind": {"type": "string", "enum": sorted(KINDS)},
+            "status": {"type": "string", "enum": ["candidate", "uncertain"]},
+        },
+    }
+
+
 def audit_schema(system, inputs):
     """Optional structured-output contract; runtime checks remain authoritative."""
     verdict = {"type": "string", "enum": ["supported", "unsupported", "uncertain"]}
     if system == ANCHOR_AUDIT_SYSTEM:
         fields = {"verdict": verdict}
+    elif system == DISCOVER_SYSTEM:
+        fields = {
+            "checked_ids": {"type": "array", "items": {"type": "string"}},
+            "relations": {"type": "array", "items": _relation_item_schema()},
+        }
+    elif system == DISCOVERY_AUDIT_SYSTEM:
+        fields = {
+            "checked_ids": {"type": "array", "items": {"type": "string"}},
+            "status": {"type": "string", "enum": ["complete", "incomplete", "uncertain"]},
+            "missing_relations": {"type": "array", "items": _relation_item_schema()},
+            "uncertain_ids": {"type": "array", "items": {"type": "string"}},
+        }
     elif system == PAIR_AUDIT_SYSTEM:
         fields = {key: {"const": inputs["relation"][key]} for key in ("early_id", "late_id", "kind")}
         fields["verdict"] = verdict
@@ -188,13 +212,17 @@ def _selected(value, side, paragraph, window, verdict):
     anchors = [paragraph["quotes"][i] for i in indices]
     if not isinstance(extra, list):
         raise ref.UnverifiedReply("link_source_quotes")
+    source = ref._source_context(window)
     for quote in anchors + extra:
         # _owned_anchor already enforces the minimum owned quote length.
-        if (not isinstance(quote, str)
-                or quote not in ref._source_context(window) or not ref._owned_anchor(quote, window)):
+        if not isinstance(quote, str) or not ref._owned_anchor(quote, window):
             raise ref.UnverifiedReply("link_source_quotes")
-    if any(not any(anchor in quote for anchor in anchors) for quote in extra):
-        raise ref.UnverifiedReply("link_paragraph_anchor")
+    if extra:
+        anchor_spans = [sp for anchor in anchors for sp in ref._find_quote_spans(anchor, source)]
+        for quote in extra:
+            q_spans = ref._find_quote_spans(quote, source)
+            if not any(qs <= as_ and ae <= qe for qs, qe in q_spans for as_, ae in anchor_spans):
+                raise ref.UnverifiedReply("link_paragraph_anchor")
     if verdict == "supported" and all(_owned_occurrences(q, window) > 1 for q in anchors + extra):
         raise ref.UnverifiedReply("link_ambiguous_source_anchor")
 
