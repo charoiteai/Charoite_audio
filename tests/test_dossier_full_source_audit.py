@@ -132,8 +132,7 @@ def test_refused_contextual_addition_never_advances_writer_state(world, tmp_path
         if system == "You judge source relevance conservatively.":
             return json.dumps({"verdict": "relevant", "quote": FACT, "reason": "Synthetic source-level relevance."})
         if system == "You extend factual dossiers conservatively.":
-            body = dossier.load_dossier(path).parsed.body.replace("## Как пришли", f"- {FACT} [[{B}]]\n## Как пришли")
-            return json.dumps({"body": body, "changes": []})
+            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}], "corrections": []})
         if system == SUPPORT:
             audited.append(payload)
             return json.dumps({"verdict": "reject", "supported": False,

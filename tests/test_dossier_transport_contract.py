@@ -95,7 +95,8 @@ def provider(monkeypatch):
             if system == SOURCE:
                 answer = {"verdict": "relevant", "reason": "Synthetic supported topic fact.", "quote": scenario.fact}
             elif system == GENERATE:
-                answer = {"body": scenario.candidate, "changes": []}
+                answer = {"additions": [{"section": "Сейчас", "text": scenario.fact, "source": B}],
+                          "corrections": []}
             elif system == MAIN:
                 answer = {"verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
                           "reason": "Synthetic candidate verdict.", "claims": [scenario.claim]}

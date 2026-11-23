@@ -374,10 +374,11 @@ def test_writer_keeps_body_membership_index_and_backups_and_retries_either_stage
         if system == SOURCE_SYSTEM:
             return json.dumps({"verdict": "relevant", "reason": "Synthetic supported source.", "quote": FACT})
         if system == GENERATE_SYSTEM:
-            body = dossier.load_dossier(path).parsed.body
-            body = body + f"\n[[{B}]]" if failure == "no-contribution" else body.replace(
-                "## Как пришли", f"- {FACT} [[{B}]]\n## Как пришли")
-            return json.dumps({"body": body, "changes": []})
+            if failure == "no-contribution":
+                return json.dumps({"additions": [{"section": "Кто в теме", "text": f"[[{B}]]", "source": B}],
+                                   "corrections": []})
+            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}],
+                               "corrections": []})
         if system in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
             current_stage = "support" if system == inc.SUPPORT_AUDIT_SYSTEM else "topic"
             response = _stage_response(current_stage)
@@ -484,7 +485,7 @@ def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry
         if system == SOURCE_SYSTEM:
             return json.dumps({"verdict": "relevant", "reason": "Supported topic fact.", "quote": FACT})
         if system == GENERATE_SYSTEM:
-            return json.dumps({"body": ADDED, "changes": []})
+            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}], "corrections": []})
         if system == MAIN_SYSTEM:
             return json.dumps(_verdict())
         if system == inc.SUPPORT_AUDIT_SYSTEM:
@@ -506,7 +507,7 @@ def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry
 
     def overflow_downstream(prompt, config, *, system, **kwargs):
         gen_calls.append(system)
-        return json.dumps({"body": ADDED, "changes": []})
+        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}], "corrections": []})
 
     monkeypatch.setattr(inc, "local_complete", overflow_downstream)
     monkeypatch.setattr(
@@ -647,7 +648,7 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
         if system == SOURCE_SYSTEM:
             return json.dumps({"verdict": "relevant", "reason": "Open question.", "quote": plain_quote})
         if system == GENERATE_SYSTEM:
-            return json.dumps({"body": BODY, "changes": []})
+            return json.dumps({"additions": [], "corrections": []})
         if system == MAIN_SYSTEM:
             return json.dumps(_verdict([]))
         raise AssertionError(f"unexpected stage system: {system}")

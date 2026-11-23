@@ -171,7 +171,9 @@ for scenario, revised, new_fact in [
                                        "quote": new_fact})
                 if "extend factual" in system:
                     seen.append(list(payload["new_sources"]))
-                    return json.dumps({"body": candidate, "changes": []})
+                    src = next(iter(payload["new_sources"]))
+                    return json.dumps({"additions": [{"section": "Сейчас", "text": new_fact, "source": src}],
+                                       "corrections": []})
                 return json.dumps({"verdict": "accept", "conserved": True, "supported": True,
                                    "corrections_valid": True, "reason": "fixed test input"})
             incremental.local_complete = fixed_complete

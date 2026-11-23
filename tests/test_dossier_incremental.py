@@ -68,7 +68,11 @@ def _new(graph, name=B, body="A rain cover was fitted."):
     return path
 
 
-def _responses(monkeypatch, *, body=NEW_BODY, irrelevant=(), failure=None):
+DEFAULT_PATCH = {"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B}],
+                 "corrections": []}
+
+
+def _responses(monkeypatch, *, patch=None, irrelevant=(), failure=None):
     calls = []
 
     def complete(prompt, c, *, system, **kw):
@@ -81,7 +85,7 @@ def _responses(monkeypatch, *, body=NEW_BODY, irrelevant=(), failure=None):
             return json.dumps({"verdict": "irrelevant" if no else "relevant", "reason": "invented judgment",
                                "quote": "" if no else data["source_text"].splitlines()[-1]})
         if system == "You extend factual dossiers conservatively.":
-            return json.dumps({"body": body, "changes": []})
+            return json.dumps(DEFAULT_PATCH if patch is None else patch)
         if system == inc.SUPPORT_AUDIT_SYSTEM:
             return json.dumps({"verdict": "accept", "supported": True,
                                "reason": "Invented source support judgment."})
@@ -162,14 +166,17 @@ def test_legacy_rejection_is_reassessed(world, monkeypatch):
     assert X in dossier.rejection_versions(path.read_text())
 
 
-@pytest.mark.parametrize("body", [NEW_BODY.replace("- ⚠ Sensor is unverified.\n", ""),
-                                  NEW_BODY.replace("- Read the guide. [[SensorGuide]]", "- Read [[SensorGuide]]."),
-                                  NEW_BODY + "\n## Правки автора\nchanged\n"])
-def test_bad_candidate_never_stamps_a_relevant_source(world, monkeypatch, body):
+@pytest.mark.parametrize("patch", [
+    {"additions": [], "corrections": []},
+    {"additions": [{"section": "Сейчас", "text": "A rain cover `code` fitted.", "source": B}], "corrections": []},
+    {"additions": [{"section": "Правки автора", "text": "changed", "source": B}], "corrections": []},
+    {"additions": [{"section": "Сейчас", "text": "ok\n## Правки автора\nchanged", "source": B}], "corrections": []},
+])
+def test_bad_candidate_never_stamps_a_relevant_source(world, monkeypatch, patch):
     nd, graph, path = world
     _new(graph)
     before = path.read_bytes()
-    _responses(monkeypatch, body=body)
+    _responses(monkeypatch, patch=patch)
     result = nd.run(graph, LOCAL, full=False, dry=False, limit=None)
     assert result["отказы"] == 1 and result["собрано"] == 0
     assert path.read_bytes() == before
