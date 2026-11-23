@@ -43,7 +43,7 @@ SOURCE_PREDICT = 350
 MAIN_JUDGE_PREDICT = 1200
 AUDIT_PREDICT = 2000
 APPEND_FEEDBACK_RESPONSE_CHARS = 2000
-_PATCH_LINE_BREAKS = re.compile(r"[\n\r\x85\u2028\u2029]")
+_PATCH_LINE_BREAKS = re.compile(r"[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 _PATCH_EMPTY_BODY = re.compile(r"[-—\s]*")
 _NON_RENDERED_OR_WIKILINK = re.compile(
     r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%"
@@ -447,7 +447,9 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
     new_sections = {section.title: section_lines(candidate, section)
                     for section in candidate.parsed.sections}
     used, retained = set(), set()
-    for section in old.parsed.sections:
+    # Match fixed-placement sections before ## Сейчас so original ## Как пришли
+    # lines keep their slots when a duplicate line moves from ## Сейчас to the tail.
+    for section in sorted(old.parsed.sections, key=lambda s: s.title == "Сейчас"):
         remaining, matched = dict(new_sections), {}
         lines = section_lines(old, section)
         for index, (start, end, prior) in enumerate(lines):
@@ -888,7 +890,8 @@ def _apply_patch(loaded: dossier.DossierLoad, names: list[str],
         for line_offset, line in lines_with_offsets:
             if line_offset in replacements:
                 moved.append(line)
-                kept.append(replacements[line_offset])
+                if replacements[line_offset] not in kept:
+                    kept.append(replacements[line_offset])
             elif line.strip() != "—":
                 kept.append(line)
         kept.extend(move_lines)

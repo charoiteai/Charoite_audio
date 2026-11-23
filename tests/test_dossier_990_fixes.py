@@ -1024,7 +1024,8 @@ def test_normalize_patch_line_handles_bullets_links_and_rejects_bad_inputs():
     for raw_text, raw_src in ((123, m1), ("Fact A.", 123)):
         with pytest.raises(inc.Refused, match="malformed patch entry"):
             inc._normalize_patch_line(raw_text, raw_src, [m1], bad_source_msg="bad src")
-    for bad_nl in ("line1\nline2", "line1\rline2", "line1\x85line2", "line1\u2028line2", "line1\u2029line2"):
+    for bad_nl in ("line1\nline2", "line1\rline2", "line1\x0bline2", "line1\x0cline2",
+                   "line1\x1cline2", "line1\x85line2", "line1\u2028line2", "line1\u2029line2"):
         with pytest.raises(inc.Refused, match="multiline patch entry"):
             inc._normalize_patch_line(bad_nl, m1, [m1], bad_source_msg="bad src")
     for bad_text in ("", "   ", "-", "---", "—", "- — ", "## Правки автора", "  # Heading"):
@@ -1041,7 +1042,8 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
         f"- First line. [[{a}]]\n"
         f"- Second line. [[{a}]]\n\n"
         f"## Как пришли\n"
-        f"- First line. [[{a}]]\n\n"
+        f"- First line. [[{a}]]\n"
+        f"- Older history line. [[{a}]]\n\n"
         f"## Решено\n—\n\n"
         f"## Открыто\n—\n\n"
         f"## Кто в теме\n- Alice [[{a}]]"
@@ -1073,6 +1075,7 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
     history = body.split("## Как пришли\n", 1)[1].split("\n\n## Решено", 1)[0]
     assert history == (
         f"- First line. [[{a}]]\n"
+        f"- Older history line. [[{a}]]\n"
         f"- First line. [[{a}]]\n"
         f"- Second line. [[{a}]]"
     )
@@ -1081,6 +1084,22 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
     assert current == f"- First now updated. [[{b}]]\n- Second now updated. [[{b}]]"
     # Placeholder "—" in ## Решено replaced cleanly, untouched ## Открыто kept verbatim with "—"
     assert "## Решено\n- Extra decision. [[2099-01-03_100000]]\n\n## Открыто\n—\n\n## Кто в теме" in body
+
+    # Two corrections merging into one identical replacement line must deduplicate in ## Сейчас
+    # while still moving both superseded lines to ## Как пришли.
+    merge_patch = {
+        "additions": [],
+        "corrections": [
+            {"before": "First line.", "after": "Unified state.", "source": b, "quote": "First replaced."},
+            {"before": "Second line.", "after": "Unified state.", "source": b, "quote": "Second replaced."},
+        ],
+    }
+    merged_body, merged_changes = inc._apply_patch(loaded, [b], merge_patch)
+    inc.deterministic_check(loaded, merged_body, [b], files, merged_changes)
+    merged_current = merged_body.split("## Сейчас\n", 1)[1].split("\n\n## Как пришли", 1)[0]
+    assert merged_current == f"- Unified state. [[{b}]]"
+    merged_history = merged_body.split("## Как пришли\n", 1)[1].split("\n\n## Решено", 1)[0]
+    assert merged_history.endswith(f"- First line. [[{a}]]\n- Second line. [[{a}]]")
 
 
 def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malformed():
