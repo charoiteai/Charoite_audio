@@ -172,10 +172,11 @@ def test_oversized_audit_survives_nightly_refusal_classification(monkeypatch, co
 
 def test_audit_context_steps_cover_exact_char_and_output_reserves():
     longest = max(len(inc.SUPPORT_AUDIT_SYSTEM), len(inc.TOPIC_AUDIT_SYSTEM))
-    assert inc._audit_config({}, "x")["llm"]["num_ctx"] == 8192
-    # 5936 input tokens + 2000 output + 256 envelope = exactly 8192.
-    assert inc._audit_config({}, "x" * (11872 - longest))["llm"]["num_ctx"] == 8192
-    assert inc._audit_config({}, "x" * (11874 - longest))["llm"]["num_ctx"] == 16384
+    min_budget = (inc.MIN_AUTO_CONTEXT - inc.AUDIT_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    assert inc._audit_config({}, "x")["llm"]["num_ctx"] == inc.MIN_AUTO_CONTEXT
+    # Exact MIN_AUTO_CONTEXT boundary: input + AUDIT_PREDICT + CONTEXT_RESERVE == MIN_AUTO_CONTEXT.
+    assert inc._audit_config({}, "x" * (min_budget - longest))["llm"]["num_ctx"] == inc.MIN_AUTO_CONTEXT
+    assert inc._audit_config({}, "x" * (min_budget + inc.ADMISSION_CHARS_PER_TOKEN - longest))["llm"]["num_ctx"] == inc.MID_AUTO_CONTEXT
 
 
 @pytest.mark.parametrize("stage", ["support", "topic"])
@@ -317,7 +318,7 @@ def test_all_claim_audits_share_the_largest_required_window(monkeypatch):
     second_quote = "A rain cover was fitted today."
     candidate = ADDED.replace(f"[[{B}]]", f"[[{B}]] [[{C}]]")
     claims = [_claim(), _claim(source=C, quote=second_quote)]
-    long_source = "Unrelated qualification. " * 900 + second_quote
+    long_source = "Unrelated qualification. " * 600 + second_quote
     configs = []
     calls = _transport(monkeypatch, _verdict(claims), configs=configs)
     inc.validate_candidate("Glasshouse", _old(), [B, C],
@@ -445,12 +446,14 @@ def test_actual_adapter_transport_is_checked_again_after_local_factory(monkeypat
 
 def test_stage_config_boundaries_and_auto_stepping(monkeypatch):
     longest = max(len(inc.SUPPORT_AUDIT_SYSTEM), len(inc.TOPIC_AUDIT_SYSTEM))
-    # Odd boundary 11873 chars -> ceil(11873 / 2) = 5937 + 2000 + 256 = 8193 -> 16384.
-    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (11873 - longest))["llm"]["num_ctx"] == 16384
-    # Exact 32768 boundary: (32768 - 2000 - 256) * 2 = 61024 -> 32768; +1 -> Refused(CONTEXT).
-    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (61024 - longest))["llm"]["num_ctx"] == 32768
+    min_budget = (inc.MIN_AUTO_CONTEXT - inc.AUDIT_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    max_budget = (inc.MAX_AUDIT_CONTEXT - inc.AUDIT_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    # Odd boundary min_budget + 1 chars -> ceil((min_budget + 1) / 2) + AUDIT_PREDICT + 256 = 8193 -> 16384.
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (min_budget + 1 - longest))["llm"]["num_ctx"] == 16384
+    # Exact 32768 boundary: max_budget -> 32768; +1 -> Refused(CONTEXT).
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (max_budget - longest))["llm"]["num_ctx"] == 32768
     with pytest.raises(inc.Refused, match="maximum context budget") as over:
-        inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (61025 - longest))
+        inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (max_budget + 1 - longest))
     assert over.value.reason == inc.telemetry.Reason.CONTEXT
     # Explicit small (< 8192) and negative windows are preserved for admission to refuse.
     assert inc._stage_config({"llm": {"num_ctx": 4096}}, 10, "x" * 14000, 350)["llm"]["num_ctx"] == 4096

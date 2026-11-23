@@ -139,7 +139,7 @@ def _assert_finite_json_profiles(calls, config):
         assert options["think"] is support_role
         assert isinstance(options["temperature"], (int, float)) and math.isfinite(options["temperature"])
         if options["system"] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
-            assert options["num_predict"] == (2000 if support_role else 350)
+            assert options["num_predict"] == (inc.AUDIT_PREDICT if support_role else 350)
             assert type(options["temperature"]) in (int, float)
         assert options["timeout"] == llm.DOC_STREAM_TIMEOUT
         assert set(options) == {"model", "system", "temperature", "num_predict", "think",

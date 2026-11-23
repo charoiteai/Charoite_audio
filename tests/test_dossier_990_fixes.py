@@ -1168,3 +1168,136 @@ def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malfor
     ):
         assert msg in telemetry._MESSAGE_TO_DETAIL
         assert telemetry._MESSAGE_TO_DETAIL[msg] != telemetry.Detail.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# 8. Round 5 (#990): speaker label normalization, Кто в теме guard, AUDIT_PREDICT
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_patch_line_unlabels_speakers_and_validates_after_unlabel():
+    from charoite_graph import graph_names
+
+    m1 = "2099-01-02_100000"
+    assert inc._normalize_patch_line("Собеседник 3 предложил релиз.", m1, [m1], bad_source_msg="bad") == (
+        f"- Участник встречи предложил релиз. [[{m1}]]", m1
+    )
+    assert inc._normalize_patch_line("Слова Собеседника 2 учтены.", m1, [m1], bad_source_msg="bad") == (
+        f"- Слова участника встречи учтены. [[{m1}]]", m1
+    )
+    assert inc._normalize_patch_line("[[Люди/Спикер 1|Спикер 1]] ответил.", m1, [m1], bad_source_msg="bad") == (
+        f"- Участник встречи ответил. [[{m1}]]", m1
+    )
+    # Alias expanding to a heading or placeholder must still be refused after unlabel_speakers.
+    for bad_alias in ("[[Люди/Спикер 1|#Заголовок]]", "[[Люди/Спикер 1|—]]", "[[Люди/Спикер 1|-]]"):
+        with pytest.raises(inc.Refused, match="empty or invalid patch entry"):
+            inc._normalize_patch_line(bad_alias, m1, [m1], bad_source_msg="bad")
+    assert not graph_names.has_speaker_actor(
+        inc._normalize_patch_line("Спикер 2 и Участник 1", m1, [m1], bad_source_msg="bad")[0]
+    )
+
+
+def test_apply_patch_unlabels_body_sections_and_omits_anonymous_who_in_topic():
+    m1 = "2099-01-02_100000"
+    loaded = _loaded_dossier()
+    files = {m1: {"text": "Собеседник 1 сообщил: Vent A закрыт. Спикер 2 отметил риск."}}
+    patch = {
+        "additions": [
+            {"section": "Открыто", "text": "Спикер 2 отметил риск.", "source": m1},
+            {"section": "Кто в теме", "text": "Собеседник 3 назначен ответственным.", "source": m1},
+            {"section": "Кто в теме", "text": "[[Люди/Спикер 1]]", "source": m1},
+            {"section": "Кто в теме", "text": "участника встречи", "source": m1},
+            {"section": "Кто в теме", "text": "участнику встречи", "source": m1},
+            {"section": "Кто в теме", "text": "с участником встречи", "source": m1},
+            {"section": "Кто в теме", "text": "об участнике встречи", "source": m1},
+            {"section": "Кто в теме", "text": "[[Люди/Спикер 1|Анна Смирнова]]", "source": m1},
+            {"section": "Кто в теме", "text": "Иван Петров (Спикер 2)", "source": m1},
+            {"section": "Кто в теме", "text": "Соучастник встречи Борис", "source": m1},
+        ],
+        "corrections": [
+            {
+                "before": "Vent A is open.",
+                "after": "Собеседник 1 сообщил: Vent A закрыт.",
+                "source": m1,
+                "quote": "Собеседник 1 сообщил: Vent A закрыт.",
+            }
+        ],
+    }
+    body, changes = inc._apply_patch(loaded, [m1], patch)
+    inc.deterministic_check(loaded, body, [m1], files, changes)
+    assert f"- Участник встречи сообщил: Vent A закрыт. [[{m1}]]" in body
+    assert changes[0]["after"] == f"- Участник встречи сообщил: Vent A закрыт. [[{m1}]]"
+    assert f"- Участник встречи отметил риск. [[{m1}]]" in body
+    who = body.split("## Кто в теме", 1)[1]
+    assert not inc._UNLABELED_ACTOR_RE.search(who)
+    assert f"- Анна Смирнова [[{m1}]]" in who
+    assert f"- Иван Петров (Спикер 2) [[{m1}]]" in who
+    assert f"- Соучастник встречи Борис [[{m1}]]" in who
+
+    # Source filename containing the phrase must not drop a real named person in Кто в теме.
+    weird_src = "2099-01-02_участник встречи"
+    body_weird, _ = inc._apply_patch(loaded, [weird_src], {
+        "additions": [{"section": "Кто в теме", "text": "Анна Смирнова", "source": weird_src}],
+        "corrections": [],
+    })
+    assert f"- Анна Смирнова [[{weird_src}]]" in body_weird.split("## Кто в теме", 1)[1]
+
+    # Validation still runs BEFORE omitting anonymous Кто в теме entries (bad source/multiline refused).
+    with pytest.raises(inc.Refused, match="unsupported patch source"):
+        inc._apply_patch(loaded, [m1], {
+            "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": "unknown"}],
+            "corrections": [],
+        })
+    # When an anonymous Кто в теме entry is the ONLY entry for a source, deterministic_check refuses attribution.
+    body_only_anon, changes_only_anon = inc._apply_patch(loaded, [m1], {
+        "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": m1}],
+        "corrections": [],
+    })
+    with pytest.raises(inc.Refused, match="does not attribute each accepted source"):
+        inc.deterministic_check(loaded, body_only_anon, [m1], files, changes_only_anon)
+
+
+def test_round5_unlabeled_rule_in_prompts_and_audit_predict(monkeypatch):
+    from charoite_graph import graph_names
+
+    assert inc.AUDIT_PREDICT == 4096
+    m1 = "2099-01-02_100000"
+    loaded = _loaded_with_body(BODY)
+    files = {m1: {"text": "Glasshouse vent sealed."}}
+    seen_prompts = []
+    seen_audit = []
+
+    replies = iter([
+        json.dumps({
+            "additions": [
+                {"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": m1},
+                {"section": "Кто в теме", "text": "Собеседник 3", "source": m1},
+            ],
+            "corrections": [],
+        }),
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": "Glasshouse vent sealed.", "source": m1,
+                        "quote": "Glasshouse vent sealed.", "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
+        json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
+    ])
+
+    def fake_complete(prompt, config, *, system, **kwargs):
+        seen_prompts.append((system, prompt))
+        if system in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
+            seen_audit.append((system, kwargs.get("think"), kwargs.get("num_predict")))
+        return next(replies)
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
+    out = inc.append("Glasshouse", loaded, [m1], files, LOCAL)
+    assert "Glasshouse vent sealed." in out
+    assert "участник" not in out.split("## Кто в теме", 1)[1].lower()
+    assert graph_names.UNLABELED_RULE in seen_prompts[0][1]
+    assert "unnamed per-meeting voice" in seen_prompts[1][1]
+    assert seen_audit == [
+        (inc.SUPPORT_AUDIT_SYSTEM, True, inc.AUDIT_PREDICT),
+        (inc.TOPIC_AUDIT_SYSTEM, False, 350),
+    ]

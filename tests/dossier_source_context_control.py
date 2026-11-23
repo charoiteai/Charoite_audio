@@ -190,7 +190,7 @@ def main():
             error = f"{type(exc).__name__}: {exc}"
         flag_ok = shape_ok and verdict[flag_name] is expected_flag
         expected_think = flag_name == "supported"
-        expected_predict = 2000 if expected_think else 350
+        expected_predict = inc.AUDIT_PREDICT if expected_think else 350
         decision_ok = shape_ok and (verdict["verdict"] == "accept" if expected_flag
                                     else verdict["verdict"] in {"reject", "uncertain"})
         profile_ok = (row["engine"] == "ollama" and row["model"] == MODEL + ":local" and row["transport"] == BASE

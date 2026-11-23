@@ -41,10 +41,14 @@ GENERATE_SYSTEM = "You extend factual dossiers conservatively."
 MAIN_JUDGE_SYSTEM = "You are an independent conservative dossier judge."
 SOURCE_PREDICT = 350
 MAIN_JUDGE_PREDICT = 1200
-AUDIT_PREDICT = 2000
+AUDIT_PREDICT = 4096
 APPEND_FEEDBACK_RESPONSE_CHARS = 2000
 _PATCH_LINE_BREAKS = re.compile(r"[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 _PATCH_EMPTY_BODY = re.compile(r"[-—\s]*")
+_UNLABELED_ACTOR_RE = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё])участник(?:а|у|ом|е)?\s+встречи(?![A-Za-zА-Яа-яЁё])",
+    re.IGNORECASE,
+)
 _NON_RENDERED_OR_WIKILINK = re.compile(
     r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%"
     r"|!?\[\[(?P<target>[^\[\]|#\r\n^]*)(?:[#^][^\[\]|\r\n]*)?(?:\|(?P<alias>[^\[\]\r\n]*))?\]\]"
@@ -698,7 +702,7 @@ def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *
     prompt = _audit_prompt(theme, loaded, claim, quote_context)
     audit_config = _audit_config(c, prompt)
     for field, system, think, num_predict, st in (
-            ("supported", SUPPORT_AUDIT_SYSTEM, True, 2000, telemetry.Stage.AUDIT_SUPPORT),
+            ("supported", SUPPORT_AUDIT_SYSTEM, True, AUDIT_PREDICT, telemetry.Stage.AUDIT_SUPPORT),
             ("relevant", TOPIC_AUDIT_SYSTEM, False, 350, telemetry.Stage.AUDIT_TOPIC)):
         with telemetry.stage(st):
             verdict = _json(local_complete(prompt, audit_config, system=system, num_predict=num_predict, think=think),
@@ -780,6 +784,8 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "was made and changes is [], set corrections_valid=true: there is nothing invalid to "
         "correct. Do not use false to mean not applicable. If a factual correction was made "
         "without its required ledger entry, set corrections_valid=false. "
+        "Treat generic 'участник встречи' as an unnamed per-meeting voice, not one persistent "
+        "person across meetings. "
         "Use accept only when all three checks are true.")
     stage_c = _stage_config(c, len(MAIN_JUDGE_SYSTEM), prompt, MAIN_JUDGE_PREDICT)
     verdict = _json(local_complete(prompt, stage_c, system=MAIN_JUDGE_SYSTEM,
@@ -816,7 +822,7 @@ def _normalize_patch_line(raw_text: object, raw_source: object, names: list[str]
         raise Refused("malformed patch entry")
     if _PATCH_LINE_BREAKS.search(raw_text):
         raise Refused("multiline patch entry")
-    text = raw_text.strip()
+    text = graph_names.unlabel_speakers(raw_text).strip()
     if text.startswith("#") or _PATCH_EMPTY_BODY.fullmatch(text):
         raise Refused("empty or invalid patch entry")
     name = _resolve_source_name(raw_source, names)
@@ -861,9 +867,11 @@ def _apply_patch(loaded: dossier.DossierLoad, names: list[str],
         section = raw_section.strip().removeprefix("## ").strip()
         if section not in by_section:
             raise Refused("invalid patch section")
-        line, _ = _normalize_patch_line(
+        line, src_name = _normalize_patch_line(
             item["text"], item["source"], names, bad_source_msg="unsupported patch source",
         )
+        if section == "Кто в теме" and _UNLABELED_ACTOR_RE.search(line.replace(f"[[{src_name}]]", "")):
+            continue
         by_section[section].append(line)
 
     moved: list[str] = []
@@ -918,6 +926,11 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "each added clause separately. Allowed section names: Сейчас, Как пришли, Решено, Открыто, "
         "Кто в теме (never Источники or Правки автора). Each text and after must be ONE plain "
         "Markdown line without newlines, leading #, speaker labels, backticks, <, >, or ~. "
+        f"{graph_names.UNLABELED_RULE} "
+        "Do NOT put anonymous diarization speaker labels (Собеседник N, Спикер N, Участник N, "
+        "Speaker N, Participant N) or 'участник встречи' into Кто в теме — only real named people "
+        "belong in Кто в теме; write impersonally or place factual roles without speaker numbers in "
+        "Сейчас/Открыто. "
         "Use corrections ONLY when a new source explicitly supersedes a line currently in ## Сейчас: "
         "set before to an exact substring uniquely identifying that line in ## Сейчас, put ONLY "
         "facts explicitly stated in the new source into after (never copy unverified old clauses "

@@ -20,7 +20,6 @@ def main():
     if think:
         args = args[1:]
     source, output, *prompts = map(lambda p: Path(p).resolve(), args)
-    num_predict = 2000 if think else 350
     home = Path.home().resolve()
     if any(p.is_relative_to(home) for p in (source, output, *prompts)):
         raise SystemExit("public source, invented prompts and output must be outside the owner home")
@@ -53,6 +52,7 @@ def main():
     sys.path.insert(0, str(source / "src"))
     import dossier_incremental as inc
 
+    num_predict = inc.AUDIT_PREDICT if think else 350
     config = {"llm": {"engine": "ollama", "base_url": "http://127.0.0.1:11434",
                        "model": "qwen3.6:35b-mlx", "num_ctx": 8192,
                        "cloud_fallback_local": False, "allow_remote": False},
