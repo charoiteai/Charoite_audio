@@ -166,7 +166,7 @@ def test_append_multiple_requests_and_recovered_retry_have_no_final_refusal(worl
         if kwargs["system"] == "You extend factual dossiers conservatively.":
             generated += 1
             if generated == 1:
-                return json.dumps({"body": "bad synthetic candidate", "changes": []})
+                return json.dumps({"additions": [], "corrections": []})
         return answer(prompt, LOCAL, **kwargs)
 
     provider.reply = reply
@@ -186,7 +186,7 @@ def test_append_audit_refusal_differs_from_no_contribution_success(world, provid
     _new(graph)
     actual = inc.local_complete
     _responses(monkeypatch, irrelevant=("2099-01-02_100000",) if irrelevant else (),
-               body="bad synthetic candidate")
+               patch={"additions": [], "corrections": []})
     answer = inc.local_complete
     monkeypatch.setattr(inc, "local_complete", actual)
     provider.reply = lambda prompt, **kwargs: answer(prompt, LOCAL, **kwargs)

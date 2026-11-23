@@ -62,8 +62,11 @@ def test_generation_feedback_preserves_guards_and_is_bounded(monkeypatch, correc
     def complete(prompt, config, *, system, **kwargs):
         payload, _ = json.JSONDecoder().raw_decode(prompt)
         calls.append(payload)
-        body = ADDED if len(calls) == 2 and correct_second else ADDED.replace("- ⚠ Sensor is unverified.\n", "")
-        return json.dumps({"body": body, "changes": []})
+        if len(calls) == 2 and correct_second:
+            return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B}],
+                               "corrections": []})
+        return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover `bad` fitted.", "source": B}],
+                           "corrections": []})
 
     monkeypatch.setattr(inc, "local_complete", complete)
     monkeypatch.setattr(inc, "semantic_check", lambda *args: judged.append(1))
@@ -71,12 +74,12 @@ def test_generation_feedback_preserves_guards_and_is_bounded(monkeypatch, correc
         assert inc.append("Glasshouse", loaded, [B], files, {}) == ADDED
         assert judged == [1]
     else:
-        with pytest.raises(inc.Refused, match="prior claim"):
+        with pytest.raises(inc.Refused, match="opaque markup"):
             inc.append("Glasshouse", loaded, [B], files, {})
         assert judged == []
     assert len(calls) == 2
     assert "correction_feedback" not in calls[0]
-    assert "- ⚠ Sensor is unverified." in calls[1]["correction_feedback"]["required_verbatim_lines"]
+    assert calls[1]["correction_feedback"]["current_section_lines"] == [f"- Vent A is open. [[{A}]]"]
     assert loaded.raw == text.encode()
 
 
@@ -90,20 +93,18 @@ def test_generation_retry_requires_only_verbatim_content_lines(monkeypatch):
         calls.append(json.JSONDecoder().raw_decode(prompt)[0])
         if len(calls) == 1:
             return "not JSON"
-        return json.dumps({"body": ADDED, "changes": []})
+        return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B}],
+                           "corrections": []})
 
     # Exercise the real retry and deterministic validation; only completion and
     # semantic judgement are explicit doubles, so this makes no model calls.
     monkeypatch.setattr(inc, "local_complete", complete)
     monkeypatch.setattr(inc, "semantic_check", lambda *args: judged.append(1))
-    assert inc.append("Glasshouse", loaded, [B], files, {}) == ADDED
+    expected = prior.replace("\n\n \t\n## Как пришли", f"\n- A rain cover was fitted. [[{B}]]\n\n\n## Как пришли", 1)
+    assert inc.append("Glasshouse", loaded, [B], files, {}) == expected
     assert len(calls) == 2 and judged == [1]
     assert "correction_feedback" not in calls[0]
-    assert calls[1]["correction_feedback"]["required_verbatim_lines"] == [
-        f"- Vent A is open. [[{A}]]",
-        "- Keep purple labels.",
-        "- ⚠ Sensor is unverified.",
-    ]
+    assert calls[1]["correction_feedback"]["current_section_lines"] == [f"- Vent A is open. [[{A}]]"]
     assert loaded.parsed.body == prior and loaded.raw == _old(prior).raw
 
 

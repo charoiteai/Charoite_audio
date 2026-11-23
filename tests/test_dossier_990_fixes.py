@@ -524,14 +524,14 @@ def test_stage_refusals_stays_empty_when_append_recovers_on_retry(world, monkeyp
     nd, graph, _ = world
     name = "2099-01-02_100000"
     _new(graph, name, "Glasshouse vent sealed.")
-    good_body = BODY.replace(
-        "- Vent A is open. [[2099-01-01_100000]]",
-        f"- Vent A is open. [[2099-01-01_100000]]\n- Glasshouse vent sealed. [[{name}]]",
-    )
+    good_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "corrections": [],
+    })
     monkeypatch.setattr(inc, "local_complete", _seq_replies([
         json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Glasshouse vent sealed."}),
         "bad json attempt 0",
-        json.dumps({"body": good_body, "changes": []}),
+        good_patch,
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
@@ -553,12 +553,12 @@ def test_stage_refusals_captures_audit_topic_rejection(world, monkeypatch):
     nd, graph, _ = world
     name = "2099-01-02_100000"
     _new(graph, name, "Glasshouse vent sealed.")
-    good_body = BODY.replace(
-        "- Vent A is open. [[2099-01-01_100000]]",
-        f"- Vent A is open. [[2099-01-01_100000]]\n- Glasshouse vent sealed. [[{name}]]",
-    )
+    good_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "corrections": [],
+    })
     one_attempt = [
-        json.dumps({"body": good_body, "changes": []}),
+        good_patch,
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
@@ -584,10 +584,15 @@ def test_stage_refusals_covers_append_deterministic_semantic_and_audit_support(w
     nd, graph, _ = world
     name = "2099-01-02_100000"
     _new(graph, name, "Glasshouse vent sealed.")
-    good_body = BODY.replace(
-        "- Vent A is open. [[2099-01-01_100000]]",
-        f"- Vent A is open. [[2099-01-01_100000]]\n- Glasshouse vent sealed. [[{name}]]",
-    )
+    good_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "corrections": [],
+    })
+    bad_section_patch = json.dumps({
+        "additions": [{"section": "Источники", "text": "Glasshouse vent sealed.", "source": name}],
+        "corrections": [],
+    })
+    empty_patch = json.dumps({"additions": [], "corrections": []})
     rel_ok = json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Glasshouse vent sealed."})
     sem_ok = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
@@ -597,19 +602,18 @@ def test_stage_refusals_covers_append_deterministic_semantic_and_audit_support(w
     })
     cases = [
         ([rel_ok, "not json", "still not json"], {"append": {"json_malformed": 1}}),
-        ([rel_ok, json.dumps({"body": "## Сейчас\n—", "changes": []}),
-          json.dumps({"body": "## Сейчас\n—", "changes": []})],
-         {"deterministic_check": {"sections_invalid": 1}}),
-        ([rel_ok, json.dumps({"body": good_body, "changes": []}),
+        ([rel_ok, bad_section_patch, bad_section_patch], {"append": {"sections_invalid": 1}}),
+        ([rel_ok, empty_patch, empty_patch], {"deterministic_check": {"source_unattributed": 1}}),
+        ([rel_ok, good_patch,
           json.dumps({"verdict": "reject", "conserved": True, "supported": False,
                       "corrections_valid": True, "reason": "no", "claims": []}),
-          json.dumps({"body": good_body, "changes": []}),
+          good_patch,
           json.dumps({"verdict": "reject", "conserved": True, "supported": False,
                       "corrections_valid": True, "reason": "no", "claims": []})],
          {"semantic_check": {"semantic_rejected": 1}}),
-        ([rel_ok, json.dumps({"body": good_body, "changes": []}), sem_ok,
+        ([rel_ok, good_patch, sem_ok,
           json.dumps({"verdict": "reject", "supported": False, "reason": "unsupported"}),
-          json.dumps({"body": good_body, "changes": []}), sem_ok,
+          good_patch, sem_ok,
           json.dumps({"verdict": "reject", "supported": False, "reason": "unsupported"})],
          {"audit_support": {"audit_support_rejected": 1}}),
     ]
@@ -619,6 +623,20 @@ def test_stage_refusals_covers_append_deterministic_semantic_and_audit_support(w
         snap = result.telemetry.snapshot()
         assert snap["final_refusals"] == 1
         assert snap["stage_refusals"] == expected_stage
+
+    # Direct validate_candidate still records deterministic_check/sections_invalid.
+    collector = telemetry.Collector()
+    loaded = _loaded_dossier()
+    with collector.activate():
+        with collector.topic():
+            try:
+                inc.validate_candidate("Glasshouse", loaded, [name], {name: {"text": "Glasshouse vent sealed."}},
+                                       LOCAL, "## Сейчас\n—", [])
+            except inc.Refused as exc:
+                telemetry.record_refusal_message(str(exc))
+                telemetry.request_refusal(telemetry.Reason.VALIDATION)
+            collector.complete_topic(attempted=True, committed=0, refused=1)
+    assert collector.snapshot()["stage_refusals"] == {"deterministic_check": {"sections_invalid": 1}}
 
 
 # ---------------------------------------------------------------------------
@@ -677,16 +695,13 @@ def test_source_relevance_retries_once_on_bad_quote_and_recovers_cleanly(world, 
     nd, graph, _ = world
     name = "2099-01-02_100000"
     _new(graph, name, "| [[Ядра/Glasshouse\\|Glasshouse]] | Vent sealed on Monday. |")
-    good_body = BODY.replace(
-        "- Vent A is open. [[2099-01-01_100000]]",
-        f"- Vent A is open. [[2099-01-01_100000]]\n- Vent sealed on Monday. [[{name}]]",
-    )
     seen_prompts = []
     long_bad_quote = "missing " + ("x" * 260)
     replies = iter([
         json.dumps({"verdict": "relevant", "reason": "fact", "quote": long_bad_quote}),
         json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Vent sealed on Monday."}),
-        json.dumps({"body": good_body, "changes": []}),
+        json.dumps({"additions": [{"section": "Сейчас", "text": "Vent sealed on Monday.", "source": name}],
+                    "corrections": []}),
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
@@ -757,26 +772,7 @@ def test_source_relevance_retry_preserves_stage_on_second_failure_and_skips_retr
     assert snap_over["stage_refusals"] == {"source_relevance": {"relevance_quote_missing": 1}}
 
 
-def test_append_predict_scales_for_large_dossier_respects_small_ctx_and_trims_retry_feedback(monkeypatch):
-    # Small body stays at GEN_PREDICT (1800)
-    assert inc._append_predict("x" * 500, LOCAL) == dossier.GEN_PREDICT
-    # Exact boundary (1200 chars -> 600 + 1200 = 1800; 1201 chars -> 601 + 1200 = 1801)
-    assert inc._append_predict("x" * 1200, LOCAL) == dossier.GEN_PREDICT
-    assert inc._append_predict("x" * 1201, LOCAL) == 1801
-    # Large odd body (4373 chars -> ceil(4373/2)=2187 + 1200 = 3387 tokens) kills floor/ceil mutants
-    assert inc._append_predict("x" * 4373, LOCAL) == 3387
-    # Very large body clamps at APPEND_MAX_PREDICT (8192)
-    assert inc._append_predict("x" * 20_000, LOCAL) == inc.APPEND_MAX_PREDICT
-    # Explicit small num_ctx (0 < num_ctx < MIN_AUTO_CONTEXT) keeps GEN_PREDICT; 0, -1, 8192 scale normally
-    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": 4096}}) == dossier.GEN_PREDICT
-    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": "4096"}}) == dossier.GEN_PREDICT
-    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": 0}}) == 3700
-    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": -1}}) == 3700
-    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": inc.MIN_AUTO_CONTEXT}}) == 3700
-    # Invalid/bool num_ctx does not crash _append_predict (deferred to _stage_config PREFLIGHT)
-    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": True}}) == 3700
-    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": "bad"}}) == 3700
-
+def test_append_uses_fixed_gen_predict_and_trims_retry_feedback(monkeypatch):
     # _trim_feedback_response preserves short responses and trims long ones head+tail
     short = "a" * inc.APPEND_FEEDBACK_RESPONSE_CHARS
     assert inc._trim_feedback_response(short) == short
@@ -785,7 +781,8 @@ def test_append_predict_scales_for_large_dossier_respects_small_ctx_and_trims_re
     assert trimmed.startswith("HEAD") and trimmed.endswith("TAIL")
     assert "\n...\n" in trimmed and len(trimmed) == inc.APPEND_FEEDBACK_RESPONSE_CHARS + len("\n...\n")
 
-    # End-to-end append passes scaled num_predict and trimmed previous_response on retry
+    # End-to-end append on a large dossier keeps fixed GEN_PREDICT (delta patch only)
+    # and trims previous_response on retry
     large_body = BODY.replace(
         "## Как пришли\n—",
         "## Как пришли\n" + "\n".join(f"- Line {i} " + ("я" * 160) + " [[2099-01-01_100000]]" for i in range(26)),
@@ -796,18 +793,16 @@ def test_append_predict_scales_for_large_dossier_respects_small_ctx_and_trims_re
     )
     large_raw = dossier.with_composition(large_raw, ["2099-01-01_100000"])
     loaded = dossier.DossierLoad("ok", large_raw, raw=large_raw.encode("utf-8"))
-    expected_predict = inc._append_predict(loaded.parsed.body, LOCAL)
-    assert expected_predict > dossier.GEN_PREDICT
 
     name = "2099-01-02_100000"
     files = {name: {"text": "Glasshouse vent sealed.", "kind": "Встречи"}}
-    good_body = loaded.parsed.body.replace(
-        "- Vent A is open. [[2099-01-01_100000]]",
-        f"- Vent A is open. [[2099-01-01_100000]]\n- Glasshouse vent sealed. [[{name}]]",
-    )
     seen = []
     huge_bad = "{" + ("z" * 4500)
-    replies = iter([huge_bad, json.dumps({"body": good_body, "changes": []})])
+    good_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "corrections": [],
+    })
+    replies = iter([huge_bad, good_patch])
 
     def fake_complete(prompt, config, *, system, num_predict, **kwargs):
         seen.append((prompt, config["llm"]["num_ctx"], num_predict))
@@ -816,9 +811,9 @@ def test_append_predict_scales_for_large_dossier_respects_small_ctx_and_trims_re
     monkeypatch.setattr(inc, "local_complete", fake_complete)
     monkeypatch.setattr(inc, "validate_candidate", lambda *a, **kw: None)
     out = inc.append("Glasshouse", loaded, [name], files, LOCAL)
-    assert "Glasshouse vent sealed." in out
+    assert "Glasshouse vent sealed." in out and f"[[{name}]]" in out
     assert len(seen) == 2
-    assert seen[0][2] == expected_predict and seen[1][2] == expected_predict
+    assert seen[0][2] == dossier.GEN_PREDICT and seen[1][2] == dossier.GEN_PREDICT
     retry_payload, _ = json.JSONDecoder().raw_decode(seen[1][0])
     prev = retry_payload["correction_feedback"]["previous_response"]
     assert "\n...\n" in prev and len(prev) == inc.APPEND_FEEDBACK_RESPONSE_CHARS + len("\n...\n")
@@ -867,18 +862,22 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
         m2: {"text": "Glasshouse fact 2.", "kind": "Встречи"},
         m3: {"text": "Glasshouse fact 3.", "kind": "Встречи"},
     }
-    full_body = loaded.parsed.body.replace(
-        "- Vent A is open. [[2099-01-01_100000]]",
-        f"- Vent A is open. [[2099-01-01_100000]]\n- F1 [[{m1}]]\n- F2 [[{m2}]]\n- F3 [[{m3}]]",
-    )
-    partial_body = loaded.parsed.body.replace(
-        "- Vent A is open. [[2099-01-01_100000]]",
-        f"- Vent A is open. [[2099-01-01_100000]]\n- F3 [[{m3}]]",
-    )
+    full_patch = json.dumps({
+        "additions": [
+            {"section": "Сейчас", "text": "F1", "source": m1},
+            {"section": "Сейчас", "text": "F2", "source": m2},
+            {"section": "Сейчас", "text": "F3", "source": m3},
+        ],
+        "corrections": [],
+    })
+    partial_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": "F3", "source": m3}],
+        "corrections": [],
+    })
 
     def run_case(attempt0_raw: str, *, fail_validate_attempt0: bool = False):
         prompts = []
-        replies = iter([attempt0_raw, json.dumps({"body": full_body, "changes": []})])
+        replies = iter([attempt0_raw, full_patch])
 
         def fake_complete(prompt, config, **kwargs):
             prompts.append(prompt)
@@ -898,23 +897,23 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
         retry_payload, _ = json.JSONDecoder().raw_decode(prompts[1])
         return retry_payload["correction_feedback"]
 
-    # (a) malformed JSON -> result is None -> no UnboundLocalError and no missing_citations key/hint
+    # (a) malformed JSON -> body is None -> no UnboundLocalError and no missing_citations key/hint
     fb_malformed = run_case("not json")
     assert "missing_citations" not in fb_malformed
     assert "missing_citations" not in fb_malformed["instruction"]
 
-    # (b) non-string result["body"] -> no TypeError and no missing_citations key/hint
-    fb_non_str = run_case(json.dumps({"body": 123, "changes": []}))
-    assert "missing_citations" not in fb_non_str
-    assert "missing_citations" not in fb_non_str["instruction"]
+    # (b) malformed patch schema -> _apply_patch fails (body is None) -> no missing_citations key/hint
+    fb_bad_patch = run_case(json.dumps({"additions": "not-a-list", "corrections": []}))
+    assert "missing_citations" not in fb_bad_patch
+    assert "missing_citations" not in fb_bad_patch["instruction"]
 
     # (c) partial citations -> exact missing_citations list in source order and explicit hint
-    fb_partial = run_case(json.dumps({"body": partial_body, "changes": []}))
+    fb_partial = run_case(partial_patch)
     assert fb_partial["missing_citations"] == [f"[[{m1}]]", f"[[{m2}]]"]
     assert "missing_citations" in fb_partial["instruction"]
 
     # (d) all citations present, rejected downstream -> no missing_citations key/hint
-    fb_complete = run_case(json.dumps({"body": full_body, "changes": []}), fail_validate_attempt0=True)
+    fb_complete = run_case(full_patch, fail_validate_attempt0=True)
     assert "missing_citations" not in fb_complete
     assert "missing_citations" not in fb_complete["instruction"]
 
@@ -941,8 +940,8 @@ def test_append_retry_budget_guard_exact_boundary_preserves_attempt0_refusal(
                 config["llm"]["num_ctx"],
                 inc._stage_needed_tokens(len(inc.GENERATE_SYSTEM), prompt, num_predict),
             ))
-            # Valid JSON, missing required [[name]] -> deterministic_check/source_unattributed
-            return json.dumps({"body": BODY, "changes": []})
+            # Valid empty patch, missing required [[name]] -> deterministic_check/source_unattributed
+            return json.dumps({"additions": [], "corrections": []})
 
         monkeypatch.setattr(inc, "local_complete", fake_complete)
         res = nd.run_all([graph], cfg, full=False, dry=False)
@@ -981,15 +980,15 @@ def test_nightly_add_falls_back_sequentially_on_multi_source_unattributed_only(w
         batch_sizes.append(len(names))
         if len(names) > 1:
             # Drop one accepted source so real inc.append -> deterministic_check raises source_unattributed
-            partial = payload["existing_dossier"].replace(
-                "## Как пришли", f"- Fact {names[0]}. [[{names[0]}]]\n\n## Как пришли",
-            )
-            return json.dumps({"body": partial, "changes": []})
+            return json.dumps({
+                "additions": [{"section": "Сейчас", "text": f"Fact {names[0]}.", "source": names[0]}],
+                "corrections": [],
+            })
         src = names[0]
-        updated = payload["existing_dossier"].replace(
-            "## Как пришли", f"- Fact {src}. [[{src}]]\n\n## Как пришли",
-        )
-        return json.dumps({"body": updated, "changes": []})
+        return json.dumps({
+            "additions": [{"section": "Сейчас", "text": f"Fact {src}.", "source": src}],
+            "corrections": [],
+        })
 
     monkeypatch.setattr(inc, "local_complete", fake_complete)
     result = nd.run_all([graph], LOCAL, full=False, dry=False)
@@ -999,3 +998,173 @@ def test_nightly_add_falls_back_sequentially_on_multi_source_unattributed_only(w
     text = old_path.read_text(encoding="utf-8")
     assert f"[[{m1}]]" in text and f"[[{m2}]]" in text
     assert result.telemetry.snapshot()["stage_refusals"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 7. Round 4 (#990): structured append patch (_normalize_patch_line, _apply_patch)
+# ---------------------------------------------------------------------------
+
+
+def _loaded_with_body(body: str) -> dossier.DossierLoad:
+    raw = dossier.render(
+        "Glasshouse", body, ["2099-01-01_100000"],
+        {"2099-01-01_100000": {"kind": "Встречи", "text": "ok"}}, "fp-old", "2099-01-01",
+    )
+    raw = dossier.with_composition(raw, ["2099-01-01_100000"])
+    return dossier.DossierLoad("ok", raw, raw=raw.encode("utf-8"))
+
+
+def test_normalize_patch_line_handles_bullets_links_and_rejects_bad_inputs():
+    m1 = "2099-01-02_100000"
+    assert inc._normalize_patch_line("Fact A.", m1, [m1], bad_source_msg="bad src") == (f"- Fact A. [[{m1}]]", m1)
+    assert inc._normalize_patch_line("  - Fact A.  ", f"[[{m1}]]", [m1], bad_source_msg="bad src") == (f"- Fact A. [[{m1}]]", m1)
+    assert inc._normalize_patch_line(f"- Fact A. [[{m1}]]", m1, [m1], bad_source_msg="bad src") == (f"- Fact A. [[{m1}]]", m1)
+    assert inc._normalize_patch_line(f"Fact A. [[{m1}]]", m1, [m1], bad_source_msg="bad src") == (f"- Fact A. [[{m1}]]", m1)
+
+    for raw_text, raw_src in ((123, m1), ("Fact A.", 123)):
+        with pytest.raises(inc.Refused, match="malformed patch entry"):
+            inc._normalize_patch_line(raw_text, raw_src, [m1], bad_source_msg="bad src")
+    for bad_nl in ("line1\nline2", "line1\rline2", "line1\x0bline2", "line1\x0cline2",
+                   "line1\x1cline2", "line1\x85line2", "line1\u2028line2", "line1\u2029line2"):
+        with pytest.raises(inc.Refused, match="multiline patch entry"):
+            inc._normalize_patch_line(bad_nl, m1, [m1], bad_source_msg="bad src")
+    for bad_text in ("", "   ", "-", "---", "—", "- — ", "## Правки автора", "  # Heading"):
+        with pytest.raises(inc.Refused, match="empty or invalid patch entry"):
+            inc._normalize_patch_line(bad_text, m1, [m1], bad_source_msg="bad src")
+    with pytest.raises(inc.Refused, match="bad src"):
+        inc._normalize_patch_line("Fact A.", "unknown", [m1], bad_source_msg="bad src")
+
+
+def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_lines():
+    a, b, c_src = "2099-01-01_100000", "2099-01-02_100000", "2099-01-03_100000"
+    prior_body = (
+        f"## Сейчас\n"
+        f"- First line. [[{a}]]\n"
+        f"- Second line. [[{a}]]\n\n"
+        f"## Как пришли\n"
+        f"- First line. [[{a}]]\n"
+        f"- Older history line. [[{a}]]\n\n"
+        f"## Решено\n—\n\n"
+        f"## Открыто\n—\n\n"
+        f"## Кто в теме\n- Alice [[{a}]]"
+    )
+    loaded = _loaded_with_body(prior_body)
+    files = {
+        b: {"text": "Second replaced. First replaced. Duplicate test. Bob joined."},
+        c_src: {"text": "Extra decision."},
+    }
+    # Reverse order in corrections + duplicate of correction.after in additions + last-section append
+    patch = {
+        "additions": [
+            {"section": "  ##  Сейчас  ", "text": "  - First now updated.  ", "source": b},
+            {"section": "Решено", "text": "Extra decision.", "source": c_src},
+            {"section": "Кто в теме", "text": "Bob joined.", "source": b},
+        ],
+        "corrections": [
+            {"before": "Second line.", "after": "Second now updated.", "source": f"[[{b}]]", "quote": "Second replaced."},
+            {"before": "First line.", "after": "First now updated.", "source": b, "quote": "First replaced."},
+        ],
+    }
+    body, changes = inc._apply_patch(loaded, [b, c_src], patch)
+    # Full deterministic_check (including _new_content_positions order + count checks) must pass!
+    inc.deterministic_check(loaded, body, [b, c_src], files, changes)
+    # Last section Кто в теме must not glue lines and must not end with trailing newline
+    assert f"- Alice [[{a}]]\n- Bob joined. [[{b}]]" in body
+    assert not body.endswith("\n")
+    # Moved lines in ## Как пришли must appear in ascending physical order AND keep the duplicate copy
+    history = body.split("## Как пришли\n", 1)[1].split("\n\n## Решено", 1)[0]
+    assert history == (
+        f"- First line. [[{a}]]\n"
+        f"- Older history line. [[{a}]]\n"
+        f"- First line. [[{a}]]\n"
+        f"- Second line. [[{a}]]"
+    )
+    # Deduplicated addition matching correction.after must appear only once in ## Сейчас
+    current = body.split("## Сейчас\n", 1)[1].split("\n\n## Как пришли", 1)[0]
+    assert current == f"- First now updated. [[{b}]]\n- Second now updated. [[{b}]]"
+    # Placeholder "—" in ## Решено replaced cleanly, untouched ## Открыто kept verbatim with "—"
+    assert "## Решено\n- Extra decision. [[2099-01-03_100000]]\n\n## Открыто\n—\n\n## Кто в теме" in body
+
+    # Two corrections merging into one identical replacement line must deduplicate in ## Сейчас
+    # while still moving both superseded lines to ## Как пришли.
+    merge_patch = {
+        "additions": [],
+        "corrections": [
+            {"before": "First line.", "after": "Unified state.", "source": b, "quote": "First replaced."},
+            {"before": "Second line.", "after": "Unified state.", "source": b, "quote": "Second replaced."},
+        ],
+    }
+    merged_body, merged_changes = inc._apply_patch(loaded, [b], merge_patch)
+    inc.deterministic_check(loaded, merged_body, [b], files, merged_changes)
+    merged_current = merged_body.split("## Сейчас\n", 1)[1].split("\n\n## Как пришли", 1)[0]
+    assert merged_current == f"- Unified state. [[{b}]]"
+    merged_history = merged_body.split("## Как пришли\n", 1)[1].split("\n\n## Решено", 1)[0]
+    assert merged_history.endswith(f"- First line. [[{a}]]\n- Second line. [[{a}]]")
+
+
+def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malformed():
+    m1 = "2099-01-02_100000"
+    empty_current_body = (
+        "## Сейчас\n—\n"
+        "## Как пришли\n— \n"
+        "## Решено\n—\n"
+        "## Открыто\n—\n"
+        "## Кто в теме\n—"
+    )
+    loaded_empty = _loaded_with_body(empty_current_body)
+    # Addition to Открыто must leave untouched ## Сейчас with "—" intact, and clean "— " when Как пришли is edited
+    body, changes = inc._apply_patch(loaded_empty, [m1], {
+        "additions": [
+            {"section": "Как пришли", "text": "History note.", "source": m1},
+            {"section": "Открыто", "text": "Open question.", "source": m1},
+        ],
+        "corrections": [],
+    })
+    assert changes == []
+    assert body.startswith("## Сейчас\n—\n## Как пришли\n- History note. [[2099-01-02_100000]]\n## Решено\n—\n")
+    assert "## Открыто\n- Open question. [[2099-01-02_100000]]\n## Кто в теме\n—" in body
+
+    # Correction targeting placeholder "—" in ## Сейчас must be refused
+    with pytest.raises(inc.Refused, match="must identify one current line"):
+        inc._apply_patch(loaded_empty, [m1], {
+            "additions": [],
+            "corrections": [{"before": "—", "after": "New state.", "source": m1, "quote": "q"}],
+        })
+
+    loaded = _loaded_dossier()
+    bad_cases = [
+        ({"additions": "bad", "corrections": []}, "malformed patch entry"),
+        ({"additions": [], "corrections": "bad"}, "malformed patch entry"),
+        ({"additions": ["bad"], "corrections": []}, "malformed patch entry"),
+        ({"additions": [{"section": "Сейчас", "text": "x"}], "corrections": []}, "malformed patch entry"),
+        ({"additions": [{"section": 123, "text": "x", "source": m1}], "corrections": []}, "invalid patch section"),
+        ({"additions": [{"section": "Правки автора", "text": "x", "source": m1}], "corrections": []}, "invalid patch section"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": "other"}], "corrections": []}, "unsupported patch source"),
+        ({"additions": [], "corrections": ["bad"]}, "malformed correction ledger"),
+        ({"additions": [], "corrections": [{"before": "Vent A"}]}, "malformed correction ledger"),
+        ({"additions": [], "corrections": [{"before": 123, "after": "x", "source": m1, "quote": "q"}]}, "empty correction ledger entry"),
+        ({"additions": [], "corrections": [{"before": "   ", "after": "x", "source": m1, "quote": "q"}]}, "empty correction ledger entry"),
+        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": m1, "quote": 123}]}, "empty correction ledger entry"),
+        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": m1, "quote": "   "}]}, "empty correction ledger entry"),
+        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": "other", "quote": "q"}]}, "unsupported or unattributed correction ledger"),
+        ({"additions": [], "corrections": [{"before": "Absent claim", "after": "x", "source": m1, "quote": "q"}]}, "must identify one current line"),
+        ({"additions": [], "corrections": [
+            {"before": "Vent A", "after": "Closed 1.", "source": m1, "quote": "q"},
+            {"before": "Vent A", "after": "Closed 2.", "source": m1, "quote": "q"},
+        ]}, "must identify one current line"),
+    ]
+    for bad_patch, pattern in bad_cases:
+        with pytest.raises(inc.Refused, match=pattern):
+            inc._apply_patch(loaded, [m1], bad_patch)
+
+    # All new closed refusal messages map to non-unknown telemetry details
+    for msg in (
+        "malformed patch entry",
+        "multiline patch entry",
+        "empty or invalid patch entry",
+        "invalid patch section",
+        "unsupported patch source",
+        "unsupported correction: before must identify one current line in ## Сейчас",
+    ):
+        assert msg in telemetry._MESSAGE_TO_DETAIL
+        assert telemetry._MESSAGE_TO_DETAIL[msg] != telemetry.Detail.UNKNOWN

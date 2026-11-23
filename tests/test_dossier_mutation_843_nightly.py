@@ -197,7 +197,7 @@ def test_captured_context_capped_output_cannot_publish_or_advance_membership(iso
     fixture = Path(__file__).parent / "fixtures/dossier_context_capped_output.json"
     raw = json.loads(fixture.read_text())["output"]
     with pytest.raises(inc.Refused, match="malformed model JSON"):
-        inc._json(raw, {"body", "changes"})
+        inc._json(raw, {"additions", "corrections"})
     graph, path = _world(isolated)
     assert night.run_all([graph], LOCAL, full=False, dry=False).attempts == 0
     _source(graph)

@@ -58,7 +58,9 @@ def _answer(payload, system, *, irrelevant=(), candidate=None):
         return json.dumps({"verdict": "irrelevant" if no else "relevant", "reason": "Synthetic source judgment.",
                            "quote": "" if no else FACT})
     if "extend factual" in system:
-        return json.dumps({"body": candidate or _addition(payload["existing_dossier"]), "changes": []})
+        if candidate is not None:
+            return json.dumps(candidate)
+        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}], "corrections": []})
     if system == inc.SUPPORT_AUDIT_SYSTEM:
         return json.dumps({"verdict": "accept", "supported": True,
                            "reason": "Synthetic source-support judgment."})
