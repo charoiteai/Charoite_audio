@@ -492,20 +492,28 @@ def test_stage_and_detail_reject_freeform_strings():
     assert snap["stage_refusals"] == {}
 
 
-@pytest.mark.parametrize("reply_text,expected_detail", [
-    ("not json at all " + SENTINEL, "json_malformed"),
-    (json.dumps({"verdict": "relevant", "reason": "ok"}), "json_schema"),
-    (json.dumps({"verdict": "relevant", "reason": "   ", "quote": "x"}), "relevance_incomplete"),
-    (json.dumps({"verdict": "relevant", "reason": "ok", "quote": "absent quote"}), "relevance_quote_missing"),
-    (json.dumps({"verdict": "uncertain", "reason": "ambiguous", "quote": ""}), "relevance_uncertain"),
+@pytest.mark.parametrize("replies,expected_detail", [
+    (["not json at all " + SENTINEL], "json_malformed"),
+    ([json.dumps({"verdict": "relevant", "reason": "ok"})], "json_schema"),
+    ([json.dumps({"verdict": "relevant", "reason": "   ", "quote": "x"})], "relevance_incomplete"),
+    ([json.dumps({"verdict": "relevant", "reason": "ok", "quote": "   "})] * 2, "relevance_quote_empty"),
+    ([json.dumps({"verdict": "relevant", "reason": "ok", "quote": "absent quote"})] * 2, "relevance_quote_missing"),
+    ([json.dumps({"verdict": "uncertain", "reason": "ambiguous", "quote": ""})], "relevance_uncertain"),
 ])
-def test_stage_refusals_classifies_source_relevance_failures(world, monkeypatch, reply_text, expected_detail):
+def test_stage_refusals_classifies_source_relevance_failures(world, monkeypatch, replies, expected_detail):
     nd, graph, _ = world
     _new(graph, "2099-01-02_100000", f"Glasshouse fact {SENTINEL}.")
-    monkeypatch.setattr(inc, "local_complete", _seq_replies([reply_text]))
+    calls = []
+
+    def fake_complete(*args, **kwargs):
+        calls.append(args[0])
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
 
     result = nd.run_all([graph], LOCAL, full=False, dry=False)
     snap = result.telemetry.snapshot()
+    assert len(calls) == len(replies)
     assert SENTINEL not in json.dumps(snap)
     assert snap["final_refusals"] == 1
     assert snap["final_reasons"] == {"validation_refused": 1}
@@ -611,3 +619,206 @@ def test_stage_refusals_covers_append_deterministic_semantic_and_audit_support(w
         snap = result.telemetry.snapshot()
         assert snap["final_refusals"] == 1
         assert snap["stage_refusals"] == expected_stage
+
+
+# ---------------------------------------------------------------------------
+# 5. Round 2 (#990): trivial wikilink alias folding, hidden-zone masking,
+#    CRLF normalization, source_relevance bounded retry, dynamic _append_predict
+# ---------------------------------------------------------------------------
+
+
+def test_quote_hits_folds_trivial_wikilink_alias_and_normalizes_crlf():
+    src = (
+        "- Срок для [[Ядра/Платформа Альфа]] перенесён.\r\n"
+        "- В таблице | [[Ядра/Платформа Альфа\\|Платформа Альфа]] | 28.11 |\r\n"
+        "- Вложение ![[Файлы/Схема|Схема]] готово.\r\n"
+        "- См. **Важно**: `api_v2` и [[Ядра/Альфа]].\r\n"
+    )
+    # Trivial alias added by model when source has bare [[Folder/Stem]]
+    assert inc._quote_hits(src, "Срок для [[Ядра/Платформа Альфа|Платформа Альфа]] перенесён.") == 1
+    # Bare [[Folder/Stem]] when source has escaped table [[Folder/Stem\|Stem]]
+    assert inc._quote_hits(src, "| [[Ядра/Платформа Альфа]] | 28.11 |") == 1
+    # Embed ![[Folder/Stem|Stem]] <-> ![[Folder/Stem]]
+    assert inc._quote_hits(src, "Вложение ![[Файлы/Схема]] готово.") == 1
+    # Combined stripped bold + preserved inline code + folded trivial alias
+    assert inc._quote_hits(src, "Важно: `api_v2` и [[Ядра/Альфа|Альфа]].") == 1
+    # Multiline CRLF in source vs LF in JSON quote (and vice versa)
+    assert inc._quote_hits(
+        src,
+        "Срок для [[Ядра/Платформа Альфа|Платформа Альфа]] перенесён.\n"
+        "- В таблице | [[Ядра/Платформа Альфа]] | 28.11 |",
+    ) == 1
+    assert inc._quote_hits("Line A\nLine B", "Line A\r\nLine B") == 1
+
+
+@pytest.mark.parametrize("source,bad_quote", [
+    # Hidden non-rendered zones must NEVER match folded trivial aliases from outside
+    ("Пример `[[Ядра/Glasshouse]]` в коде.", "[[Ядра/Glasshouse|Glasshouse]]"),
+    ("Комментарий %% [[Ядра/Glasshouse]] %% скрыт.", "[[Ядра/Glasshouse|Glasshouse]]"),
+    ("```\n[[Ядра/Glasshouse]]\n```", "[[Ядра/Glasshouse|Glasshouse]]"),
+    # Heading/block anchors and non-trivial or empty aliases must not fold
+    ("Раздел [[Ядра/Альфа#Секция|Альфа]] важен.", "Раздел [[Ядра/Альфа]] важен."),
+    ("Раздел [[Ядра/Альфа#Секция|Альфа]] важен.", "Раздел [[Ядра/Альфа#Секция]] важен."),
+    ("Блок [[Ядра/Альфа^b1|Альфа]] важен.", "Блок [[Ядра/Альфа]] важен."),
+    ("Блок [[Ядра/Альфа^b1|Альфа]] важен.", "Блок [[Ядра/Альфа^b1]] важен."),
+    ("Ссылка [[Ядра/Альфа|Витрина]] важна.", "Ссылка [[Ядра/Альфа]] важна."),
+    ("Пустой [[Ядра/Альфа| ]] алиас.", "Пустой [[Ядра/Альфа]] алиас."),
+    # Different folder target or fabricated link must never match
+    ("Ссылка [[Ядра/Альфа|Альфа]] ок.", "Ссылка [[Чужой/Альфа|Альфа]] ок."),
+    ("A Glasshouse B", "A [[Выдуманная/Glasshouse|Glasshouse]] B"),
+    # Embed vs non-embed mismatch
+    ("Вложение ![[Файлы/Схема|Схема]] готово.", "Вложение [[Файлы/Схема]] готово."),
+])
+def test_quote_hits_blocks_hidden_zones_anchors_and_nontrivial_aliases(source, bad_quote):
+    assert inc._quote_hits(source, bad_quote) == 0
+
+
+def test_source_relevance_retries_once_on_bad_quote_and_recovers_cleanly(world, monkeypatch):
+    nd, graph, _ = world
+    name = "2099-01-02_100000"
+    _new(graph, name, "| [[Ядра/Glasshouse\\|Glasshouse]] | Vent sealed on Monday. |")
+    good_body = BODY.replace(
+        "- Vent A is open. [[2099-01-01_100000]]",
+        f"- Vent A is open. [[2099-01-01_100000]]\n- Vent sealed on Monday. [[{name}]]",
+    )
+    seen_prompts = []
+    long_bad_quote = "missing " + ("x" * 260)
+    replies = iter([
+        json.dumps({"verdict": "relevant", "reason": "fact", "quote": long_bad_quote}),
+        json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Vent sealed on Monday."}),
+        json.dumps({"body": good_body, "changes": []}),
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": "Vent sealed on Monday.", "source": name,
+                        "quote": "Vent sealed on Monday.", "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
+        json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
+    ])
+
+    def fake_complete(prompt, config, *, system, **kwargs):
+        if system == inc.SOURCE_RELEVANCE_SYSTEM:
+            seen_prompts.append((prompt, config["llm"]["num_ctx"]))
+        return next(replies)
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    snap = result.telemetry.snapshot()
+    assert len(seen_prompts) == 2
+    retry_payload, _ = json.JSONDecoder().raw_decode(seen_prompts[1][0])
+    assert "correction_feedback" in retry_payload
+    assert len(retry_payload["correction_feedback"]["previous_quote"]) == 200
+    assert seen_prompts[0][1] == seen_prompts[1][1]
+    assert snap["committed_topics"] == 1
+    assert snap["final_refusals"] == 0
+    assert snap["stage_refusals"] == {}
+
+
+def test_source_relevance_retry_preserves_stage_on_second_failure_and_skips_retry_at_ctx_edge(world, monkeypatch):
+    nd, graph, _ = world
+    name = "2099-01-02_100000"
+    _new(graph, name, "Glasshouse vent sealed.")
+    # Failure on attempt 1 (malformed JSON) must still be recorded under source_relevance, not unknown.
+    monkeypatch.setattr(inc, "local_complete", _seq_replies([
+        json.dumps({"verdict": "relevant", "reason": "fact", "quote": "wrong quote"}),
+        "not json on retry",
+    ]))
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    snap = result.telemetry.snapshot()
+    assert snap["stage_refusals"] == {"source_relevance": {"json_malformed": 1}}
+
+    # Exact ctx boundary for retry: needed == 8192 retries (2 calls), needed == 8193 skips retry (1 call)
+    # and reports original relevance_quote_missing rather than turning it into context_budget or reloading Ollama.
+    def _run_edge(pad_len: int):
+        _new(graph, name, "Glasshouse fact. " + ("a" * pad_len))
+        seen_ctx = []
+
+        def bad_quote(prompt, config, **kwargs):
+            seen_ctx.append((config["llm"]["num_ctx"], inc._stage_needed_tokens(len(inc.SOURCE_RELEVANCE_SYSTEM), prompt, inc.SOURCE_PREDICT)))
+            return json.dumps({"verdict": "relevant", "reason": "fact", "quote": "absent quote"})
+
+        monkeypatch.setattr(inc, "local_complete", bad_quote)
+        res = nd.run_all([graph], LOCAL, full=False, dry=False)
+        return seen_ctx, res.telemetry.snapshot()
+
+    # Probe retry prompt overhead dynamically so the test pins the exact 8192 vs 8193 token boundary.
+    probe_ctx, _ = _run_edge(100)
+    delta_chars = (inc.MIN_AUTO_CONTEXT - probe_ctx[1][1]) * inc.ADMISSION_CHARS_PER_TOKEN
+    exact_fit_pad = 100 + delta_chars
+
+    calls_fit, snap_fit = _run_edge(exact_fit_pad)
+    assert len(calls_fit) == 2 and calls_fit[0][0] == inc.MIN_AUTO_CONTEXT and calls_fit[1][1] == inc.MIN_AUTO_CONTEXT
+    assert snap_fit["stage_refusals"] == {"source_relevance": {"relevance_quote_missing": 1}}
+
+    calls_over, snap_over = _run_edge(exact_fit_pad + inc.ADMISSION_CHARS_PER_TOKEN)
+    assert len(calls_over) == 1 and calls_over[0][0] == inc.MIN_AUTO_CONTEXT
+    assert snap_over["final_reasons"] == {"validation_refused": 1}
+    assert snap_over["stage_refusals"] == {"source_relevance": {"relevance_quote_missing": 1}}
+
+
+def test_append_predict_scales_for_large_dossier_respects_small_ctx_and_trims_retry_feedback(monkeypatch):
+    # Small body stays at GEN_PREDICT (1800)
+    assert inc._append_predict("x" * 500, LOCAL) == dossier.GEN_PREDICT
+    # Exact boundary (1200 chars -> 600 + 1200 = 1800; 1201 chars -> 601 + 1200 = 1801)
+    assert inc._append_predict("x" * 1200, LOCAL) == dossier.GEN_PREDICT
+    assert inc._append_predict("x" * 1201, LOCAL) == 1801
+    # Large odd body (4373 chars -> ceil(4373/2)=2187 + 1200 = 3387 tokens) kills floor/ceil mutants
+    assert inc._append_predict("x" * 4373, LOCAL) == 3387
+    # Very large body clamps at APPEND_MAX_PREDICT (8192)
+    assert inc._append_predict("x" * 20_000, LOCAL) == inc.APPEND_MAX_PREDICT
+    # Explicit small num_ctx (0 < num_ctx < MIN_AUTO_CONTEXT) keeps GEN_PREDICT; 0, -1, 8192 scale normally
+    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": 4096}}) == dossier.GEN_PREDICT
+    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": "4096"}}) == dossier.GEN_PREDICT
+    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": 0}}) == 3700
+    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": -1}}) == 3700
+    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": inc.MIN_AUTO_CONTEXT}}) == 3700
+    # Invalid/bool num_ctx does not crash _append_predict (deferred to _stage_config PREFLIGHT)
+    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": True}}) == 3700
+    assert inc._append_predict("x" * 5000, {"llm": {"engine": "ollama", "num_ctx": "bad"}}) == 3700
+
+    # _trim_feedback_response preserves short responses and trims long ones head+tail
+    short = "a" * inc.APPEND_FEEDBACK_RESPONSE_CHARS
+    assert inc._trim_feedback_response(short) == short
+    long_raw = "HEAD" + ("m" * 3000) + "TAIL"
+    trimmed = inc._trim_feedback_response(long_raw)
+    assert trimmed.startswith("HEAD") and trimmed.endswith("TAIL")
+    assert "\n...\n" in trimmed and len(trimmed) == inc.APPEND_FEEDBACK_RESPONSE_CHARS + len("\n...\n")
+
+    # End-to-end append passes scaled num_predict and trimmed previous_response on retry
+    large_body = BODY.replace(
+        "## Как пришли\n—",
+        "## Как пришли\n" + "\n".join(f"- Line {i} " + ("я" * 160) + " [[2099-01-01_100000]]" for i in range(26)),
+    )
+    large_raw = dossier.render(
+        "Glasshouse", large_body, ["2099-01-01_100000"],
+        {"2099-01-01_100000": {"kind": "Встречи", "text": "ok"}}, "fp-old", "2099-01-01",
+    )
+    large_raw = dossier.with_composition(large_raw, ["2099-01-01_100000"])
+    loaded = dossier.DossierLoad("ok", large_raw, raw=large_raw.encode("utf-8"))
+    expected_predict = inc._append_predict(loaded.parsed.body, LOCAL)
+    assert expected_predict > dossier.GEN_PREDICT
+
+    name = "2099-01-02_100000"
+    files = {name: {"text": "Glasshouse vent sealed.", "kind": "Встречи"}}
+    good_body = loaded.parsed.body.replace(
+        "- Vent A is open. [[2099-01-01_100000]]",
+        f"- Vent A is open. [[2099-01-01_100000]]\n- Glasshouse vent sealed. [[{name}]]",
+    )
+    seen = []
+    huge_bad = "{" + ("z" * 4500)
+    replies = iter([huge_bad, json.dumps({"body": good_body, "changes": []})])
+
+    def fake_complete(prompt, config, *, system, num_predict, **kwargs):
+        seen.append((prompt, config["llm"]["num_ctx"], num_predict))
+        return next(replies)
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
+    monkeypatch.setattr(inc, "validate_candidate", lambda *a, **kw: None)
+    out = inc.append("Glasshouse", loaded, [name], files, LOCAL)
+    assert "Glasshouse vent sealed." in out
+    assert len(seen) == 2
+    assert seen[0][2] == expected_predict and seen[1][2] == expected_predict
+    retry_payload, _ = json.JSONDecoder().raw_decode(seen[1][0])
+    prev = retry_payload["correction_feedback"]["previous_response"]
+    assert "\n...\n" in prev and len(prev) == inc.APPEND_FEEDBACK_RESPONSE_CHARS + len("\n...\n")
