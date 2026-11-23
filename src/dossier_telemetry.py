@@ -149,6 +149,7 @@ _MESSAGE_TO_DETAIL: dict[str, Detail] = {
     "empty candidate claim evidence": Detail.CLAIM_MALFORMED,
     "duplicate candidate claim": Detail.CLAIM_MALFORMED,
     "candidate claim lacks exact new-source evidence": Detail.CLAIM_QUOTE_MISSING,
+    "candidate claim names an unsupported new source": Detail.CLAIM_SOURCE_MISSING,
     "complete source context is required for claim audits": Detail.CLAIM_QUOTE_MISSING,
     "ambiguous claim evidence: quote must identify one source occurrence": Detail.CLAIM_QUOTE_AMBIGUOUS,
     "candidate claim text is not an exact candidate span": Detail.CLAIM_SPAN_MISSING,

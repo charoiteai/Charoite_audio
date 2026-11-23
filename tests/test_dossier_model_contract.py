@@ -187,7 +187,7 @@ def test_two_atomic_spans_on_one_line_have_complete_evidence(monkeypatch, newlin
         return json.dumps(verdict)
     monkeypatch.setattr(inc, "local_complete", complete)
     inc.validate_candidate("Glasshouse", _old(), [B], files, {}, candidate, [])
-    assert len(calls) == 1 and calls[0][1]["num_predict"] == 1200
+    assert len(calls) == 1 and calls[0][1]["num_predict"] == inc.MAIN_JUDGE_PREDICT
     assert "splitting a compound bullet" in calls[0][0]
 
 
