@@ -43,6 +43,119 @@ class Reason(str, Enum):
     UNKNOWN = "unknown"
 
 
+class Stage(str, Enum):
+    SOURCE_RELEVANCE = "source_relevance"
+    APPEND = "append"
+    DETERMINISTIC = "deterministic_check"
+    SEMANTIC = "semantic_check"
+    AUDIT_SUPPORT = "audit_support"
+    AUDIT_TOPIC = "audit_topic"
+    APPEND_COMMIT = "append_commit"
+    REBUILD = "rebuild"
+    SCAN = "scan"
+    UNKNOWN = "unknown"
+
+
+class Detail(str, Enum):
+    JSON_MALFORMED = "json_malformed"
+    JSON_SCHEMA = "json_schema"
+    RELEVANCE_INCOMPLETE = "relevance_incomplete"
+    RELEVANCE_UNCERTAIN = "relevance_uncertain"
+    RELEVANCE_QUOTE_MISSING = "relevance_quote_missing"
+    CONTEXT_BUDGET = "context_budget"
+    PREFLIGHT = "preflight_refused"
+    CONTRACT = "contract_refused"
+    LEDGER_MALFORMED = "ledger_malformed"
+    LEDGER_SOURCE = "ledger_source"
+    LEDGER_PLACEMENT = "ledger_placement"
+    SECTIONS_INVALID = "sections_invalid"
+    SPEAKER_LABELS = "speaker_labels"
+    LINKS_LOST = "links_lost"
+    SOURCE_UNATTRIBUTED = "source_unattributed"
+    CONSERVATION_LOST = "conservation_lost"
+    MARKUP_CHANGED = "markup_changed"
+    SEMANTIC_REJECTED = "semantic_rejected"
+    CLAIM_MALFORMED = "claim_malformed"
+    CLAIM_QUOTE_MISSING = "claim_quote_missing"
+    CLAIM_QUOTE_AMBIGUOUS = "claim_quote_ambiguous"
+    CLAIM_SPAN_MISSING = "claim_span_missing"
+    CLAIM_UNCOVERED = "claim_uncovered"
+    CLAIM_SOURCE_MISSING = "claim_source_missing"
+    AUDIT_SUPPORT_REJECTED = "audit_support_rejected"
+    AUDIT_TOPIC_REJECTED = "audit_topic_rejected"
+    RENDER_INVALID = "render_invalid"
+    INPUT_REFUSED = "input_refused"
+    FORMAT_REFUSED = "format_refused"
+    EMPTY_REPLY = "empty_reply"
+    TIMEOUT = "timeout"
+    HTTP_ERROR = "http_error"
+    STREAM_ERROR = "stream_error"
+    TRANSPORT_ERROR = "transport_error"
+    IO_REFUSED = "io_refused"
+    INTERRUPTED = "interrupted"
+    UNEXPECTED_ERROR = "unexpected_error"
+    UNKNOWN = "unknown"
+
+
+_REASON_TO_DETAIL: dict[Reason, Detail] = {
+    Reason.EMPTY: Detail.EMPTY_REPLY,
+    Reason.PREFLIGHT: Detail.PREFLIGHT,
+    Reason.CONTEXT: Detail.CONTEXT_BUDGET,
+    Reason.CONTRACT: Detail.CONTRACT,
+    Reason.TIMEOUT: Detail.TIMEOUT,
+    Reason.HTTP: Detail.HTTP_ERROR,
+    Reason.STREAM: Detail.STREAM_ERROR,
+    Reason.TRANSPORT: Detail.TRANSPORT_ERROR,
+    Reason.ERROR: Detail.UNEXPECTED_ERROR,
+    Reason.INTERRUPTED: Detail.INTERRUPTED,
+    Reason.INPUT: Detail.INPUT_REFUSED,
+    Reason.FORMAT: Detail.FORMAT_REFUSED,
+    Reason.IO: Detail.IO_REFUSED,
+}
+
+_MESSAGE_TO_DETAIL: dict[str, Detail] = {
+    "malformed model JSON": Detail.JSON_MALFORMED,
+    "unexpected model JSON fields": Detail.JSON_SCHEMA,
+    "duplicate verdict key": Detail.JSON_SCHEMA,
+    "incomplete relevance verdict": Detail.RELEVANCE_INCOMPLETE,
+    "source relevance did not return a literal boolean": Detail.RELEVANCE_INCOMPLETE,
+    "empty or damaged candidate": Detail.SECTIONS_INVALID,
+    "candidate has protected, ambiguous or incomplete sections": Detail.SECTIONS_INVALID,
+    "candidate contains speaker labels": Detail.SPEAKER_LABELS,
+    "candidate lost a canonical link target": Detail.LINKS_LOST,
+    "candidate does not attribute each accepted source": Detail.SOURCE_UNATTRIBUTED,
+    "missing change ledger": Detail.LEDGER_MALFORMED,
+    "malformed correction ledger": Detail.LEDGER_MALFORMED,
+    "empty correction ledger entry": Detail.LEDGER_MALFORMED,
+    "unsupported correction: before must occur in both old and new body": Detail.LEDGER_PLACEMENT,
+    "unsupported correction: after must be an exact substring of the candidate body": Detail.LEDGER_PLACEMENT,
+    "superseded current claim must move to history with its replacement current": Detail.LEDGER_PLACEMENT,
+    "ambiguous correction: before must identify one current physical-line occurrence": Detail.LEDGER_PLACEMENT,
+    "unsupported or unattributed correction ledger": Detail.LEDGER_SOURCE,
+    "candidate lost a prior claim or has uncovered new significant text (section/count/order)": Detail.CONSERVATION_LOST,
+    "candidate changed prior opaque markup context": Detail.MARKUP_CHANGED,
+    "candidate introduced opaque markup around dossier content": Detail.MARKUP_CHANGED,
+    "candidate semantic conservation was not accepted": Detail.SEMANTIC_REJECTED,
+    "candidate claim is not relevant and supported": Detail.SEMANTIC_REJECTED,
+    "candidate claims must be an array": Detail.CLAIM_MALFORMED,
+    "malformed candidate claim": Detail.CLAIM_MALFORMED,
+    "empty candidate claim evidence": Detail.CLAIM_MALFORMED,
+    "duplicate candidate claim": Detail.CLAIM_MALFORMED,
+    "candidate claim lacks exact new-source evidence": Detail.CLAIM_QUOTE_MISSING,
+    "complete source context is required for claim audits": Detail.CLAIM_QUOTE_MISSING,
+    "ambiguous claim evidence: quote must identify one source occurrence": Detail.CLAIM_QUOTE_AMBIGUOUS,
+    "candidate claim text is not an exact candidate span": Detail.CLAIM_SPAN_MISSING,
+    "candidate claim does not represent new significant text": Detail.CLAIM_SPAN_MISSING,
+    "candidate has uncovered new significant text": Detail.CLAIM_UNCOVERED,
+    "candidate lacks a new claim contribution from every accepted source": Detail.CLAIM_SOURCE_MISSING,
+    "independent claim audit was not accepted (supported)": Detail.AUDIT_SUPPORT_REJECTED,
+    "independent claim audit was not accepted (relevant)": Detail.AUDIT_TOPIC_REJECTED,
+    "invalid rendered append": Detail.RENDER_INVALID,
+    "author payload changed": Detail.RENDER_INVALID,
+    "new source is unreadable or damaged": Detail.INPUT_REFUSED,
+}
+
+
 @dataclass
 class _Request:
     phase: Phase = Phase.PREFLIGHT
@@ -53,6 +166,8 @@ class _Request:
 class _Topic:
     reason: Reason = Reason.UNKNOWN
     request_failure: Reason | None = None
+    stage: Stage | None = None
+    detail: Detail | None = None
 
 
 _run: ContextVar[Collector | None] = ContextVar("dossier_telemetry_run", default=None)
@@ -67,6 +182,7 @@ class Collector:
         self.requests = self.stream_entries = 0
         self.outcomes = Counter()
         self.final_reasons = Counter()
+        self.stage_refusals = Counter()
         self.interrupted = False
         self.scan_failed = self.index_failed = self.scanned_topics = self.scan_refusals = 0
 
@@ -82,6 +198,9 @@ class Collector:
                                  for phase in Phase if any(self.outcomes[phase, reason] for reason in Reason)},
             "final_reasons": {reason.value: self.final_reasons[reason]
                               for reason in Reason if self.final_reasons[reason]},
+            "stage_refusals": {st.value: {dt.value: self.stage_refusals[st, dt]
+                                          for dt in Detail if self.stage_refusals[st, dt]}
+                               for st in Stage if any(self.stage_refusals[st, dt] for dt in Detail)},
             "interrupted": self.interrupted, "scan_failed": self.scan_failed,
             "index_failed": self.index_failed, "topics_scanned": self.scanned_topics,
             "scan_refusals": self.scan_refusals,
@@ -91,7 +210,9 @@ class Collector:
         self.scanned_topics += topics
         self.scan_refusals += refused
         self.final_refusals += refused
-        self.final_reasons[Reason.INPUT] += refused
+        if refused:
+            self.final_reasons[Reason.INPUT] += refused
+            self.stage_refusals[Stage.SCAN, Detail.INPUT_REFUSED] += refused
 
     @contextmanager
     def activate(self, on_emit=None):
@@ -144,7 +265,12 @@ class Collector:
         self.final_refusals += refused
         if refused:
             topic = _topic.get()
-            self.final_reasons[topic.reason if topic else Reason.UNKNOWN] += refused
+            final_reason = topic.reason if topic else Reason.UNKNOWN
+            self.final_reasons[final_reason] += refused
+            st = topic.stage if topic and topic.stage is not None else Stage.UNKNOWN
+            dt = (topic.detail if topic and topic.detail is not None
+                  else _REASON_TO_DETAIL.get(final_reason, Detail.UNKNOWN))
+            self.stage_refusals[st, dt] += refused
 
 
 def current() -> Collector | None:
@@ -163,6 +289,43 @@ def begin_attempt():
     if topic := _topic.get():
         topic.reason = Reason.UNKNOWN
         topic.request_failure = None
+        topic.stage = None
+        topic.detail = None
+
+
+@contextmanager
+def stage(value: Stage):
+    if not isinstance(value, Stage):
+        raise TypeError("closed telemetry stage required")
+    topic = _topic.get()
+    if topic is None:
+        yield
+        return
+    previous = topic.stage
+    topic.stage = value
+    try:
+        yield
+    except BaseException:
+        raise
+    else:
+        if topic.detail is None and topic.reason == Reason.UNKNOWN:
+            topic.stage = previous
+
+
+def detail(value: Detail):
+    if not isinstance(value, Detail):
+        raise TypeError("closed telemetry detail required")
+    if topic := _topic.get():
+        topic.detail = value
+
+
+def record_refusal_message(message: str):
+    """Map a closed internal refusal constant to a closed Detail; never store freeform text."""
+    topic = _topic.get()
+    if topic is not None and topic.detail is None and topic.request_failure is None:
+        mapped = _MESSAGE_TO_DETAIL.get(message)
+        if mapped is not None:
+            topic.detail = mapped
 
 
 def refusal(value: Reason):
