@@ -297,3 +297,119 @@ def test_progress_reports_closed_reason_for_short_and_windowed_paths():
     ref.refine(speech, [], "", {}, request=lambda *a: next(answers2), progress=events2.append)
     win2 = [e for e in events2 if e["phase"] == "source_window"]
     assert len(win2) == 1 and win2[0]["verbatim"] is True and win2[0]["reason"] == "unsupported_quote"
+
+
+def test_normalization_cache_boundaries_and_failure_kinds():
+    # Leading/trailing whitespace must not inject stray spaces; cache must reuse normalized source.
+    norm, _ = ref._normalize_with_spans("   Нужна   схема   ")
+    assert norm == "нужна схема"
+
+    src = "**Участник A** [00:01:02 – 00:01:30]:\nНужна двухфазная схема для релиза."
+    ref._normalized_source.cache_clear()
+    first = ref._normalized_source(src)
+    second = ref._normalized_source(src)
+    assert first == second
+    assert ref._normalized_source.cache_info().hits == 1
+
+    # Exact header boundary match (qs == hs and qe == he) counts as header_only.
+    assert ref._is_header_only_spans([(0, 10)], [(0, 10)]) is True
+    assert ref._is_header_only_spans([(0, 10)], []) is False
+
+    # Non-string inputs must return empty list (not None) and classify as too_short.
+    assert ref._find_quote_spans(None, src) == []
+    assert ref._find_quote_spans("нужна двухфазная схема", None) == []
+    assert ref._quote_failure_kind(None) == "too_short"
+    assert ref._quote_failure_kind("а" * 11) == "too_short"
+    assert ref._quote_failure_kind("а" * 12) == "not_in_source"
+    assert ref._quote_failure_kind("а" * 12 + "...") == "ellipsis"
+
+
+def test_paragraphs_caps_quote_errors_at_four_for_missing_and_header_only():
+    header = "**Участник A** [00:01:02 – 00:01:30]:"
+    speech = f"{header}\nРелиз подтверждён на вторник после проверки стенда."
+    five_missing = json.dumps({"paragraphs": [
+        {"text": f"Пункт {i}.", "quotes": [f"Выдуманная цитата номер {i} отсутствует."], "uncertain": False}
+        for i in range(5)
+    ]})
+    with pytest.raises(ref._UnsupportedQuote) as exc_missing:
+        ref._paragraphs(five_missing, speech)
+    assert len(exc_missing.value.details) == 4
+
+    five_headers = json.dumps({"paragraphs": [
+        {"text": f"Пункт {i}.", "quotes": ["Участник A [00:01:02 – 00:01:30]:"], "uncertain": False}
+        for i in range(5)
+    ]})
+    with pytest.raises(ref._UnsupportedQuote) as exc_headers:
+        ref._paragraphs(five_headers, speech)
+    assert len(exc_headers.value.details) == 4
+    assert all(kind == "header_only" for _, kind, _ in exc_headers.value.details)
+
+
+def test_exact_schema_constraints_for_draft_audit_and_relations():
+    s0 = ref._draft_schema()
+    assert s0["additionalProperties"] is False
+    assert "minItems" not in s0["properties"]["paragraphs"]
+    row = s0["properties"]["paragraphs"]["items"]
+    assert row["additionalProperties"] is False
+    assert row["properties"]["text"]["minLength"] == 1
+    assert row["properties"]["quotes"]["minItems"] == 1
+    assert row["properties"]["quotes"]["items"]["minLength"] == 12
+    assert ref._draft_schema(min_items=1)["properties"]["paragraphs"]["minItems"] == 1
+
+    sa = ref._short_audit_schema(2)
+    assert sa["additionalProperties"] is False
+    check = sa["properties"]["paragraphs"]["items"]
+    assert check["additionalProperties"] is False
+    assert check["properties"]["index"]["maximum"] == 1
+    assert ref._short_audit_schema(0)["properties"]["paragraphs"]["items"]["properties"]["index"]["maximum"] == 0
+
+    rel = links._relation_item_schema()
+    assert rel["additionalProperties"] is False
+
+
+def test_quote_feedback_and_fit_retry_exact_length_boundaries():
+    base = [{"index": i, "kind": "not_in_source", "quote_excerpt": "а" * 140} for i in range(4)]
+    pad = 800 - len(ref._dump(base))
+    assert pad > 0
+    details = [
+        (0, "not_in_source" + "x" * pad, "а" * 150),
+        (1, "not_in_source", "а" * 150),
+        (2, "not_in_source", "а" * 150),
+        (3, "not_in_source", "а" * 150),
+    ]
+    fb = ref._quote_feedback(details)
+    assert len(ref._dump(fb["examples"])) == 800
+    assert len(fb["examples"][0]["quote_excerpt"]) == 140
+
+    p, sys_s, cand, full_s, min_s = "prompt", "system", "prompt+feedback", " full-suffix", " min"
+    exact_full = len(cand) + len(sys_s) + len(full_s)
+    assert ref._fit_retry(p, sys_s, cand, full_s, min_s, exact_full) == (cand, sys_s + full_s)
+    exact_min = len(p) + len(sys_s) + len(min_s)
+    assert ref._fit_retry(p, sys_s, cand, full_s, min_s, exact_min) == (p, sys_s + min_s)
+
+
+def test_refine_short_budget_prevents_retry_from_overflowing_into_windowed():
+    cfg = {"llm": {"num_ctx": 8192}}
+    short_budget = (8192 - 3000 - ref.CONTEXT_RESERVE) * ref.CHARS_PER_TOKEN
+    anchor = "Ключевое решение перенести релиз на вторник."
+    base_prompt = json.dumps({"final_speech": anchor, "live_thread": [], "previous_debrief": ""}, ensure_ascii=False)
+    pad = short_budget - len(base_prompt) - len(ref.SYSTEM) - 100
+    assert pad > 0
+    speech = anchor + " " + ("б" * (pad - 1))
+    seen = []
+    answers = iter([
+        json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная фраза которой нет."], "uncertain": False}]}),
+        json.dumps({"paragraphs": [{"text": "Релиз перенесли на вторник.", "quotes": [anchor], "uncertain": False}]}),
+        json.dumps({"paragraphs": [{"index": 0, "supported": True}],
+                    "coverage_complete": True, "corrections_resolved": True}),
+    ])
+
+    def req(_cfg, p, s, _pr):
+        seen.append((p, s))
+        return next(answers)
+
+    out = ref.refine(speech, [], "", cfg, request=req)
+    assert "Релиз перенесли на вторник." in out
+    assert len(seen) == 3
+    assert len(seen[1][0]) + len(seen[1][1]) <= short_budget
+    assert "quote_feedback" not in seen[1][1]

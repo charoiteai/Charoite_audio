@@ -174,22 +174,19 @@ def _header_star_positions(text: str) -> set[int]:
 
 
 def _header_spans(text: str) -> list[tuple[int, int]]:
-    if "[" not in text:
-        return []
     from transcript import BLOCK_RE
     return [(match.start(), match.end()) for match in BLOCK_RE.finditer(text)]
 
 
-def _normalize_with_spans(text: str, *, strip_header_stars: bool = True) -> tuple[str, list[tuple[int, int]]]:
+def _normalize_with_spans(text: str) -> tuple[str, list[tuple[int, int]]]:
     """Canonicalize typography/case/whitespace and speaker-header bold with exact source spans."""
-    skip = _header_star_positions(text) if strip_header_stars else set()
+    skip = _header_star_positions(text)
     norm: list[str] = []
     spans: list[tuple[int, int]] = []
     n = len(text)
     i = 0
-    ws_start: int | None = None
-    ws_end = 0
-    for _ in range(n + 1):
+    pending_space = False
+    for _ in range(n):
         if i >= n:
             break
         if i in skip:
@@ -197,21 +194,19 @@ def _normalize_with_spans(text: str, *, strip_header_stars: bool = True) -> tupl
             continue
         ch = text[i]
         if ch.isspace():
-            if ws_start is None:
-                ws_start = i
-            ws_end = i + 1
+            if norm:
+                pending_space = True
             i += 1
             continue
-        if ws_start is not None:
-            if norm:
-                norm.append(" ")
-                spans.append((ws_start, ws_end))
-            ws_start = None
+        if pending_space:
+            norm.append(" ")
+            spans.append((i, i))
+            pending_space = False
         end = i + 1
-        for _ in range(n - end):
-            if end >= n or end in skip or not unicodedata.combining(text[end]):
+        for k in range(i + 1, n):
+            if not unicodedata.combining(text[k]):
                 break
-            end += 1
+            end = k + 1
         cluster = text[i:end]
         if not cluster.isascii():
             cluster = unicodedata.normalize("NFC", cluster)
@@ -225,17 +220,15 @@ def _normalize_with_spans(text: str, *, strip_header_stars: bool = True) -> tupl
 
 @functools.lru_cache(maxsize=16)
 def _normalized_source(source: str) -> tuple[str, tuple[tuple[int, int], ...]]:
-    norm_s, s_spans = _normalize_with_spans(source, strip_header_stars=True)
+    norm_s, s_spans = _normalize_with_spans(source)
     return norm_s, tuple(s_spans)
 
 
 def _normalized_len(text: str) -> int:
-    return len(_normalize_with_spans(text, strip_header_stars=True)[0])
+    return len(_normalize_with_spans(text)[0])
 
 
 def _is_header_only_spans(spans: list[tuple[int, int]], headers: list[tuple[int, int]]) -> bool:
-    if not headers:
-        return False
     return all(any(hs <= qs and qe <= he for hs, he in headers) for qs, qe in spans)
 
 
@@ -243,12 +236,10 @@ def _find_quote_spans(quote: str, source: str) -> list[tuple[int, int]]:
     """Return all exact source (start, end) spans matching quote via canonical normalization."""
     if not isinstance(quote, str) or not isinstance(source, str):
         return []
-    norm_q, _ = _normalize_with_spans(quote, strip_header_stars=True)
+    norm_q, _ = _normalize_with_spans(quote)
     if len(norm_q) < 12:
         return []
     norm_s, s_spans = _normalized_source(source)
-    if not norm_s or len(norm_q) > len(norm_s):
-        return []
     result: list[tuple[int, int]] = []
     offset = norm_s.find(norm_q)
     qlen = len(norm_q)
@@ -789,7 +780,7 @@ def _draft(prompt: str, system: str, predict: int, source: str, call, *, window=
             if str(exc) != "unsupported_quote":
                 raise
             codes = ""
-            if isinstance(exc, _UnsupportedQuote) and exc.details:
+            if isinstance(exc, _UnsupportedQuote):
                 codes = " Отклонённые опоры: " + ", ".join(f"p{i}:{k}" for i, k, _ in exc.details) + "."
                 data = _json(prompt)
                 data["quote_feedback"] = _quote_feedback(exc.details)
@@ -858,7 +849,7 @@ def _windowed(speech: str, thread: list[dict], previous: str, call, progress) ->
         token = _WINDOW_REASON.set(holder)
         try:
             rows = _refine_window(window, thread, previous, call)
-            reason = holder[-1] if holder else ("verified" if rows else "noise")
+            reason = holder[0] if holder else ("verified" if rows else "noise")
             current_relations = link_window(done, window, rows, call) if rows else []
         except UnverifiedReply as exc:
             # Render only the exact canonical slice when its model text cannot be verified.
