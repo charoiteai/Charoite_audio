@@ -1008,7 +1008,8 @@ def test_generate_calls_the_model_with_what_the_label_hashes(monkeypatch):
     monkeypatch.setattr(nd.dossier, "GEN_TEMPERATURES", (0.4, 0.1))
     assert nd.generate("т", [], {}, {"llm": {"model": "q"}}) == GOOD.strip()
     assert seen == [{"model": "q:local", "truncate": False, "shift": False, "temperature": 0.4,
-                     "system": "S", "num_predict": 77, "think": True}]
+                     "system": "S", "num_predict": 77, "think": True,
+                     "timeout": llm_mod.DOC_STREAM_TIMEOUT}]
 
 
 @pytest.mark.parametrize("fell", [True, False])
