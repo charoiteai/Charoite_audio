@@ -200,22 +200,33 @@ def _strip_inline_emphasis(text: str) -> str:
     return text
 
 
-def _emphasis_free(text: str, *, plain_links: bool) -> str:
+def _flush_emphasis(open_buf: list[str], links: list[str]) -> str:
+    rendered = _strip_inline_emphasis("".join(open_buf))
+    for idx, token in enumerate(links):
+        rendered = rendered.replace(f"\ufdd0{idx}\ufdd1", token)
+    open_buf.clear()
+    links.clear()
+    return rendered
+
+
+def _emphasis_free(text: str, *, plain_links: bool = False) -> str:
     parts: list[str] = []
     open_buf: list[str] = []
+    links: list[str] = []
     pos = 0
     for match in _NON_RENDERED_OR_WIKILINK.finditer(text):
         open_buf.append(text[pos:match.start()])
-        if match.group("target") is not None and plain_links:
+        if match.group("target") is None:
+            parts.append(_flush_emphasis(open_buf, links))
+            parts.append(match.group(0))
+        elif plain_links:
             open_buf.append(_wikilink_display(match))
         else:
-            parts.append(_strip_inline_emphasis("".join(open_buf)))
-            open_buf.clear()
-            token = match.group(0)
-            parts.append(token if match.group("target") is None else token.replace(r"\|", "|"))
+            open_buf.append(f"\ufdd0{len(links)}\ufdd1")
+            links.append(match.group(0).replace(r"\|", "|"))
         pos = match.end()
     open_buf.append(text[pos:])
-    parts.append(_strip_inline_emphasis("".join(open_buf)))
+    parts.append(_flush_emphasis(open_buf, links))
     return "".join(parts)
 
 
@@ -229,13 +240,11 @@ def _quote_hits(text: str, quote: str) -> int:
         )
         if hits:
             return hits
-        return _span_hits(_emphasis_free(text, plain_links=False),
-                          _emphasis_free(quote, plain_links=False))
+        return _span_hits(_emphasis_free(text), _emphasis_free(quote))
     hits = _span_hits(_plain_wikilinks(text), quote) or _span_hits(text, quote)
     if hits:
         return hits
-    return _span_hits(_emphasis_free(text, plain_links=True),
-                      _emphasis_free(quote, plain_links=False))
+    return _span_hits(_emphasis_free(text, plain_links=True), _emphasis_free(quote))
 
 
 def _has_source_quote(text: str, quote: str) -> bool:
@@ -342,6 +351,7 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
         name = _resolve_source_name(raw_name, names)
         if name is None or not _has_source_quote(source_text(files[name]), quote) or name not in _links(after):
             raise Refused("unsupported or unattributed correction ledger")
+        change["source"] = name
         new_sections = {s.title: candidate.text[s.content:s.end] for s in parsed.sections}
         current = _current_line_before(loaded, before)
         if current is not None and (
@@ -473,8 +483,7 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
         if (text, name) in seen:
             raise Refused("duplicate candidate claim")
         seen.add((text, name))
-        if not _has_source_quote(source_text(files[name]), quote):
-            raise Refused("candidate claim lacks exact new-source evidence")
+        _quote_context(source_text(files[name]), quote)
         start = body.find(text)
         if start < 0:
             raise Refused("candidate claim text is not an exact candidate span")
@@ -732,7 +741,7 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
             or any(verdict[key] is not True for key in ("conserved", "supported", "corrections_valid"))):
         raise Refused("candidate semantic conservation was not accepted")
     _check_claims(loaded, body, names, files, verdict["claims"], changes)
-    audits = [(claim, _quote_context(source_text(files[claim["source"]]), claim["quote"]))
+    audits = [(claim, source_text(files[claim["source"]]))
               for claim in verdict["claims"]]
     # Pin one bounded window across every claim in this candidate. Switching
     # num_ctx between claims would repeatedly reload the resident Ollama model.
@@ -786,21 +795,20 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
             stage_c = _stage_config(c, len(GENERATE_SYSTEM), prompt, dossier.GEN_PREDICT)
             raw = local_complete(prompt, stage_c, system=GENERATE_SYSTEM,
                                  num_predict=dossier.GEN_PREDICT)
-        try:
-            with telemetry.stage(telemetry.Stage.APPEND):
+            try:
                 result = _json(raw, {"body", "changes"})
-            validate_candidate(theme, loaded, names, files, c, result["body"], result["changes"])
-            return result["body"].strip()
-        except Refused as exc:
-            if attempt or exc.reason == telemetry.Reason.CONTEXT:
-                raise
-            feedback = {"failure": str(exc), "previous_response": raw,
-                        "instruction": "Ordinary additions require changes: []; remove invented correction entries. "
-                                       "For explicit supersession keep the genuine source-backed correction ledger "
-                                       "(with source set to the exact new_sources key without [[ ]]), "
-                                       "move the old current bullet verbatim to ## Как пришли and put only its "
-                                       "replacement in ## Сейчас. Use every exact required_new_citation.",
-                        "required_verbatim_lines": [line for line in loaded.parsed.body.splitlines()
-                                                    if line.strip() and not line.lstrip().startswith("#")
-                                                    and line.strip() != "—"]}
+                validate_candidate(theme, loaded, names, files, c, result["body"], result["changes"])
+                return result["body"].strip()
+            except Refused as exc:
+                if attempt or exc.reason == telemetry.Reason.CONTEXT:
+                    raise
+                feedback = {"failure": str(exc), "previous_response": raw,
+                            "instruction": "Ordinary additions require changes: []; remove invented correction entries. "
+                                           "For explicit supersession keep the genuine source-backed correction ledger "
+                                           "(with source set to the exact new_sources key without [[ ]]), "
+                                           "move the old current bullet verbatim to ## Как пришли and put only its "
+                                           "replacement in ## Сейчас. Use every exact required_new_citation.",
+                            "required_verbatim_lines": [line for line in loaded.parsed.body.splitlines()
+                                                        if line.strip() and not line.lstrip().startswith("#")
+                                                        and line.strip() != "—"]}
     raise Refused("candidate attempts exhausted")

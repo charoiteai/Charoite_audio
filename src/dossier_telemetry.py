@@ -67,7 +67,6 @@ class Detail(str, Enum):
     CONTRACT = "contract_refused"
     LEDGER_MALFORMED = "ledger_malformed"
     LEDGER_SOURCE = "ledger_source"
-    LEDGER_QUOTE = "ledger_quote"
     LEDGER_PLACEMENT = "ledger_placement"
     SECTIONS_INVALID = "sections_invalid"
     SPEAKER_LABELS = "speaker_labels"
@@ -323,7 +322,7 @@ def detail(value: Detail):
 def record_refusal_message(message: str):
     """Map a closed internal refusal constant to a closed Detail; never store freeform text."""
     topic = _topic.get()
-    if topic is not None and topic.detail is None:
+    if topic is not None and topic.detail is None and topic.request_failure is None:
         mapped = _MESSAGE_TO_DETAIL.get(message)
         if mapped is not None:
             topic.detail = mapped

@@ -3,14 +3,20 @@ context_budget sequential fallback, and closed stage_refusals telemetry."""
 from __future__ import annotations
 
 # Shared pytest fixtures are imported under their fixture names.
-# ruff: noqa: F811
+# ruff: noqa: F811, E402
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
 import dossier_incremental as inc
 import dossier_telemetry as telemetry
+import llm
+import nightly_dossier as night_cli
 from charoite_graph import dossier, frontmatter
 from test_dossier_incremental import BODY, LOCAL, _new, world  # noqa: F401
 
@@ -86,8 +92,13 @@ def test_quote_hits_accepts_inline_bold_italic_and_mixed_wikilink():
     ) == 1
     # __bold__ and *italic*
     assert inc._quote_hits(source, "Срочно: проверили резервный контур.") == 1
-    # Wikilink nested inside **...**
+    # Wikilink nested inside **...** (both plain display and preserved [[...]] quote)
     assert inc._quote_hits(source, "По Платформа Альфа запущен тест.") == 1
+    assert inc._quote_hits(source, "По [[Ядра/Платформа Альфа|Платформа Альфа]] запущен тест.") == 1
+    # Inline bold spanning across a preserved wikilink
+    spanned = "- **По [[Ядра/Альфа|Альфа]]**: готово."
+    assert inc._quote_hits(spanned, "По [[Ядра/Альфа|Альфа]]: готово.") == 1
+    assert inc._quote_hits(spanned, "По Альфа: готово.") == 1
     # Escaped table link with bold in same row
     table = "| [[Ядра/Альфа\\|Альфа]] | **500 RPS** |"
     assert inc._quote_hits(table, "| [[Ядра/Альфа|Альфа]] | 500 RPS |") == 1
@@ -206,6 +217,8 @@ def test_deterministic_check_accepts_wikilink_source_in_changes():
         "quote": "Vent A is now closed.",
     }]
     inc.deterministic_check(loaded, body, [name], files, changes)
+    # Canonicalized in place so semantic_check receives the plain key without [[ ]]
+    assert changes[0]["source"] == name
 
     bad_changes = [{**changes[0], "source": f"[[{name}|Alias]]"}]
     with pytest.raises(inc.Refused, match="unsupported or unattributed correction ledger"):
@@ -303,6 +316,8 @@ def test_nightly_add_falls_back_sequentially_only_on_multi_source_context_budget
     raw_bytes = old_path.read_bytes()
     assert b"\r\n" in raw_bytes
     final_text = raw_bytes.decode("utf-8-sig")
+    final_body = dossier.DossierLoad("ok", final_text).parsed.body
+    assert f"Fact from {m1}" in final_body and f"Fact from {m2}" in final_body
     assert f"[[{m1}]]" in final_text and f"[[{m2}]]" in final_text
     assert m3 in frontmatter.list_field(final_text, dossier.REJECTED_FIELD)
     # rejection_version computed against original loaded.text (before body updates)
@@ -315,6 +330,78 @@ def test_nightly_add_falls_back_sequentially_only_on_multi_source_context_budget
     assert snap["committed_topics"] == 1
     assert snap["final_refusals"] == 0
     assert snap["stage_refusals"] == {}
+
+
+def test_append_result_refuses_empty_body_when_sources_accepted():
+    loaded = _loaded_dossier()
+    with pytest.raises(inc.Refused, match="invalid rendered append"):
+        night_cli._append_result(loaded, None, ["2099-01-02_100000"], [], None, "fp")
+    with pytest.raises(inc.Refused, match="invalid rendered append"):
+        night_cli._append_result(loaded, "   ", ["2099-01-02_100000"], [], None, "fp")
+
+
+def test_stage_refusals_preserves_empty_reply_and_io_stage(world, monkeypatch):
+    nd, graph, old_path = world
+    _new(graph, "2099-01-02_100000", "Glasshouse vent sealed.")
+
+    class EmptyLLM:
+        cloud_ready = False
+        engine = "ollama"
+        base = "http://127.0.0.1:11434"
+        _fell_back_local = False
+
+        def __init__(self, c):
+            pass
+
+        def require_local_ollama_model(self, model):
+            return model + ":local"
+
+        def stream(self, prompt, **kwargs):
+            yield ""
+
+    monkeypatch.setattr(llm, "LLM", EmptyLLM)
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    snap = result.telemetry.snapshot()
+    assert snap["final_reasons"] == {"empty_reply": 1}
+    assert snap["stage_refusals"] == {"source_relevance": {"empty_reply": 1}}
+
+    # IO error during backup on add path reports append_commit (not unknown)
+    monkeypatch.setattr(inc, "source_relevance", lambda *a, **kw: False)
+    monkeypatch.setattr(dossier, "backup", lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
+    result_io = nd.run_all([graph], LOCAL, full=False, dry=False)
+    snap_io = result_io.telemetry.snapshot()
+    assert snap_io["final_reasons"] == {"io_refused": 1}
+    assert snap_io["stage_refusals"] == {"append_commit": {"io_refused": 1}}
+
+
+def test_semantic_check_runs_emphasis_fallback_once_per_claim(monkeypatch):
+    loaded = _loaded_dossier()
+    name = "2099-01-02_100000"
+    files = {name: {"text": "**Glasshouse** vent is sealed.", "kind": "Встречи"}}
+    body = loaded.parsed.body.replace(
+        "- Vent A is open. [[2099-01-01_100000]]",
+        f"- Vent A is open. [[2099-01-01_100000]]\n- Glasshouse vent is sealed. [[{name}]]",
+    )
+    orig_emphasis = inc._emphasis_free
+    calls = []
+
+    def counting_emphasis(text, **kw):
+        calls.append(text)
+        return orig_emphasis(text, **kw)
+
+    monkeypatch.setattr(inc, "_emphasis_free", counting_emphasis)
+    monkeypatch.setattr(inc, "audit_claim", lambda *a, **kw: None)
+    monkeypatch.setattr(inc, "local_complete", _seq_replies([
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": "Glasshouse vent is sealed.", "source": name,
+                        "quote": "Glasshouse vent is sealed.", "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+    ]))
+    inc.semantic_check("Glasshouse", loaded, [name], files, LOCAL, body, [])
+    # 1 call for text + 1 call for quote (not doubled in semantic_check)
+    assert len(calls) == 2
 
 
 def test_nightly_add_fallback_failure_records_actual_reason_not_stale_context(world, monkeypatch):

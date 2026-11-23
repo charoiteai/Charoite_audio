@@ -445,6 +445,9 @@ def _input_refusal(g: _GraphRun, theme: str, members: list[str], loaded: dossier
 def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list[str],
                    rejected: list[str], g: _GraphRun, fp: str) -> str:
     """Change only the body, append source citations, then stamp committed inputs."""
+    if accepted and (not isinstance(body, str) or not body.strip()):
+        telemetry.detail(telemetry.Detail.RENDER_INVALID)
+        raise dossier_incremental.Refused("invalid rendered append")
     text = loaded.replace_body(body) if body is not None else loaded.raw.decode("utf-8")
     if accepted:
         parsed = dossier.DossierLoad("ok", text).parsed
@@ -494,10 +497,11 @@ def _append_sequential(theme: str, loaded: dossier.DossierLoad, accepted: list[s
     """Fallback when a multi-source batch exceeds MAX_AUDIT_CONTEXT: step one source at a time."""
     current = loaded
     body = ""
-    for name in accepted:
+    for idx, name in enumerate(accepted):
         body = dossier_incremental.append(theme, current, [name], files, c)
-        step_text = loaded.replace_body(body)
-        current = dossier.DossierLoad("ok", step_text, raw=step_text.encode("utf-8"))
+        if idx + 1 < len(accepted):
+            step_text = loaded.replace_body(body)
+            current = dossier.DossierLoad("ok", step_text, raw=step_text.encode("utf-8"))
     return body
 
 
@@ -519,7 +523,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
                             on_disk=False, force=g.full)
     if decision.action in ("skip", "hold"):
         g.keep(theme, members, loaded, fp)
-        telemetry.refusal(telemetry.Reason.INPUT)
+        with telemetry.stage(telemetry.Stage.SCAN):
+            telemetry.refusal(telemetry.Reason.INPUT)
         _record_plan(g, theme, loaded, decision)
         return None
     if decision.action == "add":
@@ -528,7 +533,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
     else:
         allowed, author_payload, failures = _manual_for_rebuild(theme, loaded)
     if not allowed:
-        telemetry.refusal(telemetry.Reason.INPUT)
+        with telemetry.stage(telemetry.Stage.SCAN):
+            telemetry.refusal(telemetry.Reason.INPUT)
         g.отказы += failures
         if failures == 0:
             # Отказ из-за повреждённых «Правок автора» — это пропуск темы,
@@ -670,7 +676,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         try:
             copy = dossier.backup(folder, g.stamp, path)
         except OSError as e:
-            telemetry.refusal(telemetry.Reason.IO)
+            with telemetry.stage(telemetry.Stage.APPEND_COMMIT if decision.action == "add" else telemetry.Stage.REBUILD):
+                telemetry.refusal(telemetry.Reason.IO)
             print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
             g.отказы += 1
             return gen_s
