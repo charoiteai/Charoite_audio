@@ -1301,3 +1301,75 @@ def test_round5_unlabeled_rule_in_prompts_and_audit_predict(monkeypatch):
         (inc.SUPPORT_AUDIT_SYSTEM, True, inc.AUDIT_PREDICT),
         (inc.TOPIC_AUDIT_SYSTEM, False, 350),
     ]
+
+
+def test_round6_main_judge_predict_quote_contract_and_source_telemetry(monkeypatch):
+    assert inc.MAIN_JUDGE_PREDICT == 4096
+    assert inc.MAIN_JUDGE_PREDICT >= inc.AUDIT_PREDICT
+
+    # Stage context stepping for MAIN_JUDGE_PREDICT matches AUDIT_PREDICT boundaries.
+    sys_len = len(inc.MAIN_JUDGE_SYSTEM)
+    min_budget = (inc.MIN_AUTO_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    max_budget = (inc.MAX_AUDIT_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (min_budget - sys_len),
+                             inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.MIN_AUTO_CONTEXT
+    assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (min_budget + 1 - sys_len),
+                             inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.MID_AUTO_CONTEXT
+    assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (max_budget - sys_len),
+                             inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.MAX_AUDIT_CONTEXT
+    with pytest.raises(inc.Refused, match="maximum context budget") as over:
+        inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (max_budget + 1 - sys_len),
+                          inc.MAIN_JUDGE_PREDICT)
+    assert over.value.reason == telemetry.Reason.CONTEXT
+
+    # Prompt preserves multiline quotes while forbidding line joining, and uses MAIN_JUDGE_PREDICT.
+    m1 = "2099-01-02_100000"
+    loaded = _loaded_with_body(BODY)
+    files = {m1: {"text": "- Header\n  - Glasshouse vent sealed."}}
+    body = BODY.replace("## Как пришли", f"- Glasshouse vent sealed. [[{m1}]]\n## Как пришли")
+    seen_calls = []
+
+    def fake_complete(prompt, config, *, system, **kwargs):
+        seen_calls.append((system, prompt, kwargs.get("num_predict")))
+        return json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": "Glasshouse vent sealed.", "source": m1,
+                        "quote": "- Header\n  - Glasshouse vent sealed.",
+                        "relevant": True, "supported": True, "reason": "ok"}],
+        })
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
+    monkeypatch.setattr(inc, "audit_claim", lambda *a, **kw: None)
+    inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+    assert len(seen_calls) == 1
+    _, prompt, num_predict = seen_calls[0]
+    assert num_predict == inc.MAIN_JUDGE_PREDICT
+    assert "without joining separate lines, bullets, or speaker turns with a space" in prompt
+    assert "for a multiline span, preserve exact newlines, indentation, bullet markers, and prefixes" in prompt
+
+    # Unsupported claim source maps to claim_source_missing, distinct from claim_quote_missing.
+    for bad_claim, expected_msg, expected_detail in (
+        (
+            {"text": "Glasshouse vent sealed.", "source": f"[[Встречи/{m1}]]",
+             "quote": "Glasshouse vent sealed.", "relevant": True, "supported": True, "reason": "ok"},
+            "names an unsupported new source",
+            "claim_source_missing",
+        ),
+        (
+            {"text": "Glasshouse vent sealed.", "source": m1,
+             "quote": "Header Glasshouse vent sealed.", "relevant": True, "supported": True, "reason": "ok"},
+            "lacks exact new-source evidence",
+            "claim_quote_missing",
+        ),
+    ):
+        col = telemetry.Collector()
+        with col.activate():
+            with col.topic():
+                with pytest.raises(inc.Refused, match=expected_msg) as exc_info:
+                    with telemetry.stage(telemetry.Stage.SEMANTIC):
+                        inc._check_claims(loaded, body, [m1], files, [bad_claim], [])
+                telemetry.record_refusal_message(str(exc_info.value))
+                telemetry.request_refusal(telemetry.Reason.VALIDATION)
+                col.complete_topic(attempted=True, committed=0, refused=1)
+        assert col.snapshot()["stage_refusals"] == {"semantic_check": {expected_detail: 1}}

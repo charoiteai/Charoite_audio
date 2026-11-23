@@ -40,7 +40,7 @@ SOURCE_RELEVANCE_SYSTEM = "You judge source relevance conservatively."
 GENERATE_SYSTEM = "You extend factual dossiers conservatively."
 MAIN_JUDGE_SYSTEM = "You are an independent conservative dossier judge."
 SOURCE_PREDICT = 350
-MAIN_JUDGE_PREDICT = 1200
+MAIN_JUDGE_PREDICT = 4096
 AUDIT_PREDICT = 4096
 APPEND_FEEDBACK_RESPONSE_CHARS = 2000
 _PATCH_LINE_BREAKS = re.compile(r"[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
@@ -528,7 +528,7 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
         text, raw_name, quote = claim["text"], claim["source"], claim["quote"]
         name = _resolve_source_name(raw_name, names)
         if name is None:
-            raise Refused("candidate claim lacks exact new-source evidence")
+            raise Refused("candidate claim names an unsupported new source")
         if (text, name) in seen:
             raise Refused("duplicate candidate claim")
         seen.add((text, name))
@@ -739,9 +739,12 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "preserved old claims as irrelevant. Return one claims item per independent assertion, "
         "splitting a compound bullet into exact text spans rather than judging the whole bullet "
         "as one claim. Each item's text must copy its exact candidate span, source must name "
-        "one supplied new source, and quote must copy exact nonempty source evidence "
-        "from new_sources (for wikilinks, either the exact source text or the visible link text, "
-        "keeping valid JSON escaping). "
+        "one supplied new source, and quote must copy one contiguous verbatim substring "
+        "from new_sources without joining separate lines, bullets, or speaker turns with a space, "
+        "omitting intermediate prefixes or newlines, or altering table pipes (for a multiline span, "
+        "preserve exact newlines, indentation, bullet markers, and prefixes; for wikilinks, copy "
+        "either the exact source text or the visible link text; keep valid JSON escaping for "
+        "quotes and newlines). "
         "Set relevant and supported separately, with a nonempty reason for that assertion. "
         "The reason must explain that assertion's topic relationship, not shared meeting context. "
         "A tentative or unverified source quote cannot support an unconditional factual claim; "
