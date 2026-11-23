@@ -479,6 +479,37 @@ def test_grounded_answer_rejects_invalid_output_schema():
         list(ollama_client.grounded_answer("p", system="s", cancel_event=threading.Event(), output_schema="json"))
 
 
+def test_real_stopped_feed_receipt_with_unprocessed_final_speech(tmp_path):
+    from daemon import close_grounded_export
+    from feed_contract import parse_feed
+    from grounded_feed.local_runner import LocalLoopbackAuthority
+    from grounded_feed.runtime import SourceProducerCutoff, bind_product_source
+    from grounded_feed.session import GroundedFeedSession
+    from transcript import Transcript
+    session = GroundedFeedSession(lambda event: None)
+    tr = Transcript(tmp_path)
+    actor = bind_product_source(session, tr, SourceProducerCutoff(lambda timeout: True),
+                                source_only_notice=False, local_product_authority=True)
+    client = SimpleNamespace(engine="mlx-server", base="http://127.0.0.1:8080", cloud_ready=False,
+                             mlx_model="test-model", _cfg={})
+    authority = LocalLoopbackAuthority.verify(client)
+    tr.add("Выпуск 12 июня.", speaker="Участник A")
+    session.ingest_source_once(limit=16)
+    actor.commit_local_speech_window(
+        authority, window_id="w1", items=parse_feed(json.dumps({"items": [{"topic": "Выпуск", "text": "Выпуск 12 июня."}]})),
+        expected_cursor=(0, 0), next_cursor=(1, 0))
+    tr.add("Уточняю: выпуск 15 июня.", speaker="Участник A")
+    # The display filename can differ from the capture epoch used by the Stop receipt.
+    tr.path = tr.path.rename(tmp_path / "renamed-capture.md")
+    export = tmp_path / "renamed-capture.md.grounded.json"
+    assert close_grounded_export(session, tr)
+    binding = ref.receipt(export, tr.stamp)
+    assert ref.load_thread(tmp_path / "renamed.md", binding)[0]["text"] == "Выпуск 12 июня."
+    # Semantic completeness is not assumed: refinement must still see final speech.
+    source = json.loads(export.read_text())["snapshot"]["source"]
+    all_speech = source["portions"] + source["late_portions"]
+    assert "15 июня" in all_speech[-1]["body_utf8"]
+
 @pytest.mark.parametrize("repair", [True, False])
 def test_missing_uncertainty_requires_explicit_model_repair_and_audit(repair):
     quote = "Проверка пока не назначена."

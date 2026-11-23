@@ -1,6 +1,45 @@
 import SwiftUI
+import CryptoKit
 
 #if os(macOS)
+
+/// Only a verified conversation can mark a source excerpt as literal text.
+enum MeetingCardFilePart: Equatable {
+    case markdown(String)
+    case transcript(String)
+
+    var displayText: AttributedString {
+        switch self {
+        case .markdown(let line): return MarkdownLine.render(line)
+        case .transcript(let source): return AttributedString(source)
+        }
+    }
+
+    static func read(_ text: String, verifiedConversation: Bool) -> [Self] {
+        // The writer adds LF delimiters. A source CR before a delimiter still belongs to the source.
+        let lines = text.utf8.split(separator: 0x0A, omittingEmptySubsequences: false)
+            .map { String(decoding: $0, as: UTF8.self) }
+        var parts: [Self] = []
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            index += 1
+            if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                parts.append(.markdown(line))
+            }
+            guard verifiedConversation, line == "**Из стенограммы**",
+                  index + 1 < lines.count, lines[index].isEmpty else { continue }
+            let opener = lines[index + 1]
+            let fence = opener.prefix(while: { $0 == "`" })
+            guard fence.count >= 3, opener.dropFirst(fence.count) == "text" else { continue }
+            let start = index + 2
+            let end = lines[start...].firstIndex(of: String(fence)) ?? lines.endIndex
+            parts.append(.transcript(lines[start..<end].joined(separator: "\n")))
+            index = end < lines.endIndex ? end + 1 : end
+        }
+        return parts
+    }
+}
 
 /// Четыре глубины чтения одной встречи: Резюме · Минутки · Разбор ·
 /// Стенограмма. Вынесено из MeetingCardView — там и без того больше
@@ -35,7 +74,7 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
     /// неизменном статусе (Codex, круг-2 по #391). Ветка без archiveFolder —
     /// на случай карточки, собранной не через MeetingCardLoader (в проде
     /// минуток без папки архива не бывает — только в тестах и превью).
-    static func available(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> [MeetingCardDepth] {
+    static func available(card: MeetingCard, meeting: MeetingProcessingSnapshot, conversation: URL? = nil, resolutionComplete: Bool = true) -> [MeetingCardDepth] {
         var out: [MeetingCardDepth] = [.summary]
         if let folder = card.archiveFolder {
             if FileManager.default.fileExists(atPath: folder.appendingPathComponent("Минутки.md").path) {
@@ -44,7 +83,8 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
         } else if let minutes = card.minutes, !minutes.isEmpty {
             out.append(.minutes)
         }
-        if let note = meeting.notePath, FileManager.default.fileExists(atPath: note) {
+        if let analysis = MeetingCardDepth.analysis.file(card: card, meeting: meeting, conversation: conversation, resolutionComplete: resolutionComplete),
+           FileManager.default.fileExists(atPath: analysis.path) {
             out.append(.analysis)
         }
         if FileManager.default.fileExists(atPath: meeting.transcriptPath) {
@@ -53,9 +93,48 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
         return out
     }
 
+    /// Resolve once off the main actor. The binding is authoritative even when
+    /// an archive contains the current transcript beside an older debrief.
+    static func conversationFile(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> URL? {
+        verifiedConversation(card: card, meeting: meeting)?.url
+    }
+
+    static func verifiedConversation(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> (url: URL, text: String)? {
+        let fm = FileManager.default
+        let transcript = URL(fileURLWithPath: meeting.transcriptPath)
+        guard !fm.fileExists(atPath: transcript.path + ".debrief-publication.json"),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: transcript.path + ".debrief-binding.json")),
+              data.count <= 65536,
+              let binding = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              binding["owner"] as? String == transcript.lastPathComponent,
+              let publication = binding["publication_id"] as? String, !publication.isEmpty,
+              let name = binding["debrief_file"] as? String, !name.isEmpty,
+              (name as NSString).lastPathComponent == name, name != ".", name != "..",
+              let source = try? Data(contentsOf: transcript, options: .mappedIfSafe) else { return nil }
+        let debrief = transcript.deletingLastPathComponent().appendingPathComponent(name)
+        guard let body = try? Data(contentsOf: debrief, options: .mappedIfSafe),
+              binding["full_sha256"] as? String == digest(source),
+              let outputSHA = binding["debrief_sha256"] as? String, outputSHA == digest(body),
+              let text = String(data: body, encoding: .utf8) else { return nil }
+        if let folder = card.archiveFolder {
+            let archived = folder.appendingPathComponent("Разбор.md")
+            if let archivedSource = try? Data(contentsOf: folder.appendingPathComponent("Стенограмма.md"), options: .mappedIfSafe),
+               archivedSource == source,
+               let archivedBody = try? Data(contentsOf: archived, options: .mappedIfSafe),
+               digest(archivedBody) == outputSHA {
+                return (archived, text)
+            }
+        }
+        return (debrief, text)
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Файл этой глубины для внешнего редактора: резюме и минутки живут в
-    /// архиве встречи, разбор — заметка графа, стенограмма — она сама.
-    func file(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> URL? {
+    /// архиве встречи; старые карточки без разбора открывают заметку графа.
+    func file(card: MeetingCard, meeting: MeetingProcessingSnapshot, conversation: URL? = nil, resolutionComplete: Bool = true) -> URL? {
         let note = meeting.notePath.map { URL(fileURLWithPath: $0) }
         switch self {
         case .summary:
@@ -63,7 +142,7 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
         case .minutes:
             return card.archiveFolder?.appendingPathComponent("Минутки.md") ?? note
         case .analysis:
-            return note
+            return resolutionComplete ? (conversation ?? note) : nil
         case .transcript:
             return URL(fileURLWithPath: meeting.transcriptPath)
         }
@@ -72,7 +151,7 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
 
 struct DepthTaskID: Equatable {
     let depth: MeetingCardDepth
-    let meetingID: String
+    let snapshot: MeetingProcessingSnapshot
     let url: URL?
 }
 
@@ -82,9 +161,17 @@ extension MeetingCardView {
         return available.contains(wanted) ? wanted : .summary
     }
 
-    var depth: MeetingCardDepth {
-        depth(in: MeetingCardDepth.available(card: card, meeting: meeting))
+    var availableDepths: [MeetingCardDepth] {
+        MeetingCardDepth.available(card: card, meeting: meeting,
+                                   conversation: resolvedConversation?.url, resolutionComplete: loadedSnapshot == meeting)
     }
+
+    func depthFile(_ depth: MeetingCardDepth) -> URL? {
+        depth.file(card: card, meeting: meeting,
+                   conversation: resolvedConversation?.url, resolutionComplete: loadedSnapshot == meeting)
+    }
+
+    var depth: MeetingCardDepth { depth(in: availableDepths) }
 
     /// Сегмент глубин показывается, когда глубин больше одной: у встречи
     /// без минуток и стенограммы выбирать нечего.
@@ -134,14 +221,22 @@ extension MeetingCardView {
                 // стенограмму: содержимое честнее пустоты.
                 fileView(depth: depth, targetURL: targetURL)
             }
-        case .analysis, .transcript:
+        case .analysis:
+            if meeting.state == .error {
+                Text(L.t("Обработка не завершена. Сохранённый разбор может относиться к предыдущей версии стенограммы.",
+                         "Processing is incomplete. The saved analysis may refer to an earlier transcript version.",
+                         "处理尚未完成。已保存的分析可能对应较早的逐字稿版本。"))
+                    .font(.caption).foregroundStyle(Theme.warning)
+            }
+            fileView(depth: depth, targetURL: targetURL)
+        case .transcript:
             fileView(depth: depth, targetURL: targetURL)
         }
     }
 
     private func loadedDepthFile(depth: MeetingCardDepth, targetURL: URL?) -> Bool {
         fileDepth == depth
-            && fileMeetingID == meeting.meetingID
+            && fileSnapshot == meeting
             && fileURL == targetURL
     }
 
@@ -149,19 +244,19 @@ extension MeetingCardView {
     /// Стенограмма длинной встречи — сотни абзацев: LazyVStack, не один Text.
     @ViewBuilder
     private func fileView(depth: MeetingCardDepth, targetURL: URL?) -> some View {
-        if !loadedDepthFile(depth: depth, targetURL: targetURL) || fileLines == nil {
+        if !loadedDepthFile(depth: depth, targetURL: targetURL) || fileParts == nil {
             HStack(spacing: 7) {
                 ProgressView().controlSize(.small)
                 Text(L.t("Читаю…", "Reading…", "正在读取…"))
                     .font(.callout).foregroundStyle(.secondary)
             }
-        } else if let fileLines, fileLines.isEmpty {
+        } else if let fileParts, fileParts.isEmpty {
             Text(L.t("Файл пуст.", "The file is empty.", "文件为空。"))
                 .font(.callout).foregroundStyle(.secondary)
-        } else if let fileLines {
+        } else if let fileParts {
             LazyVStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(fileLines.enumerated()), id: \.offset) { _, line in
-                    Text(MarkdownLine.render(line))
+                ForEach(Array(fileParts.enumerated()), id: \.offset) { _, part in
+                    Text(part.displayText)
                         .font(.callout)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -177,31 +272,30 @@ extension MeetingCardView {
     @MainActor
     func loadDepthFile() async {
         let wanted = depth
-        let meetingID = meeting.meetingID
+        let snapshot = meeting
         let needsMinutesFile = wanted == .minutes
             && (card.minutes?.isEmpty ?? true)
         guard wanted == .analysis || wanted == .transcript || needsMinutesFile,
-              let url = wanted.file(card: card, meeting: meeting) else { return }
-        // Режем на непустые строки в фоне один раз: рендер получает готовый
+              let url = depthFile(wanted) else { return }
+        // Готовим строки и дословные фрагменты в фоне: рендер получает готовый
         // массив, а не мегабайтную строку на каждый проход тела. Минутки там
         // же и парсим — чтобы панель могла показать файл, которого нет в кэше.
-        let (lines, minutes) = await Task.detached(priority: .userInitiated) {
-            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-            let lines = text
-                .components(separatedBy: "\n")
-                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            return (lines, needsMinutesFile ? MeetingMinutes.parse(text) : nil)
+        let verifiedText = wanted == .analysis && url == resolvedConversation?.url ? resolvedConversation?.text : nil
+        let (parts, minutes) = await Task.detached(priority: .userInitiated) {
+            let text = verifiedText ?? ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+            let parts = MeetingCardFilePart.read(text, verifiedConversation: verifiedText != nil)
+            return (parts, needsMinutesFile ? MeetingMinutes.parse(text) : nil)
         }.value
         // .task(id:) отменяет прежнюю задачу при смене глубины или встречи;
         // второй сторож — на случай смены между await и записью.
         guard !Task.isCancelled,
               depth == wanted,
-              meeting.meetingID == meetingID,
-              wanted.file(card: card, meeting: meeting) == url else { return }
-        fileLines = lines
+              meeting == snapshot,
+              depthFile(wanted) == url else { return }
+        fileParts = parts
         fileMinutes = minutes
         fileDepth = wanted
-        fileMeetingID = meetingID
+        fileSnapshot = snapshot
         fileURL = url
     }
 

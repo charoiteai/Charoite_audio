@@ -93,6 +93,8 @@ llm:
 sufler:
   # Живая локальная последовательная нить встречи (темы, факты, вопросы и ответы в одном полотне).
   live_feed: true
+  # После Stop локальная модель готовит связный разбор по итоговой стенограмме.
+  refined_debrief: false
   # Optional local model role; omitted means llm.model. mlx-server uses llm.mlx_model.
   feed_model: null
   auto_hint: true

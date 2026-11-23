@@ -388,8 +388,23 @@ def brain_rename(stamp: str, pretty: str, *, sent: bool, enabled: bool, explicit
 
 
 def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
+    import debrief_pipeline
+    # Check destinations even when the source predates refinement metadata:
+    # an orphan identity at the new name must never be inherited by a rename.
+    bound_moves = [(old, new) for old, new in p["moves"] if old.suffix == ".md"]
+    for old, new in bound_moves:
+        if not debrief_pipeline.can_retitle(old, new):
+            raise RuntimeError("переименование отклонено: привязка разбора изменилась")
+    bound = [(old, new) for old, new in bound_moves if debrief_pipeline.binding_path(old).exists()]
+    for old, new in bound:
+        debrief_pipeline.prepare_retitle(old, new)
     for old, new in p["moves"]:
-        old.rename(new)
+        if bound:
+            debrief_pipeline.move_retitle_file(old, new)
+        else:
+            old.rename(new)
+    for old, new in bound_moves:
+        debrief_pipeline.retitle_binding(old, new)
     # Секунды главного файла, получившего минутное имя, — в ключ `stamp`
     # сайдкара (кто и почему — решает plan). После всех переносов: пара
     # .md + сайдкар уже под новым именем, remember пишет в прямой.

@@ -129,6 +129,13 @@ def test_llm_grounded_answer_and_feed_enforce_local_selector_and_reject_cloud_ta
     assert captured[0][1]["think"] is False
     assert captured[0][2]["method"] == "grounded_answer"
 
+    assert "format" not in captured[0][1]
+    schema = {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]}
+    list(client.grounded_answer("Сколько?", system="sys-ru", cancel_event=threading.Event(), output_schema=schema))
+    assert len(captured) == 2
+    assert captured[1][1] == {**captured[0][1], "format": schema}
+    assert captured[1][1]["truncate"] is False and captured[1][1]["shift"] is False
+
 
 def test_local_speech_batch_dedup_topic_pinning_adjacency_and_atomicity(tmp_path):
     events = []
@@ -906,6 +913,9 @@ def test_llm_critical_doors_ollama_cache_mlx_and_ndjson(monkeypatch):
         list(mlx_client.feed("Речь", "{}", cancel_event=threading.Event(), model="other"))
     with pytest.raises(ValueError, match="does not match"):
         list(mlx_client.grounded_answer("В?", system="s", cancel_event=threading.Event(), model="other"))
+
+    with pytest.raises(ValueError, match="Ollama JSON schema"):
+        list(mlx_client.grounded_answer("В?", system="s", cancel_event=threading.Event(), output_schema={}))
 
     seen.clear()
     monkeypatch.setattr(mlx_client, "_open_stream", make_stream([

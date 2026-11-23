@@ -53,6 +53,7 @@ import channel_trace  # noqa: E402
 import decision_gate  # noqa: E402
 import live_nemotron  # noqa: E402
 import live_sidecar  # noqa: E402
+import debrief_pipeline  # noqa: E402
 import machine_power  # noqa: E402
 import meeting_source  # noqa: E402
 import model_ledger  # noqa: E402
@@ -182,6 +183,15 @@ def cut_stop_producers(hub, grounded_feed, timeout: float = STT_PRODUCER_CUTOFF_
         merge(late)
         print("grounded feed: producers survived Stop cutoff: " + ",".join(late), file=sys.stderr)
     return late
+
+
+def close_grounded_export(grounded_feed, transcript: Transcript) -> bool:
+    """Bind the Stop snapshot to this transcript and its capture epoch."""
+    return grounded_feed.close(
+        export_path=transcript.path.with_name(transcript.path.name + ".grounded.json"),
+        session_epoch=transcript.stamp,
+        request_id=f"close-{transcript.stamp}",
+    )
 
 
 def wait_live_producers(timeout: float = STT_PRODUCER_CUTOFF_S) -> list[str]:
@@ -4085,6 +4095,15 @@ def main():
                                 "stamp": tr.stamp}, bare=tr.stamp)
         except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
             pass
+        debrief_handoff = None
+        debrief_args = []
+        try:
+            if debrief_pipeline.enabled(cfg):
+                debrief_handoff = debrief_pipeline.new_handoff(pathlib.Path(tr.path), tr.stamp)
+                debrief_args = debrief_pipeline.arguments(debrief_handoff)
+        except Exception as error:  # noqa: BLE001 — never delay or cancel the canonical child
+            debrief_args = ["--refinement-unbound"]
+            print(f"debrief handoff failed: {type(error).__name__}", file=sys.stderr)
         try:
             if grounded_feed is not None:
                 grounded_feed.cancel_live_generation(timeout_s=2.0)
@@ -4096,7 +4115,8 @@ def main():
                 pass
             subprocess.Popen(
                 ["nice", "-n", "10", sys.executable,
-                 str(CODE / "src" / "rebuild_transcript.py"), str(tr.path)],
+                 str(CODE / "src" / "rebuild_transcript.py"), str(tr.path)]
+                + debrief_args,
                 start_new_session=True, stdin=subprocess.DEVNULL,
                 stdout=glog, stderr=subprocess.STDOUT,
             )
@@ -4128,11 +4148,11 @@ def main():
                 nemotron_shadow.close(live_nemotron.STOP_GRACE_S)
             except Exception as error:  # noqa: BLE001 - never skip the grounded export
                 print("nemotron shadow close failed: " + type(error).__name__, file=sys.stderr)
+            export_complete = False
             if grounded_feed is not None:
-                export_path = pathlib.Path(str(tr.path) + ".grounded.json")
                 try:
-                    if not grounded_feed.close(export_path=export_path, session_epoch=tr.stamp,
-                                               request_id=f"close-{tr.stamp}"):
+                    export_complete = close_grounded_export(grounded_feed, tr)
+                    if not export_complete:
                         emit_error("Не удалось полностью сохранить живую ленту. Проверьте итог сеанса.",
                                    reason="grounded_export_incomplete")
                         print("grounded feed export incomplete: accepted tail was not fully drained",
@@ -4141,6 +4161,12 @@ def main():
                     emit_error("Не удалось полностью сохранить живую ленту. Проверьте итог сеанса.",
                                reason="grounded_export_failed")
                     print(f"grounded feed export failed: {type(error).__name__}", file=sys.stderr)
+            if debrief_handoff is not None:
+                try:
+                    debrief_pipeline.finish_stop(pathlib.Path(tr.path), debrief_handoff,
+                                                 complete=export_complete)
+                except Exception as error:  # noqa: BLE001 — child fails closed; canonical work continues
+                    print(f"debrief Stop receipt failed: {type(error).__name__}", file=sys.stderr)
 
 
 if __name__ == "__main__":

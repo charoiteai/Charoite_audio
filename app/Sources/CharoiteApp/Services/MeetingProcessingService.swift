@@ -173,6 +173,10 @@ enum MeetingProcessingPolicy {
             return L.t("Пересобираю стенограмму…",
                        "Rebuilding the transcript…",
                        "正在重建逐字稿…")
+        case "refining_debrief":
+            return L.t("Уточняю разговор по итоговой стенограмме…",
+                       "Refining the conversation against the final transcript…",
+                       "正在根据最终逐字稿核对对话…")
         case "updating_graph":
             // На длинной встрече эта стадия висит минутами и внешне ничем не
             // отличается от зависшего процесса. Номер части — то, что отличает

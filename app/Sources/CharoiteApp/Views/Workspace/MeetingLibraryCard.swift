@@ -107,8 +107,7 @@ extension MeetingLibraryView {
     func cardActions(_ record: MeetingRecord) -> some View {
         switch record.state {
         case .ready:
-            let depths = MeetingCardDepth.available(card: record.card, meeting: record.snapshot)
-            if depths.count > 1 {
+            ResolvedMeetingDepths(record: record) { depths in
                 depthChips(record, available: depths)
             }
         case .error:
@@ -220,6 +219,34 @@ private struct PulsingDot: View {
             .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: dimmed)
             .onAppear { dimmed = true }
             .onDisappear { dimmed = false }
+    }
+}
+
+/// Each library row resolves its publication off the main actor. A reused row
+/// never applies the previous meeting's result while the next lookup is pending.
+private struct ResolvedMeetingDepths<Content: View>: View {
+    let record: MeetingRecord
+    let content: ([MeetingCardDepth]) -> Content
+    @State private var resolvedRecord: MeetingRecord?
+    @State private var conversation: URL?
+
+    var body: some View {
+        let depths = MeetingCardDepth.available(
+            card: record.card, meeting: record.snapshot,
+            conversation: resolvedRecord == record ? conversation : nil,
+            resolutionComplete: resolvedRecord == record)
+        Group {
+            if depths.count > 1 { content(depths) }
+        }
+        .task(id: record) {
+            let requested = record
+            let url = await Task.detached(priority: .userInitiated) {
+                MeetingCardDepth.conversationFile(card: requested.card, meeting: requested.snapshot)
+            }.value
+            guard !Task.isCancelled, record == requested else { return }
+            conversation = url
+            resolvedRecord = requested
+        }
     }
 }
 
