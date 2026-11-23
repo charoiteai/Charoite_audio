@@ -479,12 +479,26 @@ def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list
                                      [f"{versions[n]}:{n}" for n in sorted(all_rejected) if n in versions])
     candidate = dossier.DossierLoad("ok", text)
     if not candidate.parsed.complete or candidate.refusal("review"):
+        telemetry.detail(telemetry.Detail.RENDER_INVALID)
         raise dossier_incremental.Refused(candidate.parsed.reason or "invalid rendered append")
     before_manual = next(s for s in loaded.parsed.sections if s.title == "Правки автора")
     after_manual = next(s for s in candidate.parsed.sections if s.title == "Правки автора")
     if (loaded.text or "")[before_manual.content:] != candidate.text[after_manual.content:]:
+        telemetry.detail(telemetry.Detail.RENDER_INVALID)
         raise dossier_incremental.Refused("author payload changed")
     return text
+
+
+def _append_sequential(theme: str, loaded: dossier.DossierLoad, accepted: list[str],
+                       files: dict, c: dict) -> str:
+    """Fallback when a multi-source batch exceeds MAX_AUDIT_CONTEXT: step one source at a time."""
+    current = loaded
+    body = ""
+    for name in accepted:
+        body = dossier_incremental.append(theme, current, [name], files, c)
+        step_text = loaded.replace_body(body)
+        current = dossier.DossierLoad("ok", step_text, raw=step_text.encode("utf-8"))
+    return body
 
 
 def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | None:
@@ -531,13 +545,26 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             # Judge independently and finish every source before candidate
             # generation: a bad candidate cannot reject any source.
             for name in decision.new:
-                relevant = dossier_incremental.source_relevance(theme, loaded, name, g.files[name], c)
-                if type(relevant) is not bool:
-                    raise dossier_incremental.Refused("source relevance did not return a literal boolean")
+                with telemetry.stage(telemetry.Stage.SOURCE_RELEVANCE):
+                    relevant = dossier_incremental.source_relevance(theme, loaded, name, g.files[name], c)
+                    if type(relevant) is not bool:
+                        raise dossier_incremental.Refused("source relevance did not return a literal boolean")
                 (accepted if relevant else rejected).append(name)
-            body = dossier_incremental.append(theme, loaded, accepted, g.files, c) if accepted else ""
-            text = _append_result(loaded, body if accepted else None, accepted, rejected, g, fp)
+            if accepted:
+                try:
+                    body = dossier_incremental.append(theme, loaded, accepted, g.files, c)
+                except dossier_incremental.Refused as exc:
+                    if exc.reason != telemetry.Reason.CONTEXT or len(accepted) <= 1:
+                        raise
+                    telemetry.begin_attempt()
+                    body = _append_sequential(theme, loaded, accepted, g.files, c)
+            else:
+                body = ""
+            with telemetry.stage(telemetry.Stage.APPEND_COMMIT):
+                text = _append_result(loaded, body if accepted else None, accepted, rejected, g, fp)
         except Exception as e:  # noqa: BLE001
+            if isinstance(e, dossier_incremental.Refused):
+                telemetry.record_refusal_message(str(e))
             telemetry.request_refusal(telemetry.Reason.VALIDATION if isinstance(e, dossier_incremental.Refused)
                                       else telemetry.exception_reason(e))
             print(f"  ✗ {theme}: добавка не принята ({type(e).__name__}: {e}) — источники остаются для повтора")
@@ -548,7 +575,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
         for temperature in dossier.GEN_TEMPERATURES:
             telemetry.begin_attempt()
             try:
-                raw_body = generate(theme, supplied, g.files, c, temperature=temperature, fell_back=fell_back)
+                with telemetry.stage(telemetry.Stage.REBUILD):
+                    raw_body = generate(theme, supplied, g.files, c, temperature=temperature, fell_back=fell_back)
                 body = "" if dossier.DossierLoad("ok", raw_body).parsed.protected else graph_names.unlabel_speakers(
                     dossier.trim_to_format(raw_body))
             except Exception as e:  # noqa: BLE001
@@ -568,7 +596,9 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
             candidate = dossier.DossierLoad("ok", text)
             if dossier.looks_valid(body) and candidate.parsed.complete and not candidate.refusal("rebuild"):
                 break
-            telemetry.refusal(telemetry.Reason.FORMAT if raw_body else telemetry.Reason.EMPTY)
+            with telemetry.stage(telemetry.Stage.REBUILD):
+                telemetry.refusal(telemetry.Reason.FORMAT if raw_body else telemetry.Reason.EMPTY)
+                telemetry.detail(telemetry.Detail.FORMAT_REFUSED if raw_body else telemetry.Detail.EMPTY_REPLY)
             print(f"  … {theme}: ответ не по формату (температура {temperature})")
             body = ""
     if not body and decision.action != "add":

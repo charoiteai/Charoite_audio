@@ -46,6 +46,19 @@ _NON_RENDERED_OR_WIKILINK = re.compile(
     r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%"
     r"|!?\[\[(?P<target>[^\[\]|#\r\n^]*)(?:[#^][^\[\]|\r\n]*)?(?:\|(?P<alias>[^\[\]\r\n]*))?\]\]"
 )
+_INLINE_EMPHASIS = (
+    re.compile(r"\*\*(?!\s)(?P<inner>[^\r\n*]+?)(?<!\s)\*\*"),
+    re.compile(r"(?<!\w)__(?!\s)(?P<inner>[^\r\n_]+?)(?<!\s)__(?!\w)"),
+    re.compile(r"(?<!\w)(?<!\*)\*(?!\s)(?P<inner>[^\r\n*]+?)(?<!\s)\*(?!\*)(?!\w)"),
+)
+
+
+def _resolve_source_name(raw: str, names: list[str] | set[str]) -> str | None:
+    if raw in names:
+        return raw
+    if raw.startswith("[[") and raw.endswith("]]") and raw[2:-2] in names:
+        return raw[2:-2]
+    return None
 
 
 def local_config(c: dict) -> dict:
@@ -181,16 +194,48 @@ def _span_hits(haystack: str, quote: str) -> int:
     return 2 if haystack.find(quote, start + 1) != -1 else 1
 
 
+def _strip_inline_emphasis(text: str) -> str:
+    for pattern in _INLINE_EMPHASIS:
+        text = pattern.sub(r"\g<inner>", text)
+    return text
+
+
+def _emphasis_free(text: str, *, plain_links: bool) -> str:
+    parts: list[str] = []
+    open_buf: list[str] = []
+    pos = 0
+    for match in _NON_RENDERED_OR_WIKILINK.finditer(text):
+        open_buf.append(text[pos:match.start()])
+        if match.group("target") is not None and plain_links:
+            open_buf.append(_wikilink_display(match))
+        else:
+            parts.append(_strip_inline_emphasis("".join(open_buf)))
+            open_buf.clear()
+            token = match.group(0)
+            parts.append(token if match.group("target") is None else token.replace(r"\|", "|"))
+        pos = match.end()
+    open_buf.append(text[pos:])
+    parts.append(_strip_inline_emphasis("".join(open_buf)))
+    return "".join(parts)
+
+
 def _quote_hits(text: str, quote: str) -> int:
     if not quote:
         return 0
     if "[[" in quote:
-        return max(
+        hits = max(
             _span_hits(text, quote),
             _span_hits(_unescape_wikilinks(text), _unescape_wikilinks(quote)),
         )
-    plain_hits = _span_hits(_plain_wikilinks(text), quote)
-    return plain_hits if plain_hits > 0 else _span_hits(text, quote)
+        if hits:
+            return hits
+        return _span_hits(_emphasis_free(text, plain_links=False),
+                          _emphasis_free(quote, plain_links=False))
+    hits = _span_hits(_plain_wikilinks(text), quote) or _span_hits(text, quote)
+    if hits:
+        return hits
+    return _span_hits(_emphasis_free(text, plain_links=True),
+                      _emphasis_free(quote, plain_links=False))
 
 
 def _has_source_quote(text: str, quote: str) -> bool:
@@ -226,8 +271,12 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
     if verdict["verdict"] == "irrelevant":
         return False
     quote = verdict["quote"]
-    if verdict["verdict"] == "relevant" and quote.strip() and _has_source_quote(text, quote):
-        return True
+    if verdict["verdict"] == "relevant":
+        if quote.strip() and _has_source_quote(text, quote):
+            return True
+        telemetry.detail(telemetry.Detail.RELEVANCE_QUOTE_MISSING)
+    else:
+        telemetry.detail(telemetry.Detail.RELEVANCE_UNCERTAIN)
     raise Refused("uncertain or unsupported relevance verdict")
 
 
@@ -285,12 +334,13 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
             raise Refused("malformed correction ledger")
         if any(not isinstance(value, str) or not value.strip() for value in change.values()):
             raise Refused("empty correction ledger entry")
-        before, after, name, quote = (change[k] for k in ("before", "after", "source", "quote"))
+        before, after, raw_name, quote = (change[k] for k in ("before", "after", "source", "quote"))
         if before not in loaded.parsed.body or before not in body:
             raise Refused("unsupported correction: before must occur in both old and new body")
         if after not in body:
             raise Refused("unsupported correction: after must be an exact substring of the candidate body")
-        if name not in names or not _has_source_quote(source_text(files[name]), quote) or name not in _links(after):
+        name = _resolve_source_name(raw_name, names)
+        if name is None or not _has_source_quote(source_text(files[name]), quote) or name not in _links(after):
             raise Refused("unsupported or unattributed correction ledger")
         new_sections = {s.title: candidate.text[s.content:s.end] for s in parsed.sections}
         current = _current_line_before(loaded, before)
@@ -306,8 +356,10 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
 
 def validate_candidate(theme: str, loaded: dossier.DossierLoad, names: list[str],
                        files: dict, c: dict, body: str, changes: list) -> None:
-    deterministic_check(loaded, body, names, files, changes)
-    semantic_check(theme, loaded, names, files, c, body, changes)
+    with telemetry.stage(telemetry.Stage.DETERMINISTIC):
+        deterministic_check(loaded, body, names, files, changes)
+    with telemetry.stage(telemetry.Stage.SEMANTIC):
+        semantic_check(theme, loaded, names, files, c, body, changes)
 
 
 def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[str],
@@ -414,11 +466,14 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
             raise Refused("empty candidate claim evidence")
         if claim["relevant"] is not True or claim["supported"] is not True:
             raise Refused("candidate claim is not relevant and supported")
-        text, name, quote = claim["text"], claim["source"], claim["quote"]
+        text, raw_name, quote = claim["text"], claim["source"], claim["quote"]
+        name = _resolve_source_name(raw_name, names)
+        if name is None:
+            raise Refused("candidate claim lacks exact new-source evidence")
         if (text, name) in seen:
             raise Refused("duplicate candidate claim")
         seen.add((text, name))
-        if name not in names or not _has_source_quote(source_text(files[name]), quote):
+        if not _has_source_quote(source_text(files[name]), quote):
             raise Refused("candidate claim lacks exact new-source evidence")
         start = body.find(text)
         if start < 0:
@@ -429,6 +484,7 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
             start = body.find(text, start + len(text))
         if not represented.intersection(required):
             raise Refused("candidate claim does not represent new significant text")
+        claim["source"] = name
         contributors.add(name)
         uncovered.difference_update(represented)
     if uncovered:
@@ -583,13 +639,15 @@ def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *
         raise Refused("complete source context is required for claim audits")
     prompt = _audit_prompt(theme, loaded, claim, quote_context)
     audit_config = _audit_config(c, prompt)
-    for field, system, think, num_predict in (("supported", SUPPORT_AUDIT_SYSTEM, True, 2000),
-                                            ("relevant", TOPIC_AUDIT_SYSTEM, False, 350)):
-        verdict = _json(local_complete(prompt, audit_config, system=system, num_predict=num_predict, think=think),
-                        {"verdict", field, "reason"}, fenced=True)
-        if (verdict["verdict"] != "accept" or verdict[field] is not True
-                or not isinstance(verdict["reason"], str) or not verdict["reason"].strip()):
-            raise Refused(f"independent claim audit was not accepted ({field})")
+    for field, system, think, num_predict, st in (
+            ("supported", SUPPORT_AUDIT_SYSTEM, True, 2000, telemetry.Stage.AUDIT_SUPPORT),
+            ("relevant", TOPIC_AUDIT_SYSTEM, False, 350, telemetry.Stage.AUDIT_TOPIC)):
+        with telemetry.stage(st):
+            verdict = _json(local_complete(prompt, audit_config, system=system, num_predict=num_predict, think=think),
+                            {"verdict", field, "reason"}, fenced=True)
+            if (verdict["verdict"] != "accept" or verdict[field] is not True
+                    or not isinstance(verdict["reason"], str) or not verdict["reason"].strip()):
+                raise Refused(f"independent claim audit was not accepted ({field})")
 
 
 def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
@@ -657,7 +715,7 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "support separately. Reject unrelated facts even if links survived. "
         "Return ONLY JSON with exactly: verdict (accept/reject/uncertain), conserved (boolean), "
         "supported (boolean), corrections_valid (boolean), reason (nonempty string), and "
-        'claims (array of {"text":"exact candidate span","source":"new source name",'
+        'claims (array of {"text":"exact candidate span","source":"exact new_sources key without [[ ]]",'
         '"quote":"exact source quote","relevant":true,"supported":true,"reason":"reason"}). '
         "Set all booleans from the comparison, never from a default. "
         "corrections_valid means there is NO invalid factual correction. If no factual correction "
@@ -710,7 +768,7 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "Never output Источники or Правки автора sections; the writer preserves them. "
         'Return ONLY JSON {"body":"complete five-section body", "changes":'
         '[{"before":"old claim","after":"new claim with [[source]]",'
-        '"source":"source name","quote":"exact explicit supersession quotation"}]}. '
+        '"source":"exact new_sources key without [[ ]]","quote":"exact explicit supersession quotation"}]}. '
         "The after string MUST contain the replacement's [[source]] link, exactly as in body. "
         "An ordinary additional fact is NOT a correction. Never use an unrelated old history "
         "line as its before string. If the source does not explicitly supersede an old claim, "
@@ -724,11 +782,13 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         telemetry.begin_attempt()
         payload = {**data, **({"correction_feedback": feedback} if feedback else {})}
         prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
-        stage_c = _stage_config(c, len(GENERATE_SYSTEM), prompt, dossier.GEN_PREDICT)
-        raw = local_complete(prompt, stage_c, system=GENERATE_SYSTEM,
-                             num_predict=dossier.GEN_PREDICT)
+        with telemetry.stage(telemetry.Stage.APPEND):
+            stage_c = _stage_config(c, len(GENERATE_SYSTEM), prompt, dossier.GEN_PREDICT)
+            raw = local_complete(prompt, stage_c, system=GENERATE_SYSTEM,
+                                 num_predict=dossier.GEN_PREDICT)
         try:
-            result = _json(raw, {"body", "changes"})
+            with telemetry.stage(telemetry.Stage.APPEND):
+                result = _json(raw, {"body", "changes"})
             validate_candidate(theme, loaded, names, files, c, result["body"], result["changes"])
             return result["body"].strip()
         except Refused as exc:
@@ -736,7 +796,8 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                 raise
             feedback = {"failure": str(exc), "previous_response": raw,
                         "instruction": "Ordinary additions require changes: []; remove invented correction entries. "
-                                       "For explicit supersession keep the genuine source-backed correction ledger, "
+                                       "For explicit supersession keep the genuine source-backed correction ledger "
+                                       "(with source set to the exact new_sources key without [[ ]]), "
                                        "move the old current bullet verbatim to ## Как пришли and put only its "
                                        "replacement in ## Сейчас. Use every exact required_new_citation.",
                         "required_verbatim_lines": [line for line in loaded.parsed.body.splitlines()
