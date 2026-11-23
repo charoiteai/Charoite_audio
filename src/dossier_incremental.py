@@ -96,7 +96,7 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     # The provider must use the same effective window as the complete-input guard.
     local["llm"]["num_ctx"] = context
     telemetry.phase(telemetry.Phase.CONTRACT)
-    from llm import LLM, LLMHTTPError  # noqa: PLC0415
+    from llm import DOC_STREAM_TIMEOUT, LLM, LLMHTTPError  # noqa: PLC0415
 
     llm = LLM(local)
     try:
@@ -126,7 +126,7 @@ def local_complete(prompt: str, c: dict, *, system: str, temperature: float = 0,
     try:
         out = "".join(llm.stream(prompt, model=model_ref, system=system,
                                temperature=temperature, num_predict=num_predict, think=think,
-                               truncate=False, shift=False)).strip()
+                               truncate=False, shift=False, timeout=DOC_STREAM_TIMEOUT)).strip()
     except LLMHTTPError as exc:
         telemetry.refusal(telemetry.Reason.STREAM if exc.status == 200 else telemetry.Reason.HTTP)
         raise
@@ -847,21 +847,22 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "The after string MUST contain the replacement's [[source]] link, exactly as in body. "
         "An ordinary additional fact is NOT a correction. Never use an unrelated old history "
         "line as its before string. If the source does not explicitly supersede an old claim, "
-        "leave changes EMPTY: []. Keep its new fact in body, with the exact meeting-ID citation "
-        "from required_new_citations. Links occurring INSIDE a source are not substitutes for "
+        "leave changes EMPTY: []. Include at least one supported fact and exact meeting-ID citation "
+        "in body for EVERY source in required_new_citations. In a correction's after string, include "
+        "only facts explicitly stated in its new source (never copy unverified old clauses from before). "
+        "Links occurring INSIDE a source are not substitutes for "
         "the source meeting's own citation. Use an empty changes list for additions without corrections.")
     # A bounded correction attempt gives the model a concrete validation error;
     # the same deterministic and semantic guards still judge the final output.
     append_predict = _append_predict(loaded.parsed.body, c)
-    feedback = None
+    prompt = json.dumps(data, ensure_ascii=False) + "\n" + instruction
     for attempt in range(2):
         telemetry.begin_attempt()
-        payload = {**data, **({"correction_feedback": feedback} if feedback else {})}
-        prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
         with telemetry.stage(telemetry.Stage.APPEND):
             stage_c = _stage_config(c, len(GENERATE_SYSTEM), prompt, append_predict)
             raw = local_complete(prompt, stage_c, system=GENERATE_SYSTEM,
                                  num_predict=append_predict)
+            result = None
             try:
                 result = _json(raw, {"body", "changes"})
                 validate_candidate(theme, loaded, names, files, c, result["body"], result["changes"])
@@ -869,13 +870,28 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
             except Refused as exc:
                 if attempt or exc.reason == telemetry.Reason.CONTEXT:
                     raise
+                missing = (
+                    [f"[[{n}]]" for n in names if n not in _links(result["body"])]
+                    if result is not None and isinstance(result["body"], str)
+                    else []
+                )
+                missing_hint = " (especially every item in missing_citations)" if missing else ""
                 feedback = {"failure": str(exc), "previous_response": _trim_feedback_response(raw),
+                            **({"missing_citations": missing} if missing else {}),
                             "instruction": "Ordinary additions require changes: []; remove invented correction entries. "
+                                           f"Attribute EVERY source in required_new_citations{missing_hint} "
+                                           "with a supported fact and its exact [[source]] link. "
                                            "For explicit supersession keep the genuine source-backed correction ledger "
                                            "(with source set to the exact new_sources key without [[ ]]), "
-                                           "move the old current bullet verbatim to ## Как пришли and put only its "
-                                           "replacement in ## Сейчас. Use every exact required_new_citation.",
+                                           "copy the ENTIRE old bullet verbatim from required_verbatim_lines into "
+                                           "## Как пришли, and put ONLY facts stated in the new source in ## Сейчас "
+                                           "(do not copy unverified old clauses from before into after).",
                             "required_verbatim_lines": [line for line in loaded.parsed.body.splitlines()
                                                         if line.strip() and not line.lstrip().startswith("#")
                                                         and line.strip() != "—"]}
+                prompt = json.dumps({**data, "correction_feedback": feedback}, ensure_ascii=False) + "\n" + instruction
+                ctx = stage_c["llm"]["num_ctx"]
+                cap = ctx if ctx < MIN_AUTO_CONTEXT else max(ctx, MAX_AUDIT_CONTEXT)
+                if _stage_needed_tokens(len(GENERATE_SYSTEM), prompt, append_predict) > cap:
+                    raise
     raise Refused("candidate attempts exhausted")

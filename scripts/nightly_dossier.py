@@ -494,7 +494,7 @@ def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list
 
 def _append_sequential(theme: str, loaded: dossier.DossierLoad, accepted: list[str],
                        files: dict, c: dict) -> str:
-    """Fallback when a multi-source batch exceeds MAX_AUDIT_CONTEXT: step one source at a time."""
+    """Fallback when a multi-source batch hits context budget or unattributed sources: step one at a time."""
     current = loaded
     body = ""
     for idx, name in enumerate(accepted):
@@ -560,7 +560,11 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
                 try:
                     body = dossier_incremental.append(theme, loaded, accepted, g.files, c)
                 except dossier_incremental.Refused as exc:
-                    if exc.reason != telemetry.Reason.CONTEXT or len(accepted) <= 1:
+                    can_split = (
+                        exc.reason == telemetry.Reason.CONTEXT
+                        or str(exc) == "candidate does not attribute each accepted source"
+                    )
+                    if not can_split or len(accepted) <= 1:
                         raise
                     telemetry.begin_attempt()
                     body = _append_sequential(theme, loaded, accepted, g.files, c)

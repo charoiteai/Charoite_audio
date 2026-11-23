@@ -822,3 +822,180 @@ def test_append_predict_scales_for_large_dossier_respects_small_ctx_and_trims_re
     retry_payload, _ = json.JSONDecoder().raw_decode(seen[1][0])
     prev = retry_payload["correction_feedback"]["previous_response"]
     assert "\n...\n" in prev and len(prev) == inc.APPEND_FEEDBACK_RESPONSE_CHARS + len("\n...\n")
+
+
+# ---------------------------------------------------------------------------
+# 6. Round 3 (#990): DOC_STREAM_TIMEOUT, append missing_citations feedback,
+#    and retry context-budget guard before telemetry.begin_attempt()
+# ---------------------------------------------------------------------------
+
+
+def test_local_complete_uses_doc_stream_timeout(monkeypatch):
+    seen_timeouts = []
+
+    class DocLLM:
+        cloud_ready = False
+        engine = "ollama"
+        base = "http://127.0.0.1:11434"
+        _fell_back_local = False
+
+        def __init__(self, c):
+            pass
+
+        def require_local_ollama_model(self, model):
+            return model + ":local"
+
+        def stream(self, prompt, **kwargs):
+            seen_timeouts.append(kwargs.get("timeout"))
+            yield '{"ok":true}'
+
+    monkeypatch.setattr(llm, "LLM", DocLLM)
+    assert inc.local_complete("hello", LOCAL, system="sys", num_predict=64) == '{"ok":true}'
+    assert seen_timeouts == [llm.DOC_STREAM_TIMEOUT]
+
+
+def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkeypatch):
+    raw_doc = dossier.render(
+        "Glasshouse", BODY, ["2099-01-01_100000"],
+        {"2099-01-01_100000": {"kind": "Встречи", "text": "ok"}}, "fp-old", "2099-01-01",
+    )
+    raw_doc = dossier.with_composition(raw_doc, ["2099-01-01_100000"])
+    loaded = dossier.DossierLoad("ok", raw_doc, raw=raw_doc.encode("utf-8"))
+    m1, m2, m3 = "2099-01-02_100000", "2099-01-03_100000", "2099-01-04_100000"
+    files = {
+        m1: {"text": "Glasshouse fact 1.", "kind": "Встречи"},
+        m2: {"text": "Glasshouse fact 2.", "kind": "Встречи"},
+        m3: {"text": "Glasshouse fact 3.", "kind": "Встречи"},
+    }
+    full_body = loaded.parsed.body.replace(
+        "- Vent A is open. [[2099-01-01_100000]]",
+        f"- Vent A is open. [[2099-01-01_100000]]\n- F1 [[{m1}]]\n- F2 [[{m2}]]\n- F3 [[{m3}]]",
+    )
+    partial_body = loaded.parsed.body.replace(
+        "- Vent A is open. [[2099-01-01_100000]]",
+        f"- Vent A is open. [[2099-01-01_100000]]\n- F3 [[{m3}]]",
+    )
+
+    def run_case(attempt0_raw: str, *, fail_validate_attempt0: bool = False):
+        prompts = []
+        replies = iter([attempt0_raw, json.dumps({"body": full_body, "changes": []})])
+
+        def fake_complete(prompt, config, **kwargs):
+            prompts.append(prompt)
+            return next(replies)
+
+        def fake_validate(theme, ld, names, fls, cfg, body, changes):
+            if len(prompts) == 1:
+                if fail_validate_attempt0:
+                    raise inc.Refused("independent claim audit was not accepted (supported)")
+                inc.deterministic_check(ld, body, names, fls, changes)
+
+        monkeypatch.setattr(inc, "local_complete", fake_complete)
+        monkeypatch.setattr(inc, "validate_candidate", fake_validate)
+        out = inc.append("Glasshouse", loaded, [m1, m2, m3], files, LOCAL)
+        assert f"[[{m1}]]" in out
+        assert len(prompts) == 2
+        retry_payload, _ = json.JSONDecoder().raw_decode(prompts[1])
+        return retry_payload["correction_feedback"]
+
+    # (a) malformed JSON -> result is None -> no UnboundLocalError and no missing_citations key/hint
+    fb_malformed = run_case("not json")
+    assert "missing_citations" not in fb_malformed
+    assert "missing_citations" not in fb_malformed["instruction"]
+
+    # (b) non-string result["body"] -> no TypeError and no missing_citations key/hint
+    fb_non_str = run_case(json.dumps({"body": 123, "changes": []}))
+    assert "missing_citations" not in fb_non_str
+    assert "missing_citations" not in fb_non_str["instruction"]
+
+    # (c) partial citations -> exact missing_citations list in source order and explicit hint
+    fb_partial = run_case(json.dumps({"body": partial_body, "changes": []}))
+    assert fb_partial["missing_citations"] == [f"[[{m1}]]", f"[[{m2}]]"]
+    assert "missing_citations" in fb_partial["instruction"]
+
+    # (d) all citations present, rejected downstream -> no missing_citations key/hint
+    fb_complete = run_case(json.dumps({"body": full_body, "changes": []}), fail_validate_attempt0=True)
+    assert "missing_citations" not in fb_complete
+    assert "missing_citations" not in fb_complete["instruction"]
+
+
+@pytest.mark.parametrize("cfg_ctx,expected_cap", [
+    (4096, 4096),
+    (8192, inc.MAX_AUDIT_CONTEXT),
+    (65536, 65536),
+])
+def test_append_retry_budget_guard_exact_boundary_preserves_attempt0_refusal(
+    world, monkeypatch, cfg_ctx, expected_cap,
+):
+    nd, graph, _ = world
+    name = "2099-01-02_100000"
+    cfg = {**LOCAL, "llm": {**LOCAL["llm"], "num_ctx": cfg_ctx}}
+    monkeypatch.setattr(inc, "source_relevance", lambda *a, **kw: True)
+
+    def _run_with_pad(pad_len: int):
+        _new(graph, name, "Glasshouse fact. " + ("a" * pad_len))
+        seen = []
+
+        def fake_complete(prompt, config, *, system, num_predict, **kwargs):
+            seen.append((
+                config["llm"]["num_ctx"],
+                inc._stage_needed_tokens(len(inc.GENERATE_SYSTEM), prompt, num_predict),
+            ))
+            # Valid JSON, missing required [[name]] -> deterministic_check/source_unattributed
+            return json.dumps({"body": BODY, "changes": []})
+
+        monkeypatch.setattr(inc, "local_complete", fake_complete)
+        res = nd.run_all([graph], cfg, full=False, dry=False)
+        return seen, res.telemetry.snapshot()
+
+    probe_seen, _ = _run_with_pad(100)
+    assert len(probe_seen) == 2
+    delta_chars = (expected_cap - probe_seen[1][1]) * inc.ADMISSION_CHARS_PER_TOKEN
+    exact_fit_pad = 100 + delta_chars
+
+    # Exact fit (needed == cap): retry executes (2 calls)
+    seen_fit, snap_fit = _run_with_pad(exact_fit_pad)
+    assert len(seen_fit) == 2 and seen_fit[1][1] == expected_cap
+    assert snap_fit["stage_refusals"] == {"deterministic_check": {"source_unattributed": 1}}
+
+    # One token over cap (needed == cap + 1): retry skipped BEFORE begin_attempt(), preserving attempt-0 stage/detail
+    seen_over, snap_over = _run_with_pad(exact_fit_pad + inc.ADMISSION_CHARS_PER_TOKEN)
+    assert len(seen_over) == 1
+    assert snap_over["final_reasons"] == {"validation_refused": 1}
+    assert snap_over["stage_refusals"] == {"deterministic_check": {"source_unattributed": 1}}
+
+
+def test_nightly_add_falls_back_sequentially_on_multi_source_unattributed_only(world, monkeypatch):
+    nd, graph, old_path = world
+    m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
+    _new(graph, m1, "Glasshouse update one.")
+    _new(graph, m2, "Glasshouse update two.")
+
+    batch_sizes = []
+    monkeypatch.setattr(inc, "source_relevance", lambda *a, **kw: True)
+    monkeypatch.setattr(inc, "semantic_check", lambda *a, **kw: None)
+
+    def fake_complete(prompt, config, **kwargs):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        names = list(payload["new_sources"])
+        batch_sizes.append(len(names))
+        if len(names) > 1:
+            # Drop one accepted source so real inc.append -> deterministic_check raises source_unattributed
+            partial = payload["existing_dossier"].replace(
+                "## Как пришли", f"- Fact {names[0]}. [[{names[0]}]]\n\n## Как пришли",
+            )
+            return json.dumps({"body": partial, "changes": []})
+        src = names[0]
+        updated = payload["existing_dossier"].replace(
+            "## Как пришли", f"- Fact {src}. [[{src}]]\n\n## Как пришли",
+        )
+        return json.dumps({"body": updated, "changes": []})
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    assert sum(g.built for g in result.graphs) == 1
+    # 2 batch attempts (both rejected by real deterministic_check) + 2 single-source sequential appends
+    assert batch_sizes == [2, 2, 1, 1]
+    text = old_path.read_text(encoding="utf-8")
+    assert f"[[{m1}]]" in text and f"[[{m2}]]" in text
+    assert result.telemetry.snapshot()["stage_refusals"] == {}

@@ -140,7 +140,9 @@ def _assert_finite_json_profiles(calls, config):
         if options["system"] in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
             assert options["num_predict"] == (2000 if support_role else 350)
             assert type(options["temperature"]) in (int, float)
-        assert set(options) == {"model", "system", "temperature", "num_predict", "think", "truncate", "shift"}
+        assert options["timeout"] == llm.DOC_STREAM_TIMEOUT
+        assert set(options) == {"model", "system", "temperature", "num_predict", "think",
+                                "truncate", "shift", "timeout"}
 
 
 def test_source_and_candidate_reach_bounded_local_provider_with_complete_new_input(provider):
@@ -183,7 +185,8 @@ def test_explicit_caller_profile_and_optional_fallback_record_are_preserved(prov
     assert inc.local_complete(prompt, config, **requested) == answer
     assert len(provider.calls) == 2
     assert all(call["options"] == {"model": config["llm"]["model"] + ":local", "truncate": False,
-                                   "shift": False, **requested} for call in provider.calls)
+                                   "shift": False, "timeout": llm.DOC_STREAM_TIMEOUT,
+                                   **requested} for call in provider.calls)
 
 
 @pytest.mark.parametrize("engine", ["ollama"])
