@@ -61,6 +61,7 @@ class Detail(str, Enum):
     JSON_SCHEMA = "json_schema"
     RELEVANCE_INCOMPLETE = "relevance_incomplete"
     RELEVANCE_UNCERTAIN = "relevance_uncertain"
+    RELEVANCE_QUOTE_EMPTY = "relevance_quote_empty"
     RELEVANCE_QUOTE_MISSING = "relevance_quote_missing"
     CONTEXT_BUDGET = "context_budget"
     PREFLIGHT = "preflight_refused"
