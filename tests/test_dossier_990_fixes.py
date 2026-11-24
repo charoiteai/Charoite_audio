@@ -525,7 +525,8 @@ def test_stage_refusals_stays_empty_when_append_recovers_on_retry(world, monkeyp
     name = "2099-01-02_100000"
     _new(graph, name, "Glasshouse vent sealed.")
     good_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
+                       "quote": "Glasshouse vent sealed."}],
         "corrections": [],
     })
     monkeypatch.setattr(inc, "local_complete", _seq_replies([
@@ -554,7 +555,8 @@ def test_stage_refusals_captures_audit_topic_rejection(world, monkeypatch):
     name = "2099-01-02_100000"
     _new(graph, name, "Glasshouse vent sealed.")
     good_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
+                       "quote": "Glasshouse vent sealed."}],
         "corrections": [],
     })
     one_attempt = [
@@ -585,11 +587,13 @@ def test_stage_refusals_covers_append_deterministic_semantic_and_audit_support(w
     name = "2099-01-02_100000"
     _new(graph, name, "Glasshouse vent sealed.")
     good_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
+                       "quote": "Glasshouse vent sealed."}],
         "corrections": [],
     })
     bad_section_patch = json.dumps({
-        "additions": [{"section": "Источники", "text": "Glasshouse vent sealed.", "source": name}],
+        "additions": [{"section": "Источники", "text": "Glasshouse vent sealed.", "source": name,
+                       "quote": "Glasshouse vent sealed."}],
         "corrections": [],
     })
     empty_patch = json.dumps({"additions": [], "corrections": []})
@@ -707,7 +711,8 @@ def test_source_relevance_retries_once_on_bad_quote_and_recovers_cleanly(world, 
     replies = iter([
         json.dumps({"verdict": "relevant", "reason": "fact", "quote": long_bad_quote}),
         json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Vent sealed on Monday."}),
-        json.dumps({"additions": [{"section": "Сейчас", "text": "Vent sealed on Monday.", "source": name}],
+        json.dumps({"additions": [{"section": "Сейчас", "text": "Vent sealed on Monday.", "source": name,
+                                   "quote": "Vent sealed on Monday."}],
                     "corrections": []}),
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
@@ -806,7 +811,8 @@ def test_append_uses_fixed_gen_predict_and_trims_retry_feedback(monkeypatch):
     seen = []
     huge_bad = "{" + ("z" * 4500)
     good_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name}],
+        "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
+                       "quote": "Glasshouse vent sealed."}],
         "corrections": [],
     })
     replies = iter([huge_bad, good_patch])
@@ -871,14 +877,14 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
     }
     full_patch = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": "F1", "source": m1},
-            {"section": "Сейчас", "text": "F2", "source": m2},
-            {"section": "Сейчас", "text": "F3", "source": m3},
+            {"section": "Сейчас", "text": "F1", "source": m1, "quote": "Glasshouse fact 1."},
+            {"section": "Сейчас", "text": "F2", "source": m2, "quote": "Glasshouse fact 2."},
+            {"section": "Сейчас", "text": "F3", "source": m3, "quote": "Glasshouse fact 3."},
         ],
         "corrections": [],
     })
     partial_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": "F3", "source": m3}],
+        "additions": [{"section": "Сейчас", "text": "F3", "source": m3, "quote": "Glasshouse fact 3."}],
         "corrections": [],
     })
 
@@ -890,7 +896,7 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
             prompts.append(prompt)
             return next(replies)
 
-        def fake_validate(theme, ld, names, fls, cfg, body, changes):
+        def fake_validate(theme, ld, names, fls, cfg, body, changes, **kwargs):
             if len(prompts) == 1:
                 if fail_validate_attempt0:
                     raise inc.Refused("independent claim audit was not accepted (supported)")
@@ -988,12 +994,14 @@ def test_nightly_add_falls_back_sequentially_on_multi_source_unattributed_only(w
         if len(names) > 1:
             # Drop one accepted source so real inc.append -> deterministic_check raises source_unattributed
             return json.dumps({
-                "additions": [{"section": "Сейчас", "text": f"Fact {names[0]}.", "source": names[0]}],
+                "additions": [{"section": "Сейчас", "text": f"Fact {names[0]}.", "source": names[0],
+                               "quote": payload["new_sources"][names[0]].splitlines()[-1]}],
                 "corrections": [],
             })
         src = names[0]
         return json.dumps({
-            "additions": [{"section": "Сейчас", "text": f"Fact {src}.", "source": src}],
+            "additions": [{"section": "Сейчас", "text": f"Fact {src}.", "source": src,
+                           "quote": payload["new_sources"][src].splitlines()[-1]}],
             "corrections": [],
         })
 
@@ -1063,16 +1071,17 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
     # Reverse order in corrections + duplicate of correction.after in additions + last-section append
     patch = {
         "additions": [
-            {"section": "  ##  Сейчас  ", "text": "  - First now updated.  ", "source": b},
-            {"section": "Решено", "text": "Extra decision.", "source": c_src},
-            {"section": "Кто в теме", "text": "Bob joined.", "source": b},
+            {"section": "  ##  Сейчас  ", "text": "  - First now updated.  ", "source": b, "quote": "Duplicate test."},
+            {"section": "Решено", "text": "Extra decision.", "source": c_src, "quote": "Extra decision."},
+            {"section": "Кто в теме", "text": "Bob joined.", "source": b, "quote": "Bob joined."},
         ],
         "corrections": [
             {"before": "Second line.", "after": "Second now updated.", "source": f"[[{b}]]", "quote": "Second replaced."},
             {"before": "First line.", "after": "First now updated.", "source": b, "quote": "First replaced."},
         ],
     }
-    body, changes = inc._apply_patch(loaded, [b, c_src], patch)
+    body, changes, anchors = inc._apply_patch(loaded, [b, c_src], files, patch)
+    assert len(anchors) == 4
     # Full deterministic_check (including _new_content_positions order + count checks) must pass!
     inc.deterministic_check(loaded, body, [b, c_src], files, changes)
     # Last section Кто в теме must not glue lines and must not end with trailing newline
@@ -1101,7 +1110,8 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
             {"before": "Second line.", "after": "Unified state.", "source": b, "quote": "Second replaced."},
         ],
     }
-    merged_body, merged_changes = inc._apply_patch(loaded, [b], merge_patch)
+    merged_body, merged_changes, merged_anchors = inc._apply_patch(loaded, [b], files, merge_patch)
+    assert len(merged_anchors) == 1
     inc.deterministic_check(loaded, merged_body, [b], files, merged_changes)
     merged_current = merged_body.split("## Сейчас\n", 1)[1].split("\n\n## Как пришли", 1)[0]
     assert merged_current == f"- Unified state. [[{b}]]"
@@ -1111,6 +1121,7 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
 
 def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malformed():
     m1 = "2099-01-02_100000"
+    files = {m1: {"text": "History note. Open question. Vent A q."}}
     empty_current_body = (
         "## Сейчас\n—\n"
         "## Как пришли\n— \n"
@@ -1120,20 +1131,21 @@ def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malfor
     )
     loaded_empty = _loaded_with_body(empty_current_body)
     # Addition to Открыто must leave untouched ## Сейчас with "—" intact, and clean "— " when Как пришли is edited
-    body, changes = inc._apply_patch(loaded_empty, [m1], {
+    body, changes, anchors = inc._apply_patch(loaded_empty, [m1], files, {
         "additions": [
-            {"section": "Как пришли", "text": "History note.", "source": m1},
-            {"section": "Открыто", "text": "Open question.", "source": m1},
+            {"section": "Как пришли", "text": "History note.", "source": m1, "quote": "History note."},
+            {"section": "Открыто", "text": "Open question.", "source": m1, "quote": "Open question."},
         ],
         "corrections": [],
     })
     assert changes == []
+    assert len(anchors) == 2
     assert body.startswith("## Сейчас\n—\n## Как пришли\n- History note. [[2099-01-02_100000]]\n## Решено\n—\n")
     assert "## Открыто\n- Open question. [[2099-01-02_100000]]\n## Кто в теме\n—" in body
 
     # Correction targeting placeholder "—" in ## Сейчас must be refused
     with pytest.raises(inc.Refused, match="must identify one current line"):
-        inc._apply_patch(loaded_empty, [m1], {
+        inc._apply_patch(loaded_empty, [m1], files, {
             "additions": [],
             "corrections": [{"before": "—", "after": "New state.", "source": m1, "quote": "q"}],
         })
@@ -1144,9 +1156,12 @@ def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malfor
         ({"additions": [], "corrections": "bad"}, "malformed patch entry"),
         ({"additions": ["bad"], "corrections": []}, "malformed patch entry"),
         ({"additions": [{"section": "Сейчас", "text": "x"}], "corrections": []}, "malformed patch entry"),
-        ({"additions": [{"section": 123, "text": "x", "source": m1}], "corrections": []}, "invalid patch section"),
-        ({"additions": [{"section": "Правки автора", "text": "x", "source": m1}], "corrections": []}, "invalid patch section"),
-        ({"additions": [{"section": "Сейчас", "text": "x", "source": "other"}], "corrections": []}, "unsupported patch source"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": m1}], "corrections": []}, "malformed patch entry"),
+        ({"additions": [{"section": 123, "text": "x", "source": m1, "quote": "q"}], "corrections": []}, "invalid patch section"),
+        ({"additions": [{"section": "Правки автора", "text": "x", "source": m1, "quote": "q"}], "corrections": []}, "invalid patch section"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": m1, "quote": 123}], "corrections": []}, "empty or invalid patch entry"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": m1, "quote": "   "}], "corrections": []}, "empty or invalid patch entry"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": "other", "quote": "q"}], "corrections": []}, "unsupported patch source"),
         ({"additions": [], "corrections": ["bad"]}, "malformed correction ledger"),
         ({"additions": [], "corrections": [{"before": "Vent A"}]}, "malformed correction ledger"),
         ({"additions": [], "corrections": [{"before": 123, "after": "x", "source": m1, "quote": "q"}]}, "empty correction ledger entry"),
@@ -1162,7 +1177,7 @@ def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malfor
     ]
     for bad_patch, pattern in bad_cases:
         with pytest.raises(inc.Refused, match=pattern):
-            inc._apply_patch(loaded, [m1], bad_patch)
+            inc._apply_patch(loaded, [m1], files, bad_patch)
 
     # All new closed refusal messages map to non-unknown telemetry details
     for msg in (
@@ -1207,19 +1222,19 @@ def test_normalize_patch_line_unlabels_speakers_and_validates_after_unlabel():
 def test_apply_patch_unlabels_body_sections_and_omits_anonymous_who_in_topic():
     m1 = "2099-01-02_100000"
     loaded = _loaded_dossier()
-    files = {m1: {"text": "Собеседник 1 сообщил: Vent A закрыт. Спикер 2 отметил риск."}}
+    files = {m1: {"text": "Собеседник 1 сообщил: Vent A закрыт. Спикер 2 отметил риск. Анна Смирнова. Иван Петров. Соучастник встречи Борис."}}
     patch = {
         "additions": [
-            {"section": "Открыто", "text": "Спикер 2 отметил риск.", "source": m1},
-            {"section": "Кто в теме", "text": "Собеседник 3 назначен ответственным.", "source": m1},
-            {"section": "Кто в теме", "text": "[[Люди/Спикер 1]]", "source": m1},
-            {"section": "Кто в теме", "text": "участника встречи", "source": m1},
-            {"section": "Кто в теме", "text": "участнику встречи", "source": m1},
-            {"section": "Кто в теме", "text": "с участником встречи", "source": m1},
-            {"section": "Кто в теме", "text": "об участнике встречи", "source": m1},
-            {"section": "Кто в теме", "text": "[[Люди/Спикер 1|Анна Смирнова]]", "source": m1},
-            {"section": "Кто в теме", "text": "Иван Петров (Спикер 2)", "source": m1},
-            {"section": "Кто в теме", "text": "Соучастник встречи Борис", "source": m1},
+            {"section": "Открыто", "text": "Спикер 2 отметил риск.", "source": m1, "quote": "Спикер 2 отметил риск."},
+            {"section": "Кто в теме", "text": "Собеседник 3 назначен ответственным.", "source": m1, "quote": "отсутствующая фраза"},
+            {"section": "Кто в теме", "text": "[[Люди/Спикер 1]]", "source": m1, "quote": "отсутствующая фраза"},
+            {"section": "Кто в теме", "text": "участника встречи", "source": m1, "quote": "отсутствующая фраза"},
+            {"section": "Кто в теме", "text": "участнику встречи", "source": m1, "quote": "отсутствующая фраза"},
+            {"section": "Кто в теме", "text": "с участником встречи", "source": m1, "quote": "отсутствующая фраза"},
+            {"section": "Кто в теме", "text": "об участнике встречи", "source": m1, "quote": "отсутствующая фраза"},
+            {"section": "Кто в теме", "text": "[[Люди/Спикер 1|Анна Смирнова]]", "source": m1, "quote": "Анна Смирнова."},
+            {"section": "Кто в теме", "text": "Иван Петров (Спикер 2)", "source": m1, "quote": "Иван Петров."},
+            {"section": "Кто в теме", "text": "Соучастник встречи Борис", "source": m1, "quote": "Соучастник встречи Борис."},
         ],
         "corrections": [
             {
@@ -1230,7 +1245,8 @@ def test_apply_patch_unlabels_body_sections_and_omits_anonymous_who_in_topic():
             }
         ],
     }
-    body, changes = inc._apply_patch(loaded, [m1], patch)
+    body, changes, anchors = inc._apply_patch(loaded, [m1], files, patch)
+    assert len(anchors) == 5
     inc.deterministic_check(loaded, body, [m1], files, changes)
     assert f"- Участник встречи сообщил: Vent A закрыт. [[{m1}]]" in body
     assert changes[0]["after"] == f"- Участник встречи сообщил: Vent A закрыт. [[{m1}]]"
@@ -1243,23 +1259,24 @@ def test_apply_patch_unlabels_body_sections_and_omits_anonymous_who_in_topic():
 
     # Source filename containing the phrase must not drop a real named person in Кто в теме.
     weird_src = "2099-01-02_участник встречи"
-    body_weird, _ = inc._apply_patch(loaded, [weird_src], {
-        "additions": [{"section": "Кто в теме", "text": "Анна Смирнова", "source": weird_src}],
+    body_weird, _, _ = inc._apply_patch(loaded, [weird_src], {weird_src: {"text": "Анна Смирнова."}}, {
+        "additions": [{"section": "Кто в теме", "text": "Анна Смирнова", "source": weird_src, "quote": "Анна Смирнова."}],
         "corrections": [],
     })
     assert f"- Анна Смирнова [[{weird_src}]]" in body_weird.split("## Кто в теме", 1)[1]
 
     # Validation still runs BEFORE omitting anonymous Кто в теме entries (bad source/multiline refused).
     with pytest.raises(inc.Refused, match="unsupported patch source"):
-        inc._apply_patch(loaded, [m1], {
-            "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": "unknown"}],
+        inc._apply_patch(loaded, [m1], files, {
+            "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": "unknown", "quote": "q"}],
             "corrections": [],
         })
     # When an anonymous Кто в теме entry is the ONLY entry for a source, deterministic_check refuses attribution.
-    body_only_anon, changes_only_anon = inc._apply_patch(loaded, [m1], {
-        "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": m1}],
+    body_only_anon, changes_only_anon, anchors_only_anon = inc._apply_patch(loaded, [m1], files, {
+        "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": m1, "quote": "отсутствующая фраза"}],
         "corrections": [],
     })
+    assert anchors_only_anon == []
     with pytest.raises(inc.Refused, match="does not attribute each accepted source"):
         inc.deterministic_check(loaded, body_only_anon, [m1], files, changes_only_anon)
 
@@ -1277,8 +1294,9 @@ def test_round5_unlabeled_rule_in_prompts_and_audit_predict(monkeypatch):
     replies = iter([
         json.dumps({
             "additions": [
-                {"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": m1},
-                {"section": "Кто в теме", "text": "Собеседник 3", "source": m1},
+                {"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": m1,
+                 "quote": "Glasshouse vent sealed."},
+                {"section": "Кто в теме", "text": "Собеседник 3", "source": m1, "quote": "Собеседник 3"},
             ],
             "corrections": [],
         }),
@@ -1687,7 +1705,7 @@ def test_round8_semantic_detail_classification_and_quote_retry_override(monkeypa
         ({**base, "verdict": "accept", "claims": [{**claim_ok, "relevant": False}]}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
         ({**base, "verdict": "accept", "claims": [{**claim_ok, "supported": False}]}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
         ({**base, "verdict": "accept", "claims": []}, telemetry.Detail.CLAIM_UNCOVERED, None),
-        ({**base, "verdict": "accept", "claims": [{**claim_ok, "quote": "still missing"}]}, telemetry.Detail.CLAIM_QUOTE_MISSING, None),
+        ({**base, "verdict": "accept", "claims": [{**claim_ok, "quote": "still missing"}]}, telemetry.Detail.CLAIM_QUOTE_MISSING, telemetry.Detail.CLAIM_QUOTE_MISSING),
     ):
         replies = iter([miss_reply, json.dumps(retry_reply_obj)])
         monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: next(replies))
@@ -1763,8 +1781,8 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
 
     # 3) Standalone append (NO Collector active!) receives Detail hint + filtered rejected_claims without leaking judge reason
     orig_validate = inc.validate_candidate
-    patch_bad = json.dumps({"additions": [{"section": "Сейчас", "text": fact_b, "source": m1}], "corrections": []})
-    patch_good = json.dumps({"additions": [{"section": "Сейчас", "text": fact_a, "source": m1}], "corrections": []})
+    patch_bad = json.dumps({"additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b}], "corrections": []})
+    patch_good = json.dumps({"additions": [{"section": "Сейчас", "text": fact_a, "source": m1, "quote": fact_a}], "corrections": []})
     prompts: list[str] = []
     call_idx = {"n": 0}
 
@@ -1775,7 +1793,7 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
 
     val_idx = {"n": 0}
 
-    def fake_validate(theme, ld, names, fl, c, cand_body, changes):
+    def fake_validate(theme, ld, names, fl, c, cand_body, changes, **kwargs):
         val_idx["n"] += 1
         if val_idx["n"] == 1:
             raise inc.Refused(
@@ -1798,7 +1816,7 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
     # 4) Fallback via detail_for_message when external Refused has detail=None + truncation/limit on rejected_claims
     long_items = [f"Item{i} " + ("z" * 230) for i in range(6)]
     patch_long = json.dumps({
-        "additions": [{"section": "Сейчас", "text": t, "source": m1} for t in long_items],
+        "additions": [{"section": "Сейчас", "text": t, "source": m1, "quote": fact_a} for t in long_items],
         "corrections": [],
     })
     prompts_fb: list[str] = []
@@ -1989,13 +2007,13 @@ def test_round9_verdict_rejected_claims_and_open_item_contract(monkeypatch):
     #    and MAIN_JUDGE prompt aligns ## Открыто -> ## Решено contract while protecting ⚠ warnings.
     patch_bad = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": fact_a, "source": m1},
-            {"section": "Сейчас", "text": fact_b, "source": m1},
+            {"section": "Сейчас", "text": fact_a, "source": m1, "quote": fact_a},
+            {"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b},
         ],
         "corrections": [],
     })
     patch_good = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1}],
+        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b}],
         "corrections": [],
     })
     append_prompts: list[str] = []
@@ -2144,7 +2162,10 @@ def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feed
             names = list(payload["new_sources"])
             gen_batches.append(names)
             return json.dumps({
-                "additions": [{"section": "Сейчас", "text": f"Fact {n}.", "source": n} for n in names],
+                "additions": [{
+                    "section": "Сейчас", "text": f"Fact {n}.", "source": n,
+                    "quote": f"Glasshouse update {'one' if n == m1 else 'two'}.",
+                } for n in names],
                 "corrections": [],
             })
         if system == inc.MAIN_JUDGE_SYSTEM:
@@ -2191,13 +2212,13 @@ def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feed
     files = {m1: {"text": f"{fact_a} {fact_b}"}}
     patch_bad = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": fact_a, "source": m1},
-            {"section": "Сейчас", "text": fact_b, "source": m1},
+            {"section": "Сейчас", "text": fact_a, "source": m1, "quote": fact_a},
+            {"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b},
         ],
         "corrections": [],
     })
     patch_good = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1}],
+        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b}],
         "corrections": [],
     })
     miss_reply = json.dumps({
@@ -2234,6 +2255,280 @@ def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feed
     assert "explicit source-stated role or connection to the dossier theme" in append_prompts[0]
     assert "distinct non-identical exact text spans" in judge_prompts[0]
     assert "explicitly covers EVERY clause and event in that item's text" in judge_prompts[0]
+
+
+def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypatch):
+    m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
+    loaded = _loaded_with_body(BODY)
+
+    # 1) _apply_patch addition quote validation: missing (0), ambiguous (2), unique (1), existing kept skipped
+    files_q = {m1: {"text": "Alpha unique quote. Repeat phrase. Repeat phrase."}}
+    with pytest.raises(inc._MissingClaimQuotes) as exc_miss:
+        inc._apply_patch(loaded, [m1], files_q, {
+            "additions": [
+                {"section": "Сейчас", "text": "Bad quote fact.", "source": m1, "quote": "Absent substring."},
+                {"section": "Открыто", "text": "Ambiguous fact.", "source": m1, "quote": "Repeat phrase."},
+            ],
+            "corrections": [],
+        })
+    assert exc_miss.value.detail is telemetry.Detail.CLAIM_QUOTE_MISSING
+    assert exc_miss.value.rejected_claims == (f"- Bad quote fact. [[{m1}]]",)
+    assert exc_miss.value.missing_quotes == [
+        {"text": f"- Bad quote fact. [[{m1}]]", "source": m1, "quote": "Absent substring."}
+    ]
+
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence") as exc_amb:
+        inc._apply_patch(loaded, [m1], files_q, {
+            "additions": [
+                {"section": "Сейчас", "text": "Ambiguous fact.", "source": m1, "quote": "Repeat phrase."},
+                {"section": "Открыто", "text": "Ambiguous fact.", "source": m1, "quote": "Repeat phrase."},
+            ],
+            "corrections": [],
+        })
+    assert exc_amb.value.detail is telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS
+    assert exc_amb.value.rejected_claims == (f"- Ambiguous fact. [[{m1}]]",)
+
+    # Duplicate exact line already in kept must be skipped BEFORE _quote_hits and NOT added to anchors
+    body_dup_old, ch_dup_old, anc_dup_old = inc._apply_patch(loaded, [m1], files_q, {
+        "additions": [
+            {"section": "Сейчас", "text": "Alpha unique fact.", "source": m1, "quote": "Alpha unique quote."},
+            {"section": "Сейчас", "text": "Alpha unique fact.", "source": m1, "quote": "Absent!"},
+        ],
+        "corrections": [],
+    })
+    assert len(anc_dup_old) == 1
+    assert anc_dup_old[0] == {
+        "text": f"- Alpha unique fact. [[{m1}]]", "source": m1, "quote": "Alpha unique quote.",
+    }
+    assert ch_dup_old == [] and "Alpha unique fact." in body_dup_old
+
+    # 2) Corrections with hits == 2 pass _apply_patch + deterministic_check (not placed in anchors),
+    #    corrections with hits == 0 fail in deterministic_check with LEDGER_SOURCE, hits == 1 placed in anchors.
+    body_c2, ch_c2, anc_c2 = inc._apply_patch(loaded, [m1], files_q, {
+        "additions": [],
+        "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "quote": "Repeat phrase."}],
+    })
+    assert anc_c2 == []
+    inc.deterministic_check(loaded, body_c2, [m1], files_q, ch_c2)
+
+    body_c0, ch_c0, anc_c0 = inc._apply_patch(loaded, [m1], files_q, {
+        "additions": [],
+        "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "quote": "Not in file."}],
+    })
+    assert anc_c0 == []
+    with pytest.raises(inc.Refused, match="unsupported or unattributed correction ledger"):
+        inc.deterministic_check(loaded, body_c0, [m1], files_q, ch_c0)
+
+    _, _, anc_c1 = inc._apply_patch(loaded, [m1], files_q, {
+        "additions": [],
+        "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "quote": "Alpha unique quote."}],
+    })
+    assert anc_c1 == [{"text": f"- Vent A closed. [[{m1}]]", "source": m1, "quote": "Alpha unique quote."}]
+
+    # 3) Safe deduplication of addition against correction.after in ## Сейчас (wikilink target & source protection)
+    dedup_files = {
+        m1: {"text": "Q1 unique. Q2 unique. Q3 unique."},
+        m2: {"text": "M2 unique."},
+    }
+    # (a) Same source, identical plain text, addition links subset of after links -> safely dropped
+    body_da, _, anc_da = inc._apply_patch(loaded, [m1], dedup_files, {
+        "additions": [
+            {"section": "Сейчас", "text": "Пилот Дельта перенесён на 25 мая.", "source": m1, "quote": "Absent ok!"},
+        ],
+        "corrections": [{
+            "before": "Vent A is open.",
+            "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
+            "source": m1,
+            "quote": "Q1 unique.",
+        }],
+    })
+    cur_da = body_da.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
+    assert cur_da == f"- Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая. [[{m1}]]"
+    assert len(anc_da) == 1
+
+    # (b) Same plain alias but DIFFERENT wikilink target -> MUST NOT drop
+    body_db, _, anc_db = inc._apply_patch(loaded, [m1], dedup_files, {
+        "additions": [
+            {"section": "Сейчас", "text": "Срок [[Ядра/Бета|Проект]] — 5 дек.", "source": m1, "quote": "Q2 unique."},
+        ],
+        "corrections": [{
+            "before": "Vent A is open.",
+            "after": "Срок [[Ядра/Альфа|Проект]] — 5 дек.",
+            "source": m1,
+            "quote": "Q1 unique.",
+        }],
+    })
+    cur_db = body_db.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
+    assert "[[Ядра/Альфа|Проект]]" in cur_db and "[[Ядра/Бета|Проект]]" in cur_db
+    assert len(anc_db) == 2
+
+    # (c) after lacks wikilink while addition carries one -> MUST NOT drop
+    body_dc, _, anc_dc = inc._apply_patch(loaded, [m1], dedup_files, {
+        "additions": [
+            {"section": "Сейчас", "text": "Срок [[Ядра/Альфа|Альфа]] — 5 дек.", "source": m1, "quote": "Q2 unique."},
+        ],
+        "corrections": [{
+            "before": "Vent A is open.",
+            "after": "Срок Альфа — 5 дек.",
+            "source": m1,
+            "quote": "Q1 unique.",
+        }],
+    })
+    cur_dc = body_dc.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
+    assert cur_dc.count("5 дек.") == 2 and len(anc_dc) == 2
+
+    # (d) Different source with identical plain text -> MUST NOT drop
+    body_dd, _, anc_dd = inc._apply_patch(loaded, [m1, m2], dedup_files, {
+        "additions": [
+            {"section": "Сейчас", "text": "Пилот Дельта перенесён на 25 мая.", "source": m2, "quote": "M2 unique."},
+        ],
+        "corrections": [{
+            "before": "Vent A is open.",
+            "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
+            "source": m1,
+            "quote": "Q1 unique.",
+        }],
+    })
+    cur_dd = body_dd.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
+    assert f"[[{m1}]]" in cur_dd and f"[[{m2}]]" in cur_dd and len(anc_dd) == 2
+
+    # 4) append retry on _apply_patch missing_quotes: skips MAIN_JUDGE on attempt 0,
+    #    uses _PATCH_QUOTE_MISSING_HINT + missing_quotes + rejected_claims, passes candidate_anchors to MAIN_JUDGE only.
+    fact_ok = "Pressure sensor calibrated at 4 bar."
+    files_e2e = {m1: {"text": f"{fact_ok} Repeat tag. Repeat tag."}}
+    long_bad_q = "bad " + ("x" * 240)
+    patch_miss = json.dumps({
+        "additions": [
+            {"section": "Сейчас", "text": f"LongClaim{i} " + ("y" * 230), "source": m1, "quote": long_bad_q}
+            for i in range(6)
+        ],
+        "corrections": [],
+    })
+    patch_ok = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact_ok, "source": m1, "quote": fact_ok}],
+        "corrections": [],
+    })
+    judge_ok = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact_ok, "source": m1, "quote": fact_ok, "relevant": True, "supported": True, "reason": "ok"}],
+    })
+    seen_calls: list[tuple[str, str]] = []
+    seq = iter([
+        patch_miss,
+        patch_ok,
+        judge_ok,
+        json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
+        json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
+    ])
+
+    def rec_complete(prompt, cfg, *, system, **kw):
+        seen_calls.append((system, prompt))
+        return next(seq)
+
+    monkeypatch.setattr(inc, "local_complete", rec_complete)
+    out = inc.append("Glasshouse", loaded, [m1], files_e2e, LOCAL)
+    assert fact_ok in out
+    assert [s for s, _ in seen_calls] == [
+        inc.GENERATE_SYSTEM, inc.GENERATE_SYSTEM, inc.MAIN_JUDGE_SYSTEM,
+        inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM,
+    ]
+    assert "existing ⚠ warnings are preserved automatically" in seen_calls[0][1]
+    assert "do NOT duplicate them" in seen_calls[0][1]
+    assert "never add a contradicting ## Сейчас line via additions" in seen_calls[0][1]
+    assert "short exact contiguous verbatim" in seen_calls[0][1]
+    fb_miss = json.loads(seen_calls[1][1].split("\n", 1)[0])["correction_feedback"]
+    assert fb_miss["instruction"].startswith(inc._PATCH_QUOTE_MISSING_HINT + " Return ONLY valid patch JSON")
+    assert len(fb_miss["rejected_claims"]) == inc.QUOTE_FEEDBACK_LIMIT
+    assert all(len(t) == inc.QUOTE_FEEDBACK_CHARS for t in fb_miss["rejected_claims"])
+    assert len(fb_miss["missing_quotes"]) == inc.QUOTE_FEEDBACK_LIMIT
+    assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_miss["missing_quotes"])
+    assert all(len(item["quote"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_miss["missing_quotes"])
+    judge_payload = json.loads(seen_calls[2][1].split("\n", 1)[0])
+    assert judge_payload["candidate_anchors"] == [
+        {"text": f"- {fact_ok} [[{m1}]]", "source": m1, "quote": fact_ok}
+    ]
+    assert "candidate_anchors are UNTRUSTED" in seen_calls[2][1]
+    assert "candidate_anchors" not in seen_calls[3][1]
+    assert "candidate_anchors" not in seen_calls[4][1]
+
+    # Standalone semantic_check without anchors must NOT include candidate_anchors or anchor_note
+    plain_judge_prompts: list[str] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (plain_judge_prompts.append(p), judge_ok)[1])
+    monkeypatch.setattr(inc, "audit_claim", lambda *a, **kw: None)
+    inc.semantic_check("Glasshouse", loaded, [m1], files_e2e, LOCAL, out, [])
+    assert "candidate_anchors" not in plain_judge_prompts[0]
+
+    # 5) _apply_patch CLAIM_QUOTE_AMBIGUOUS retry feedback + telemetry recording on double refusal
+    patch_amb = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact_ok, "source": m1, "quote": "Repeat tag."}],
+        "corrections": [],
+    })
+    amb_prompts: list[str] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (amb_prompts.append(p), patch_amb)[1])
+    col_amb = telemetry.Collector()
+    with col_amb.activate():
+        with col_amb.topic():
+            with pytest.raises(inc.Refused, match="ambiguous claim evidence") as exc_a2:
+                inc.append("Glasshouse", loaded, [m1], files_e2e, LOCAL)
+            if exc_a2.value.detail is not None:
+                telemetry.detail(exc_a2.value.detail)
+            telemetry.record_refusal_message(str(exc_a2.value))
+            telemetry.request_refusal(telemetry.Reason.VALIDATION)
+            col_amb.complete_topic(attempted=True, committed=0, refused=1)
+    assert len(amb_prompts) == 2
+    fb_amb = json.loads(amb_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert "missing_quotes" not in fb_amb
+    assert fb_amb["rejected_claims"] == [f"- {fact_ok} [[{m1}]]"]
+    assert fb_amb["instruction"].startswith(inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS] + " Return ONLY valid patch JSON")
+    assert col_amb.snapshot()["stage_refusals"] == {"append": {"claim_quote_ambiguous": 1}}
+
+    # 6) nightly_dossier can_split on multi-source semantic_conserved_false -> _append_sequential succeeds cleanly
+    nd, graph, old_path = world
+    _new(graph, m1, "Glasshouse update alpha.")
+    _new(graph, m2, "Glasshouse update beta.")
+    monkeypatch.setattr(inc, "source_relevance", lambda *a, **kw: True)
+    split_batches: list[list[str]] = []
+
+    def split_complete(prompt, cfg, *, system, **kw):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        names = list(payload["new_sources"])
+        if system == inc.GENERATE_SYSTEM:
+            split_batches.append(names)
+            return json.dumps({
+                "additions": [{
+                    "section": "Сейчас", "text": f"Update {n}.", "source": n,
+                    "quote": f"Glasshouse update {'alpha' if n == m1 else 'beta'}.",
+                } for n in names],
+                "corrections": [],
+            })
+        if system == inc.MAIN_JUDGE_SYSTEM:
+            if len(names) > 1:
+                return json.dumps({
+                    "verdict": "reject", "conserved": False, "supported": True,
+                    "corrections_valid": True, "reason": "batch conflict", "claims": [],
+                })
+            src = names[0]
+            return json.dumps({
+                "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+                "reason": "ok",
+                "claims": [{
+                    "text": f"- Update {src}. [[{src}]]", "source": src,
+                    "quote": f"Glasshouse update {'alpha' if src == m1 else 'beta'}.",
+                    "relevant": True, "supported": True, "reason": "ok",
+                }],
+            })
+        raise AssertionError(f"unexpected system: {system}")
+
+    monkeypatch.setattr(inc, "local_complete", split_complete)
+    monkeypatch.setattr(inc, "audit_claim", lambda *a, **kw: None)
+    res_split = nd.run_all([graph], LOCAL, full=False, dry=False)
+    assert sum(g.built for g in res_split.graphs) == 1
+    assert split_batches == [[m1, m2], [m1, m2], [m1], [m2]]
+    assert res_split.telemetry.snapshot()["stage_refusals"] == {}
+    final_txt = old_path.read_text(encoding="utf-8")
+    assert f"[[{m1}]]" in final_txt and f"[[{m2}]]" in final_txt
+
 
 
 

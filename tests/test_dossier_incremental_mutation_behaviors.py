@@ -60,7 +60,8 @@ def _answer(payload, system, *, irrelevant=(), candidate=None):
     if "extend factual" in system:
         if candidate is not None:
             return json.dumps(candidate)
-        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}], "corrections": []})
+        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
+                           "corrections": []})
     if system == inc.SUPPORT_AUDIT_SYSTEM:
         return json.dumps({"verdict": "accept", "supported": True,
                            "reason": "Synthetic source-support judgment."})

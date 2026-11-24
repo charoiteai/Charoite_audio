@@ -95,7 +95,8 @@ def provider(monkeypatch):
             if system == SOURCE:
                 answer = {"verdict": "relevant", "reason": "Synthetic supported topic fact.", "quote": scenario.fact}
             elif system == GENERATE:
-                answer = {"additions": [{"section": "Сейчас", "text": scenario.fact, "source": B}],
+                answer = {"additions": [{"section": "Сейчас", "text": scenario.fact, "source": B,
+                                         "quote": scenario.fact}],
                           "corrections": []}
             elif system == MAIN:
                 answer = {"verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
@@ -299,7 +300,10 @@ def test_no_room_for_message_envelope_refuses_before_the_factory(provider, role)
         elif role == GENERATE:
             inc.append(scenario.topic, scenario.old, [B], scenario.files, config)
         elif role == MAIN:
-            _validate(scenario, config)
+            inc.validate_candidate(
+                scenario.topic, scenario.old, [B], scenario.files, config, scenario.candidate, [],
+                anchors=reference["payload"].get("candidate_anchors"),
+            )
         else:
             # Reuse the exact real stage request. Otherwise the support stage's
             # own admission could mask the topic stage's envelope refusal.
