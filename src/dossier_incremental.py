@@ -243,7 +243,7 @@ def _canon_text(text: str) -> str:
     ).replace(" \n", "\n")
 
 
-def _flush_emphasis(open_buf: list[str], links: list[str], *, canonical: bool = False) -> str:
+def _flush_emphasis(open_buf: list[str], links: list[str], *, canonical: bool) -> str:
     rendered = _strip_inline_emphasis(unicodedata.normalize("NFC", "".join(open_buf)))
     if canonical:
         rendered = _canon_text(rendered)
@@ -254,7 +254,7 @@ def _flush_emphasis(open_buf: list[str], links: list[str], *, canonical: bool = 
     return rendered
 
 
-def _canon_wikilink(raw: str, *, canonical: bool = False) -> str:
+def _canon_wikilink(raw: str, *, canonical: bool) -> str:
     if canonical:
         raw = unicodedata.normalize("NFC", raw)
     clean = raw.replace(r"\|", "|")
