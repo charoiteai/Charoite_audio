@@ -2250,6 +2250,7 @@ def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feed
     assert fact_b in out_body and fact_a not in out_body
     assert len(append_prompts) == 2
     fb = json.loads(append_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert "missing_quotes" not in fb
     assert fb["rejected_claims"] == [fact_a]
     assert fb["instruction"].startswith(inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.CLAIM_QUOTE_MISSING] + " Return ONLY valid patch JSON")
     assert "explicit source-stated role or connection to the dossier theme" in append_prompts[0]
@@ -2392,6 +2393,37 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     cur_dd = body_dd.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
     assert f"[[{m1}]]" in cur_dd and f"[[{m2}]]" in cur_dd and len(anc_dd) == 2
 
+    # (e) Same source, DIFFERENT text in ## Сейчас alongside a correction -> MUST NOT drop (kills plain_line==r_plain -> True)
+    body_de, _, anc_de = inc._apply_patch(loaded, [m1], dedup_files, {
+        "additions": [
+            {"section": "Сейчас", "text": "Отдельный новый факт.", "source": m1, "quote": "Q2 unique."},
+        ],
+        "corrections": [{
+            "before": "Vent A is open.",
+            "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
+            "source": m1,
+            "quote": "Q1 unique.",
+        }],
+    })
+    cur_de = body_de.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
+    assert "Отдельный новый факт." in cur_de and "перенесён на 25 мая." in cur_de and len(anc_de) == 2
+
+    # (f) Mixed-case non-stem alias shared between after and addition -> kills canonical=False -> True on either side
+    body_df, _, anc_df = inc._apply_patch(loaded, [m1], dedup_files, {
+        "additions": [
+            {"section": "Сейчас", "text": "Пилот Дельта по [[Ядра/Альфа|Проект]] — 5 дек.", "source": m1, "quote": "Absent ok!"},
+        ],
+        "corrections": [{
+            "before": "Vent A is open.",
+            "after": "Пилот [[Ядра/Дельта|Дельта]] по [[Ядра/Альфа|Проект]] — 5 дек.",
+            "source": m1,
+            "quote": "Q1 unique.",
+        }],
+    })
+    cur_df = body_df.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
+    assert cur_df == f"- Пилот [[Ядра/Дельта|Дельта]] по [[Ядра/Альфа|Проект]] — 5 дек. [[{m1}]]"
+    assert len(anc_df) == 1
+
     # 4) append retry on _apply_patch missing_quotes: skips MAIN_JUDGE on attempt 0,
     #    uses _PATCH_QUOTE_MISSING_HINT + missing_quotes + rejected_claims, passes candidate_anchors to MAIN_JUDGE only.
     fact_ok = "Pressure sensor calibrated at 4 bar."
@@ -2528,6 +2560,7 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     assert res_split.telemetry.snapshot()["stage_refusals"] == {}
     final_txt = old_path.read_text(encoding="utf-8")
     assert f"[[{m1}]]" in final_txt and f"[[{m2}]]" in final_txt
+    assert telemetry.Detail.CLAIM_SOURCE_MISSING in night_cli._SPLITTABLE_DETAILS
 
 
 

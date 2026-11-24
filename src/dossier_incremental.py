@@ -1382,7 +1382,7 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                         }
                         for item in exc.missing_quotes[:QUOTE_FEEDBACK_LIMIT]
                     ]
-                    if isinstance(exc, _MissingClaimQuotes) else []
+                    if patch_quote_missing else []
                 )
                 hint_prefix = f"{extra_hint} " if extra_hint else ""
                 feedback = {

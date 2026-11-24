@@ -494,6 +494,8 @@ def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list
 
 
 _SPLITTABLE_DETAILS = frozenset({
+    telemetry.Detail.SOURCE_UNATTRIBUTED,
+    telemetry.Detail.JSON_MALFORMED,
     telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED,
     telemetry.Detail.SEMANTIC_CONSERVED_FALSE,
     telemetry.Detail.SEMANTIC_CORRECTIONS_INVALID,
@@ -503,6 +505,7 @@ _SPLITTABLE_DETAILS = frozenset({
     telemetry.Detail.CLAIM_QUOTE_MISSING,
     telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS,
     telemetry.Detail.CLAIM_UNCOVERED,
+    telemetry.Detail.CLAIM_SOURCE_MISSING,
     telemetry.Detail.CLAIM_NOT_SUPPORTED,
     telemetry.Detail.CLAIM_NOT_RELEVANT,
 })
@@ -580,7 +583,6 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
                     exc_detail = exc.detail or telemetry.detail_for_message(str(exc))
                     can_split = (
                         exc.reason == telemetry.Reason.CONTEXT
-                        or str(exc) in ("candidate does not attribute each accepted source", "malformed model JSON")
                         or exc_detail in _SPLITTABLE_DETAILS
                     )
                     if not can_split or len(accepted) <= 1:
