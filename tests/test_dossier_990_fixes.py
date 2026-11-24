@@ -1373,3 +1373,240 @@ def test_round6_main_judge_predict_quote_contract_and_source_telemetry(monkeypat
                 telemetry.request_refusal(telemetry.Reason.VALIDATION)
                 col.complete_topic(attempted=True, committed=0, refused=1)
         assert col.snapshot()["stage_refusals"] == {"semantic_check": {expected_detail: 1}}
+
+
+def test_round7_canonical_quote_hits_typography_nfd_wikilinks_and_hidden_symmetry():
+    import unicodedata
+
+    # All _QUOTE_CHAR_MAP entries + casefold + horizontal spaces + trailing spaces before newline
+    for src_ch, ascii_ch in (
+        ("ё", "е"), ("Ё", "е"), ("—", "-"), ("–", "-"), ("−", "-"),
+        ("‑", "-"), ("‐", "-"), ("‒", "-"), ("―", "-"),
+        ("«", '"'), ("»", '"'), ("“", '"'), ("”", '"'), ("„", '"'),
+        ("‘", "'"), ("’", "'"),
+    ):
+        assert inc._quote_hits(f"Факт {src_ch} проверка", f"факт {ascii_ch} проверка") == 1
+
+    # NBSP, tabs, multiple horizontal spaces, and trailing space before newline
+    source = (
+        "- **Релиз «Орбита\u00a02.4»** — перенесён на 15–18 февраля.\u00a0 \n"
+        "  - Лимит очереди\t 500  сообщений.\n"
+    )
+    assert inc._quote_hits(source, 'релиз "орбита 2.4" - перенесен на 15-18 февраля.') == 1
+    assert inc._quote_hits(
+        source,
+        "- Релиз «Орбита 2.4» — перенесён на 15–18 февраля.\n - Лимит очереди 500 сообщений.",
+    ) == 1
+    # Single-line quote carrying trailing NBSP/space still matches multi-line source line whose trailing space was stripped
+    assert inc._quote_hits(source, "- Релиз «Орбита 2.4» — перенесён на 15–18 февраля.\u00a0 ") == 1
+    # Newlines are NEVER collapsed into spaces (no cross-line splicing)
+    assert inc._quote_hits(
+        "Собеседник 1: Нет, отменяем.\nСобеседник 2: Запускаем завтра.",
+        "Нет, отменяем. Запускаем завтра.",
+    ) == 0
+    # Whitespace-only quote never matches single space via canonicalization
+    assert inc._quote_hits("a b", "  ") == 0
+    assert inc._quote_hits("a  b", "  ") == 1
+
+    # NFD vs NFC: normal matching AND NFC before _strip_inline_emphasis (word boundary \w on NFD й)
+    nfd_source = unicodedata.normalize("NFD", "- **Расчёт задержек**: модуль «Маяк» переведён на 03:00.")
+    assert inc._quote_hits(nfd_source, "Расчёт задержек: модуль «Маяк» переведён на 03:00.") == 1
+    assert inc._quote_hits("пои\u0306*ти*", "пои\u0306ти") == 0
+    assert inc._quote_hits("пои\u0306*ти*", "пойти") == 0
+
+    # Non-canonical emphasis-free branch keeps exact-case disambiguation before canonical folding
+    assert inc._quote_hits("- **Альфа** готова.\n- альфа готова.", "Альфа готова.") == 1
+
+    # Wikilinks with [[ in quote: canonicalize alias + NFD target (with й) while keeping exact target
+    nfd_link_src = unicodedata.normalize("NFD", "- [[Ядра/Устойчивый маяк|Проект\u00a0—\u00a0Маяк]]: готово.")
+    assert inc._quote_hits(nfd_link_src, "- [[Ядра/Устойчивый маяк|Проект - Маяк]]: готово.") == 1
+    assert inc._quote_hits(nfd_link_src, "- [[Чужой/Устойчивый маяк|Проект - Маяк]]: готово.") == 0
+    assert inc._quote_hits("- [[Ядра/Орбита|орбита]]: ok.", "- [[Ядра/Орбита]]: ok.") == 1
+    assert inc._quote_hits("- [[Ядра/Орбита| ]]: ok.", "- [[Ядра/Орбита| ]]: ok.") == 1
+    assert inc._quote_hits("- [[Ядра/Орбита#sec|Орбита]]: ok.", "- [[Ядра/Орбита#sec]]: ok.") == 0
+
+    # Sentinel characters \ufdd0/\ufdd1/\ufdd2 cannot forge hidden/link matches
+    for bad_q in ("s\ufdd2e\ufdd2c\ufdd2r\ufdd2e\ufdd2t", "a\ufdd0b", "a\ufdd1b"):
+        assert inc._quote_hits("Код `secret` ок. a\ufdd0b a\ufdd1b", bad_q) == 0
+    assert inc._quote_hits("x \ufdd0:0\ufdd1 y [[Ядра/А]]", "x [[Ядра/А]] y") == 0
+    assert inc._quote_hits("x [[Ядра/А|\ufdd0:0\ufdd1]] y [[Ядра/Б]]", "x [[Ядра/Б]] y") == 0
+
+    # Hidden-zone symmetry & duplicate detection (including single literal inline-code quote != duplicate!)
+    assert inc._quote_hits("Запуск `pytest -q` прошёл штатно.", "`pytest -q`") == 1
+    assert inc._quote_hits("Код `[[Ядра/Glasshouse]]` и текст.", "`[[Ядра/Glasshouse]]`") == 1
+    assert inc._quote_hits("Запуск `pytest -q` и ещё `PYTEST -Q`.", "`pytest -q`") == 2
+    assert inc._quote_hits("Код `[[Ядра/Glasshouse]]` и [[Ядра/Glasshouse|glasshouse]].", "[[Ядра/Glasshouse]]") == 2
+    assert inc._quote_hits("Glasshouse\u00a0fitted.\n```\nGlasshouse fitted.\n```\n", "Glasshouse fitted.") == 2
+    assert inc._quote_hits("Glasshouse fitted.\n```\nGlasshouse\u00a0fitted.\n```\n", "Glasshouse fitted.") == 2
+    assert inc._quote_hits("Glasshouse\u00a0fitted.\n```\nGlasshouse\u00a0fitted.\n```\n", "glasshouse fitted.") == 2
+    assert inc._quote_hits("Расче\u0308т готов.\n```\nРасче\u0308т готов.\n```\n", "расчет готов.") == 2
+    assert inc._quote_hits("Код `Орбита` и текст Орбита.", "орбита") == 2
+    assert inc._quote_hits("Переход на `API v2` намечен на 1\u00a0марта.", "переход на `API v2` намечен на 1 марта.") == 1
+    assert inc._quote_hits("Переход на `API v2` намечен на 1\u00a0марта.", "переход на `api v2` намечен на 1 марта.") == 0
+    assert inc._quote_hits("Код `[[Ядра/Glasshouse]]` и текст.", "[[Ядра/Glasshouse]]") == 1
+    assert inc._quote_hits('- Релиз «Орбита».\n- Релиз "Орбита".', 'релиз "орбита".') == 2
+
+
+def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
+    assert inc.QUOTE_FEEDBACK_LIMIT == 5
+    assert inc.QUOTE_FEEDBACK_CHARS == 200
+
+    m1 = "2099-01-02_100000"
+    m2 = "2099-01-03_100000"
+    loaded = _loaded_with_body(BODY)
+    fact1 = "Valve pressure stabilized at 4 bar."
+    fact2 = "Backup sensor calibration completed."
+    files = {
+        m1: {"text": f"Inspection log: {fact1}"},
+        m2: {"text": f"Calibration log: {fact2}"},
+    }
+    body = BODY.replace("## Как пришли", f"- {fact1} [[{m1}]]\n## Как пришли")
+
+    # 1) Pure claim_quote_missing triggers exactly 1 bounded retry with correction_feedback and succeeds
+    seen_prompts: list[str] = []
+    audited: list[dict] = []
+    replies = iter([
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": fact1, "source": f"[[{m1}]]",
+                        "quote": "Valve pressure ... 4 bar.", "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "fixed quote",
+            "claims": [{"text": fact1, "source": m1,
+                        "quote": fact1, "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+    ])
+
+    def fake_complete(prompt, config, *, system, **kwargs):
+        seen_prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
+    monkeypatch.setattr(inc, "audit_claim", lambda *a, **kw: audited.append(a[2]))
+    inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+    assert len(seen_prompts) == 2
+    payload_retry = json.loads(seen_prompts[1].split("\n", 1)[0])
+    fb = payload_retry["correction_feedback"]
+    assert fb["failure"] == "one or more claim quotes were not found verbatim in new_sources"
+    assert fb["missing_quotes"] == [{"text": fact1, "source": m1, "quote": "Valve pressure ... 4 bar."}]
+    assert "supported=false and verdict=reject" in fb["instruction"]
+    assert len(audited) == 1 and audited[0]["quote"] == fact1
+
+    # 2) Bounded retry: 2 consecutive misses stop after 2 calls and record claim_quote_missing
+    calls_twice: list[str] = []
+    bad_verdict = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact1, "source": m1,
+                    "quote": "not in source", "relevant": True, "supported": True, "reason": "ok"}],
+    })
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (calls_twice.append(p), bad_verdict)[1])
+    col = telemetry.Collector()
+    with col.activate():
+        with col.topic():
+            with pytest.raises(inc.Refused, match="lacks exact new-source evidence") as exc_info:
+                with telemetry.stage(telemetry.Stage.SEMANTIC):
+                    inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+            telemetry.record_refusal_message(str(exc_info.value))
+            telemetry.request_refusal(telemetry.Reason.VALIDATION)
+            col.complete_topic(attempted=True, committed=0, refused=1)
+    assert len(calls_twice) == 2
+    assert col.snapshot()["stage_refusals"] == {"semantic_check": {"claim_quote_missing": 1}}
+
+    # 3) Truncation limits: at most QUOTE_FEEDBACK_LIMIT items and QUOTE_FEEDBACK_CHARS per text/quote
+    long_facts = [f"Fact{i} " + ("x" * 230) + "." for i in range(6)]
+    long_body = BODY.replace("## Как пришли", "".join(f"- {f} [[{m1}]]\n" for f in long_facts) + "## Как пришли")
+    long_files = {m1: {"text": "completely different text"}}
+    long_prompts: list[str] = []
+    long_verdict = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [
+            {"text": f, "source": m1, "quote": f"Quote{i} " + ("y" * 230),
+             "relevant": True, "supported": True, "reason": "ok"}
+            for i, f in enumerate(long_facts)
+        ],
+    })
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (long_prompts.append(p), long_verdict)[1])
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc.semantic_check("Glasshouse", loaded, [m1], long_files, LOCAL, long_body, [])
+    assert len(long_prompts) == 2
+    fb_long = json.loads(long_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert len(fb_long["missing_quotes"]) == inc.QUOTE_FEEDBACK_LIMIT
+    assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["missing_quotes"])
+    assert all(len(item["quote"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["missing_quotes"])
+
+    # 4) Retry turning into verdict=reject refuses immediately as semantic conservation rejected
+    reject_replies = iter([
+        bad_verdict,
+        json.dumps({
+            "verdict": "reject", "conserved": True, "supported": False, "corrections_valid": True,
+            "reason": "unsupported", "claims": [],
+        }),
+    ])
+    monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: next(reject_replies))
+    with pytest.raises(inc.Refused, match="semantic conservation was not accepted"):
+        inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+
+    # 5) Critical invariant: missing quote on claim[0] NEVER triggers retry when ANY other check fails
+    two_body = BODY.replace("## Как пришли", f"- {fact1} [[{m1}]]\n- {fact2} [[{m2}]]\n## Как пришли")
+    ambig_files = {m1: {"text": f"Log: {fact1}"}, m2: {"text": f"{fact2}\n{fact2}"}}
+    missing_c1 = {"text": fact1, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"}
+    for bad_claims, err_re, use_names, use_files, use_body in (
+        ([missing_c1, {"text": fact2, "source": m2, "quote": fact2, "relevant": True, "supported": True, "reason": "ok"}],
+         "ambiguous claim evidence", [m1, m2], ambig_files, two_body),
+        ([missing_c1, {"text": "broken"}], "malformed candidate claim", [m1, m2], files, two_body),
+        ([missing_c1, {"text": fact2, "source": m2, "quote": fact2, "relevant": True, "supported": False, "reason": "no"}],
+         "not relevant and supported", [m1, m2], files, two_body),
+        ([missing_c1, {"text": fact2, "source": "unknown", "quote": fact2, "relevant": True, "supported": True, "reason": "ok"}],
+         "unsupported new source", [m1, m2], files, two_body),
+        ([missing_c1, missing_c1], "duplicate candidate claim", [m1], files, body),
+        ([missing_c1, {"text": "not in body", "source": m2, "quote": fact2, "relevant": True, "supported": True, "reason": "ok"}],
+         "not an exact candidate span", [m1, m2], files, two_body),
+        ([missing_c1], "uncovered new significant text", [m1, m2], files, two_body),
+        ([missing_c1], "contribution", [m1, m2], files, body),
+    ):
+        one_shot: list[int] = []
+        v = json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok", "claims": bad_claims,
+        })
+        monkeypatch.setattr(inc, "local_complete", lambda *a, v=v, **kw: (one_shot.append(1), v)[1])
+        with pytest.raises(inc.Refused, match=err_re):
+            inc.semantic_check("Glasshouse", loaded, use_names, use_files, LOCAL, use_body, [])
+        assert len(one_shot) == 1
+
+    # 6) Budget guard on retry: exact == ctx allows retry, ctx + 1 refuses without 2nd call; non-ollama doesn't KeyError
+    sys_len = len(inc.MAIN_JUDGE_SYSTEM)
+    min_budget = (inc.MIN_AUTO_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    base_calls: list[str] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (base_calls.append(p), bad_verdict)[1])
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+    assert len(base_calls) == 2
+    exact_pad = min_budget - sys_len - len(base_calls[1])
+    assert exact_pad >= 0
+    exact_files = {m1: {"text": f"Inspection log: {fact1}" + ("z" * exact_pad)}}
+    exact_calls: list[str] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (exact_calls.append(p), bad_verdict)[1])
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc.semantic_check("Glasshouse", loaded, [m1], exact_files, LOCAL, body, [])
+    assert len(exact_calls) == 2
+    assert inc._stage_needed_tokens(sys_len, exact_calls[1], inc.MAIN_JUDGE_PREDICT) == inc.MIN_AUTO_CONTEXT
+
+    tight_files = {m1: {"text": f"Inspection log: {fact1}" + ("z" * (exact_pad + 1))}}
+    tight_calls: list[int] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (tight_calls.append(len(p)), bad_verdict)[1])
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc.semantic_check("Glasshouse", loaded, [m1], tight_files, LOCAL, body, [])
+    assert len(tight_calls) == 1
+
+    # Non-ollama config (no num_ctx) retries without KeyError
+    non_ollama_calls: list[int] = []
+    monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: (non_ollama_calls.append(1), bad_verdict)[1])
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc.semantic_check("Glasshouse", loaded, [m1], files, {"llm": {"engine": "cloud"}}, body, [])
+    assert len(non_ollama_calls) == 2
