@@ -139,9 +139,9 @@ def test_oversized_complete_audit_refuses_before_transport(monkeypatch):
     calls = _transport(monkeypatch, _verdict())
     reasons = []
     monkeypatch.setattr(inc.telemetry, "refusal", reasons.append)
+    overflow = FACT + "\n" + "x" * (inc.MAX_AUDIT_CONTEXT * inc.ADMISSION_CHARS_PER_TOKEN)
     with pytest.raises(inc.Refused, match="maximum context budget"):
-        inc.audit_claim("Glasshouse", _old(), _claim(), {},
-                        quote_context=FACT + "\n" + "Outside source. " * 5000)
+        inc.audit_claim("Glasshouse", _old(), _claim(), {}, quote_context=overflow)
     assert calls == []
     assert reasons == [inc.telemetry.Reason.CONTEXT]
 
@@ -155,7 +155,7 @@ def test_oversized_configured_audit_window_refuses_before_transport(monkeypatch)
 
 
 @pytest.mark.parametrize("config,source", [
-    ({}, FACT + "\n" + "Outside source. " * 5000),
+    ({}, FACT + "\n" + "x" * (inc.MAX_AUDIT_CONTEXT * inc.ADMISSION_CHARS_PER_TOKEN)),
     ({"llm": {"num_ctx": 131072}}, FACT + "\nComplete source tail."),
 ])
 def test_oversized_audit_survives_nightly_refusal_classification(monkeypatch, config, source):
@@ -447,24 +447,30 @@ def test_actual_adapter_transport_is_checked_again_after_local_factory(monkeypat
 def test_stage_config_boundaries_and_auto_stepping(monkeypatch):
     longest = max(len(inc.SUPPORT_AUDIT_SYSTEM), len(inc.TOPIC_AUDIT_SYSTEM))
     min_budget = (inc.MIN_AUTO_CONTEXT - inc.AUDIT_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    mid_budget = (inc.MID_AUTO_CONTEXT - inc.AUDIT_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    high_budget = (inc.HIGH_AUTO_CONTEXT - inc.AUDIT_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
     max_budget = (inc.MAX_AUDIT_CONTEXT - inc.AUDIT_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
     # Odd boundary min_budget + 1 chars -> ceil((min_budget + 1) / 2) + AUDIT_PREDICT + 256 = 8193 -> 16384.
-    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (min_budget + 1 - longest))["llm"]["num_ctx"] == 16384
-    # Exact 32768 boundary: max_budget -> 32768; +1 -> Refused(CONTEXT).
-    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (max_budget - longest))["llm"]["num_ctx"] == 32768
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (min_budget + 1 - longest))["llm"]["num_ctx"] == inc.MID_AUTO_CONTEXT
+    # Exact 32768 (HIGH_AUTO_CONTEXT) boundary: mid_budget + 1 -> 32768; high_budget -> 32768; high_budget + 1 -> 65536.
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (mid_budget + 1 - longest))["llm"]["num_ctx"] == inc.HIGH_AUTO_CONTEXT
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (high_budget - longest))["llm"]["num_ctx"] == inc.HIGH_AUTO_CONTEXT
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (high_budget + 1 - longest))["llm"]["num_ctx"] == inc.MAX_AUDIT_CONTEXT
+    # Exact 65536 (MAX_AUDIT_CONTEXT) boundary: max_budget -> 65536; +1 -> Refused(CONTEXT).
+    assert inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (max_budget - longest))["llm"]["num_ctx"] == inc.MAX_AUDIT_CONTEXT
     with pytest.raises(inc.Refused, match="maximum context budget") as over:
         inc._audit_config({"llm": {"num_ctx": 8192}}, "x" * (max_budget + 1 - longest))
     assert over.value.reason == inc.telemetry.Reason.CONTEXT
     # Explicit small (< 8192) and negative windows are preserved for admission to refuse.
     assert inc._stage_config({"llm": {"num_ctx": 4096}}, 10, "x" * 14000, 350)["llm"]["num_ctx"] == 4096
     assert inc._stage_config({"llm": {"num_ctx": -1}}, 10, "x", 350)["llm"]["num_ctx"] == -1
-    # Explicit large (> 32768) operator windows are preserved on non-audit stages up to their exact budget.
-    max_64k_prompt = "x" * ((65536 - 350 - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN - 10)
-    assert inc._stage_config({"llm": {"num_ctx": 65536}}, 10, "x", 350)["llm"]["num_ctx"] == 65536
-    assert inc._stage_config({"llm": {"num_ctx": 65536}}, 10, max_64k_prompt, 350)["llm"]["num_ctx"] == 65536
-    with pytest.raises(inc.Refused, match="maximum context budget") as over_64k:
-        inc._stage_config({"llm": {"num_ctx": 65536}}, 10, max_64k_prompt + "x", 350)
-    assert over_64k.value.reason == inc.telemetry.Reason.CONTEXT
+    # Explicit large (> 65536) operator windows are preserved on non-audit stages up to their exact budget.
+    max_128k_prompt = "x" * ((131072 - 350 - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN - 10)
+    assert inc._stage_config({"llm": {"num_ctx": 131072}}, 10, "x", 350)["llm"]["num_ctx"] == 131072
+    assert inc._stage_config({"llm": {"num_ctx": 131072}}, 10, max_128k_prompt, 350)["llm"]["num_ctx"] == 131072
+    with pytest.raises(inc.Refused, match="maximum context budget") as over_128k:
+        inc._stage_config({"llm": {"num_ctx": 131072}}, 10, max_128k_prompt + "x", 350)
+    assert over_128k.value.reason == inc.telemetry.Reason.CONTEXT
     # Non-ollama configs pass through untouched so local_config enforces the local-only gate.
     cloud_cfg = {"llm": {"engine": "cloud", "model": "invented"}}
     assert inc._stage_config(cloud_cfg, 10, "x" * 70000, 350) is cloud_cfg
