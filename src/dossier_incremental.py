@@ -1359,13 +1359,16 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                 missing_hint = " (especially every item in missing_citations)" if missing else ""
                 detail = exc.detail or telemetry.detail_for_message(str(exc))
                 patch_quote_missing = body is None and isinstance(exc, _MissingClaimQuotes)
-                patch_quote_ambiguous = body is None and detail is telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS
                 extra_hint = (
                     _PATCH_QUOTE_MISSING_HINT
                     if patch_quote_missing
                     else _APPEND_FEEDBACK_HINTS.get(detail, "")
                 )
-                allow_rejected = body is not None or patch_quote_missing or patch_quote_ambiguous
+                allow_rejected = (
+                    body is not None
+                    or patch_quote_missing
+                    or detail is telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS
+                )
                 rejected = (
                     list(dict.fromkeys(
                         t[:QUOTE_FEEDBACK_CHARS] for t in exc.rejected_claims

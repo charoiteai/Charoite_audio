@@ -2424,6 +2424,22 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     assert cur_df == f"- Пилот [[Ядра/Дельта|Дельта]] по [[Ядра/Альфа|Проект]] — 5 дек. [[{m1}]]"
     assert len(anc_df) == 1
 
+    # (g) Equal canonical link sets with different raw syntax ([[X|X]] vs [[X]]) -> kills line_links <= r_links -> <
+    body_dg, _, anc_dg = inc._apply_patch(loaded, [m1], dedup_files, {
+        "additions": [
+            {"section": "Сейчас", "text": "Пилот [[Ядра/Дельта]] перенесён на 25 мая.", "source": m1, "quote": "Absent ok!"},
+        ],
+        "corrections": [{
+            "before": "Vent A is open.",
+            "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
+            "source": m1,
+            "quote": "Q1 unique.",
+        }],
+    })
+    cur_dg = body_dg.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
+    assert cur_dg == f"- Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая. [[{m1}]]"
+    assert len(anc_dg) == 1
+
     # 4) append retry on _apply_patch missing_quotes: skips MAIN_JUDGE on attempt 0,
     #    uses _PATCH_QUOTE_MISSING_HINT + missing_quotes + rejected_claims, passes candidate_anchors to MAIN_JUDGE only.
     fact_ok = "Pressure sensor calibrated at 4 bar."
