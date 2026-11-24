@@ -610,6 +610,13 @@ def test_stage_refusals_covers_append_deterministic_semantic_and_audit_support(w
           good_patch,
           json.dumps({"verdict": "reject", "conserved": True, "supported": False,
                       "corrections_valid": True, "reason": "no", "claims": []})],
+         {"semantic_check": {"semantic_supported_false": 1}}),
+        ([rel_ok, good_patch,
+          json.dumps({"verdict": "reject", "conserved": True, "supported": True,
+                      "corrections_valid": True, "reason": "no", "claims": []}),
+          good_patch,
+          json.dumps({"verdict": "reject", "conserved": True, "supported": True,
+                      "corrections_valid": True, "reason": "no", "claims": []})],
          {"semantic_check": {"semantic_rejected": 1}}),
         ([rel_ok, good_patch, sem_ok,
           json.dumps({"verdict": "reject", "supported": False, "reason": "unsupported"}),
@@ -1610,3 +1617,238 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
         inc.semantic_check("Glasshouse", loaded, [m1], files, {"llm": {"engine": "cloud"}}, body, [])
     assert len(non_ollama_calls) == 2
+
+
+def test_round8_semantic_detail_classification_and_quote_retry_override(monkeypatch):
+    # 1) Pure table classifier: structural validity -> quote_retried -> conserved -> corrections_valid -> uncertain -> supported -> fallback
+    base = {"verdict": "reject", "conserved": True, "corrections_valid": True, "supported": True, "reason": "r"}
+    assert telemetry.classify_semantic_detail({**base, "reason": ""}, quote_retried=True) is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.classify_semantic_detail({**base, "reason": "   "}, quote_retried=True) is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.classify_semantic_detail({**base, "reason": None}, quote_retried=True) is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.classify_semantic_detail({**base, "supported": 0}, quote_retried=True) is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.classify_semantic_detail({**base, "conserved": None}, quote_retried=False) is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.classify_semantic_detail({**base, "corrections_valid": "false"}, quote_retried=False) is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.classify_semantic_detail({**base, "supported": False}, quote_retried=True) is telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED
+    assert telemetry.classify_semantic_detail({**base, "conserved": False, "corrections_valid": False, "supported": False}) is telemetry.Detail.SEMANTIC_CONSERVED_FALSE
+    assert telemetry.classify_semantic_detail({**base, "corrections_valid": False, "verdict": "uncertain", "supported": False}) is telemetry.Detail.SEMANTIC_CORRECTIONS_INVALID
+    assert telemetry.classify_semantic_detail({**base, "verdict": "uncertain", "supported": False}) is telemetry.Detail.SEMANTIC_UNCERTAIN
+    assert telemetry.classify_semantic_detail({**base, "supported": False}) is telemetry.Detail.SEMANTIC_SUPPORTED_FALSE
+    assert telemetry.classify_semantic_detail(base) is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.detail_for_message("candidate semantic conservation was not accepted") is telemetry.Detail.SEMANTIC_REJECTED
+    assert telemetry.detail_for_message("unknown freeform text") is None
+
+    # 2) semantic_check attempt=0 records exact Detail for verdict flags and claim flags
+    m1 = "2099-01-02_100000"
+    loaded = _loaded_with_body(BODY)
+    fact = "Valve pressure stabilized at 4 bar."
+    files = {m1: {"text": f"Inspection log: {fact}"}}
+    body = BODY.replace("## Как пришли", f"- {fact} [[{m1}]]\n## Как пришли")
+    claim_ok = {"text": fact, "source": m1, "quote": fact, "relevant": True, "supported": True, "reason": "ok"}
+
+    for reply_obj, expected_detail in (
+        ({**base, "conserved": False, "claims": []}, telemetry.Detail.SEMANTIC_CONSERVED_FALSE),
+        ({**base, "corrections_valid": False, "claims": []}, telemetry.Detail.SEMANTIC_CORRECTIONS_INVALID),
+        ({**base, "verdict": "uncertain", "supported": False, "claims": []}, telemetry.Detail.SEMANTIC_UNCERTAIN),
+        ({**base, "supported": False, "claims": []}, telemetry.Detail.SEMANTIC_SUPPORTED_FALSE),
+        ({**base, "claims": []}, telemetry.Detail.SEMANTIC_REJECTED),
+        ({**base, "verdict": "accept", "claims": [{**claim_ok, "relevant": False}]}, telemetry.Detail.CLAIM_NOT_RELEVANT),
+        ({**base, "verdict": "accept", "claims": [{**claim_ok, "supported": False}]}, telemetry.Detail.CLAIM_NOT_SUPPORTED),
+    ):
+        monkeypatch.setattr(inc, "local_complete", lambda *a, r=json.dumps(reply_obj), **kw: r)
+        col = telemetry.Collector()
+        with col.activate():
+            with col.topic():
+                with pytest.raises(inc.Refused) as exc_info:
+                    with telemetry.stage(telemetry.Stage.SEMANTIC):
+                        inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+                assert exc_info.value.detail is expected_detail
+                telemetry.record_refusal_message(str(exc_info.value))
+                telemetry.request_refusal(telemetry.Reason.VALIDATION)
+                col.complete_topic(attempted=True, committed=0, refused=1)
+        assert col.snapshot()["stage_refusals"] == {"semantic_check": {expected_detail.value: 1}}
+
+    # 3) quote_feedback retry (attempt=1) overrides verdict reject AND claim relevant/supported reject to SEMANTIC_QUOTE_RETRY_REJECTED,
+    # while non-semantic claim failures (uncovered / ambiguous / quote_missing) keep their own Detail.
+    miss_reply = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok", "claims": [{**claim_ok, "quote": "missing quote"}],
+    })
+    for retry_reply_obj, expected_detail, expected_exc_detail in (
+        ({**base, "supported": False, "claims": []}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
+        ({**base, "verdict": "accept", "claims": [{**claim_ok, "relevant": False}]}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
+        ({**base, "verdict": "accept", "claims": [{**claim_ok, "supported": False}]}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
+        ({**base, "verdict": "accept", "claims": []}, telemetry.Detail.CLAIM_UNCOVERED, None),
+        ({**base, "verdict": "accept", "claims": [{**claim_ok, "quote": "still missing"}]}, telemetry.Detail.CLAIM_QUOTE_MISSING, None),
+    ):
+        replies = iter([miss_reply, json.dumps(retry_reply_obj)])
+        monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: next(replies))
+        col = telemetry.Collector()
+        with col.activate():
+            with col.topic():
+                with pytest.raises(inc.Refused) as exc_info:
+                    with telemetry.stage(telemetry.Stage.SEMANTIC):
+                        inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+                assert exc_info.value.detail is expected_exc_detail
+                telemetry.record_refusal_message(str(exc_info.value))
+                telemetry.request_refusal(telemetry.Reason.VALIDATION)
+                col.complete_topic(attempted=True, committed=0, refused=1)
+        assert col.snapshot()["stage_refusals"] == {"semantic_check": {expected_detail.value: 1}}
+
+
+def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeypatch):
+    m1 = "2099-01-02_100000"
+    loaded = _loaded_with_body(BODY)
+    fact_a = "Valve pressure stabilized at 4 bar."
+    fact_b = "Backup pump may run after Friday if load stays high."
+    files = {m1: {"text": f"{fact_a} {fact_b}"}}
+    body = BODY.replace("## Как пришли", f"- {fact_a} [[{m1}]]\n- {fact_b} [[{m1}]]\n## Как пришли")
+
+    # 1) _check_claims filters rejected_claims strictly to new spans overlapping required, deduplicated, resilient to non-dict/bad text
+    claims_mixed = [
+        {"text": fact_a, "source": m1, "quote": fact_a, "relevant": False, "supported": True, "reason": "offtopic"},
+        {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": False, "reason": "unsup"},
+        {"text": fact_a, "source": m1, "quote": fact_a, "relevant": False, "supported": False, "reason": "dup"},
+        {"text": "Vent A is open.", "source": m1, "quote": fact_a, "relevant": False, "supported": True, "reason": "old line"},
+        {"text": ".", "source": m1, "quote": fact_a, "relevant": True, "supported": False, "reason": "punct only"},
+        {"text": "   ", "source": m1, "quote": fact_a, "relevant": False, "supported": True, "reason": "spaces"},
+        {"text": 123, "source": m1, "quote": fact_a, "relevant": False, "supported": True, "reason": "non-str"},
+        {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "good"},
+        "not-a-dict",
+    ]
+    with pytest.raises(inc.Refused, match="not relevant and supported") as exc_claims:
+        inc._check_claims(loaded, body, [m1], files, claims_mixed, [])
+    assert exc_claims.value.detail is telemetry.Detail.CLAIM_NOT_RELEVANT
+    assert exc_claims.value.rejected_claims == (fact_a, fact_b)
+
+    # Also verify valid claim is NOT collected when only second claim fails supported=False
+    claims_sup_only = [
+        {"text": fact_a, "source": m1, "quote": fact_a, "relevant": True, "supported": True, "reason": "good"},
+        {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": False, "reason": "unsup"},
+    ]
+    with pytest.raises(inc.Refused, match="not relevant and supported") as exc_sup:
+        inc._check_claims(loaded, body, [m1], files, claims_sup_only, [])
+    assert exc_sup.value.detail is telemetry.Detail.CLAIM_NOT_SUPPORTED
+    assert exc_sup.value.rejected_claims == (fact_b,)
+
+    # 2) audit_claim attaches closed Detail + rejected_claims=(claim["text"],) for both support and topic stages
+    claim = {"text": fact_b, "source": m1, "quote": fact_b}
+    for replies, expected_detail in (
+        ([json.dumps({"verdict": "reject", "supported": False, "reason": "SECRET_REASON_1"})],
+         telemetry.Detail.AUDIT_SUPPORT_REJECTED),
+        ([json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
+          json.dumps({"verdict": "reject", "relevant": False, "reason": "SECRET_REASON_2"})],
+         telemetry.Detail.AUDIT_TOPIC_REJECTED),
+    ):
+        monkeypatch.setattr(inc, "local_complete", _seq_replies(replies))
+        col = telemetry.Collector()
+        with col.activate():
+            with col.topic():
+                with pytest.raises(inc.Refused) as exc_audit:
+                    inc.audit_claim("Glasshouse", loaded, claim, LOCAL, quote_context=files[m1]["text"])
+                assert exc_audit.value.detail is expected_detail
+                assert exc_audit.value.rejected_claims == (fact_b,)
+                telemetry.request_refusal(telemetry.Reason.VALIDATION)
+                col.complete_topic(attempted=True, committed=0, refused=1)
+        expected_stage = "audit_support" if expected_detail is telemetry.Detail.AUDIT_SUPPORT_REJECTED else "audit_topic"
+        assert col.snapshot()["stage_refusals"] == {expected_stage: {expected_detail.value: 1}}
+
+    # 3) Standalone append (NO Collector active!) receives Detail hint + filtered rejected_claims without leaking judge reason
+    orig_validate = inc.validate_candidate
+    patch_bad = json.dumps({"additions": [{"section": "Сейчас", "text": fact_b, "source": m1}], "corrections": []})
+    patch_good = json.dumps({"additions": [{"section": "Сейчас", "text": fact_a, "source": m1}], "corrections": []})
+    prompts: list[str] = []
+    call_idx = {"n": 0}
+
+    def fake_append_complete(prompt, c, *, system, **kwargs):
+        prompts.append(prompt)
+        call_idx["n"] += 1
+        return patch_bad if call_idx["n"] == 1 else patch_good
+
+    val_idx = {"n": 0}
+
+    def fake_validate(theme, ld, names, fl, c, cand_body, changes):
+        val_idx["n"] += 1
+        if val_idx["n"] == 1:
+            raise inc.Refused(
+                "independent claim audit was not accepted (supported)",
+                detail=telemetry.Detail.AUDIT_SUPPORT_REJECTED,
+                rejected_claims=("", 123, "NOT_IN_BODY", fact_b, fact_b),
+            )
+
+    monkeypatch.setattr(inc, "local_complete", fake_append_complete)
+    monkeypatch.setattr(inc, "validate_candidate", fake_validate)
+    assert telemetry.current() is None
+    res = inc.append("Glasshouse", loaded, [m1], files, LOCAL)
+    assert fact_a in res
+    assert len(prompts) == 2
+    assert "Preserve source certainty, conditions, uncertainty, and time" in prompts[0]
+    fb_payload = json.loads(prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert fb_payload["rejected_claims"] == [fact_b]
+    assert inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.AUDIT_SUPPORT_REJECTED] in fb_payload["instruction"]
+
+    # 4) Fallback via detail_for_message when external Refused has detail=None + truncation/limit on rejected_claims
+    long_items = [f"Item{i} " + ("z" * 230) for i in range(6)]
+    patch_long = json.dumps({
+        "additions": [{"section": "Сейчас", "text": t, "source": m1} for t in long_items],
+        "corrections": [],
+    })
+    prompts_fb: list[str] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (prompts_fb.append(p), patch_long)[1])
+    monkeypatch.setattr(
+        inc,
+        "validate_candidate",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            inc.Refused("candidate semantic conservation was not accepted", rejected_claims=tuple(long_items))
+        ),
+    )
+    with pytest.raises(inc.Refused, match="semantic conservation was not accepted"):
+        inc.append("Glasshouse", loaded, [m1], files, LOCAL)
+    assert len(prompts_fb) == 2
+    fb2 = json.loads(prompts_fb[1].split("\n", 1)[0])["correction_feedback"]
+    assert len(fb2["rejected_claims"]) == inc.QUOTE_FEEDBACK_LIMIT
+    assert all(len(t) == inc.QUOTE_FEEDBACK_CHARS for t in fb2["rejected_claims"])
+    assert inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.SEMANTIC_REJECTED] in fb2["instruction"]
+
+    # 5) body is None (malformed JSON) does not crash on rejected_claims and appends no trailing space when no hint
+    prompts_json: list[str] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (prompts_json.append(p), "{bad json")[1])
+    with pytest.raises(inc.Refused, match="malformed model JSON"):
+        inc.append("Glasshouse", loaded, [m1], files, LOCAL)
+    fb3 = json.loads(prompts_json[1].split("\n", 1)[0])["correction_feedback"]
+    assert "rejected_claims" not in fb3
+    assert fb3["instruction"].endswith("and do not duplicate after in additions.")
+
+    # 6) Judge freeform reason NEVER leaks into append correction_feedback
+    monkeypatch.setattr(inc, "validate_candidate", orig_validate)
+    secret_prompts: list[str] = []
+    seq = iter([
+        patch_bad,
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "SECRET_MAIN_REASON",
+            "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        json.dumps({"verdict": "reject", "supported": False, "reason": "SECRET_AUDIT_REASON"}),
+        patch_good,
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": fact_a, "source": m1, "quote": fact_a, "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
+        json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
+    ])
+
+    def leak_check_complete(prompt, c, *, system, **kwargs):
+        if system == inc.GENERATE_SYSTEM:
+            secret_prompts.append(prompt)
+        return next(seq)
+
+    monkeypatch.setattr(inc, "local_complete", leak_check_complete)
+    out_body = inc.append("Glasshouse", loaded, [m1], files, LOCAL)
+    assert fact_a in out_body
+    assert len(secret_prompts) == 2
+    assert "SECRET_MAIN_REASON" not in secret_prompts[1]
+    assert "SECRET_AUDIT_REASON" not in secret_prompts[1]
+    assert fact_b in secret_prompts[1]
+

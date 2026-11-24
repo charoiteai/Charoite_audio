@@ -19,9 +19,13 @@ import dossier_telemetry as telemetry
 class Refused(ValueError):
     """Retryable: no body or semantic membership may be committed."""
 
-    def __init__(self, message: str, *, reason: telemetry.Reason | None = None):
+    def __init__(self, message: str, *, reason: telemetry.Reason | None = None,
+                 detail: telemetry.Detail | None = None,
+                 rejected_claims: tuple[str, ...] = ()):
         super().__init__(message)
         self.reason = reason
+        self.detail = detail
+        self.rejected_claims = rejected_claims
 
 
 class _MissingClaimQuotes(Refused):
@@ -87,6 +91,52 @@ _QUOTE_CHAR_MAP = str.maketrans({
 _HSPACE_RE = re.compile(r"[^\S\n]+")
 _HIDDEN_BLOCK_RE = re.compile(r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%")
 _SENTINEL_CHARS = "\ufdd0\ufdd1\ufdd2"
+_CLAIM_SEMANTIC_DETAILS = (
+    telemetry.Detail.CLAIM_NOT_RELEVANT,
+    telemetry.Detail.CLAIM_NOT_SUPPORTED,
+)
+_APPEND_FEEDBACK_HINTS: dict[telemetry.Detail, str] = {
+    telemetry.Detail.AUDIT_SUPPORT_REJECTED: (
+        "Fix or remove every item in rejected_claims: preserve all conditions, uncertainty, "
+        "hedges, and time from new_sources (never turn tentative or conditional statements into "
+        "definite facts), and base each line on one contiguous source passage."
+    ),
+    telemetry.Detail.AUDIT_TOPIC_REJECTED: (
+        "Remove every off-topic item in rejected_claims: keep ONLY assertions directly about "
+        "the dossier theme or an explicit source-stated relationship to it."
+    ),
+    telemetry.Detail.CLAIM_NOT_RELEVANT: (
+        "Remove every off-topic item in rejected_claims: omit facts about other topics or "
+        "unrelated meeting items unless new_sources explicitly links them to the dossier theme."
+    ),
+    telemetry.Detail.CLAIM_NOT_SUPPORTED: (
+        "Fix or remove every unsupported item in rejected_claims: preserve exact source "
+        "certainty, conditions, and time, and base each line on one contiguous passage."
+    ),
+    telemetry.Detail.SEMANTIC_CONSERVED_FALSE: (
+        "Do not contradict, negate, or silently resolve any existing claim or ⚠ warning."
+    ),
+    telemetry.Detail.SEMANTIC_CORRECTIONS_INVALID: (
+        "If a new source explicitly updates a ## Сейчас claim, use corrections with verbatim "
+        "before from current_section_lines and a supersession quote; otherwise keep corrections: []."
+    ),
+    telemetry.Detail.SEMANTIC_SUPPORTED_FALSE: (
+        "Keep ONLY facts directly supported by one contiguous passage in new_sources, preserving "
+        "all conditions, uncertainty, and time, and omit off-topic assertions."
+    ),
+    telemetry.Detail.SEMANTIC_UNCERTAIN: (
+        "Keep ONLY unambiguous, directly relevant, clearly supported facts from new_sources "
+        "and omit speculative or ambiguous items."
+    ),
+    telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED: (
+        "Split any line that merges distant passages and keep ONLY facts supported by one "
+        "contiguous passage in new_sources with exact source certainty and conditions."
+    ),
+    telemetry.Detail.SEMANTIC_REJECTED: (
+        "Keep ONLY unambiguous, relevant facts supported by one contiguous passage in "
+        "new_sources, preserving all conditions, uncertainty, and existing ⚠ warnings."
+    ),
+}
 
 
 def _resolve_source_name(raw: str, names: list[str] | set[str]) -> str | None:
@@ -577,6 +627,19 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
     return required
 
 
+def _rejected_new_claims(body: str, claims: list, required: set[int]) -> tuple[str, ...]:
+    found: list[str] = []
+    for item in claims:
+        if (isinstance(item, dict)
+                and (item.get("relevant") is not True or item.get("supported") is not True)):
+            text = item.get("text")
+            if (isinstance(text, str)
+                    and any(required.intersection(range(m.start(), m.end()))
+                            for m in re.finditer(re.escape(text), body))):
+                found.append(text)
+    return tuple(dict.fromkeys(found))
+
+
 def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
                   files: dict, claims, changes: list) -> None:
     """Validate every evidence item and cover all otherwise new significant text."""
@@ -594,7 +657,17 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
                for key in ("text", "source", "quote", "reason")):
             raise Refused("empty candidate claim evidence")
         if claim["relevant"] is not True or claim["supported"] is not True:
-            raise Refused("candidate claim is not relevant and supported")
+            detail = (
+                telemetry.Detail.CLAIM_NOT_RELEVANT
+                if claim["relevant"] is not True
+                else telemetry.Detail.CLAIM_NOT_SUPPORTED
+            )
+            telemetry.detail(detail)
+            raise Refused(
+                "candidate claim is not relevant and supported",
+                detail=detail,
+                rejected_claims=_rejected_new_claims(body, claims, required),
+            )
         text, raw_name, quote = claim["text"], claim["source"], claim["quote"]
         name = _resolve_source_name(raw_name, names)
         if name is None:
@@ -777,15 +850,19 @@ def audit_claim(theme: str, loaded: dossier.DossierLoad, claim: dict, c: dict, *
         raise Refused("complete source context is required for claim audits")
     prompt = _audit_prompt(theme, loaded, claim, quote_context)
     audit_config = _audit_config(c, prompt)
-    for field, system, think, num_predict, st in (
-            ("supported", SUPPORT_AUDIT_SYSTEM, True, AUDIT_PREDICT, telemetry.Stage.AUDIT_SUPPORT),
-            ("relevant", TOPIC_AUDIT_SYSTEM, False, 350, telemetry.Stage.AUDIT_TOPIC)):
+    for field, system, think, num_predict, st, fail_detail in (
+            ("supported", SUPPORT_AUDIT_SYSTEM, True, AUDIT_PREDICT,
+             telemetry.Stage.AUDIT_SUPPORT, telemetry.Detail.AUDIT_SUPPORT_REJECTED),
+            ("relevant", TOPIC_AUDIT_SYSTEM, False, 350,
+             telemetry.Stage.AUDIT_TOPIC, telemetry.Detail.AUDIT_TOPIC_REJECTED)):
         with telemetry.stage(st):
             verdict = _json(local_complete(prompt, audit_config, system=system, num_predict=num_predict, think=think),
                             {"verdict", field, "reason"}, fenced=True)
             if (verdict["verdict"] != "accept" or verdict[field] is not True
                     or not isinstance(verdict["reason"], str) or not verdict["reason"].strip()):
-                raise Refused(f"independent claim audit was not accepted ({field})")
+                telemetry.detail(fail_detail)
+                raise Refused(f"independent claim audit was not accepted ({field})",
+                              detail=fail_detail, rejected_claims=(claim["text"],))
 
 
 def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
@@ -884,7 +961,9 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         if (verdict["verdict"] != "accept" or not isinstance(verdict["reason"], str)
                 or not verdict["reason"].strip()
                 or any(verdict[key] is not True for key in ("conserved", "supported", "corrections_valid"))):
-            raise Refused("candidate semantic conservation was not accepted")
+            detail = telemetry.classify_semantic_detail(verdict, quote_retried=bool(attempt))
+            telemetry.detail(detail)
+            raise Refused("candidate semantic conservation was not accepted", detail=detail)
         try:
             _check_claims(loaded, body, names, files, verdict["claims"], changes)
             break
@@ -908,6 +987,11 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
                     "new_sources, set supported=false and verdict=reject."
                 ),
             }
+        except Refused as exc:
+            if attempt and exc.detail in _CLAIM_SEMANTIC_DETAILS:
+                exc.detail = telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED
+                telemetry.detail(exc.detail)
+            raise
     audits = [(claim, source_text(files[claim["source"]]))
               for claim in verdict["claims"]]
     # Pin one bounded window across every claim in this candidate. Switching
@@ -1035,7 +1119,10 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "the dossier theme or an explicitly source-stated relationship affecting that theme. A new "
         "meeting can contain independent topics: omit facts solely about other topics, even when "
         "true and cited. Shared meeting/core links do not make all source facts relevant. Check "
-        "each added clause separately. Allowed section names: Сейчас, Как пришли, Решено, Открыто, "
+        "each added clause separately. Preserve source certainty, conditions, uncertainty, and time "
+        "(never state tentative or conditional plans as definite facts), and base each added line on "
+        "one contiguous source passage rather than merging distant unrelated lines. Allowed section "
+        "names: Сейчас, Как пришли, Решено, Открыто, "
         "Кто в теме (never Источники or Правки автора). Each text and after must be ONE plain "
         "Markdown line without newlines, leading #, speaker labels, backticks, <, >, or ~. "
         f"{graph_names.UNLABELED_RULE} "
@@ -1085,10 +1172,21 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                     if body is not None else []
                 )
                 missing_hint = " (especially every item in missing_citations)" if missing else ""
+                detail = exc.detail or telemetry.detail_for_message(str(exc))
+                extra_hint = _APPEND_FEEDBACK_HINTS.get(detail, "")
+                rejected = (
+                    list(dict.fromkeys(
+                        t[:QUOTE_FEEDBACK_CHARS] for t in exc.rejected_claims
+                        if isinstance(t, str) and t and t in body
+                    ))[:QUOTE_FEEDBACK_LIMIT]
+                    if body is not None else []
+                )
+                hint_suffix = f" {extra_hint}" if extra_hint else ""
                 feedback = {
                     "failure": str(exc),
                     "previous_response": _trim_feedback_response(raw),
                     **({"missing_citations": missing} if missing else {}),
+                    **({"rejected_claims": rejected} if rejected else {}),
                     "current_section_lines": current_lines,
                     "instruction": (
                         'Return ONLY valid patch JSON {"additions":[...],"corrections":[...]}. '
@@ -1096,7 +1194,7 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                         f"Add a supported fact for EVERY source in required_new_citations{missing_hint}. "
                         "For explicit supersession of a ## Сейчас claim, copy before verbatim from "
                         "current_section_lines, put ONLY facts stated in the new source into after, "
-                        "and do not duplicate after in additions."
+                        f"and do not duplicate after in additions.{hint_suffix}"
                     ),
                 }
                 prompt = json.dumps({**data, "correction_feedback": feedback}, ensure_ascii=False) + "\n" + instruction
