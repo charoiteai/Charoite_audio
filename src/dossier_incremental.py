@@ -30,7 +30,10 @@ class Refused(ValueError):
 
 class _MissingClaimQuotes(Refused):
     def __init__(self, missing_quotes: list[dict[str, str]]):
-        super().__init__("candidate claim lacks exact new-source evidence")
+        super().__init__(
+            "candidate claim lacks exact new-source evidence",
+            rejected_claims=tuple(dict.fromkeys(item["text"] for item in missing_quotes)),
+        )
         self.missing_quotes = missing_quotes
 
 
@@ -52,6 +55,7 @@ SOURCE_RELEVANCE_SYSTEM = "You judge source relevance conservatively."
 GENERATE_SYSTEM = "You extend factual dossiers conservatively."
 MAIN_JUDGE_SYSTEM = "You are an independent conservative dossier judge."
 SOURCE_PREDICT = 350
+APPEND_PREDICT = 2800
 MAIN_JUDGE_PREDICT = 4096
 AUDIT_PREDICT = 4096
 APPEND_FEEDBACK_RESPONSE_CHARS = 2000
@@ -78,6 +82,10 @@ _INLINE_EMPHASIS = (
 _QUOTE_CHAR_MAP = str.maketrans({
     "ё": "е",
     "\u2026": "...",
+    "\u2192": "->",
+    "\u200b": None,
+    "\ufeff": None,
+    "\u00ad": None,
     "—": "-",
     "–": "-",
     "−": "-",
@@ -95,7 +103,11 @@ _QUOTE_CHAR_MAP = str.maketrans({
 })
 _HSPACE_RE = re.compile(r"[^\S\n]+")
 _VSPACE_RE = re.compile(r"[ \n]*\n[ \n]*")
-_LINE_PREFIX_RE = re.compile(r"(?m)^[ ]*(?:(?:#{1,6}|>+|[*\-+])[ ]+)+")
+_LINE_PREFIX_RE = re.compile(r"(?m)^[ ]*(?:(?:#{1,6}|>+|[*\-+]|\d{1,3}[.)]|📌)[ ]+)+")
+_SPEAKER_NL_RE = re.compile(
+    r"(?m)^([^\n\[\]:]+\[\d{1,2}:\d{2}(?::\d{2})?(?: ?- ?\d{1,2}:\d{2}(?::\d{2})?)?\]:)\n"
+    r"(?![^\n\[\]:]+\[\d{1,2}:\d{2}(?::\d{2})?(?: ?- ?\d{1,2}:\d{2}(?::\d{2})?)?\]:)"
+)
 _PIPE_SPACE_RE = re.compile(r" *\| *")
 _HIDDEN_BLOCK_RE = re.compile(r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%")
 _SENTINEL_CHARS = "\ufdd0\ufdd1\ufdd2"
@@ -105,9 +117,10 @@ _CLAIM_SEMANTIC_DETAILS = (
 )
 _APPEND_FEEDBACK_HINTS: dict[telemetry.Detail, str] = {
     telemetry.Detail.AUDIT_SUPPORT_REJECTED: (
-        "Fix or remove every item in rejected_claims: preserve all conditions, uncertainty, "
-        "hedges, and time from new_sources (never turn tentative or conditional statements into "
-        "definite facts), and base each line on one contiguous source passage."
+        "Do NOT repeat any item in rejected_claims verbatim or merely move it to another section: "
+        "either split any multi-turn or compound line into separate single-turn lines each backed "
+        "by one contiguous passage, rewrite it to preserve all conditions, uncertainty, hedges, "
+        "and time from new_sources, or remove it if other lines already cover the source."
     ),
     telemetry.Detail.AUDIT_TOPIC_REJECTED: (
         "Remove every off-topic item in rejected_claims: keep ONLY assertions directly about "
@@ -136,8 +149,15 @@ _APPEND_FEEDBACK_HINTS: dict[telemetry.Detail, str] = {
         "Keep ONLY unambiguous, directly relevant, clearly supported facts from new_sources "
         "and omit speculative or ambiguous items."
     ),
+    telemetry.Detail.CLAIM_QUOTE_MISSING: (
+        "Do NOT repeat any item in rejected_claims verbatim or merely move it to another section: "
+        "split any line that merges distant passages into separate lines each backed by one "
+        "contiguous passage in new_sources, or remove unsupported items; preserve exact source "
+        "certainty and conditions."
+    ),
     telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED: (
-        "Split any line that merges distant passages (starting with rejected_claims if present) "
+        "Do NOT repeat any item in rejected_claims verbatim or merely move it to another section: "
+        "split any line that merges distant passages (starting with rejected_claims if present) "
         "into separate lines each backed by one contiguous passage in new_sources, or remove "
         "unsupported items; preserve exact source certainty and conditions."
     ),
@@ -308,7 +328,7 @@ def _canon_text(text: str) -> str:
 
 
 def _canon_open(text: str) -> str:
-    return _PIPE_SPACE_RE.sub("|", _LINE_PREFIX_RE.sub("", text))
+    return _PIPE_SPACE_RE.sub("|", _SPEAKER_NL_RE.sub(r"\1 ", _LINE_PREFIX_RE.sub("", text)))
 
 
 def _flush_emphasis(open_buf: list[str], links: list[str], *, canonical: bool,
@@ -350,8 +370,16 @@ def _canon_wikilink(raw: str, *, canonical: bool) -> str:
     return clean
 
 
-def _emphasis_free(text: str, *, plain_links: bool = False, canonical: bool = False,
-                   plain_md_links: bool = False) -> str:
+def _quote_wikilinks(quote: str, *, canonical: bool) -> frozenset[str]:
+    return frozenset(
+        _canon_wikilink(match.group(0), canonical=canonical)
+        for match in _NON_RENDERED_OR_WIKILINK.finditer(quote)
+        if match.group("target") is not None
+    )
+
+
+def _emphasis_free(text: str, *, keep_links: frozenset[str] | None = None,
+                   canonical: bool = False, plain_md_links: bool = False) -> str:
     parts: list[str] = []
     open_buf: list[str] = []
     links: list[str] = []
@@ -363,11 +391,13 @@ def _emphasis_free(text: str, *, plain_links: bool = False, canonical: bool = Fa
             # Injectively separate characters inside non-rendered blocks so
             # canonicalized/stripped outside quotes can never match inside them.
             parts.append("\ufdd2".join(match.group(0)))
-        elif plain_links:
-            open_buf.append(_wikilink_display(match).replace("\ufdd0", "\ufdd0!"))
         else:
-            open_buf.append(f"\ufdd0:{len(links)}\ufdd1")
-            links.append(_canon_wikilink(match.group(0), canonical=canonical))
+            canon_link = _canon_wikilink(match.group(0), canonical=canonical)
+            if keep_links is not None and canon_link not in keep_links:
+                open_buf.append(_wikilink_display(match).replace("\ufdd0", "\ufdd0!"))
+            else:
+                open_buf.append(f"\ufdd0:{len(links)}\ufdd1")
+                links.append(canon_link)
         pos = match.end()
     open_buf.append(text[pos:].replace("\ufdd0", "\ufdd0!"))
     parts.append(_flush_emphasis(open_buf, links, canonical=canonical, plain_md_links=plain_md_links))
@@ -395,9 +425,13 @@ def _quote_hits(text: str, quote: str) -> int:
             _span_hits(text, quote),
             _span_hits(_unescape_wikilinks(text), _unescape_wikilinks(quote)),
         )
-    if not hits:
-        hits = _span_hits(_emphasis_free(text, plain_links=plain, plain_md_links=plain_md),
-                          _emphasis_free(quote))
+    if not hits or (hits == 1 and not plain):
+        keep_raw = _quote_wikilinks(quote, canonical=False)
+        hits = max(
+            hits,
+            _span_hits(_emphasis_free(text, keep_links=keep_raw, plain_md_links=plain_md),
+                       _emphasis_free(quote)),
+        )
     if not quote.strip():
         return hits
     open_canon_hits: int | None = None
@@ -406,8 +440,9 @@ def _quote_hits(text: str, quote: str) -> int:
         canon_q = _emphasis_free(quote, canonical=True).strip(" \n")
         if not canon_q:
             return 0
+        keep_canon = _quote_wikilinks(quote, canonical=True)
         open_canon_hits = _span_hits(
-            _emphasis_free(text, plain_links=plain, canonical=True, plain_md_links=plain_md),
+            _emphasis_free(text, keep_links=keep_canon, canonical=True, plain_md_links=plain_md),
             canon_q,
         )
         hits = open_canon_hits
@@ -420,8 +455,9 @@ def _quote_hits(text: str, quote: str) -> int:
             if any(_span_hits(_canon_open(_canon_text(blk)), cq) > _span_hits("\ufdd2".join(blk), canon_q)
                    for blk in hidden):
                 if open_canon_hits is None:
+                    keep_canon = _quote_wikilinks(quote, canonical=True)
                     open_canon_hits = _span_hits(
-                        _emphasis_free(text, plain_links=plain, canonical=True, plain_md_links=plain_md),
+                        _emphasis_free(text, keep_links=keep_canon, canonical=True, plain_md_links=plain_md),
                         canon_q,
                     )
                 if open_canon_hits:
@@ -948,13 +984,17 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "additions appended to an old line, and new factual subheadings. new_statements is only "
         "a line hint: compare the ENTIRE candidate to the prior dossier. Do not reclassify "
         "preserved old claims as irrelevant. Return one claims item per independent assertion, "
-        "splitting a compound bullet into exact text spans rather than judging the whole bullet "
-        "as one claim. Each item's text must copy its exact candidate span, source must name "
-        "one supplied new source, and quote must copy one contiguous verbatim substring "
-        "from new_sources without joining separate lines, bullets, or speaker turns with a space, "
-        "omitting intermediate prefixes or newlines, or altering table pipes (for a multiline span, "
-        "preserve exact newlines, indentation, bullet markers, and prefixes; for wikilinks, copy "
-        "either the exact source text or the visible link text; keep valid JSON escaping for "
+        "splitting a compound bullet into distinct non-identical exact text spans (one per clause, "
+        "never repeating the same full bullet text for the same source) rather than judging the "
+        "whole bullet as one claim. Each item's text must copy its exact candidate span, source "
+        "must name one supplied new source, and quote must copy one contiguous verbatim substring "
+        "from new_sources that explicitly covers EVERY clause and event in that item's text without "
+        "joining separate lines, bullets, or speaker turns with a space, omitting intermediate "
+        "prefixes or newlines, or altering table pipes (for a multiline span, preserve exact "
+        "newlines, indentation, bullet markers, and prefixes — and when one atomic claim spans "
+        "adjacent speaker turns such as a statement and immediate follow-up Q&A, copy the full "
+        "contiguous multiline block covering all of them with intermediate turns; for wikilinks, "
+        "copy either the exact source text or the visible link text; keep valid JSON escaping for "
         "quotes and newlines). "
         "Set relevant and supported separately, with a nonempty reason for that assertion. "
         "The reason must explain that assertion's topic relationship, not shared meeting context. "
@@ -1038,7 +1078,7 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         except _MissingClaimQuotes as exc:
             if attempt:
                 raise
-            last_missing = tuple(dict.fromkeys(item["text"] for item in exc.missing_quotes))
+            last_missing = exc.rejected_claims
             feedback = {
                 "failure": "your previous judge output had claim quote(s) not found verbatim in new_sources",
                 "missing_quotes": [
@@ -1197,7 +1237,9 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         f"{graph_names.UNLABELED_RULE} "
         "Do NOT put anonymous diarization speaker labels (Собеседник N, Спикер N, Участник N, "
         "Speaker N, Participant N) or 'участник встречи' into Кто в теме — only real named people "
-        "belong in Кто в теме; write impersonally or place factual roles without speaker numbers in "
+        "belong in Кто в теме, and each Кто в теме line must state that person's explicit "
+        "source-stated role or connection to the dossier theme (never a bare name without topic "
+        "relation); write impersonally or place factual roles without speaker numbers in "
         "Сейчас/Открыто. "
         "Use corrections ONLY when a new source explicitly supersedes a line currently in ## Сейчас: "
         "set before to an exact substring uniquely identifying that line in ## Сейчас, put ONLY "
@@ -1224,9 +1266,9 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
     for attempt in range(2):
         telemetry.begin_attempt()
         with telemetry.stage(telemetry.Stage.APPEND):
-            stage_c = _stage_config(c, len(GENERATE_SYSTEM), prompt, dossier.GEN_PREDICT)
+            stage_c = _stage_config(c, len(GENERATE_SYSTEM), prompt, APPEND_PREDICT)
             raw = local_complete(prompt, stage_c, system=GENERATE_SYSTEM,
-                                 num_predict=dossier.GEN_PREDICT)
+                                 num_predict=APPEND_PREDICT)
             body = None
             try:
                 patch = _json(raw, {"additions", "corrections"})
@@ -1234,7 +1276,8 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                 validate_candidate(theme, loaded, names, files, c, body, changes)
                 return body.strip()
             except Refused as exc:
-                if attempt or exc.reason == telemetry.Reason.CONTEXT:
+                if (attempt or exc.reason == telemetry.Reason.CONTEXT
+                        or (len(names) > 1 and body is not None and str(exc) == "malformed model JSON")):
                     raise
                 missing = (
                     [f"[[{n}]]" for n in names if n not in _links(body)]
@@ -1250,7 +1293,7 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                     ))[:QUOTE_FEEDBACK_LIMIT]
                     if body is not None else []
                 )
-                hint_suffix = f" {extra_hint}" if extra_hint else ""
+                hint_prefix = f"{extra_hint} " if extra_hint else ""
                 feedback = {
                     "failure": str(exc),
                     "previous_response": _trim_feedback_response(raw),
@@ -1258,17 +1301,17 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                     **({"rejected_claims": rejected} if rejected else {}),
                     "current_section_lines": current_lines,
                     "instruction": (
-                        'Return ONLY valid patch JSON {"additions":[...],"corrections":[...]}. '
+                        f'{hint_prefix}Return ONLY valid patch JSON {{"additions":[...],"corrections":[...]}}. '
                         "Ordinary additions require corrections: []; remove invented corrections. "
                         f"Add a supported fact for EVERY source in required_new_citations{missing_hint}. "
                         "For explicit supersession of a ## Сейчас claim, copy before verbatim from "
                         "current_section_lines, put ONLY facts stated in the new source into after, "
-                        f"and do not duplicate after in additions.{hint_suffix}"
+                        "and do not duplicate after in additions."
                     ),
                 }
                 prompt = json.dumps({**data, "correction_feedback": feedback}, ensure_ascii=False) + "\n" + instruction
                 ctx = stage_c["llm"]["num_ctx"]
                 cap = ctx if ctx < MIN_AUTO_CONTEXT else max(ctx, MAX_AUDIT_CONTEXT)
-                if _stage_needed_tokens(len(GENERATE_SYSTEM), prompt, dossier.GEN_PREDICT) > cap:
+                if _stage_needed_tokens(len(GENERATE_SYSTEM), prompt, APPEND_PREDICT) > cap:
                     raise
     raise Refused("candidate attempts exhausted")

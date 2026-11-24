@@ -820,7 +820,7 @@ def test_append_uses_fixed_gen_predict_and_trims_retry_feedback(monkeypatch):
     out = inc.append("Glasshouse", loaded, [name], files, LOCAL)
     assert "Glasshouse vent sealed." in out and f"[[{name}]]" in out
     assert len(seen) == 2
-    assert seen[0][2] == dossier.GEN_PREDICT and seen[1][2] == dossier.GEN_PREDICT
+    assert seen[0][2] == inc.APPEND_PREDICT and seen[1][2] == inc.APPEND_PREDICT
     retry_payload, _ = json.JSONDecoder().raw_decode(seen[1][0])
     prev = retry_payload["correction_feedback"]["previous_response"]
     assert "\n...\n" in prev and len(prev) == inc.APPEND_FEEDBACK_RESPONSE_CHARS + len("\n...\n")
@@ -926,7 +926,7 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
 
 
 @pytest.mark.parametrize("cfg_ctx,expected_cap", [
-    (4096, 4096),
+    (6144, 6144),
     (8192, inc.MAX_AUDIT_CONTEXT),
     (65536, 65536),
 ])
@@ -1825,6 +1825,7 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
         inc.append("Glasshouse", loaded, [m1], files, LOCAL)
     fb3 = json.loads(prompts_json[1].split("\n", 1)[0])["correction_feedback"]
     assert "rejected_claims" not in fb3
+    assert not fb3["instruction"].startswith(" ")
     assert fb3["instruction"].endswith("and do not duplicate after in additions.")
 
     # 6) Judge freeform reason NEVER leaks into append correction_feedback
@@ -2030,5 +2031,209 @@ def test_round9_verdict_rejected_claims_and_open_item_contract(monkeypatch):
     assert "SECRET_REJECT_REASON" not in append_prompts[1]
     assert "non-⚠ ## Открыто item" in judge_prompts[0]
     assert "never silently resolve or contradict a ⚠ warning" in judge_prompts[0]
+
+
+def test_round10_quote_hits_mixed_links_prefixes_speaker_nl_and_invariants():
+    # 1) Mixed wikilinks + plain text in one quote, canonical alias case/NFD, and path protection
+    mixed_src = "- [[Люди/Иванов|Иванов]] передал [[Ядра/Орбита|Орбита]] и [[Ядра/Йод|Йод]] в [[Системы/Прод|Прод]]."
+    assert inc._quote_hits(mixed_src, "Иванов передал [[Ядра/Орбита|Орбита]] и Йод в Прод.") == 1
+    assert inc._quote_hits(mixed_src, "Иванов передал [[Ядра/Орбита]] и Йод в Прод.") == 1
+    assert inc._quote_hits(mixed_src, "иванов передал [[Ядра/Орбита|орбита]] и йод в прод.") == 1
+    assert inc._quote_hits(
+        "- [[Люди/Иванов|Иванов]] передал [[Ядра/Йод|И\u0306од]] в [[Системы/Прод|Прод]].",
+        "иванов передал [[Ядра/Йод|йод]] в прод.",
+    ) == 1
+    # Wrong path in kept wikilink must NEVER match
+    assert inc._quote_hits(
+        "- [[Люди/Иванов|Иванов]] передал [[Чужой/Орбита|Орбита]] в Прод.",
+        "Иванов передал [[Ядра/Орбита]] в Прод.",
+    ) == 0
+    # Non-link hidden comment %%A|B%% in quote must NOT poison keep_links
+    assert inc._quote_hits(
+        "%%Ядра/Орбита|Орбита%% и [[Ядра/Орбита]]",
+        "%%Ядра/Орбита|Орбита%% и Орбита",
+    ) == 1
+    # Duplicate asymmetry: plain + wikilink copies of a mixed quote must report ambiguous (2)
+    assert inc._quote_hits(
+        "[[Люди/Иванов|Иванов]] с [[Ядра/Орион|Орион]]. Иванов с [[Ядра/Орион|Орион]].",
+        "Иванов с [[Ядра/Орион|Орион]].",
+    ) == 2
+    # Tier 2 keep_raw canonical=False must preserve non-trivial case alias for emphasis+plain duplicates
+    assert inc._quote_hits(
+        "**Иванов** с [[Ядра/Орион|орион]]. Иванов с [[Ядра/Орион|орион]].",
+        "Иванов с [[Ядра/Орион|орион]]",
+    ) == 2
+    # Hidden-block duplicate for a mixed quote matched on tier 2 (including lowercase alias for keep_canon canonical=True)
+    assert inc._quote_hits(
+        "Код `Иванов с [[Ядра/Орион]]` и [[Люди/Иванов|Иванов]] с [[Ядра/Орион|Орион]].",
+        "Иванов с [[Ядра/Орион]]",
+    ) == 2
+    assert inc._quote_hits(
+        "Код `Иванов с [[Ядра/Орион|орион]]` и [[Люди/Иванов|Иванов]] с [[Ядра/Орион|Орион]].",
+        "Иванов с [[Ядра/Орион|орион]]",
+    ) == 2
+
+    # 2) Numbered lists and 📌 are decorative; checkboxes [ ]/[x], ✅, ⚠ preserve semantic polarity
+    assert inc._quote_hits("1. Первый шаг.\n2. Второй шаг.", "Первый шаг.\nВторой шаг.") == 1
+    assert inc._quote_hits("1) Первый шаг.\n2) Второй шаг.", "Первый шаг.\nВторой шаг.") == 1
+    assert inc._quote_hits("- 📌 Решение один.\n- 📌 Решение два.", "Решение один.\nРешение два.") == 1
+    assert inc._quote_hits("- [ ] Переключить шлюз.", "- [x] Переключить шлюз.") == 0
+    assert inc._quote_hits("- ✅ Иванов\n- ✅ Петров", "Иванов\nПетров") == 0
+    assert inc._quote_hits("- ⚠ Риск один.\n- ⚠ Риск два.", "Риск один.\nРиск два.") == 0
+    assert inc._quote_hits("План:\n2026. Год запуска.", "План:\nГод запуска.") == 0
+    assert inc._quote_hits("План:\n1.5 мс задержка.", "План:\n5 мс задержка.") == 0
+    for ponly in ("1. ", "2) ", "- 📌 "):
+        assert inc._quote_hits("Просто текст.", ponly) == 0
+
+    # 3) Speaker-header + newline in Charoite transcripts (with negative invariants & prefix order)
+    assert inc._quote_hits(
+        "**Соколов** [00:03:15]:\nКоллеги, мы проверили миграцию.",
+        "Соколов [00:03:15]: Коллеги, мы проверили миграцию.",
+    ) == 1
+    assert inc._quote_hits(
+        "**Соколов** [00:03:15 – 00:03:40]:\nКоллеги, мы проверили миграцию.",
+        "Соколов [00:03:15 - 00:03:40]: Коллеги, мы проверили миграцию.",
+    ) == 1
+    assert inc._quote_hits(
+        "**Иван** [12:34]:\n- Шлюз готов.",
+        "Иван [12:34]: Шлюз готов.",
+    ) == 1
+    assert inc._quote_hits(
+        "**Соколов** [00:03:15]:\nСбой в [12:00] устранили.",
+        "Соколов [00:03:15]: Сбой в [12:00] устранили.",
+    ) == 1
+    assert inc._quote_hits(
+        "Собеседник 1: Сбой в [12:00]:\nСобеседник 2: Да.",
+        "Сбой в [12:00]: Собеседник 2: Да.",
+    ) == 0
+    assert inc._quote_hits(
+        "**Спикер 1** [00:01]:\n**Спикер 2** [00:02]:\nДа.",
+        "Спикер 1 [00:01]: Спикер 2 [00:02]: Да.",
+    ) == 0
+    assert inc._quote_hits(
+        "**Соколов** [00:03:15]:\nНет.\n**Морозов** [00:03:20]:\nДа.",
+        "Нет. Да.",
+    ) == 0
+
+    # 4) Arrow → <-> ->, invisible characters, and empty canonical quote guard
+    assert inc._quote_hits("- [[Люди/Иванов|Иванов]] → [[Ядра/Орион|Орион]]: курирует", "Иванов -> Орион: курирует") == 1
+    assert inc._quote_hits("Код `A -> B` и текст A → B.", "A -> B") == 2
+    assert inc._quote_hits("Текст с\u200bневидимым\ufeffи\u00adдефисом.", "Текст сневидимымидефисом.") == 1
+    assert inc._quote_hits("Просто текст.", "\u200b\ufeff\u00ad") == 0
+
+
+def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feedback(world, monkeypatch):
+    assert inc.APPEND_PREDICT == 2800
+    assert dossier.GEN_PREDICT == 1800
+
+    nd, graph, old_path = world
+    m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
+    _new(graph, m1, "Glasshouse update one.")
+    _new(graph, m2, "Glasshouse update two.")
+
+    # 1) When validate_candidate raises "malformed model JSON" (body is not None),
+    #    append() must NOT waste a second generator retry, and nightly_dossier splits multi-source batch.
+    monkeypatch.setattr(inc, "source_relevance", lambda *a, **kw: True)
+    gen_batches: list[list[str]] = []
+    judge_batches: list[list[str]] = []
+
+    def fake_complete(prompt, config, *, system, num_predict, **kwargs):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        if system == inc.GENERATE_SYSTEM:
+            assert num_predict == inc.APPEND_PREDICT
+            names = list(payload["new_sources"])
+            gen_batches.append(names)
+            return json.dumps({
+                "additions": [{"section": "Сейчас", "text": f"Fact {n}.", "source": n} for n in names],
+                "corrections": [],
+            })
+        if system == inc.MAIN_JUDGE_SYSTEM:
+            names = list(payload["new_sources"])
+            judge_batches.append(names)
+            if len(names) > 1:
+                return '{"verdict": "accept", "claims": [{"text": "truncated'
+            src = names[0]
+            return json.dumps({
+                "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+                "reason": "ok",
+                "claims": [{
+                    "text": f"- Fact {src}. [[{src}]]", "source": src,
+                    "quote": f"Glasshouse update {'one' if src == m1 else 'two'}.",
+                    "relevant": True, "supported": True, "reason": "ok",
+                }],
+            })
+        raise AssertionError(f"unexpected system: {system}")
+
+    monkeypatch.setattr(inc, "local_complete", fake_complete)
+    monkeypatch.setattr(inc, "audit_claim", lambda *a, **kw: None)
+    result = nd.run_all([graph], LOCAL, full=False, dry=False)
+    assert sum(g.built for g in result.graphs) == 1
+    assert gen_batches == [[m1, m2], [m1], [m2]]
+    assert judge_batches == [[m1, m2], [m1], [m2]]
+    assert result.telemetry.snapshot()["stage_refusals"] == {}
+    final_text = old_path.read_text(encoding="utf-8")
+    assert f"[[{m1}]]" in final_text and f"[[{m2}]]" in final_text
+
+    # 1b) Multi-source malformed JSON from append itself (body is None) MUST still retry append once
+    bad_gen_calls: list[int] = []
+    loaded_multi = _loaded_with_body(BODY)
+    multi_files = {m1: {"text": "Glasshouse one."}, m2: {"text": "Glasshouse two."}}
+    monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: (bad_gen_calls.append(1), "{bad json")[1])
+    with pytest.raises(inc.Refused, match="malformed model JSON"):
+        inc.append("Glasshouse", loaded_multi, [m1, m2], multi_files, LOCAL)
+    assert len(bad_gen_calls) == 2
+
+    # 2) Double _MissingClaimQuotes in semantic_check propagates rejected_claims + CLAIM_QUOTE_MISSING
+    #    at the start of append retry feedback["instruction"] (and prompts carry new contracts).
+    loaded = _loaded_with_body(BODY)
+    fact_a = "Valve pressure stabilized at 4 bar."
+    fact_b = "Backup pump may run after Friday."
+    files = {m1: {"text": f"{fact_a} {fact_b}"}}
+    patch_bad = json.dumps({
+        "additions": [
+            {"section": "Сейчас", "text": fact_a, "source": m1},
+            {"section": "Сейчас", "text": fact_b, "source": m1},
+        ],
+        "corrections": [],
+    })
+    patch_good = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1}],
+        "corrections": [],
+    })
+    miss_reply = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [
+            {"text": fact_a, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"},
+            {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"},
+        ],
+    })
+    good_judge = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"}],
+    })
+    seq = iter([patch_bad, miss_reply, miss_reply, patch_good, good_judge])
+    append_prompts: list[str] = []
+    judge_prompts: list[str] = []
+
+    def seq_complete(prompt, config, *, system, **kwargs):
+        if system == inc.GENERATE_SYSTEM:
+            append_prompts.append(prompt)
+        elif system == inc.MAIN_JUDGE_SYSTEM:
+            judge_prompts.append(prompt)
+        return next(seq)
+
+    monkeypatch.setattr(inc, "local_complete", seq_complete)
+    out_body = inc.append("Glasshouse", loaded, [m1], files, LOCAL)
+    assert fact_b in out_body and fact_a not in out_body
+    assert len(append_prompts) == 2
+    fb = json.loads(append_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert fb["rejected_claims"] == [fact_a]
+    assert fb["instruction"].startswith(inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.CLAIM_QUOTE_MISSING] + " Return ONLY valid patch JSON")
+    assert "explicit source-stated role or connection to the dossier theme" in append_prompts[0]
+    assert "distinct non-identical exact text spans" in judge_prompts[0]
+    assert "explicitly covers EVERY clause and event in that item's text" in judge_prompts[0]
+
 
 
