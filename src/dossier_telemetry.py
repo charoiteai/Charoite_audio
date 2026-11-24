@@ -76,6 +76,13 @@ class Detail(str, Enum):
     CONSERVATION_LOST = "conservation_lost"
     MARKUP_CHANGED = "markup_changed"
     SEMANTIC_REJECTED = "semantic_rejected"
+    SEMANTIC_QUOTE_RETRY_REJECTED = "semantic_quote_retry_rejected"
+    SEMANTIC_CONSERVED_FALSE = "semantic_conserved_false"
+    SEMANTIC_CORRECTIONS_INVALID = "semantic_corrections_invalid"
+    SEMANTIC_SUPPORTED_FALSE = "semantic_supported_false"
+    SEMANTIC_UNCERTAIN = "semantic_verdict_uncertain"
+    CLAIM_NOT_RELEVANT = "claim_not_relevant"
+    CLAIM_NOT_SUPPORTED = "claim_not_supported"
     CLAIM_MALFORMED = "claim_malformed"
     CLAIM_QUOTE_MISSING = "claim_quote_missing"
     CLAIM_QUOTE_AMBIGUOUS = "claim_quote_ambiguous"
@@ -325,6 +332,31 @@ def detail(value: Detail):
         raise TypeError("closed telemetry detail required")
     if topic := _topic.get():
         topic.detail = value
+
+
+def detail_for_message(message: str) -> Detail | None:
+    """Map a closed internal refusal constant to a closed Detail without mutating topic state."""
+    return _MESSAGE_TO_DETAIL.get(message)
+
+
+def classify_semantic_detail(verdict: dict, *, quote_retried: bool = False) -> Detail:
+    """Classify a rejected semantic_check verdict into a closed content-free Detail."""
+    reason = verdict.get("reason")
+    if (not isinstance(reason, str) or not reason.strip()
+            or any(not isinstance(verdict.get(key), bool)
+                   for key in ("conserved", "corrections_valid", "supported"))):
+        return Detail.SEMANTIC_REJECTED
+    if quote_retried:
+        return Detail.SEMANTIC_QUOTE_RETRY_REJECTED
+    if verdict["conserved"] is False:
+        return Detail.SEMANTIC_CONSERVED_FALSE
+    if verdict["corrections_valid"] is False:
+        return Detail.SEMANTIC_CORRECTIONS_INVALID
+    if verdict.get("verdict") == "uncertain":
+        return Detail.SEMANTIC_UNCERTAIN
+    if verdict["supported"] is False:
+        return Detail.SEMANTIC_SUPPORTED_FALSE
+    return Detail.SEMANTIC_REJECTED
 
 
 def record_refusal_message(message: str):
