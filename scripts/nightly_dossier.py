@@ -159,6 +159,7 @@ def _generator_window(c: dict, default_ctx: int) -> int | list:
         return parsed
     steps = [step for step in (dossier_incremental.MIN_AUTO_CONTEXT,
                                dossier_incremental.MID_AUTO_CONTEXT,
+                               dossier_incremental.HIGH_AUTO_CONTEXT,
                                dossier_incremental.MAX_AUDIT_CONTEXT)
              if step >= parsed]
     return [steps, dossier_incremental.ADMISSION_CHARS_PER_TOKEN, dossier_incremental.CONTEXT_RESERVE]

@@ -729,8 +729,8 @@ def test_source_relevance_retries_once_on_bad_quote_and_recovers_cleanly(world, 
     snap = result.telemetry.snapshot()
     assert len(seen_prompts) == 2
     retry_payload, _ = json.JSONDecoder().raw_decode(seen_prompts[1][0])
-    assert "correction_feedback" in retry_payload
-    assert len(retry_payload["correction_feedback"]["previous_quote"]) == 200
+    assert "quote_feedback" in retry_payload
+    assert len(retry_payload["quote_feedback"]["previous_quote"]) == 200
     assert seen_prompts[0][1] == seen_prompts[1][1]
     assert snap["committed_topics"] == 1
     assert snap["final_refusals"] == 0
@@ -1317,11 +1317,19 @@ def test_round6_main_judge_predict_quote_contract_and_source_telemetry(monkeypat
     # Stage context stepping for MAIN_JUDGE_PREDICT matches AUDIT_PREDICT boundaries.
     sys_len = len(inc.MAIN_JUDGE_SYSTEM)
     min_budget = (inc.MIN_AUTO_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    mid_budget = (inc.MID_AUTO_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    high_budget = (inc.HIGH_AUTO_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
     max_budget = (inc.MAX_AUDIT_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
     assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (min_budget - sys_len),
                              inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.MIN_AUTO_CONTEXT
     assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (min_budget + 1 - sys_len),
                              inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.MID_AUTO_CONTEXT
+    assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (mid_budget + 1 - sys_len),
+                             inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.HIGH_AUTO_CONTEXT
+    assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (high_budget - sys_len),
+                             inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.HIGH_AUTO_CONTEXT
+    assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (high_budget + 1 - sys_len),
+                             inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.MAX_AUDIT_CONTEXT
     assert inc._stage_config({"llm": {"num_ctx": 8192}}, sys_len, "x" * (max_budget - sys_len),
                              inc.MAIN_JUDGE_PREDICT)["llm"]["num_ctx"] == inc.MAX_AUDIT_CONTEXT
     with pytest.raises(inc.Refused, match="maximum context budget") as over:
@@ -1496,8 +1504,9 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
     assert len(seen_prompts) == 2
     payload_retry = json.loads(seen_prompts[1].split("\n", 1)[0])
-    fb = payload_retry["correction_feedback"]
-    assert fb["failure"] == "one or more claim quotes were not found verbatim in new_sources"
+    assert "correction_feedback" not in payload_retry
+    fb = payload_retry["quote_feedback"]
+    assert fb["failure"] == "your previous judge output had claim quote(s) not found verbatim in new_sources"
     assert fb["missing_quotes"] == [{"text": fact1, "source": m1, "quote": "Valve pressure ... 4 bar."}]
     assert "supported=false and verdict=reject" in fb["instruction"]
     assert len(audited) == 1 and audited[0]["quote"] == fact1
@@ -1541,7 +1550,7 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
         inc.semantic_check("Glasshouse", loaded, [m1], long_files, LOCAL, long_body, [])
     assert len(long_prompts) == 2
-    fb_long = json.loads(long_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    fb_long = json.loads(long_prompts[1].split("\n", 1)[0])["quote_feedback"]
     assert len(fb_long["missing_quotes"]) == inc.QUOTE_FEEDBACK_LIMIT
     assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["missing_quotes"])
     assert all(len(item["quote"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["missing_quotes"])
@@ -1851,4 +1860,175 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
     assert "SECRET_MAIN_REASON" not in secret_prompts[1]
     assert "SECRET_AUDIT_REASON" not in secret_prompts[1]
     assert fact_b in secret_prompts[1]
+
+
+def test_round9_quote_hits_extended_markdown_and_invariants():
+    # 1) U+2026 ellipsis <-> ASCII "..." without allowing fabricated ellipsis
+    assert inc._quote_hits("Задержка 40 мс… но пики есть.", "Задержка 40 мс... но пики есть.") == 1
+    assert inc._quote_hits("Задержка 40 мс... но пики есть.", "Задержка 40 мс… но пики есть.") == 1
+    assert inc._quote_hits("Задержка 40 мс, но пики есть.", "Задержка ... пики есть.") == 0
+
+    # 2) ***bold italic*** and ~~strikethrough~~ outside hidden blocks only
+    assert inc._quote_hits("- ***Критично***: схема active-passive.", "Критично: схема active-passive.") == 1
+    assert inc._quote_hits("- Убрали ~~ручной перезапуск~~ из регламента.", "Убрали ручной перезапуск из регламента.") == 1
+    assert inc._quote_hits("Код `***bold***` и `~~strike~~`.", "Код `bold` и `strike`.") == 0
+    assert inc._quote_hits("Текст *** пробел *** тут.", "Текст  пробел  тут.") == 0
+    assert inc._quote_hits("Текст ~~ пробел ~~ тут.", "Текст  пробел  тут.") == 0
+
+    # 3) Markdown links [text](url): stripped before */** when quote has no "](",
+    #    never allows URL spoofing when "](" is present, and preserves image syntax "![alt](url)".
+    assert inc._quote_hits(
+        "- Выложили в [спецификации v2](https://example.com/spec) сегодня.",
+        "Выложили в спецификации v2 сегодня.",
+    ) == 1
+    assert inc._quote_hits("[a](https://x/1**2) и **b**.", "a и b.") == 1
+    assert inc._quote_hits("[Спека](https://right.example)", "[Спека](https://wrong.example)") == 0
+    assert inc._quote_hits("Фото ![alt](img.png) готово.", "Фото alt готово.") == 0
+    assert inc._quote_hits("Код `[a](https://x)` ок.", "Код `a` ок.") == 0
+
+    # 4) Blank lines (including whitespace-only blank lines), indentation, line prefixes, table pipes
+    assert inc._quote_hits("Реплика 1.\n\nРеплика 2.", "Реплика 1.\nРеплика 2.") == 1
+    assert inc._quote_hits("Реплика 1.\n \t \nРеплика 2.", "Реплика 1.\nРеплика 2.") == 1
+    assert inc._quote_hits("Реплика 1.\nРеплика 2.", "Реплика 1.\n\nРеплика 2.") == 1
+    assert inc._quote_hits("- Задачи:\n  - шаг 1\n  - шаг 2", "Задачи:\nшаг 1\nшаг 2") == 1
+    assert inc._quote_hits("- Header\n  - Alpha", "  - Alpha") == 1
+    assert inc._quote_hits("### Риски\n> Если сдвинется.\n> Шлюз работает.", "Риски\nЕсли сдвинется.\nШлюз работает.") == 1
+    assert inc._quote_hits("| **Шлюз** | Готов | Петров |", "|Шлюз|Готов|Петров|") == 1
+    assert inc._quote_hits("| **Шлюз** | Готов | Петров |", "Шлюз | Готов | Петров") == 1
+    assert inc._quote_hits("| A | B |", "- | A | B |") == 1
+    assert inc._quote_hits("Строка текста.", "  Строка текста.  ") == 1
+
+    # 5) Negative invariants: no line-joining, no prefix-only match, no negative numbers, hidden-zone dup symmetry
+    assert inc._quote_hits("Собеседник 1: Нет.\nСобеседник 2: Да.", "Нет. Да.") == 0
+    assert inc._quote_hits("Температура\n-5 градусов.", "Температура\n5 градусов.") == 0
+    assert inc._quote_hits("Просто текст.", "- ") == 0
+    assert inc._quote_hits("Просто текст.", "### ") == 0
+    assert inc._quote_hits("X\n```\n- \n```", "- ") == 1
+    assert inc._quote_hits("Код `|a|b|` и текст | a | b |.", "|a|b|") == 2
+    assert inc._quote_hits("Блок:\n```\n- Альфа\n- Бета\n```\n- Альфа\n- Бета", "Альфа\nБета") == 2
+
+
+def test_round9_verdict_rejected_claims_and_open_item_contract(monkeypatch):
+    assert inc.HIGH_AUTO_CONTEXT == 32_768
+    assert inc.MAX_AUDIT_CONTEXT == 65_536
+
+    m1 = "2099-01-02_100000"
+    loaded = _loaded_with_body(BODY)
+    fact_a = "Valve pressure stabilized at 4 bar."
+    fact_b = "Backup pump may run after Friday."
+    files = {m1: {"text": f"{fact_a} {fact_b}"}}
+    body = BODY.replace("## Как пришли", f"- {fact_a} [[{m1}]]\n- {fact_b} [[{m1}]]\n## Как пришли")
+    base_rej = {
+        "verdict": "reject", "conserved": True, "supported": False,
+        "corrections_valid": True, "reason": "SECRET_REJECT_REASON",
+    }
+
+    # 1) Non-list claims (null / string) on top-level reject must raise Refused (never TypeError) with empty rejected_claims
+    for bad_claims in (None, "not-a-list", 42):
+        reply = json.dumps({**base_rej, "claims": bad_claims})
+        monkeypatch.setattr(inc, "local_complete", lambda *a, r=reply, **kw: r)
+        with pytest.raises(inc.Refused, match="semantic conservation was not accepted") as exc_bad:
+            inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+        assert exc_bad.value.detail is telemetry.Detail.SEMANTIC_SUPPORTED_FALSE
+        assert exc_bad.value.rejected_claims == ()
+
+    # 2) Standalone semantic_check on body failing _new_content_positions keeps original Refused message and ()
+    broken_body = body.replace("- Vent A is open. [[2099-01-01_100000]]", "")
+    reply_with_claim = json.dumps({
+        **base_rej,
+        "claims": [{"text": fact_a, "source": m1, "quote": fact_a, "relevant": True, "supported": False, "reason": "no"}],
+    })
+    monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: reply_with_claim)
+    with pytest.raises(inc.Refused, match="semantic conservation was not accepted") as exc_broken:
+        inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, broken_body, [])
+    assert exc_broken.value.rejected_claims == ()
+
+    # 3) Top-level reject on attempt=0 extracts only rejected new spans (ignores valid and old lines)
+    reply_mixed = json.dumps({
+        **base_rej,
+        "claims": [
+            {"text": fact_a, "source": m1, "quote": fact_a, "relevant": True, "supported": True, "reason": "ok"},
+            {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": False, "reason": "no"},
+            {"text": "Vent A is open.", "source": m1, "quote": fact_a, "relevant": False, "supported": False, "reason": "old"},
+        ],
+    })
+    monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: reply_mixed)
+    with pytest.raises(inc.Refused, match="semantic conservation was not accepted") as exc_mix:
+        inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+    assert exc_mix.value.rejected_claims == (fact_b,)
+
+    # 4) quote_feedback retry (attempt=1) fallback to last_missing ONLY for genuine support/relevance reject
+    miss_reply = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [
+            {"text": fact_a, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"},
+            {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"},
+        ],
+    })
+    for retry_obj, exp_detail, exp_rejected in (
+        ({**base_rej, "claims": []}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, (fact_a,)),
+        (
+            {**base_rej, "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": False, "reason": "no"}]},
+            telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED,
+            (fact_b,),
+        ),
+        ({**base_rej, "conserved": False, "supported": True, "claims": []}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, ()),
+        ({**base_rej, "corrections_valid": False, "supported": True, "claims": []}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, ()),
+        ({**base_rej, "reason": "", "claims": []}, telemetry.Detail.SEMANTIC_REJECTED, ()),
+    ):
+        seq_it = iter([miss_reply, json.dumps(retry_obj)])
+        monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: next(seq_it))
+        with pytest.raises(inc.Refused, match="semantic conservation was not accepted") as exc_r:
+            inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
+        assert exc_r.value.detail is exp_detail
+        assert exc_r.value.rejected_claims == exp_rejected
+
+    # 5) End-to-end append retry receives last_missing as rejected_claims without leaking judge reason,
+    #    and MAIN_JUDGE prompt aligns ## Открыто -> ## Решено contract while protecting ⚠ warnings.
+    patch_bad = json.dumps({
+        "additions": [
+            {"section": "Сейчас", "text": fact_a, "source": m1},
+            {"section": "Сейчас", "text": fact_b, "source": m1},
+        ],
+        "corrections": [],
+    })
+    patch_good = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1}],
+        "corrections": [],
+    })
+    append_prompts: list[str] = []
+    judge_prompts: list[str] = []
+    e2e_seq = iter([
+        patch_bad,
+        miss_reply,
+        json.dumps({**base_rej, "claims": []}),
+        patch_good,
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
+        json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
+    ])
+
+    def e2e_complete(prompt, c, *, system, **kwargs):
+        if system == inc.GENERATE_SYSTEM:
+            append_prompts.append(prompt)
+        elif system == inc.MAIN_JUDGE_SYSTEM:
+            judge_prompts.append(prompt)
+        return next(e2e_seq)
+
+    monkeypatch.setattr(inc, "local_complete", e2e_complete)
+    out_body = inc.append("Glasshouse", loaded, [m1], files, LOCAL)
+    assert fact_b in out_body and fact_a not in out_body
+    assert len(append_prompts) == 2
+    fb_append = json.loads(append_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert fb_append["rejected_claims"] == [fact_a]
+    assert inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED] in fb_append["instruction"]
+    assert "SECRET_REJECT_REASON" not in append_prompts[1]
+    assert "non-⚠ ## Открыто item" in judge_prompts[0]
+    assert "never silently resolve or contradict a ⚠ warning" in judge_prompts[0]
+
 

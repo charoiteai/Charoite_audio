@@ -46,6 +46,7 @@ class _MissingClaimQuotes(Refused):
 ADMISSION_CHARS_PER_TOKEN = 2
 MIN_AUTO_CONTEXT = 8192
 MID_AUTO_CONTEXT = 16_384
+HIGH_AUTO_CONTEXT = 32_768
 CONTEXT_RESERVE = 256
 SOURCE_RELEVANCE_SYSTEM = "You judge source relevance conservatively."
 GENERATE_SYSTEM = "You extend factual dossiers conservatively."
@@ -66,13 +67,17 @@ _NON_RENDERED_OR_WIKILINK = re.compile(
     r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%"
     r"|!?\[\[(?P<target>[^\[\]|#\r\n^]*)(?:[#^][^\[\]|\r\n]*)?(?:\|(?P<alias>[^\[\]\r\n]*))?\]\]"
 )
+_MD_LINK_RE = re.compile(r"(?<!\!)(?<!\[)\[(?P<inner>[^\[\]\r\n]+?)\]\([^()\s\r\n]+\)")
 _INLINE_EMPHASIS = (
+    re.compile(r"\*\*\*(?!\s)(?P<inner>[^\r\n*]+?)(?<!\s)\*\*\*"),
     re.compile(r"\*\*(?!\s)(?P<inner>[^\r\n*]+?)(?<!\s)\*\*"),
     re.compile(r"(?<!\w)__(?!\s)(?P<inner>[^\r\n_]+?)(?<!\s)__(?!\w)"),
     re.compile(r"(?<!\w)(?<!\*)\*(?!\s)(?P<inner>[^\r\n*]+?)(?<!\s)\*(?!\*)(?!\w)"),
+    re.compile(r"~~(?!\s)(?P<inner>[^\r\n~]+?)(?<!\s)~~"),
 )
 _QUOTE_CHAR_MAP = str.maketrans({
     "ё": "е",
+    "\u2026": "...",
     "—": "-",
     "–": "-",
     "−": "-",
@@ -89,6 +94,9 @@ _QUOTE_CHAR_MAP = str.maketrans({
     "’": "'",
 })
 _HSPACE_RE = re.compile(r"[^\S\n]+")
+_VSPACE_RE = re.compile(r"[ \n]*\n[ \n]*")
+_LINE_PREFIX_RE = re.compile(r"(?m)^[ ]*(?:(?:#{1,6}|>+|[*\-+])[ ]+)+")
+_PIPE_SPACE_RE = re.compile(r" *\| *")
 _HIDDEN_BLOCK_RE = re.compile(r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%")
 _SENTINEL_CHARS = "\ufdd0\ufdd1\ufdd2"
 _CLAIM_SEMANTIC_DETAILS = (
@@ -129,8 +137,9 @@ _APPEND_FEEDBACK_HINTS: dict[telemetry.Detail, str] = {
         "and omit speculative or ambiguous items."
     ),
     telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED: (
-        "Split any line that merges distant passages and keep ONLY facts supported by one "
-        "contiguous passage in new_sources with exact source certainty and conditions."
+        "Split any line that merges distant passages (starting with rejected_claims if present) "
+        "into separate lines each backed by one contiguous passage in new_sources, or remove "
+        "unsupported items; preserve exact source certainty and conditions."
     ),
     telemetry.Detail.SEMANTIC_REJECTED: (
         "Keep ONLY unambiguous, relevant facts supported by one contiguous passage in "
@@ -280,21 +289,34 @@ def _span_hits(haystack: str, quote: str) -> int:
     return 2 if haystack.find(quote, start + 1) != -1 else 1
 
 
-def _strip_inline_emphasis(text: str) -> str:
+def _strip_inline_emphasis(text: str, *, plain_md_links: bool = False) -> str:
+    if plain_md_links:
+        text = _MD_LINK_RE.sub(r"\g<inner>", text)
     for pattern in _INLINE_EMPHASIS:
         text = pattern.sub(r"\g<inner>", text)
     return text
 
 
 def _canon_text(text: str) -> str:
-    return _HSPACE_RE.sub(
-        " ",
-        unicodedata.normalize("NFC", text).casefold().translate(_QUOTE_CHAR_MAP),
-    ).replace(" \n", "\n")
+    return _VSPACE_RE.sub(
+        "\n",
+        _HSPACE_RE.sub(
+            " ",
+            unicodedata.normalize("NFC", text).casefold().translate(_QUOTE_CHAR_MAP),
+        ),
+    )
 
 
-def _flush_emphasis(open_buf: list[str], links: list[str], *, canonical: bool) -> str:
-    rendered = _strip_inline_emphasis(unicodedata.normalize("NFC", "".join(open_buf)))
+def _canon_open(text: str) -> str:
+    return _PIPE_SPACE_RE.sub("|", _LINE_PREFIX_RE.sub("", text))
+
+
+def _flush_emphasis(open_buf: list[str], links: list[str], *, canonical: bool,
+                    plain_md_links: bool = False) -> str:
+    rendered = _strip_inline_emphasis(
+        unicodedata.normalize("NFC", "".join(open_buf)),
+        plain_md_links=plain_md_links,
+    )
     if canonical:
         rendered = _canon_text(rendered)
     for idx, token in enumerate(links):
@@ -328,7 +350,8 @@ def _canon_wikilink(raw: str, *, canonical: bool) -> str:
     return clean
 
 
-def _emphasis_free(text: str, *, plain_links: bool = False, canonical: bool = False) -> str:
+def _emphasis_free(text: str, *, plain_links: bool = False, canonical: bool = False,
+                   plain_md_links: bool = False) -> str:
     parts: list[str] = []
     open_buf: list[str] = []
     links: list[str] = []
@@ -336,7 +359,7 @@ def _emphasis_free(text: str, *, plain_links: bool = False, canonical: bool = Fa
     for match in _NON_RENDERED_OR_WIKILINK.finditer(text):
         open_buf.append(text[pos:match.start()].replace("\ufdd0", "\ufdd0!"))
         if match.group("target") is None:
-            parts.append(_flush_emphasis(open_buf, links, canonical=canonical))
+            parts.append(_flush_emphasis(open_buf, links, canonical=canonical, plain_md_links=plain_md_links))
             # Injectively separate characters inside non-rendered blocks so
             # canonicalized/stripped outside quotes can never match inside them.
             parts.append("\ufdd2".join(match.group(0)))
@@ -347,8 +370,11 @@ def _emphasis_free(text: str, *, plain_links: bool = False, canonical: bool = Fa
             links.append(_canon_wikilink(match.group(0), canonical=canonical))
         pos = match.end()
     open_buf.append(text[pos:].replace("\ufdd0", "\ufdd0!"))
-    parts.append(_flush_emphasis(open_buf, links, canonical=canonical))
-    return "".join(parts)
+    parts.append(_flush_emphasis(open_buf, links, canonical=canonical, plain_md_links=plain_md_links))
+    out = "".join(parts)
+    if canonical:
+        out = _canon_open(out)
+    return out
 
 
 def _hidden_blocks(text: str) -> list[str]:
@@ -361,6 +387,7 @@ def _quote_hits(text: str, quote: str) -> int:
     text = text.replace("\r\n", "\n")
     quote = quote.replace("\r\n", "\n")
     plain = "[[" not in quote
+    plain_md = "](" not in quote
     if plain:
         hits = _span_hits(_plain_wikilinks(text), quote) or _span_hits(text, quote)
     else:
@@ -369,24 +396,34 @@ def _quote_hits(text: str, quote: str) -> int:
             _span_hits(_unescape_wikilinks(text), _unescape_wikilinks(quote)),
         )
     if not hits:
-        hits = _span_hits(_emphasis_free(text, plain_links=plain), _emphasis_free(quote))
+        hits = _span_hits(_emphasis_free(text, plain_links=plain, plain_md_links=plain_md),
+                          _emphasis_free(quote))
     if not quote.strip():
         return hits
     open_canon_hits: int | None = None
     canon_q: str | None = None
     if not hits:
-        canon_q = _emphasis_free(quote, canonical=True).rstrip(" ")
-        open_canon_hits = _span_hits(_emphasis_free(text, plain_links=plain, canonical=True), canon_q)
+        canon_q = _emphasis_free(quote, canonical=True).strip(" \n")
+        if not canon_q:
+            return 0
+        open_canon_hits = _span_hits(
+            _emphasis_free(text, plain_links=plain, canonical=True, plain_md_links=plain_md),
+            canon_q,
+        )
         hits = open_canon_hits
     if hits == 1:
         hidden = _hidden_blocks(text)
         if hidden:
-            cq = _canon_text(quote).rstrip(" ")
+            cq = _canon_open(_canon_text(quote)).strip(" \n")
             if canon_q is None:
-                canon_q = _emphasis_free(quote, canonical=True).rstrip(" ")
-            if any(_span_hits(_canon_text(blk), cq) > _span_hits("\ufdd2".join(blk), canon_q) for blk in hidden):
+                canon_q = _emphasis_free(quote, canonical=True).strip(" \n")
+            if any(_span_hits(_canon_open(_canon_text(blk)), cq) > _span_hits("\ufdd2".join(blk), canon_q)
+                   for blk in hidden):
                 if open_canon_hits is None:
-                    open_canon_hits = _span_hits(_emphasis_free(text, plain_links=plain, canonical=True), canon_q)
+                    open_canon_hits = _span_hits(
+                        _emphasis_free(text, plain_links=plain, canonical=True, plain_md_links=plain_md),
+                        canon_q,
+                    )
                 if open_canon_hits:
                     return 2
     return hits
@@ -422,7 +459,7 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
     last_quote = ""
     stage_c = c
     for attempt in range(2):
-        payload = {**data, **({"correction_feedback": feedback} if feedback else {})}
+        payload = {**data, **({"quote_feedback": feedback} if feedback else {})}
         prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
         if attempt == 0:
             stage_c = _stage_config(c, len(SOURCE_RELEVANCE_SYSTEM), prompt, SOURCE_PREDICT)
@@ -627,7 +664,9 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
     return required
 
 
-def _rejected_new_claims(body: str, claims: list, required: set[int]) -> tuple[str, ...]:
+def _rejected_new_claims(body: str, claims: object, required: set[int]) -> tuple[str, ...]:
+    if not isinstance(claims, list):
+        return ()
     found: list[str] = []
     for item in claims:
         if (isinstance(item, dict)
@@ -638,6 +677,24 @@ def _rejected_new_claims(body: str, claims: list, required: set[int]) -> tuple[s
                             for m in re.finditer(re.escape(text), body))):
                 found.append(text)
     return tuple(dict.fromkeys(found))
+
+
+def _verdict_rejected_claims(
+    loaded: dossier.DossierLoad, body: str, names: list[str], changes: list,
+    verdict: dict, detail: telemetry.Detail, last_missing: tuple[str, ...],
+) -> tuple[str, ...]:
+    try:
+        rejected = _rejected_new_claims(
+            body, verdict["claims"], _new_content_positions(loaded, body, names, changes),
+        )
+    except Refused:
+        rejected = ()
+    if (not rejected and last_missing
+            and detail is telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED
+            and verdict["conserved"] is True
+            and verdict["corrections_valid"] is True):
+        return last_missing
+    return rejected
 
 
 def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
@@ -781,7 +838,7 @@ TOPIC_AUDIT_SYSTEM = "You judge one claim's topic relevance.\n\n" + TOPIC_AUDIT_
 
 # Bound the extra memory requested by a complete-source audit. The estimate is
 # only an admission heuristic; the Ollama request still forbids truncation.
-MAX_AUDIT_CONTEXT = 32_768
+MAX_AUDIT_CONTEXT = 65_536
 
 
 def _stage_needed_tokens(system_len: int, prompt: str, num_predict: int) -> int:
@@ -812,7 +869,8 @@ def _stage_config(c: dict, system_len: int, prompt: str, num_predict: int,
         raise Refused("complete dossier input exceeds the maximum context budget",
                       reason=telemetry.Reason.CONTEXT)
     context = next(
-        (step for step in (MIN_AUTO_CONTEXT, MID_AUTO_CONTEXT, MAX_AUDIT_CONTEXT) if target <= step),
+        (step for step in (MIN_AUTO_CONTEXT, MID_AUTO_CONTEXT, HIGH_AUTO_CONTEXT, MAX_AUDIT_CONTEXT)
+         if target <= step),
         parsed,
     )
     return {**c, "llm": {**llm_cfg, "num_ctx": context}}
@@ -940,14 +998,19 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "was made and changes is [], set corrections_valid=true: there is nothing invalid to "
         "correct. Do not use false to mean not applicable. If a factual correction was made "
         "without its required ledger entry, set corrections_valid=false. "
+        "Adding a supported decision in ## Решено that addresses a non-⚠ ## Открыто item "
+        "(while keeping the old ## Открыто line) is an ordinary addition with changes: [] and "
+        "corrections_valid=true; changes applies ONLY to replacing a ## Сейчас claim "
+        "(never silently resolve or contradict a ⚠ warning). "
         "Treat generic 'участник встречи' as an unnamed per-meeting voice, not one persistent "
         "person across meetings. "
         "Use accept only when all three checks are true."
     )
     feedback = None
+    last_missing: tuple[str, ...] = ()
     stage_c = c
     for attempt in range(2):
-        payload = {**data, **({"correction_feedback": feedback} if feedback else {})}
+        payload = {**data, **({"quote_feedback": feedback} if feedback else {})}
         prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
         if attempt == 0:
             stage_c = _stage_config(c, len(MAIN_JUDGE_SYSTEM), prompt, MAIN_JUDGE_PREDICT)
@@ -963,15 +1026,21 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
                 or any(verdict[key] is not True for key in ("conserved", "supported", "corrections_valid"))):
             detail = telemetry.classify_semantic_detail(verdict, quote_retried=bool(attempt))
             telemetry.detail(detail)
-            raise Refused("candidate semantic conservation was not accepted", detail=detail)
+            rejected = _verdict_rejected_claims(loaded, body, names, changes, verdict, detail, last_missing)
+            raise Refused(
+                "candidate semantic conservation was not accepted",
+                detail=detail,
+                rejected_claims=rejected,
+            )
         try:
             _check_claims(loaded, body, names, files, verdict["claims"], changes)
             break
         except _MissingClaimQuotes as exc:
             if attempt:
                 raise
+            last_missing = tuple(dict.fromkeys(item["text"] for item in exc.missing_quotes))
             feedback = {
-                "failure": "one or more claim quotes were not found verbatim in new_sources",
+                "failure": "your previous judge output had claim quote(s) not found verbatim in new_sources",
                 "missing_quotes": [
                     {
                         "text": item["text"][:QUOTE_FEEDBACK_CHARS],
