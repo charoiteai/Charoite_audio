@@ -68,7 +68,8 @@ def _new(graph, name=B, body="A rain cover was fitted."):
     return path
 
 
-DEFAULT_PATCH = {"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B}],
+DEFAULT_PATCH = {"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B,
+                                "quote": "A rain cover was fitted."}],
                  "corrections": []}
 
 
@@ -168,9 +169,12 @@ def test_legacy_rejection_is_reassessed(world, monkeypatch):
 
 @pytest.mark.parametrize("patch", [
     {"additions": [], "corrections": []},
-    {"additions": [{"section": "Сейчас", "text": "A rain cover `code` fitted.", "source": B}], "corrections": []},
-    {"additions": [{"section": "Правки автора", "text": "changed", "source": B}], "corrections": []},
-    {"additions": [{"section": "Сейчас", "text": "ok\n## Правки автора\nchanged", "source": B}], "corrections": []},
+    {"additions": [{"section": "Сейчас", "text": "A rain cover `code` fitted.", "source": B,
+                    "quote": "A rain cover was fitted."}], "corrections": []},
+    {"additions": [{"section": "Правки автора", "text": "changed", "source": B,
+                    "quote": "A rain cover was fitted."}], "corrections": []},
+    {"additions": [{"section": "Сейчас", "text": "ok\n## Правки автора\nchanged", "source": B,
+                    "quote": "A rain cover was fitted."}], "corrections": []},
 ])
 def test_bad_candidate_never_stamps_a_relevant_source(world, monkeypatch, patch):
     nd, graph, path = world

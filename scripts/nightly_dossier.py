@@ -493,12 +493,31 @@ def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list
     return text
 
 
+_SPLITTABLE_DETAILS = frozenset({
+    telemetry.Detail.SOURCE_UNATTRIBUTED,
+    telemetry.Detail.JSON_MALFORMED,
+    telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED,
+    telemetry.Detail.SEMANTIC_CONSERVED_FALSE,
+    telemetry.Detail.SEMANTIC_CORRECTIONS_INVALID,
+    telemetry.Detail.SEMANTIC_SUPPORTED_FALSE,
+    telemetry.Detail.SEMANTIC_UNCERTAIN,
+    telemetry.Detail.SEMANTIC_REJECTED,
+    telemetry.Detail.CLAIM_QUOTE_MISSING,
+    telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS,
+    telemetry.Detail.CLAIM_UNCOVERED,
+    telemetry.Detail.CLAIM_SOURCE_MISSING,
+    telemetry.Detail.CLAIM_NOT_SUPPORTED,
+    telemetry.Detail.CLAIM_NOT_RELEVANT,
+})
+
+
 def _append_sequential(theme: str, loaded: dossier.DossierLoad, accepted: list[str],
                        files: dict, c: dict) -> str:
-    """Fallback when a multi-source batch hits context budget or unattributed sources: step one at a time."""
+    """Fallback when a multi-source batch hits context budget, attribution, JSON, or semantic limits: step one at a time."""
     current = loaded
     body = ""
     for idx, name in enumerate(accepted):
+        telemetry.begin_attempt()
         if idx:
             step_text = loaded.replace_body(body)
             current = dossier.DossierLoad("ok", step_text, raw=step_text.encode("utf-8"))
@@ -561,9 +580,10 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
                 try:
                     body = dossier_incremental.append(theme, loaded, accepted, g.files, c)
                 except dossier_incremental.Refused as exc:
+                    exc_detail = exc.detail or telemetry.detail_for_message(str(exc))
                     can_split = (
                         exc.reason == telemetry.Reason.CONTEXT
-                        or str(exc) in ("candidate does not attribute each accepted source", "malformed model JSON")
+                        or exc_detail in _SPLITTABLE_DETAILS
                     )
                     if not can_split or len(accepted) <= 1:
                         raise
@@ -575,6 +595,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
                 text = _append_result(loaded, body if accepted else None, accepted, rejected, g, fp)
         except Exception as e:  # noqa: BLE001
             if isinstance(e, dossier_incremental.Refused):
+                if e.detail is not None:
+                    telemetry.detail(e.detail)
                 telemetry.record_refusal_message(str(e))
             telemetry.request_refusal(telemetry.Reason.VALIDATION if isinstance(e, dossier_incremental.Refused)
                                       else telemetry.exception_reason(e))

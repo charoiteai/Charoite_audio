@@ -63,13 +63,15 @@ def test_generation_feedback_preserves_guards_and_is_bounded(monkeypatch, correc
         payload, _ = json.JSONDecoder().raw_decode(prompt)
         calls.append(payload)
         if len(calls) == 2 and correct_second:
-            return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B}],
+            return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B,
+                                              "quote": "A rain cover was fitted."}],
                                "corrections": []})
-        return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover `bad` fitted.", "source": B}],
+        return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover `bad` fitted.", "source": B,
+                                          "quote": "A rain cover was fitted."}],
                            "corrections": []})
 
     monkeypatch.setattr(inc, "local_complete", complete)
-    monkeypatch.setattr(inc, "semantic_check", lambda *args: judged.append(1))
+    monkeypatch.setattr(inc, "semantic_check", lambda *args, **kwargs: judged.append(1))
     if correct_second:
         assert inc.append("Glasshouse", loaded, [B], files, {}) == ADDED
         assert judged == [1]
@@ -93,13 +95,14 @@ def test_generation_retry_requires_only_verbatim_content_lines(monkeypatch):
         calls.append(json.JSONDecoder().raw_decode(prompt)[0])
         if len(calls) == 1:
             return "not JSON"
-        return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B}],
+        return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B,
+                                          "quote": "A rain cover was fitted."}],
                            "corrections": []})
 
     # Exercise the real retry and deterministic validation; only completion and
     # semantic judgement are explicit doubles, so this makes no model calls.
     monkeypatch.setattr(inc, "local_complete", complete)
-    monkeypatch.setattr(inc, "semantic_check", lambda *args: judged.append(1))
+    monkeypatch.setattr(inc, "semantic_check", lambda *args, **kwargs: judged.append(1))
     expected = prior.replace("\n\n \t\n## Как пришли", f"\n- A rain cover was fitted. [[{B}]]\n\n\n## Как пришли", 1)
     assert inc.append("Glasshouse", loaded, [B], files, {}) == expected
     assert len(calls) == 2 and judged == [1]

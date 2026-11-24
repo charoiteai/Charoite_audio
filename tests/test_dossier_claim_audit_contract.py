@@ -376,9 +376,10 @@ def test_writer_keeps_body_membership_index_and_backups_and_retries_either_stage
             return json.dumps({"verdict": "relevant", "reason": "Synthetic supported source.", "quote": FACT})
         if system == GENERATE_SYSTEM:
             if failure == "no-contribution":
-                return json.dumps({"additions": [{"section": "Кто в теме", "text": f"[[{B}]]", "source": B}],
+                return json.dumps({"additions": [{"section": "Кто в теме", "text": f"[[{B}]]", "source": B,
+                                                  "quote": FACT}],
                                    "corrections": []})
-            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}],
+            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
                                "corrections": []})
         if system in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
             current_stage = "support" if system == inc.SUPPORT_AUDIT_SYSTEM else "topic"
@@ -494,7 +495,8 @@ def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry
         if system == SOURCE_SYSTEM:
             return json.dumps({"verdict": "relevant", "reason": "Supported topic fact.", "quote": FACT})
         if system == GENERATE_SYSTEM:
-            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}], "corrections": []})
+            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
+                               "corrections": []})
         if system == MAIN_SYSTEM:
             return json.dumps(_verdict())
         if system == inc.SUPPORT_AUDIT_SYSTEM:
@@ -516,7 +518,8 @@ def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry
 
     def overflow_downstream(prompt, config, *, system, **kwargs):
         gen_calls.append(system)
-        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B}], "corrections": []})
+        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
+                           "corrections": []})
 
     monkeypatch.setattr(inc, "local_complete", overflow_downstream)
     monkeypatch.setattr(
