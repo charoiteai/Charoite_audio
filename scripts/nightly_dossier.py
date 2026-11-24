@@ -563,7 +563,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> float | Non
                 except dossier_incremental.Refused as exc:
                     can_split = (
                         exc.reason == telemetry.Reason.CONTEXT
-                        or str(exc) == "candidate does not attribute each accepted source"
+                        or str(exc) in ("candidate does not attribute each accepted source", "malformed model JSON")
                     )
                     if not can_split or len(accepted) <= 1:
                         raise
