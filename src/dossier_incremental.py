@@ -55,7 +55,7 @@ SOURCE_RELEVANCE_SYSTEM = "You judge source relevance conservatively."
 GENERATE_SYSTEM = "You extend factual dossiers conservatively."
 MAIN_JUDGE_SYSTEM = "You are an independent conservative dossier judge."
 SOURCE_PREDICT = 350
-APPEND_PREDICT = 4096
+APPEND_PREDICT = 2800
 MAIN_JUDGE_PREDICT = 4096
 AUDIT_PREDICT = 4096
 APPEND_FEEDBACK_RESPONSE_CHARS = 2000
@@ -106,7 +106,7 @@ _VSPACE_RE = re.compile(r"[ \n]*\n[ \n]*")
 _LINE_PREFIX_RE = re.compile(r"(?m)^[ ]*(?:(?:#{1,6}|>+|[*\-+]|\d{1,3}[.)]|📌)[ ]+)+")
 _SPEAKER_NL_RE = re.compile(
     r"(?m)^([^\n\[\]:]+\[\d{1,2}:\d{2}(?::\d{2})?(?: ?- ?\d{1,2}:\d{2}(?::\d{2})?)?\]:)\n"
-    r"(?![^\n\[\]:]+\[\d{1,2}:\d{2})"
+    r"(?![^\n\[\]:]+\[\d{1,2}:\d{2}(?::\d{2})?(?: ?- ?\d{1,2}:\d{2}(?::\d{2})?)?\]:)"
 )
 _PIPE_SPACE_RE = re.compile(r" *\| *")
 _HIDDEN_BLOCK_RE = re.compile(r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%")

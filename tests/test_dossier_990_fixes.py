@@ -926,7 +926,7 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
 
 
 @pytest.mark.parametrize("cfg_ctx,expected_cap", [
-    (7168, 7168),
+    (6144, 6144),
     (8192, inc.MAX_AUDIT_CONTEXT),
     (65536, 65536),
 ])
@@ -1825,6 +1825,7 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
         inc.append("Glasshouse", loaded, [m1], files, LOCAL)
     fb3 = json.loads(prompts_json[1].split("\n", 1)[0])["correction_feedback"]
     assert "rejected_claims" not in fb3
+    assert not fb3["instruction"].startswith(" ")
     assert fb3["instruction"].endswith("and do not duplicate after in additions.")
 
     # 6) Judge freeform reason NEVER leaks into append correction_feedback
@@ -2057,10 +2058,19 @@ def test_round10_quote_hits_mixed_links_prefixes_speaker_nl_and_invariants():
         "[[Люди/Иванов|Иванов]] с [[Ядра/Орион|Орион]]. Иванов с [[Ядра/Орион|Орион]].",
         "Иванов с [[Ядра/Орион|Орион]].",
     ) == 2
-    # Hidden-block duplicate for a mixed quote matched on tier 2 must also report ambiguous (2)
+    # Tier 2 keep_raw canonical=False must preserve non-trivial case alias for emphasis+plain duplicates
+    assert inc._quote_hits(
+        "**Иванов** с [[Ядра/Орион|орион]]. Иванов с [[Ядра/Орион|орион]].",
+        "Иванов с [[Ядра/Орион|орион]]",
+    ) == 2
+    # Hidden-block duplicate for a mixed quote matched on tier 2 (including lowercase alias for keep_canon canonical=True)
     assert inc._quote_hits(
         "Код `Иванов с [[Ядра/Орион]]` и [[Люди/Иванов|Иванов]] с [[Ядра/Орион|Орион]].",
         "Иванов с [[Ядра/Орион]]",
+    ) == 2
+    assert inc._quote_hits(
+        "Код `Иванов с [[Ядра/Орион|орион]]` и [[Люди/Иванов|Иванов]] с [[Ядра/Орион|Орион]].",
+        "Иванов с [[Ядра/Орион|орион]]",
     ) == 2
 
     # 2) Numbered lists and 📌 are decorative; checkboxes [ ]/[x], ✅, ⚠ preserve semantic polarity
@@ -2089,6 +2099,10 @@ def test_round10_quote_hits_mixed_links_prefixes_speaker_nl_and_invariants():
         "Иван [12:34]: Шлюз готов.",
     ) == 1
     assert inc._quote_hits(
+        "**Соколов** [00:03:15]:\nСбой в [12:00] устранили.",
+        "Соколов [00:03:15]: Сбой в [12:00] устранили.",
+    ) == 1
+    assert inc._quote_hits(
         "Собеседник 1: Сбой в [12:00]:\nСобеседник 2: Да.",
         "Сбой в [12:00]: Собеседник 2: Да.",
     ) == 0
@@ -2109,7 +2123,7 @@ def test_round10_quote_hits_mixed_links_prefixes_speaker_nl_and_invariants():
 
 
 def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feedback(world, monkeypatch):
-    assert inc.APPEND_PREDICT == 4096
+    assert inc.APPEND_PREDICT == 2800
     assert dossier.GEN_PREDICT == 1800
 
     nd, graph, old_path = world
