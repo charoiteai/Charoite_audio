@@ -1397,6 +1397,8 @@ def test_round7_canonical_quote_hits_typography_nfd_wikilinks_and_hidden_symmetr
         source,
         "- Релиз «Орбита 2.4» — перенесён на 15–18 февраля.\n - Лимит очереди 500 сообщений.",
     ) == 1
+    # Single-line quote carrying trailing NBSP/space still matches multi-line source line whose trailing space was stripped
+    assert inc._quote_hits(source, "- Релиз «Орбита 2.4» — перенесён на 15–18 февраля.\u00a0 ") == 1
     # Newlines are NEVER collapsed into spaces (no cross-line splicing)
     assert inc._quote_hits(
         "Собеседник 1: Нет, отменяем.\nСобеседник 2: Запускаем завтра.",
@@ -1412,10 +1414,13 @@ def test_round7_canonical_quote_hits_typography_nfd_wikilinks_and_hidden_symmetr
     assert inc._quote_hits("пои\u0306*ти*", "пои\u0306ти") == 0
     assert inc._quote_hits("пои\u0306*ти*", "пойти") == 0
 
-    # Wikilinks with [[ in quote: canonicalize alias typography/spaces/NFD while keeping exact target
-    nfd_link_src = unicodedata.normalize("NFD", "- [[Ядра/Маяк|Проект\u00a0—\u00a0Маяк]]: готово.")
-    assert inc._quote_hits(nfd_link_src, "- [[Ядра/Маяк|Проект - Маяк]]: готово.") == 1
-    assert inc._quote_hits(nfd_link_src, "- [[Чужой/Маяк|Проект - Маяк]]: готово.") == 0
+    # Non-canonical emphasis-free branch keeps exact-case disambiguation before canonical folding
+    assert inc._quote_hits("- **Альфа** готова.\n- альфа готова.", "Альфа готова.") == 1
+
+    # Wikilinks with [[ in quote: canonicalize alias + NFD target (with й) while keeping exact target
+    nfd_link_src = unicodedata.normalize("NFD", "- [[Ядра/Устойчивый маяк|Проект\u00a0—\u00a0Маяк]]: готово.")
+    assert inc._quote_hits(nfd_link_src, "- [[Ядра/Устойчивый маяк|Проект - Маяк]]: готово.") == 1
+    assert inc._quote_hits(nfd_link_src, "- [[Чужой/Устойчивый маяк|Проект - Маяк]]: готово.") == 0
     assert inc._quote_hits("- [[Ядра/Орбита|орбита]]: ok.", "- [[Ядра/Орбита]]: ok.") == 1
     assert inc._quote_hits("- [[Ядра/Орбита| ]]: ok.", "- [[Ядра/Орбита| ]]: ok.") == 1
     assert inc._quote_hits("- [[Ядра/Орбита#sec|Орбита]]: ok.", "- [[Ядра/Орбита#sec]]: ok.") == 0
@@ -1426,7 +1431,11 @@ def test_round7_canonical_quote_hits_typography_nfd_wikilinks_and_hidden_symmetr
     assert inc._quote_hits("x \ufdd0:0\ufdd1 y [[Ядра/А]]", "x [[Ядра/А]] y") == 0
     assert inc._quote_hits("x [[Ядра/А|\ufdd0:0\ufdd1]] y [[Ядра/Б]]", "x [[Ядра/Б]] y") == 0
 
-    # Hidden-zone symmetry & duplicate detection
+    # Hidden-zone symmetry & duplicate detection (including single literal inline-code quote != duplicate!)
+    assert inc._quote_hits("Запуск `pytest -q` прошёл штатно.", "`pytest -q`") == 1
+    assert inc._quote_hits("Код `[[Ядра/Glasshouse]]` и текст.", "`[[Ядра/Glasshouse]]`") == 1
+    assert inc._quote_hits("Запуск `pytest -q` и ещё `PYTEST -Q`.", "`pytest -q`") == 2
+    assert inc._quote_hits("Код `[[Ядра/Glasshouse]]` и [[Ядра/Glasshouse|glasshouse]].", "[[Ядра/Glasshouse]]") == 2
     assert inc._quote_hits("Glasshouse\u00a0fitted.\n```\nGlasshouse fitted.\n```\n", "Glasshouse fitted.") == 2
     assert inc._quote_hits("Glasshouse fitted.\n```\nGlasshouse\u00a0fitted.\n```\n", "Glasshouse fitted.") == 2
     assert inc._quote_hits("Glasshouse\u00a0fitted.\n```\nGlasshouse\u00a0fitted.\n```\n", "glasshouse fitted.") == 2
@@ -1570,17 +1579,26 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
             inc.semantic_check("Glasshouse", loaded, use_names, use_files, LOCAL, use_body, [])
         assert len(one_shot) == 1
 
-    # 6) Budget guard on retry: never exceed stage_c["llm"]["num_ctx"], and non-ollama config doesn't KeyError
-    tight_calls: list[int] = []
-    # Compute prompt size close to MIN_AUTO_CONTEXT so attempt 0 fits 8192 but attempt 1 (+ feedback) exceeds 8192
+    # 6) Budget guard on retry: exact == ctx allows retry, ctx + 1 refuses without 2nd call; non-ollama doesn't KeyError
     sys_len = len(inc.MAIN_JUDGE_SYSTEM)
     min_budget = (inc.MIN_AUTO_CONTEXT - inc.MAIN_JUDGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
     base_calls: list[str] = []
     monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (base_calls.append(p), bad_verdict)[1])
     with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
         inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
-    pad_len = max(0, min_budget - sys_len - len(base_calls[0]) - 20)
-    tight_files = {m1: {"text": f"Inspection log: {fact1} " + ("z" * pad_len)}}
+    assert len(base_calls) == 2
+    exact_pad = min_budget - sys_len - len(base_calls[1])
+    assert exact_pad >= 0
+    exact_files = {m1: {"text": f"Inspection log: {fact1}" + ("z" * exact_pad)}}
+    exact_calls: list[str] = []
+    monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (exact_calls.append(p), bad_verdict)[1])
+    with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+        inc.semantic_check("Glasshouse", loaded, [m1], exact_files, LOCAL, body, [])
+    assert len(exact_calls) == 2
+    assert inc._stage_needed_tokens(sys_len, exact_calls[1], inc.MAIN_JUDGE_PREDICT) == inc.MIN_AUTO_CONTEXT
+
+    tight_files = {m1: {"text": f"Inspection log: {fact1}" + ("z" * (exact_pad + 1))}}
+    tight_calls: list[int] = []
     monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (tight_calls.append(len(p)), bad_verdict)[1])
     with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
         inc.semantic_check("Glasshouse", loaded, [m1], tight_files, LOCAL, body, [])

@@ -85,6 +85,7 @@ _QUOTE_CHAR_MAP = str.maketrans({
     "’": "'",
 })
 _HSPACE_RE = re.compile(r"[^\S\n]+")
+_HIDDEN_BLOCK_RE = re.compile(r"```[\s\S]*?```|`[^`\r\n]+`|%%[\s\S]*?%%")
 _SENTINEL_CHARS = "\ufdd0\ufdd1\ufdd2"
 
 
@@ -301,7 +302,7 @@ def _emphasis_free(text: str, *, plain_links: bool = False, canonical: bool = Fa
 
 
 def _hidden_blocks(text: str) -> list[str]:
-    return [m.group(0) for m in _NON_RENDERED_OR_WIKILINK.finditer(text) if m.group("target") is None]
+    return _HIDDEN_BLOCK_RE.findall(text)
 
 
 def _quote_hits(text: str, quote: str) -> int:
@@ -322,22 +323,22 @@ def _quote_hits(text: str, quote: str) -> int:
     if not quote.strip():
         return hits
     open_canon_hits: int | None = None
+    canon_q: str | None = None
     if not hits:
-        open_canon_hits = _span_hits(
-            _emphasis_free(text, plain_links=plain, canonical=True),
-            _emphasis_free(quote, canonical=True),
-        )
+        canon_q = _emphasis_free(quote, canonical=True).rstrip(" ")
+        open_canon_hits = _span_hits(_emphasis_free(text, plain_links=plain, canonical=True), canon_q)
         hits = open_canon_hits
     if hits == 1:
         hidden = _hidden_blocks(text)
-        if hidden and any(_canon_text(quote) in _canon_text(blk) for blk in hidden):
-            if open_canon_hits is None:
-                open_canon_hits = _span_hits(
-                    _emphasis_free(text, plain_links=plain, canonical=True),
-                    _emphasis_free(quote, canonical=True),
-                )
-            if open_canon_hits:
-                return 2
+        if hidden:
+            cq = _canon_text(quote).rstrip(" ")
+            if canon_q is None:
+                canon_q = _emphasis_free(quote, canonical=True).rstrip(" ")
+            if any(_span_hits(_canon_text(blk), cq) > _span_hits("\ufdd2".join(blk), canon_q) for blk in hidden):
+                if open_canon_hits is None:
+                    open_canon_hits = _span_hits(_emphasis_free(text, plain_links=plain, canonical=True), canon_q)
+                if open_canon_hits:
+                    return 2
     return hits
 
 
