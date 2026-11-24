@@ -289,7 +289,7 @@ def _span_hits(haystack: str, quote: str) -> int:
     return 2 if haystack.find(quote, start + 1) != -1 else 1
 
 
-def _strip_inline_emphasis(text: str, *, plain_md_links: bool = False) -> str:
+def _strip_inline_emphasis(text: str, *, plain_md_links: bool) -> str:
     if plain_md_links:
         text = _MD_LINK_RE.sub(r"\g<inner>", text)
     for pattern in _INLINE_EMPHASIS:
@@ -312,7 +312,7 @@ def _canon_open(text: str) -> str:
 
 
 def _flush_emphasis(open_buf: list[str], links: list[str], *, canonical: bool,
-                    plain_md_links: bool = False) -> str:
+                    plain_md_links: bool) -> str:
     rendered = _strip_inline_emphasis(
         unicodedata.normalize("NFC", "".join(open_buf)),
         plain_md_links=plain_md_links,
