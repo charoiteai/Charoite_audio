@@ -83,7 +83,7 @@ def _bound_file(expected: pathlib.Path, recorded: object, refusal: str, *, missi
                     return stored
                 if missing_ok:
                     return expected
-            elif previous is None or os.path.samestat(current, previous):
+            elif previous is None or _same_entry(expected, stored):
                 return expected
     raise refinement.RefinementRefused(refusal)
 

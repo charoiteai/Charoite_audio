@@ -289,21 +289,25 @@ def test_rebuild_after_retitle_accepts_equivalent_owner_spelling(tmp_path, model
     assert (receipt.read_bytes(), export.read_bytes()) == stop_bytes
 
 
+@pytest.mark.parametrize("hardlinked", [False, True])
 @pytest.mark.parametrize("field", ["owner", "debrief_file"])
-def test_distinct_unicode_filenames_never_share_a_binding(tmp_path, model, field):
+def test_distinct_unicode_filenames_never_share_a_binding(tmp_path, model, field, hardlinked):
     live, original, _ = alternate_title_spelling(tmp_path, "NFC")
     current = live if field == "owner" else meeting_stamp.derivative_path(live, "debrief")
     competing = original if field == "owner" else meeting_stamp.derivative_path(original, "debrief")
     if competing.exists():
         pytest.skip("This volume aliases canonically equivalent names")
-    competing.write_bytes(current.read_bytes())
-    assert not current.samefile(competing)
+    if hardlinked:
+        competing.hardlink_to(current)
+    else:
+        competing.write_bytes(current.read_bytes())
+    assert current.samefile(competing) is hardlinked
     with pytest.raises(refinement.RefinementRefused):
         pipeline.verify_publication(live)
     assert not pipeline.can_retitle(live, live.with_name("different.md"))
     if field == "debrief_file":
         # Even a freshly written canonical transcript cannot authorize this
-        # other inode or alter its previous binding before refusing the retry.
+        # other directory entry or alter its previous binding before refusing the retry.
         live.write_text(live.read_text() + "Уточнили сроки.\n")
         assert live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(live.read_text()))
     evidence = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
