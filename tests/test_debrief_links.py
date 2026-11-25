@@ -98,9 +98,7 @@ def test_missing_link_is_independently_verified_and_input_stays_immutable():
     assert result == [{**relation(), "status": "supported"}]
     assert (done, current) == snapshot
     assert [system for system, _ in calls[-2:]] == [links.PAIR_AUDIT_SYSTEM, links.ANCHOR_AUDIT_SYSTEM]
-    paragraphs = links._linked_paragraphs(links._entries(done + [current]), result)
-    assert len(paragraphs) == 1
-    assert paragraphs[0]["text"] == done[0]["rows"][0]["text"] + " Позднее уточнили: " + current["rows"][0]["text"]
+
 
 
 def mixed_windows():
@@ -124,10 +122,7 @@ def test_uncertain_endpoints_keep_their_places_but_only_certain_pairs_reach_audi
     for _, data in calls[:2]:
         assert [r["id"] for r in data["early_paragraphs"]] == ["w0:p1"]
         assert [r["id"] for r in data["current_paragraphs"]] == ["w1:p1"]
-    paragraphs = links._linked_paragraphs(links._entries(done + [current]), result)
-    assert len(paragraphs) == 3
-    assert sum("Позднее уточнили" in row["text"] for row in paragraphs) == 1
-    assert sum(row["text"].startswith("**Требует уточнения.**") for row in paragraphs) == 2
+
 
 
 @pytest.mark.parametrize("candidate", [relation("w0:p0", "w1:p1"), relation("w0:p1", "w1:p0")])
@@ -295,12 +290,6 @@ def test_single_pair_context_failure_propagates_without_lossy_retry():
     with pytest.raises(ref.RefinementRefused, match="complete_input_exceeds_context"):
         run(call)
     assert calls.count(links.PAIR_AUDIT_SYSTEM) == 1
-
-
-def test_without_links_render_matches_original_and_has_no_numbering():
-    done, current = fixture()
-    paragraphs = links._linked_paragraphs(links._entries(done + [current]), [])
-    assert [row["text"] for row in paragraphs] == [done[0]["rows"][0]["text"], current["rows"][0]["text"]]
 
 
 @pytest.mark.parametrize("patch", [{"checked_ids": []}, {"relations": {}}, {"extra": True}])
@@ -495,10 +484,7 @@ def test_bad_middle_pair_does_not_erase_supported_neighbors(middle):
     assert source_ids == ["w0:p0", "w1:p0", "w2:p0"]
     assert done[0]["rows"][0]["quotes"] in focused
     assert done[2]["rows"][0]["quotes"] in focused
-    paragraphs = links._linked_paragraphs(links._entries(done + [current]), result)
-    group = next(row["text"] for row in paragraphs if current["rows"][0]["text"] in row["text"])
-    assert done[0]["rows"][0]["text"] in group and done[2]["rows"][0]["text"] in group
-    assert done[1]["rows"][0]["text"] not in group
+
 
 
 @pytest.mark.parametrize("stage", [links.DISCOVER_SYSTEM, links.DISCOVERY_AUDIT_SYSTEM,

@@ -25,8 +25,8 @@ def verdict(rows):
             "coverage_complete": True, "corrections_resolved": True}
 
 
-@pytest.mark.parametrize("long_meeting", [False, True])
-def test_published_conclusion_merges_correction_and_marks_unknown_owner(tmp_path, monkeypatch, long_meeting):
+@pytest.mark.parametrize("long_meeting,unresolved", [(False, False), (True, False), (True, True)])
+def test_publication_requires_resolved_correction_and_marks_unknown_owner(tmp_path, monkeypatch, long_meeting, unresolved):
     width = ref.WINDOW_CHARS - 1 if long_meeting else 0
     speech = "".join(line.ljust(width - int(long_meeting and i == 0)) + "\n" for i, line in enumerate((EARLY, OWNER, LATE)))
     live, handoff = make_meeting(tmp_path, speech=speech, thread=THREAD)
@@ -43,7 +43,7 @@ def test_published_conclusion_merges_correction_and_marks_unknown_owner(tmp_path
             return json.dumps({"paragraphs": final})
         if system in (ref.AUDIT_SYSTEM, links.CONCLUSION_AUDIT_SYSTEM):
             audit_inputs.append(data)
-            return json.dumps(verdict(data["paragraphs"]))
+            return json.dumps({**verdict(data["paragraphs"]), "corrections_resolved": not unresolved})
         if system == ref.WINDOW_SYSTEM:
             owned = data["final_speech"].strip()
             row = {EARLY: paragraph("Сначала открытие наметили на среду.", [EARLY]),
@@ -59,6 +59,13 @@ def test_published_conclusion_merges_correction_and_marks_unknown_owner(tmp_path
         return json.dumps({"checked_ids": ids, "status": "complete", "missing_relations": [], "uncertain_ids": []})
 
     monkeypatch.setattr(ref, "local_request", request)
+    if unresolved:
+        destination, previous = previous_debrief(live)
+        with pytest.raises(ref.UnverifiedReply, match="audit_refused"):
+            run(live, handoff)
+        assert audit_inputs and destination.read_bytes() == previous
+        assert live.read_bytes() == original and not pipeline.publication_path(live).exists()
+        return
     destination = run(live, handoff)
     assert pipeline.verify_publication(live) == destination
     assert live.read_bytes() == original
@@ -95,7 +102,7 @@ def test_partial_publication_keeps_only_supported_material(tmp_path, monkeypatch
         if system == ref.WINDOW_AUDIT_SYSTEM:
             return json.dumps({**rejected, "has_cross_window_correction": False,
                                "correction_quotes": [], "repair_quotes": [OWNER]})
-        assert system == ref.WINDOW_REPAIR_SYSTEM
+        assert system.startswith(ref.WINDOW_REPAIR_SYSTEM)
         return json.dumps({"changes": [paragraph("Неверная правка.", ["Неподтверждённый фрагмент."])]})
 
     monkeypatch.setattr(ref, "local_request", request)
@@ -123,10 +130,6 @@ def test_final_edit_failure_cannot_add_a_fact_or_hide_uncertainty(failure):
         assert system == links.CONCLUSION_AUDIT_SYSTEM
         return json.dumps({**verdict([certain]), "coverage_complete": False})
 
-    if failure == "transport":
-        with pytest.raises(ref.RefinementRefused, match="local_request_failed"):
-            links.render_conversation(done, [], [], call)
-    else:
-        body = links.render_conversation(done, [], [], call)
-        assert FINAL in body and "**Требует уточнения.** " + OPEN in body and "Выдуманное" not in body
+    with pytest.raises(ref.RefinementRefused):
+        links.render_conversation(done, [], [], call)
     assert len(calls) == (2 if failure == "audit" else 1)

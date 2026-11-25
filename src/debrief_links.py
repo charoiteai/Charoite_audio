@@ -346,31 +346,6 @@ CONCLUSION_AUDIT_SYSTEM = (
 )
 
 
-def _linked_paragraphs(entries, relations):
-    """Keep the audited wording if a whole-meeting edit cannot be verified."""
-    # Put a later answer next to the question it resolves. A paragraph can answer
-    # multiple earlier points. Each connected group is emitted once, in source order.
-    groups = {key: key for key in entries}
-    labels = {"clarifies": "Позднее уточнили", "answers": "Ответ участников",
-              "replaces": "Позднее пересмотрели", "contradicts": "Осталось противоречие"}
-    transitions = {}
-    for relation in relations:
-        early, late = relation["early_id"], relation["late_id"]
-        first, second = groups[early], groups[late]
-        if first != second:
-            for key in groups:
-                if groups[key] == second:
-                    groups[key] = first
-        transitions[late] = labels[relation["kind"]]
-    paragraphs = {}
-    for key, (row, _) in entries.items():
-        text = ref._paragraph_text(row)
-        if key in transitions:
-            text = transitions[key] + ": " + text
-        paragraphs.setdefault(groups[key], []).append(text)
-    return [{"text": " ".join(dict.fromkeys(group)), "uncertain": False} for group in paragraphs.values()]
-
-
 def render_conversation(done, relations, thread, call) -> str:
     entries = _entries(done)
     partial = any(item["reason"] not in {"verified", "verified_with_uncertainty", "noise"} for item in done)
@@ -383,19 +358,14 @@ def render_conversation(done, relations, thread, call) -> str:
     # Each support must come from one verified paragraph. Joining quotes is only
     # for the shared typography/schema validator, never a source for new evidence.
     quotes = {quote for row in rows for quote in row["quotes"]}
-    try:
-        raw = call(ref._dump(inputs), CONCLUSION_SYSTEM, 2000)
-        conclusion = ref._paragraphs(raw, "\n".join(sorted(quotes)))
-        for row in conclusion:
-            if any(quote not in quotes for quote in row["quotes"]):
-                raise ref.UnverifiedReply("conclusion_quote")
-        certain_quotes = {quote for row in rows if not row["uncertain"] for quote in row["quotes"]}
-        if any(not row["uncertain"] and any(q not in certain_quotes for q in row["quotes"]) for row in conclusion):
-            raise ref.UnverifiedReply("conclusion_uncertainty")
-        audit = call(ref._dump({**inputs, "paragraphs": conclusion}), CONCLUSION_AUDIT_SYSTEM, 1000)
-        ref._audit(audit, len(conclusion))
-    except ref.RefinementRefused as exc:
-        if not isinstance(exc, ref.UnverifiedReply) and str(exc) not in ref.SPLIT_REASONS:
-            raise
-        conclusion = _linked_paragraphs(entries, relations)
+    raw = call(ref._dump(inputs), CONCLUSION_SYSTEM, 2000)
+    conclusion = ref._paragraphs(raw, "\n".join(sorted(quotes)))
+    for row in conclusion:
+        if any(quote not in quotes for quote in row["quotes"]):
+            raise ref.UnverifiedReply("conclusion_quote")
+    certain_quotes = {quote for row in rows if not row["uncertain"] for quote in row["quotes"]}
+    if any(not row["uncertain"] and any(q not in certain_quotes for q in row["quotes"]) for row in conclusion):
+        raise ref.UnverifiedReply("conclusion_uncertainty")
+    audit = call(ref._dump({**inputs, "paragraphs": conclusion}), CONCLUSION_AUDIT_SYSTEM, 1000)
+    ref._audit(audit, len(conclusion))
     return ref._render(conclusion, partial=partial)
