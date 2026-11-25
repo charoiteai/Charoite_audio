@@ -372,12 +372,17 @@ def test_interrupted_unicode_retitle_recovers_only_its_original_binding(tmp_path
     if damage:
         if damage == "old_binding":
             old_binding.write_text(json.dumps({**json.loads(previous), "note": "changed"}))
+            reason = "retitle_binding_conflict"
         elif damage == "replaced_owner":
             recorded.write_bytes(new.read_bytes())
+            # On an aliasing volume this recreates the old source path. On a
+            # byte-sensitive volume it instead introduces a competing owner.
+            reason = "retitle_source_changed" if old.exists() else "retitle_owner"
         else:
             marker.write_text(json.dumps({**reservation, "retitle_from": "neighbor.md"}))
+            reason = "retitle_owner"
         evidence = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
-        with pytest.raises(refinement.RefinementRefused, match="retitle_binding_conflict|retitle_owner"):
+        with pytest.raises(refinement.RefinementRefused, match=f"^{reason}$"):
             pipeline.recover_retitle(new)
         assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == evidence
     else:
