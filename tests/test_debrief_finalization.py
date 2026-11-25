@@ -122,30 +122,41 @@ def test_graph_child_defers_only_for_explicit_parent_ack(tmp_path, monkeypatch, 
     assert seen[0]["graph_input_sha"] == proof
 
 
-def test_graph_refinement_window_heartbeat_logs_only_closed_reasons(tmp_path, monkeypatch, capsys):
+def test_graph_refinement_window_heartbeat_logs_only_closed_reasons(tmp_path, monkeypatch):
+    import sys
     import graph_updater as graph
 
     reports, hooks = [], []
     monkeypatch.setattr(graph, "_report", lambda *a, **kw: reports.append((a, kw)))
     secret = "Синтетический приватный текст"
+    log = tmp_path / "graph_synthetic.log"
+    expected = []
 
     def fake_run(*args, **kwargs):
         progress = kwargs["progress"]
         progress({"phase": "request", "reason": secret})
-        progress({"phase": "source_window", "source_windows": 1, "reason": "audit_refused", "text": secret})
-        progress({"phase": "source_window", "source_windows": 2, "reason": secret})
+        for ordinal, reason, line in [
+            (1, "audit_refused", "source_window=1 reason=audit_refused"),
+            (2, secret, "source_window=2 reason=other"),
+            (0, "verified", "source_window=unknown reason=verified"),
+            (secret, "noise", "source_window=unknown reason=noise"),
+        ]:
+            progress({"phase": "source_window", "source_windows": ordinal, "reason": reason, "text": secret})
+            expected.append("debrief: " + line)
+            # The graph child redirects stdout to a regular file. Operators can
+            # read a completed window while later model requests are still running.
+            assert log.read_text().splitlines() == expected
         progress({"phase": "complete", "reason": secret})
         kwargs["before_commit"]()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
-    graph._finish_refinement(tmp_path / "synthetic.md", CFG, ["--refine-before-archive", "a" * 64],
-                             before_commit=lambda: hooks.append(True))
-    output = capsys.readouterr().out
-    assert output.splitlines() == ["debrief: source_window=1 reason=audit_refused",
-                                   "debrief: source_window=2 reason=other"]
-    assert secret not in output
-    assert len(reports) == 5
-    assert all(kw == {"stage": "refining_debrief"} for _, kw in reports)
+    with log.open("w", buffering=8192) as stdout:
+        with monkeypatch.context() as stream:
+            stream.setattr(sys, "stdout", stdout)
+            graph._finish_refinement(tmp_path / "synthetic.md", CFG, ["--refine-before-archive", "a" * 64],
+                                     before_commit=lambda: hooks.append(True))
+    assert log.read_text().splitlines() == expected
+    assert len(reports) == 7 and all(kw == {"stage": "refining_debrief"} for _, kw in reports)
     assert hooks == [True]
 
 

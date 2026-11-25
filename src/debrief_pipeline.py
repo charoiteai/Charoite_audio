@@ -78,11 +78,12 @@ def _bound_file(expected: pathlib.Path, recorded: object, refusal: str, *, missi
         stored = expected.with_name(recorded)
         current, previous = _file_stat(expected), _file_stat(stored)
         if all(stat.S_ISREG(st.st_mode) for st in (current, previous) if st is not None):
-            if current is not None and (previous is None or os.path.samestat(current, previous)):
-                return expected
-            if current is None and previous is not None:
-                return stored
-            if current is None and missing_ok:
+            if current is None:
+                if previous is not None:
+                    return stored
+                if missing_ok:
+                    return expected
+            elif previous is None or os.path.samestat(current, previous):
                 return expected
     raise refinement.RefinementRefused(refusal)
 
@@ -537,7 +538,7 @@ def run(live: pathlib.Path, cfg: dict, *, handoff: dict | None, final_sha: str |
     def unchanged():
         _bound_file(live, binding["owner"], "binding_owner")
         if "debrief_file" in binding:
-            _named_debrief(live, binding["debrief_file"], missing_ok=True)
+            _named_debrief(live, binding["debrief_file"])
         current_full, current_source = _source(live)
         if (current_full != full_sha or current_source.sha() != source.sha()
                 or _read_json(binding_path(live)) != binding

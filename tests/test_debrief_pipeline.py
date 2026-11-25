@@ -193,7 +193,7 @@ def test_retitle_keeps_exact_binding_and_updates_only_header(tmp_path, model):
     pipeline.run(renamed, CFG, handoff=None, final_sha=None, before_request=lambda: None, timeout=0)
 
 
-def alternate_title_spelling(tmp_path, form, *, keep_derivative_name=False):
+def alternate_title_spelling(tmp_path, form, *, keep_derivative_name=False, pending_publication=False):
     import graph_updater
 
     live, handoff = make_meeting(tmp_path)
@@ -203,10 +203,15 @@ def alternate_title_spelling(tmp_path, form, *, keep_derivative_name=False):
     alternate = "NFD" if form == "NFC" else "NFC"
     actual = old.with_name(unicodedata.normalize(alternate, old.name))
     assert actual != old and old != live
+    if pending_publication:
+        proof = pipeline.prepare_for_graph(old, CFG, handoff=None, final_sha=None)
+        run(old, None, graph_input_sha=proof, defer_finalization=True)
     if not actual.exists():
         # A transfer to a byte-sensitive volume can change directory entries
         # while retaining the exact existing JSON records and document bytes.
         files = [old, pipeline.binding_path(old), old.with_name(old.name + ".live.json")]
+        if pending_publication:
+            files.append(pipeline.publication_path(old))
         if not keep_derivative_name:
             files.append(meeting_stamp.derivative_path(old, "debrief"))
         for path in files:
@@ -327,12 +332,31 @@ def test_retitle_binding_refuses_an_unrelated_name_with_identical_bytes(tmp_path
     assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == evidence
 
 
-@pytest.mark.parametrize("damage", [None, "old_binding", "retitle_from"])
+def test_unicode_recovery_finishes_when_the_candidate_has_already_disappeared(tmp_path, model):
+    live, original, _ = alternate_title_spelling(tmp_path, "NFC", pending_publication=True)
+    marker = pipeline.publication_path(live)
+    previous = json.loads(marker.read_bytes())["binding"]
+    path = pipeline.verify_publication(live)
+    path.unlink()
+    with pytest.raises(refinement.RefinementRefused, match="debrief_binding_path"):
+        pipeline.verify_publication(live)
+    pipeline.recover_publication(live)
+    assert not marker.exists() and not path.exists()
+    assert json.loads(pipeline.binding_path(live).read_bytes()) == previous
+    assert previous["owner"] == original.name
+    # Rollback may finish with an absent file. A new graph must prove the
+    # identity of its differently spelled derivative before using that name.
+    with pytest.raises(refinement.RefinementRefused, match="debrief_binding_path"):
+        pipeline.prepare_for_graph(live, CFG, handoff=None, final_sha=None)
+
+
+@pytest.mark.parametrize("damage", [None, "old_binding", "retitle_from", "replaced_owner"])
 def test_interrupted_unicode_retitle_recovers_only_its_original_binding(tmp_path, model, damage):
     old, recorded, handoff = alternate_title_spelling(tmp_path, "NFC")
     old_binding = pipeline.binding_path(old)
     previous = old_binding.read_bytes()
-    debrief = pipeline.verify_publication(old).read_bytes()
+    old_debrief = pipeline.verify_publication(old)
+    debrief = old_debrief.read_bytes()
     assert old_binding.read_bytes() == previous
     new = old.with_name("2026-01-01_1200_Новая_тема.md")
     pipeline.prepare_retitle(old, new)
@@ -344,6 +368,8 @@ def test_interrupted_unicode_retitle_recovers_only_its_original_binding(tmp_path
     if damage:
         if damage == "old_binding":
             old_binding.write_text(json.dumps({**json.loads(previous), "note": "changed"}))
+        elif damage == "replaced_owner":
+            recorded.write_bytes(new.read_bytes())
         else:
             marker.write_text(json.dumps({**reservation, "retitle_from": "neighbor.md"}))
         evidence = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
@@ -351,6 +377,8 @@ def test_interrupted_unicode_retitle_recovers_only_its_original_binding(tmp_path
             pipeline.recover_retitle(new)
         assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == evidence
     else:
+        # The previous process also moved its derivative before crashing.
+        pipeline.move_retitle_file(old_debrief, meeting_stamp.derivative_path(new, "debrief"))
         pipeline.recover_retitle(new)
         assert not old_binding.exists()
         result = json.loads(marker.read_bytes())
