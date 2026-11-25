@@ -56,8 +56,10 @@ SOURCE_RELEVANCE_SYSTEM = "You judge source relevance conservatively."
 GENERATE_SYSTEM = "You extend factual dossiers conservatively."
 MAIN_JUDGE_SYSTEM = "You are an independent conservative dossier judge."
 SOURCE_PREDICT = 350
-APPEND_PREDICT = 2800
+APPEND_PREDICT = 4096
 MAIN_JUDGE_PREDICT = 4096
+MAIN_JUDGE_LARGE_PREDICT = 6144
+MAIN_JUDGE_LARGE_THRESHOLD = 8
 AUDIT_PREDICT = 4096
 APPEND_FEEDBACK_RESPONSE_CHARS = 2000
 QUOTE_FEEDBACK_LIMIT = 5
@@ -170,11 +172,33 @@ _APPEND_FEEDBACK_HINTS: dict[telemetry.Detail, str] = {
         "Keep ONLY unambiguous, relevant facts supported by one contiguous passage in "
         "new_sources, preserving all conditions, uncertainty, and existing ⚠ warnings."
     ),
+    telemetry.Detail.JSON_SCHEMA: (
+        'Use the exact JSON schema with no extra keys: top-level must have ONLY "additions" and '
+        '"corrections" arrays; every item in additions must have ONLY the 4 nonempty string keys '
+        '{"section", "text", "source", "quote"} (no extra keys such as "reason", no newlines in text); '
+        'every item in corrections must have ONLY the 4 nonempty string keys '
+        '{"before", "after", "source", "quote"} (or leave corrections: []).'
+    ),
+    telemetry.Detail.JSON_MALFORMED: (
+        "Your previous output was truncated or invalid JSON: return ONLY one complete valid JSON "
+        'object without markdown fences (no ```json), escape all internal double quotes (\\") and '
+        "newlines (\\n), and keep each quote short (just the minimal unique verbatim phrase) so the "
+        "full JSON fits well within the output limit."
+    ),
 }
+_JUDGE_JSON_OVERFLOW_HINT = (
+    "Your previous patch JSON was valid, but the downstream validator exceeded its output budget "
+    "or returned malformed JSON: keep only the most essential non-redundant additions and shorten "
+    "each quote to the minimal unique verbatim substring from new_sources[source]."
+)
 _PATCH_QUOTE_MISSING_HINT = (
-    "Fix every quote in missing_quotes by copying ONE short exact contiguous verbatim substring "
-    "from new_sources[source] (do not alter or drop valid text unless the fact cannot be backed "
-    "by one contiguous passage)."
+    "Fix every quote in missing_quotes by re-reading new_sources[source] and copying a NEW "
+    "short exact contiguous verbatim substring (prefer 4-12 words covering the assertion) "
+    "character-for-character from new_sources[source]: do NOT reuse or slightly tweak "
+    "missing_quotes[].quote or copy your own paraphrased text; check exact word endings/case, "
+    "keep backticks `...` verbatim, never use ellipsis (...), do not join lines with a space, "
+    "and for wikilinks prefer plain visible link text or exact [[...]] (do not drop valid facts "
+    "unless they cannot be backed by one contiguous passage)."
 )
 
 
@@ -494,9 +518,12 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
         "decision, open question or risk about the topic. When a source merely mentions a name in "
         "passing, asks about another topic, or contains off-topic chatter without any topic fact, "
         'decision, open question or risk, return verdict irrelevant with quote "". Copy ONE short '
-        "single-line verbatim quote from source_text (do not join multiple lines or alter wikilinks "
-        "or table pipes; for wikilinks, copy either the exact source text or the visible link "
-        "text, keeping valid JSON escaping). Return ONLY JSON "
+        "exact verbatim substring from source_text (never from existing_dossier): pick a fragment "
+        "strictly inside ONE physical line without crossing a line break, or preserve exact \\n "
+        "newlines as written (NEVER replace a line break with a space, never use ellipsis ..., "
+        "keep backticks `...`, exact word endings, punctuation, and table pipes verbatim; for "
+        "wikilinks, copy either the exact source text or the visible link text, keeping valid JSON "
+        "escaping). Return ONLY JSON "
         '{"verdict":"relevant|irrelevant|uncertain","reason":"nonempty reason",'
         '"quote":"exact source quotation supporting relevance, empty for irrelevant"}. '
         "Use uncertain only when identity or topic connection is genuinely ambiguous. "
@@ -527,8 +554,11 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
             "failure": "quote not found verbatim in source_text",
             "previous_quote": last_quote[:200],
             "instruction": (
-                "Copy ONE short single-line verbatim substring from source_text "
-                "without altering wikilinks, punctuation, or table pipes."
+                "Re-read source_text (not existing_dossier) and copy ONE short exact verbatim "
+                "substring strictly inside ONE physical line without crossing a line break, or "
+                "preserve exact \\n newlines as written (NEVER replace a line break with a space, "
+                "never use ellipsis ..., keep backticks `...`, exact word endings, punctuation, "
+                "wikilinks or their visible text, and table pipes verbatim)."
             ),
         }
     telemetry.detail(
@@ -1053,9 +1083,9 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
         "does not resolve unrelated old warnings. Judge preservation and "
         "support separately. Reject unrelated facts even if links survived. "
         "Return ONLY JSON with exactly: verdict (accept/reject/uncertain), conserved (boolean), "
-        "supported (boolean), corrections_valid (boolean), reason (nonempty string), and "
+        "supported (boolean), corrections_valid (boolean), reason (concise nonempty string), and "
         'claims (array of {"text":"exact candidate span","source":"exact new_sources key without [[ ]]",'
-        '"quote":"exact source quote","relevant":true,"supported":true,"reason":"reason"}). '
+        '"quote":"exact source quote","relevant":true,"supported":true,"reason":"concise reason"}). '
         "Set all booleans from the comparison, never from a default. "
         "corrections_valid means there is NO invalid factual correction. If no factual correction "
         "was made and changes is [], set corrections_valid=true: there is nothing invalid to "
@@ -1072,17 +1102,23 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
     feedback = None
     last_missing: tuple[str, ...] = ()
     stage_c = c
+    judge_predict = (
+        MAIN_JUDGE_LARGE_PREDICT
+        if len(data["new_statements"]) > MAIN_JUDGE_LARGE_THRESHOLD
+        or len(anchors or ()) > MAIN_JUDGE_LARGE_THRESHOLD
+        else MAIN_JUDGE_PREDICT
+    )
     for attempt in range(2):
         payload = {**data, **({"quote_feedback": feedback} if feedback else {})}
         prompt = json.dumps(payload, ensure_ascii=False) + "\n" + instruction
         if attempt == 0:
-            stage_c = _stage_config(c, len(MAIN_JUDGE_SYSTEM), prompt, MAIN_JUDGE_PREDICT)
+            stage_c = _stage_config(c, len(MAIN_JUDGE_SYSTEM), prompt, judge_predict)
         else:
             ctx = (stage_c.get("llm") or {}).get("num_ctx") if privacy.llm_engine(stage_c) == "ollama" else None
-            if ctx and _stage_needed_tokens(len(MAIN_JUDGE_SYSTEM), prompt, MAIN_JUDGE_PREDICT) > ctx:
+            if ctx and _stage_needed_tokens(len(MAIN_JUDGE_SYSTEM), prompt, judge_predict) > ctx:
                 raise Refused("candidate claim lacks exact new-source evidence")
         verdict = _json(local_complete(prompt, stage_c, system=MAIN_JUDGE_SYSTEM,
-                                       num_predict=MAIN_JUDGE_PREDICT),
+                                       num_predict=judge_predict),
                         {"verdict", "conserved", "supported", "corrections_valid", "reason", "claims"})
         if (verdict["verdict"] != "accept" or not isinstance(verdict["reason"], str)
                 or not verdict["reason"].strip()
@@ -1296,7 +1332,8 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "or invent new ⚠ lines; report only concrete new factual progress and keep all caveats). "
         "Allowed section names: Сейчас, Как пришли, Решено, Открыто, "
         "Кто в теме (never Источники or Правки автора). Each text and after must be ONE plain "
-        "Markdown line without newlines, leading #, speaker labels, backticks, <, >, or ~. "
+        "Markdown line without newlines, leading #, speaker labels, backticks, <, >, or ~ "
+        "(this no-backticks rule applies ONLY to text and after — keep backticks `...` verbatim inside quote). "
         f"{graph_names.UNLABELED_RULE} "
         "Do NOT put anonymous diarization speaker labels (Собеседник N, Спикер N, Участник N, "
         "Speaker N, Participant N) or 'участник встречи' into Кто в теме — only real named people "
@@ -1305,9 +1342,12 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
         "relation); write impersonally or place factual roles without speaker numbers in "
         "Сейчас/Открыто. "
         'For EVERY item in additions, include "quote": ONE short exact contiguous verbatim '
-        "substring copied from new_sources[source] that uniquely matches one occurrence and "
-        "explicitly supports EVERY clause, condition, uncertainty, and time in text (without "
-        "ellipsis, without joining non-adjacent lines, and keeping valid JSON escaping). "
+        "substring (just the minimal unique phrase, not a whole paragraph) copied "
+        "character-for-character from new_sources[source] (NEVER copy your own paraphrased text "
+        "into quote; keep exact word endings, backticks `...`, and punctuation; without ellipsis, "
+        "without joining non-adjacent lines, and keeping valid JSON escaping; for wikilinks copy "
+        "either exact [[...]] or plain visible link text) that uniquely matches one occurrence and "
+        "explicitly supports EVERY clause, condition, uncertainty, and time in text. "
         "Use corrections ONLY when a new source explicitly supersedes a line currently in ## Сейчас "
         "(for example a new date, status, or owner replacing an old ## Сейчас line — never add a "
         "contradicting ## Сейчас line via additions without moving the old line via corrections): "
@@ -1349,21 +1389,26 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                     validate_candidate(theme, loaded, names, files, c, body, changes)
                 return body.strip()
             except Refused as exc:
+                detail = exc.detail or telemetry.detail_for_message(str(exc))
+                judge_json_failure = (
+                    body is not None
+                    and detail in (telemetry.Detail.JSON_MALFORMED, telemetry.Detail.JSON_SCHEMA)
+                )
                 if (attempt or exc.reason == telemetry.Reason.CONTEXT
-                        or (len(names) > 1 and body is not None and str(exc) == "malformed model JSON")):
+                        or (len(names) > 1 and judge_json_failure)):
                     raise
                 missing = (
                     [f"[[{n}]]" for n in names if n not in _links(body)]
                     if body is not None else []
                 )
                 missing_hint = " (especially every item in missing_citations)" if missing else ""
-                detail = exc.detail or telemetry.detail_for_message(str(exc))
                 patch_quote_missing = body is None and isinstance(exc, _MissingClaimQuotes)
-                extra_hint = (
-                    _PATCH_QUOTE_MISSING_HINT
-                    if patch_quote_missing
-                    else _APPEND_FEEDBACK_HINTS.get(detail, "")
-                )
+                if patch_quote_missing:
+                    extra_hint = _PATCH_QUOTE_MISSING_HINT
+                elif judge_json_failure:
+                    extra_hint = _JUDGE_JSON_OVERFLOW_HINT
+                else:
+                    extra_hint = _APPEND_FEEDBACK_HINTS.get(detail, "")
                 allow_rejected = (
                     body is not None
                     or patch_quote_missing
@@ -1389,8 +1434,14 @@ def append(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dic
                 )
                 hint_prefix = f"{extra_hint} " if extra_hint else ""
                 feedback = {
-                    "failure": str(exc),
-                    "previous_response": _trim_feedback_response(raw),
+                    "failure": (
+                        "downstream validator JSON overflow or schema error on a valid patch"
+                        if judge_json_failure else str(exc)
+                    ),
+                    **(
+                        {"previous_response": _trim_feedback_response(raw)}
+                        if not (patch_quote_missing or judge_json_failure) else {}
+                    ),
                     **({"missing_citations": missing} if missing else {}),
                     **({"rejected_claims": rejected} if rejected else {}),
                     **({"missing_quotes": missing_quotes_fb} if missing_quotes_fb else {}),

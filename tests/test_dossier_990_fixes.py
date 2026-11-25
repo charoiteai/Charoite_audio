@@ -932,7 +932,7 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
 
 
 @pytest.mark.parametrize("cfg_ctx,expected_cap", [
-    (6144, 6144),
+    (7680, 7680),
     (8192, inc.MAX_AUDIT_CONTEXT),
     (65536, 65536),
 ])
@@ -2141,7 +2141,7 @@ def test_round10_quote_hits_mixed_links_prefixes_speaker_nl_and_invariants():
 
 
 def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feedback(world, monkeypatch):
-    assert inc.APPEND_PREDICT == 2800
+    assert inc.APPEND_PREDICT == 4096
     assert dossier.GEN_PREDICT == 1800
 
     nd, graph, old_path = world
@@ -2577,6 +2577,229 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     final_txt = old_path.read_text(encoding="utf-8")
     assert f"[[{m1}]]" in final_txt and f"[[{m2}]]" in final_txt
     assert telemetry.Detail.CLAIM_SOURCE_MISSING in night_cli._SPLITTABLE_DETAILS
+    assert telemetry.Detail.JSON_SCHEMA in night_cli._SPLITTABLE_DETAILS
+
+
+def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, monkeypatch):
+    m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
+    loaded = _loaded_with_body(BODY)
+    fact1 = "Valve pressure stabilized at 4 bar."
+    files1 = {m1: {"text": fact1}}
+    valid_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1}],
+        "corrections": [],
+    })
+    valid_judge = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact1, "source": m1, "quote": fact1, "relevant": True, "supported": True, "reason": "ok"}],
+    })
+
+    # 1) Predict ceilings, adaptive MAIN_JUDGE_LARGE_PREDICT threshold, and prompt contracts
+    assert inc.APPEND_PREDICT == 4096
+    assert inc.MAIN_JUDGE_PREDICT == 4096
+    assert inc.MAIN_JUDGE_LARGE_PREDICT == 6144
+    assert inc.MAIN_JUDGE_LARGE_THRESHOLD == 8
+    # Boundary check for adaptive judge_predict: <= 8 uses MAIN_JUDGE_PREDICT (4096), == 9 uses MAIN_JUDGE_LARGE_PREDICT (6144)
+    for count, expected_pred in ((inc.MAIN_JUDGE_LARGE_THRESHOLD, inc.MAIN_JUDGE_PREDICT),
+                                 (inc.MAIN_JUDGE_LARGE_THRESHOLD + 1, inc.MAIN_JUDGE_LARGE_PREDICT)):
+        lines = [f"Claim {i} verified." for i in range(count)]
+        many_src = " ".join(lines)
+        many_body = BODY.replace("## Как пришли", "\n".join(f"- {ln} [[{m1}]]" for ln in lines) + "\n## Как пришли")
+        seen_pred: list[int] = []
+        many_verdict = json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": ln, "source": m1, "quote": ln, "relevant": True, "supported": True, "reason": "ok"} for ln in lines],
+        })
+        with monkeypatch.context() as mp:
+            mp.setattr(inc, "local_complete", lambda p, cfg, *, num_predict, **kw: (seen_pred.append(num_predict), many_verdict)[1])
+            mp.setattr(inc, "audit_claim", lambda *a, **kw: None)
+            inc.semantic_check("Glasshouse", loaded, [m1], {m1: {"text": many_src}}, LOCAL, many_body, [])
+        assert seen_pred == [expected_pred]
+    # Also verify anchors-driven escalation boundary (8 -> 4096, 9 -> 6144) and _stage_config/_stage_needed_tokens use judge_predict
+    small_body = BODY.replace("## Как пришли", f"- {fact1} [[{m1}]]\n## Как пришли")
+    for anc_count, expected_pred in ((inc.MAIN_JUDGE_LARGE_THRESHOLD, inc.MAIN_JUDGE_PREDICT),
+                                     (inc.MAIN_JUDGE_LARGE_THRESHOLD + 1, inc.MAIN_JUDGE_LARGE_PREDICT)):
+        seen_anc: list[tuple[int, int]] = []
+        anc_list = [{"text": fact1, "source": m1, "quote": fact1} for _ in range(anc_count)]
+        with monkeypatch.context() as mp:
+            mp.setattr(inc, "local_complete", lambda p, cfg, *, num_predict, **kw: (seen_anc.append((cfg["llm"]["num_ctx"], num_predict)), valid_judge)[1])
+            mp.setattr(inc, "audit_claim", lambda *a, **kw: None)
+            inc.semantic_check("Glasshouse", loaded, [m1], files1, LOCAL, small_body, [], anchors=anc_list)
+        assert seen_anc[0][1] == expected_pred
+        if expected_pred == inc.MAIN_JUDGE_LARGE_PREDICT:
+            assert seen_anc[0][0] == inc.MID_AUTO_CONTEXT
+    # Retry guard on attempt 1 must also account for judge_predict=6144 (MID_AUTO_CONTEXT edge)
+    large_bad_verdict = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact1, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"}],
+    })
+    large_anchors = [{"text": fact1, "source": m1, "quote": fact1} for _ in range(inc.MAIN_JUDGE_LARGE_THRESHOLD + 1)]
+    sys_len = len(inc.MAIN_JUDGE_SYSTEM)
+    mid_large_budget = (inc.MID_AUTO_CONTEXT - inc.MAIN_JUDGE_LARGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
+    probe_large: list[str] = []
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (probe_large.append(p), large_bad_verdict)[1])
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc.semantic_check("Glasshouse", loaded, [m1], files1, LOCAL, small_body, [], anchors=large_anchors)
+    assert len(probe_large) == 2
+    large_pad = mid_large_budget - sys_len - len(probe_large[1])
+    assert large_pad >= 0
+    edge_calls: list[int] = []
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (edge_calls.append(len(p)), large_bad_verdict)[1])
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc.semantic_check("Glasshouse", loaded, [m1], {m1: {"text": fact1 + ("z" * (large_pad + 1))}}, LOCAL, small_body, [], anchors=large_anchors)
+    assert len(edge_calls) == 1
+
+    rel_prompts: list[str] = []
+    rel_seq = iter([
+        json.dumps({"verdict": "relevant", "reason": "r", "quote": "absent line"}),
+        json.dumps({"verdict": "relevant", "reason": "r", "quote": fact1}),
+    ])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (rel_prompts.append(p), next(rel_seq))[1])
+        assert inc.source_relevance("Glasshouse", loaded, m1, files1[m1], LOCAL) is True
+    assert len(rel_prompts) == 2
+    for rp in rel_prompts:
+        assert "single-line" not in rp
+        assert "NEVER replace a line break with a space" in rp
+    rel_fb = json.loads(rel_prompts[1].split("\n", 1)[0])["quote_feedback"]
+    assert "single-line" not in rel_fb["instruction"]
+    assert "NEVER replace a line break with a space" in rel_fb["instruction"]
+
+    # 2) append retry on body is None + JSON_SCHEMA (missing quote key / extra key) sends 4-key hint + previous_response
+    for bad_patch in (
+        json.dumps({"additions": [{"section": "Сейчас", "text": fact1, "source": m1}], "corrections": []}),
+        json.dumps({"additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1, "reason": "extra"}], "corrections": []}),
+    ):
+        prompts: list[str] = []
+        seq = iter([bad_patch, valid_patch])
+        with monkeypatch.context() as mp:
+            mp.setattr(inc, "local_complete", lambda p, *a, **kw: (prompts.append(p), next(seq))[1])
+            mp.setattr(inc, "validate_candidate", lambda *a, **kw: None)
+            out = inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+        assert fact1 in out and len(prompts) == 2
+        assert "applies ONLY to text and after" in prompts[0]
+        fb = json.loads(prompts[1].split("\n", 1)[0])["correction_feedback"]
+        assert fb["failure"] == "malformed patch entry"
+        assert fb["previous_response"] == bad_patch
+        assert fb["instruction"].startswith(inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.JSON_SCHEMA] + " Return ONLY valid patch JSON")
+        for key in ('"section"', '"text"', '"source"', '"quote"', '"before"', '"after"'):
+            assert key in fb["instruction"]
+
+    # 3) append retry on body is None + JSON_MALFORMED sends JSON_MALFORMED hint + previous_response
+    mal_prompts: list[str] = []
+    mal_seq = iter(["{truncated", valid_patch])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (mal_prompts.append(p), next(mal_seq))[1])
+        mp.setattr(inc, "validate_candidate", lambda *a, **kw: None)
+        assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+    fb_mal = json.loads(mal_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert fb_mal["failure"] == "malformed model JSON"
+    assert fb_mal["previous_response"] == "{truncated"
+    assert fb_mal["instruction"].startswith(inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.JSON_MALFORMED] + " Return ONLY valid patch JSON")
+
+    # 4) append retry on patch_quote_missing omits previous_response while preserving missing_quotes + rejected_claims
+    miss_prompts: list[str] = []
+    miss_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": "wrong quote"}],
+        "corrections": [],
+    })
+    miss_seq = iter([miss_patch, valid_patch])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (miss_prompts.append(p), next(miss_seq))[1])
+        mp.setattr(inc, "validate_candidate", lambda *a, **kw: None)
+        assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+    fb_pq = json.loads(miss_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert "previous_response" not in fb_pq
+    assert fb_pq["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "quote": "wrong quote"}]
+    assert fb_pq["instruction"].startswith(inc._PATCH_QUOTE_MISSING_HINT + " Return ONLY valid patch JSON")
+
+    # 5) Single-source downstream judge JSON_MALFORMED / JSON_SCHEMA (body is not None):
+    #    rewrites failure, omits previous_response, and uses _JUDGE_JSON_OVERFLOW_HINT (never 4-key patch hint).
+    for judge_bad, orig_msg in (
+        ('{"verdict":"accept","claims":[{"text":"cut', "malformed model JSON"),
+        (json.dumps({"verdict": "accept"}), "unexpected model JSON fields"),
+    ):
+        j_gen_prompts: list[str] = []
+        j_seq = iter([valid_patch, judge_bad, valid_patch, valid_judge])
+
+        def j_complete(prompt, cfg, *, system, **kw):
+            if system == inc.GENERATE_SYSTEM:
+                j_gen_prompts.append(prompt)
+            return next(j_seq)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(inc, "local_complete", j_complete)
+            mp.setattr(inc, "audit_claim", lambda *a, **kw: None)
+            assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+        assert len(j_gen_prompts) == 2
+        fb_j = json.loads(j_gen_prompts[1].split("\n", 1)[0])["correction_feedback"]
+        assert fb_j["failure"] == "downstream validator JSON overflow or schema error on a valid patch"
+        assert fb_j["failure"] != orig_msg
+        assert "previous_response" not in fb_j
+        assert fb_j["instruction"].startswith(inc._JUDGE_JSON_OVERFLOW_HINT + " Return ONLY valid patch JSON")
+        assert inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.JSON_SCHEMA] not in fb_j["instruction"]
+
+    # 6) Multi-source downstream judge JSON_SCHEMA (body is not None) skips generator retry immediately
+    #    and nightly_dossier splits via _SPLITTABLE_DETAILS[JSON_SCHEMA] into _append_sequential.
+    nd, graph, old_path = world
+    _new(graph, m1, "Glasshouse update alpha.")
+    _new(graph, m2, "Glasshouse update beta.")
+    monkeypatch.setattr(inc, "source_relevance", lambda *a, **kw: True)
+    gen_batches: list[list[str]] = []
+    judge_batches: list[list[str]] = []
+
+    def split_schema_complete(prompt, cfg, *, system, **kw):
+        payload, _ = json.JSONDecoder().raw_decode(prompt)
+        names = list(payload["new_sources"])
+        if system == inc.GENERATE_SYSTEM:
+            gen_batches.append(names)
+            return json.dumps({
+                "additions": [{
+                    "section": "Сейчас", "text": f"Fact {n}.", "source": n,
+                    "quote": f"Glasshouse update {'alpha' if n == m1 else 'beta'}.",
+                } for n in names],
+                "corrections": [],
+            })
+        if system == inc.MAIN_JUDGE_SYSTEM:
+            judge_batches.append(names)
+            if len(names) > 1:
+                return json.dumps({"verdict": "accept"})
+            src = names[0]
+            return json.dumps({
+                "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+                "reason": "ok",
+                "claims": [{
+                    "text": f"- Fact {src}. [[{src}]]", "source": src,
+                    "quote": f"Glasshouse update {'alpha' if src == m1 else 'beta'}.",
+                    "relevant": True, "supported": True, "reason": "ok",
+                }],
+            })
+        raise AssertionError(f"unexpected system: {system}")
+
+    monkeypatch.setattr(inc, "local_complete", split_schema_complete)
+    monkeypatch.setattr(inc, "audit_claim", lambda *a, **kw: None)
+    res = nd.run_all([graph], LOCAL, full=False, dry=False)
+    assert sum(g.built for g in res.graphs) == 1
+    assert gen_batches == [[m1, m2], [m1], [m2]]
+    assert judge_batches == [[m1, m2], [m1], [m2]]
+    assert res.telemetry.snapshot()["stage_refusals"] == {}
+    final_body = old_path.read_text(encoding="utf-8")
+    assert f"[[{m1}]]" in final_body and f"[[{m2}]]" in final_body
+
+    # 7) Multi-source patch JSON_SCHEMA from append itself (body is None) MUST still retry append once
+    bad_schema_calls: list[int] = []
+    loaded_m = _loaded_with_body(BODY)
+    files_m = {m1: {"text": "Glasshouse one."}, m2: {"text": "Glasshouse two."}}
+    bad_schema_reply = json.dumps({"additions": [{"section": "Сейчас", "text": "x", "source": m1}], "corrections": []})
+    monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: (bad_schema_calls.append(1), bad_schema_reply)[1])
+    with pytest.raises(inc.Refused, match="malformed patch entry"):
+        inc.append("Glasshouse", loaded_m, [m1, m2], files_m, LOCAL)
+    assert len(bad_schema_calls) == 2
 
 
 
