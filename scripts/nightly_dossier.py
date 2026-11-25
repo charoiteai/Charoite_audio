@@ -496,6 +496,7 @@ def _append_result(loaded: dossier.DossierLoad, body: str | None, accepted: list
 _SPLITTABLE_DETAILS = frozenset({
     telemetry.Detail.SOURCE_UNATTRIBUTED,
     telemetry.Detail.JSON_MALFORMED,
+    telemetry.Detail.JSON_SCHEMA,
     telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED,
     telemetry.Detail.SEMANTIC_CONSERVED_FALSE,
     telemetry.Detail.SEMANTIC_CORRECTIONS_INVALID,
