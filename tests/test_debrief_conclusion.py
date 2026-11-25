@@ -1,0 +1,132 @@
+"""Stop export → checked conclusion → published derivative, with synthetic speech."""
+import json
+
+import pytest
+
+import debrief_links as links
+import debrief_pipeline as pipeline
+import debrief_refinement as ref
+from test_debrief_pipeline import make_meeting, previous_debrief, run
+
+EARLY = "Предварительно выставку откроем в среду."
+LATE = "Открытие выставки переносим на пятницу после проверки зала."
+OWNER = "Каталог подготовлю я, имя пока не называем."
+THREAD = "Выставка в среду. Кажется, каталог поручили Ольге. Уточнить дату."
+FINAL = "Выставку откроют в пятницу после проверки зала."
+OPEN = "Каталог обещали подготовить. Имя исполнителя не подтверждено."
+
+
+def paragraph(text, quotes, uncertain=False):
+    return {"text": text, "quotes": quotes, "uncertain": uncertain}
+
+
+def verdict(rows):
+    return {"paragraphs": [{"index": i, "supported": True} for i in range(len(rows))],
+            "coverage_complete": True, "corrections_resolved": True}
+
+
+@pytest.mark.parametrize("long_meeting", [False, True])
+def test_published_conclusion_merges_correction_and_marks_unknown_owner(tmp_path, monkeypatch, long_meeting):
+    width = ref.WINDOW_CHARS - 1 if long_meeting else 0
+    speech = "".join(line.ljust(width - int(long_meeting and i == 0)) + "\n" for i, line in enumerate((EARLY, OWNER, LATE)))
+    live, handoff = make_meeting(tmp_path, speech=speech, thread=THREAD)
+    original = live.read_bytes()
+    final = [paragraph(FINAL, [EARLY, LATE]), paragraph(OPEN, [OWNER], True)]
+    audit_inputs = []
+
+    def request(cfg, prompt, system, predict):
+        data = json.loads(prompt)
+        if system == ref.SYSTEM or system == links.CONCLUSION_SYSTEM:
+            assert [item["text"] for item in data["live_thread"]] == [THREAD]
+            if system == links.CONCLUSION_SYSTEM:
+                assert {q for row in data["verified"] for q in row["quotes"]} == {EARLY, LATE, OWNER}
+            return json.dumps({"paragraphs": final})
+        if system in (ref.AUDIT_SYSTEM, links.CONCLUSION_AUDIT_SYSTEM):
+            audit_inputs.append(data)
+            return json.dumps(verdict(data["paragraphs"]))
+        if system == ref.WINDOW_SYSTEM:
+            owned = data["final_speech"].strip()
+            row = {EARLY: paragraph("Сначала открытие наметили на среду.", [EARLY]),
+                   LATE: paragraph(FINAL, [LATE]), OWNER: final[1]}[owned]
+            return json.dumps({"paragraphs": [row]})
+        if system == ref.WINDOW_AUDIT_SYSTEM:
+            return json.dumps({**verdict(data["paragraphs"]), "correction_quotes": [],
+                               "has_cross_window_correction": False})
+        ids = [row["id"] for row in data["early_paragraphs"]]
+        if system == links.DISCOVER_SYSTEM:
+            return json.dumps({"checked_ids": ids, "relations": []})
+        assert system == links.DISCOVERY_AUDIT_SYSTEM
+        return json.dumps({"checked_ids": ids, "status": "complete", "missing_relations": [], "uncertain_ids": []})
+
+    monkeypatch.setattr(ref, "local_request", request)
+    destination = run(live, handoff)
+    assert pipeline.verify_publication(live) == destination
+    assert live.read_bytes() == original
+    body = destination.read_text()
+    assert body.count(FINAL) == 1 and "**Требует уточнения.** " + OPEN in body
+    assert not any(value in body for value in (EARLY, LATE, OWNER, "Ольг", "среду", "**Из стенограммы**"))
+    assert len(audit_inputs) == 1 and audit_inputs[0]["paragraphs"] == final
+
+
+def test_no_verified_conclusion_preserves_existing_derivative(tmp_path, monkeypatch):
+    live, handoff = make_meeting(tmp_path)
+    destination, original = previous_debrief(live)
+    monkeypatch.setattr(ref, "local_request", lambda *args: '{"paragraphs":[]}')
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        run(live, handoff)
+    assert destination.read_bytes() == original
+    assert not pipeline.publication_path(live).exists()
+
+
+def test_partial_publication_keeps_only_supported_material(tmp_path, monkeypatch):
+    live, handoff = make_meeting(tmp_path, speech=LATE + "\n" + OWNER, thread=THREAD)
+    original = live.read_bytes()
+    confirmed = paragraph(FINAL, [LATE])
+    unknown = paragraph(OPEN, [OWNER], True)
+    invented = paragraph("Каталог подготовит Ольга.", [OWNER])
+    rejected = {**verdict([confirmed, unknown, invented]), "paragraphs": [
+        {"index": i, "supported": i != 2} for i in range(3)]}
+
+    def request(cfg, prompt, system, predict):
+        if system in (ref.SYSTEM, ref.WINDOW_SYSTEM):
+            return json.dumps({"paragraphs": [confirmed, unknown, invented]})
+        if system == ref.AUDIT_SYSTEM:
+            return json.dumps(rejected)
+        if system == ref.WINDOW_AUDIT_SYSTEM:
+            return json.dumps({**rejected, "has_cross_window_correction": False,
+                               "correction_quotes": [], "repair_quotes": [OWNER]})
+        assert system == ref.WINDOW_REPAIR_SYSTEM
+        return json.dumps({"changes": [paragraph("Неверная правка.", ["Неподтверждённый фрагмент."])]})
+
+    monkeypatch.setattr(ref, "local_request", request)
+    body = run(live, handoff).read_text()
+    assert live.read_bytes() == original
+    assert body.count(FINAL) == 1 and "**Требует уточнения.** " + OPEN in body
+    assert "Ольга" not in body and "Ольге" not in body and OWNER not in body
+    assert ref.PARTIAL_NOTE in body and "Из стенограммы" not in body
+
+
+@pytest.mark.parametrize("failure", ["unverified_quote", "uncertainty", "audit", "context", "transport"])
+def test_final_edit_failure_cannot_add_a_fact_or_hide_uncertainty(failure):
+    certain = paragraph(FINAL, [LATE])
+    uncertain = paragraph(OPEN, [OWNER], True)
+    done = [{"ids": [str(i)], "rows": [row], "window": {}, "reason": "verified"}
+            for i, row in enumerate((certain, uncertain))]
+    calls = []
+    def call(prompt, system, predict):
+        calls.append(system)
+        if failure in ("context", "transport"):
+            raise ref.RefinementRefused("complete_input_exceeds_context" if failure == "context" else "local_request_failed")
+        if system == links.CONCLUSION_SYSTEM:
+            quote = { "unverified_quote": OWNER + " " + LATE, "uncertainty": OWNER, "audit": LATE }[failure]
+            return json.dumps({"paragraphs": [paragraph("Выдуманное назначение.", [quote])]})
+        assert system == links.CONCLUSION_AUDIT_SYSTEM
+        return json.dumps({**verdict([certain]), "coverage_complete": False})
+
+    if failure == "transport":
+        with pytest.raises(ref.RefinementRefused, match="local_request_failed"):
+            links.render_conversation(done, [], [], call)
+    else:
+        body = links.render_conversation(done, [], [], call)
+        assert FINAL in body and "**Требует уточнения.** " + OPEN in body and "Выдуманное" not in body
+    assert len(calls) == (2 if failure == "audit" else 1)

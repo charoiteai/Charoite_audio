@@ -22,9 +22,9 @@ SPEECH = "**Участник A** [12:00]:\nСначала проверим ма�
 CFG = {"sufler": {"refined_debrief": True, "graph": False}}
 
 
-def make_meeting(tmp_path, stamp=STAMP):
+def make_meeting(tmp_path, stamp=STAMP, *, speech=SPEECH, thread="Проверяем макет."):
     live = tmp_path / (stamp + ".md")
-    live.write_text("# Встреча " + stamp + "\n\n" + SPEECH)
+    live.write_text("# Встреча " + stamp + "\n\n" + speech)
     meta = {"stamp": stamp, "transcript_sha256": live_sidecar.sha(live.read_text())}
     live.with_name(live.name + ".live.json").write_text(json.dumps(meta))
     handoff = pipeline.new_handoff(live, stamp)
@@ -32,9 +32,9 @@ def make_meeting(tmp_path, stamp=STAMP):
                "snapshot": {"complete": True, "source_drain_failure": None,
                             "producer_cutoff_failure": None,
                             "source": {"stopped": True, "portions": [
-                                {"id": "p1", "body_utf8": SPEECH,
-                                 "body_hash": hashlib.sha256(SPEECH.encode()).hexdigest()}]},
-                            "blocks": [{"serial": 1, "kind": "paragraph", "text": "Проверяем макет.",
+                                {"id": "p1", "body_utf8": speech,
+                                 "body_hash": hashlib.sha256(speech.encode()).hexdigest()}]},
+                            "blocks": [{"serial": 1, "kind": "paragraph", "text": thread,
                                         "manual_id": None}]}}
     write_snapshot(tmp_path / handoff["file"], payload)
     pipeline.finish_stop(live, handoff, complete=True)

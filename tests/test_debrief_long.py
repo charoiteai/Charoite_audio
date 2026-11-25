@@ -48,6 +48,11 @@ class ScriptedModel:
             result = {key: value["relation"][key] for key in ("early_id", "late_id", "kind")}
             result.update(verdict="supported", early_indices=[0], late_indices=[0],
                           early_quotes=[], late_quotes=[])
+        elif system == links.CONCLUSION_SYSTEM:
+            result = {"paragraphs": [{k: row[k] for k in ("text", "quotes", "uncertain")}
+                                     for row in value["verified"]]}
+        elif system == links.CONCLUSION_AUDIT_SYSTEM:
+            result = audit(len(value["paragraphs"]))
         else:
             raise AssertionError("unexpected short-path request")
         return json.dumps(result, ensure_ascii=False)
@@ -115,7 +120,7 @@ def test_context_refusal_splits_full_window_without_losing_source():
                                         ("has_cross_window_correction", "false"),
                                         ("correction_quotes", ["Несуществующая поправка."]),
                                         ("coverage_complete", False)])
-def test_unknown_correction_or_coverage_renders_each_owned_source(field, value):
+def test_unknown_correction_or_coverage_refuses_after_visiting_each_window(field, value):
     model = ScriptedModel()
 
     def request(cfg, prompt, system, predict):
@@ -125,11 +130,9 @@ def test_unknown_correction_or_coverage_renders_each_owned_source(field, value):
         return json.dumps(response)
 
     source = speech_lines()
-    body = ref.refine(source, [], "", {}, request=request)
-    slices = verbatim_slices(body)
-    assert slices == model.accepted_sources
-    assert "".join(slices) == source
-    assert "Обсуждение s0-" not in body
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref.refine(source, [], "", {}, request=request)
+    assert "".join(model.accepted_sources) == source
 
 
 def test_source_window_budget_refuses_before_any_model_request(monkeypatch):
@@ -229,7 +232,7 @@ def padded_window(line, size=3000):
 
 
 @pytest.mark.parametrize("uncertain_after_audit", [False, True])
-def test_middle_window_keeps_verified_uncertainty_or_exact_unverified_source(uncertain_after_audit):
+def test_middle_window_keeps_verified_uncertainty_and_omits_unverified_source(uncertain_after_audit):
     first = padded_window("Первое обсуждение описано полностью.")
     middle = padded_window("  Спорный фрагмент.\r\n**Из стенограммы**\n\n```text\n# Заголовок\n```\nСимволы ``````.  ")
     last = padded_window("После уточнения участники вернулись к вопросу.")
@@ -254,9 +257,9 @@ def test_middle_window_keeps_verified_uncertainty_or_exact_unverified_source(unc
         return json.dumps(response)
 
     body = ref.refine(source, [], "", {}, request=request, progress=events.append)
-    assert verbatim_slices(body) == ([] if uncertain_after_audit else [middle])
-    middle_rendered = rejected_text if uncertain_after_audit else middle
-    assert body.index(early_text) < body.index(middle_rendered) < body.index(late_text)
+    assert not verbatim_slices(body) and middle.strip() not in body
+    assert (ref.PARTIAL_NOTE in body) is (not uncertain_after_audit)
+    assert body.index(early_text) < body.index(late_text)
     if uncertain_after_audit:
         assert "**Требует уточнения.** Осталась спорная формулировка." in body
     else:
@@ -278,7 +281,7 @@ def test_middle_window_keeps_verified_uncertainty_or_exact_unverified_source(unc
     visited = [event for event in events if event["phase"] == "source_window"]
     assert [(e["start_char"], e["source_chars"]) for e in visited] == [
         (0, len(first)), (len(first), len(first + middle)), (len(first + middle), len(source))]
-    assert [e["verbatim"] for e in visited] == [False, not uncertain_after_audit, False]
+    assert [e["verbatim"] for e in visited] == [False, False, False]
     if uncertain_after_audit:
         assert visited[1]["reason"] == "verified_with_uncertainty"
     assert all(type(e["verbatim"]) is bool for e in visited)
@@ -340,8 +343,8 @@ def test_late_correction_keeps_early_proposal_and_only_displays_supported_link(v
 
     body = ref.refine(source, [], "", {}, request=request)
     assert body.index(early) < body.index(distinct) < body.index(late)
-    assert ("Позднее уточнение — фрагмент 3" in body) is (verdict == "supported")
-    assert ("Уточнение к фрагменту 1" in body) is (verdict == "supported")
+    editor = next(value for system, value in model.calls if system == links.CONCLUSION_SYSTEM)
+    assert bool(editor["relations"]) is (verdict == "supported")
     assert "Возможная связь" not in body
     assert sum(system == links.ANCHOR_AUDIT_SYSTEM for system, _ in model.calls) == 1
     pairs = [value for system, value in model.calls if system == links.PAIR_AUDIT_SYSTEM]
@@ -408,8 +411,9 @@ def test_repair_inserts_only_changes_then_audits_whole_window(reject_second, all
 
     body = ref.refine(speech_lines(), [], "", {}, request=request)
     assert len(calls) == 2
-    assert verbatim_slices(body) == ([calls[0]["final_speech"]] if reject_second else [])
-    assert ("Обсудили следующий вопрос." in body) == (not reject_second)
+    assert not verbatim_slices(body)
+    assert (ref.PARTIAL_NOTE in body) == reject_second
+    assert "Обсудили следующий вопрос." in body
     assert calls[0]["final_speech"] == calls[1]["final_speech"]
     original, repaired = [call["paragraphs"] for call in calls]
     assert repaired[0] == original[0]

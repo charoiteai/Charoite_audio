@@ -2,7 +2,6 @@
 import copy
 import hashlib
 import json
-import re
 from types import SimpleNamespace
 
 import pytest
@@ -26,16 +25,6 @@ def payload():
                          "blocks": [{"serial": 1, "kind": "paragraph", "text": "Выпуск 12 июня.", "manual_id": None}]}}
 
 
-def assert_verbatim_speech(body, source):
-    opening = re.search(r"(?m)^\*\*Из стенограммы\*\*\n\n(`{3,})text\n", body)
-    assert opening
-    fence = opening.group(1)
-    assert all(len(run) < len(fence) for run in re.findall(r"`+", source))
-    block = re.match(re.escape(source + "\n" + fence) + r"(?=\n|$)", body[opening.end():])
-    assert block
-    return body[opening.end() + block.end():]
-
-
 def good_audit(count=1):
     return {"paragraphs": [{"index": i, "supported": True} for i in range(count)],
             "coverage_complete": True, "corrections_resolved": True}
@@ -52,7 +41,7 @@ def test_connected_conversation_corrects_date_and_adds_supported_old_fact():
     assert calls[1]["final_speech"] == SPEECH
     assert "на 15 июня" in body and "Участник B подготовит проверку" in body
     assert "бюджет пока не согласован" in body
-    assert "подрядчик" not in body and "## Ход разговора" in body
+    assert "подрядчик" not in body and "## Заключение" in body
     assert len(calls) == 2
 
 
@@ -71,12 +60,18 @@ def test_audited_uncertain_windows_preserve_marked_text_without_links():
         if system == ref.WINDOW_AUDIT_SYSTEM:
             audited.append(data["final_speech"])
             return json.dumps({**good_audit(), "has_cross_window_correction": False, "correction_quotes": []})
+        if system == links.CONCLUSION_SYSTEM:
+            unique = {row["text"]: row for row in data["verified"]}
+            return json.dumps({"paragraphs": [{k: row[k] for k in ("text", "quotes", "uncertain")}
+                                               for row in unique.values()]})
+        if system == links.CONCLUSION_AUDIT_SYSTEM:
+            return json.dumps(good_audit(len(data["paragraphs"])))
         pytest.fail("an uncertain window reached link discovery")
     body = ref.refine(speech, [], "", {}, request=request)
     assert "".join(generated) == speech
     assert generated == audited
     assert "**Из стенограммы**" not in body
-    assert body.count("**Требует уточнения.**") == len(generated)
+    assert body.count("**Требует уточнения.**") == 2
     assert "**Требует уточнения.** Пока неизвестно, кто согласует бюджет." in body
     assert "Продолжение промежуточного обсуждения." in body
 
@@ -102,6 +97,10 @@ def test_mixed_verified_paragraphs_keep_one_local_uncertainty_marker(long_meetin
             if system == ref.WINDOW_AUDIT_SYSTEM:
                 verdict.update(has_cross_window_correction=False, correction_quotes=[])
             return json.dumps(verdict)
+        if system == links.CONCLUSION_SYSTEM:
+            return json.dumps({"paragraphs": rows})
+        if system == links.CONCLUSION_AUDIT_SYSTEM:
+            return json.dumps(good_audit(len(rows)))
         ids = [item["id"] for item in data["early_paragraphs"]]
         if system == links.DISCOVER_SYSTEM:
             return json.dumps({"checked_ids": ids, "relations": []})
@@ -151,7 +150,8 @@ def test_short_reversed_paragraph_order_uses_source_before_audit():
         return json.dumps({"paragraphs": rows})
 
     source = first + "\n" + second
-    assert_verbatim_speech(ref.refine(source, [], "", {}, request=request), source)
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref.refine(source, [], "", {}, request=request)
     assert len(calls) == 2  # both short and window drafts are rejected before audit
 
 
@@ -165,9 +165,8 @@ def test_short_repeated_ambiguous_quote_requires_uncertainty_before_audit():
         return json.dumps({"paragraphs": [row]})
 
     source = quote + "\n" + quote
-    body = ref.refine(source, [], "", {}, request=request)
-    assert_verbatim_speech(body, source)
-    assert row["text"] not in body
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref.refine(source, [], "", {}, request=request)
     assert len(calls) == 4  # draft and targeted retry on both paths
 
 
@@ -210,8 +209,8 @@ def test_quote_repair_keeps_full_input_and_still_requires_audit(monkeypatch, win
         assert first["text"] in body
         assert f"**Требует уточнения.** {valid['text']}" in body
     else:
-        assert_verbatim_speech(body, speech)
-        assert valid["text"] not in body
+        assert ref.PARTIAL_NOTE in body and "**Из стенограммы**" not in body
+        assert first["text"] in body and valid["text"] in body
     assert invalid["text"] not in body
     assert len(calls) == len(gates) == len(replies)
     original, retried = [json.loads(prompt) for prompt, _ in calls[:2]]
@@ -293,9 +292,8 @@ def test_invalid_candidate_uses_source_before_audit(mutate, reason, requests):
         return json.dumps({"paragraphs": rows})
     with pytest.raises(ref.RefinementRefused, match=reason):
         ref._paragraphs(json.dumps({"paragraphs": rows}), SPEECH)
-    body = ref.refine(SPEECH, [], "", {}, request=request)
-    assert_verbatim_speech(body, SPEECH)
-    assert ROWS[0]["text"] not in body
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref.refine(SPEECH, [], "", {}, request=request)
     assert len(calls) == 2 * requests
     assert calls[requests] == ref.WINDOW_SYSTEM
     assert all(system.startswith(ref.SYSTEM) for system in calls)  # no invalid draft reaches audit
@@ -308,30 +306,30 @@ def test_invalid_candidate_uses_source_before_audit(mutate, reason, requests):
     {**good_audit(), "paragraphs": [{"index": True, "supported": True}]},
     {**good_audit(), "paragraphs": []},
 ])
-def test_failed_semantic_audit_returns_only_source_material(audit):
+def test_failed_semantic_audit_and_unverified_retry_refuse_conclusion(audit):
     # The window retry independently rejects a draft with invalid evidence.
     bad = {**ROWS[0], "quotes": ["Этих слов в исходной речи нет."]}
     answers = iter(map(json.dumps, [{"paragraphs": ROWS}, audit, {"paragraphs": [bad]}, {"paragraphs": [bad]}]))
     with pytest.raises(ref.RefinementRefused, match="audit_refused"):
         ref._audit(json.dumps(audit), 1)
-    body = ref.refine(SPEECH, [], "", {}, request=lambda *a: next(answers))
-    assert_verbatim_speech(body, SPEECH)
-    assert ROWS[0]["text"] not in body
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref.refine(SPEECH, [], "", {}, request=lambda *a: next(answers))
 
 
 @pytest.mark.parametrize("ending", ["", "\n", "\n\n", "\r\n"])
-def test_short_fallback_round_trips_source_markdown_and_whitespace(ending):
+def test_short_refusal_never_publishes_source_markdown_or_draft(ending):
     source = " \tНачало.\r\n**Из стенограммы**\n\n```text\n# Маркер\n```\nВнутри ````` ряда.  " + ending
     candidate = "Выдуманная рекомендация."
     row = {"text": candidate, "quotes": ["Внутри ````` ряда."], "uncertain": False}
-    audit = {**good_audit(), "coverage_complete": False}
+    audit = {**good_audit(), "paragraphs": [{"index": 0, "supported": False}]}
     answers = iter(map(json.dumps, [{"paragraphs": [row]}, audit, {"paragraphs": [row]},
                                     {**audit, "has_cross_window_correction": False, "correction_quotes": [],
-                                     "repair_quotes": row["quotes"]}, {"changes": []}]))
-    body = ref.refine(source, [{"text": "Ранний черновик."}], "Непроверенный совет.", {},
-                      request=lambda *args: next(answers))
-    assert_verbatim_speech(body, source)
-    assert all(text not in body for text in (candidate, "Ранний черновик.", "Непроверенный совет."))
+                                     "repair_quotes": row["quotes"]}, {"changes": []},
+                                    {**good_audit(0), "has_cross_window_correction": False, "correction_quotes": []}]))
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref.refine(source, [{"text": "Ранний черновик."}], "Непроверенный совет.", {},
+                   request=lambda *args: next(answers))
+
 
 
 @pytest.mark.parametrize("reason", ["local_request_failed", "local_model_required"])
@@ -610,7 +608,8 @@ def test_missing_uncertainty_requires_explicit_model_repair_and_audit(repair):
     else:
         with pytest.raises(ref.RefinementRefused, match="missing_uncertainty"):
             ref._paragraphs(json.dumps({"paragraphs": [row]}), quote)
-        assert_verbatim_speech(ref.refine(quote, [], "", {}, request=request), quote)
+        with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+            ref.refine(quote, [], "", {}, request=request)
         assert len(seen) == 4
         assert seen[2][1] == ref.WINDOW_SYSTEM
     assert seen[0][0] == seen[1][0]

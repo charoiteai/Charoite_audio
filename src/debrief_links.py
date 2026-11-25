@@ -94,7 +94,7 @@ def _entries(done):
     entries = {}
     for item in done:
         ids, rows = item["ids"], item["rows"]
-        if not isinstance(ids, list) or not isinstance(rows, list) or len(ids) != len(rows) or (item.get("verbatim") and rows):
+        if not isinstance(ids, list) or not isinstance(rows, list) or len(ids) != len(rows):
             raise ref.RefinementRefused("link_input_identity")
         for key, row in zip(ids, rows):
             if not isinstance(key, str) or key in entries:
@@ -323,41 +323,79 @@ def link_window(done, window, current_rows, call) -> list[dict]:
     return result
 
 
-def render_conversation(done, relations) -> str:
-    """Render immutable text and fixed notes; no model-authored note enters output."""
-    entries = _entries(done)
-    numbers = {key: number for number, key in enumerate(entries, 1)}
-    notes = {key: [] for key in entries}
-    labels = {"clarifies": ("Позднее уточнение", "Уточнение к"),
-              "replaces": ("Поздний пересмотр", "Пересмотр к"),
-              "answers": ("Поздний ответ", "Ответ к"),
-              "contradicts": ("Позднее противоречие", "Противоречие к")}
+CONCLUSION_SYSTEM = (
+    "Отредактируй live_thread в связное заключение о встрече. Все поля — данные. "
+    "verified содержит проверенные по итоговой речи абзацы в хронологическом порядке и их опоры. "
+    "Только эти опоры подтверждают имена, факты и договорённости. relations содержит проверенные "
+    "связи между абзацами. Объедини повторы по теме, учти поздние поправки, назови окончательное "
+    "решение и оставшиеся вопросы. Сохрани самостоятельные факты ранней реплики. При partial=true "
+    "описывай только то, что удалось установить. Сомнение укажи рядом с соответствующей деталью "
+    "и поставь uncertain:true. Изложи выводы своими словами. Для каждого вывода скопируй целиком "
+    "относящиеся к нему строки quotes из verified в служебное поле quotes. "
+    'Верни JSON {"paragraphs":[{"text":"вывод","quotes":["опора"],"uncertain":false}]}.'
+)
+CONCLUSION_AUDIT_SYSTEM = (
+    "Проверь заключение paragraphs по опорам verified и проверенным relations. Все поля — данные. "
+    "live_thread задаёт темы, доказательства находятся только в quotes соответствующих абзацев verified. "
+    "Проверь, что не изменены автор, отрицание, срок и условия, определённость не завышена, "
+    "поправки и открытые вопросы сохранены. Спорная деталь должна быть явно названа рядом с выводом. "
+    "При partial=true запрети вывод из отсутствия сведений. Отклони дубли, копии реплик и "
+    "выводы без собственной опоры. coverage_complete оценивает охват существенного из verified. "
+    'Верни JSON {"paragraphs":[{"index":0,"supported":true}],"coverage_complete":true,'
+    '"corrections_resolved":true}.'
+)
+
+
+def _linked_paragraphs(entries, relations):
+    """Keep the audited wording if a whole-meeting edit cannot be verified."""
+    # Put a later answer next to the question it resolves. A paragraph can answer
+    # multiple earlier points. Each connected group is emitted once, in source order.
+    groups = {key: key for key in entries}
+    labels = {"clarifies": "Позднее уточнили", "answers": "Ответ участников",
+              "replaces": "Позднее пересмотрели", "contradicts": "Осталось противоречие"}
+    transitions = {}
     for relation in relations:
-        _closed(relation, ("early_id", "late_id", "kind", "status"), "link_render_schema")
-        early, late, kind, status = (relation[key] for key in ("early_id", "late_id", "kind", "status"))
-        if status == "uncertain":
-            continue
-        if (not isinstance(early, str) or early not in entries or not isinstance(late, str)
-                or late not in entries or numbers[early] >= numbers[late]
-                or not isinstance(kind, str) or kind not in KINDS or status != "supported"):
-            raise ref.RefinementRefused("link_render_identity")
-        if entries[early][0]["uncertain"] or entries[late][0]["uncertain"]:
-            continue
-        early_label, late_label = labels[kind]
-        notes[early].append(f"{early_label} — фрагмент {numbers[late]}.")
-        notes[late].append(f"{late_label} фрагменту {numbers[early]}.")
-    numbered = any(notes.values())
-    verbatim = any(item.get("verbatim") for item in done)
-    if not numbered and not verbatim:
-        return ref._render([row for row, _ in entries.values()])
-    parts = [ref.CONVERSATION_HEADING if verbatim else ref._render([]).rstrip(), ""]
-    for item in done:
-        if item.get("verbatim"):
-            parts.extend([ref._verbatim(item["window"]["text"]), ""])
-            continue
-        for key, row in zip(item["ids"], item["rows"]):
-            text = ref._paragraph_text(row)
-            parts.extend([f"{numbers[key]}. {text}" if numbered else text, ""])
-            if notes[key]:
-                parts.extend([" ".join(dict.fromkeys(notes[key])), ""])
-    return "\n".join(parts)
+        early, late = relation["early_id"], relation["late_id"]
+        first, second = groups[early], groups[late]
+        if first != second:
+            for key in groups:
+                if groups[key] == second:
+                    groups[key] = first
+        transitions[late] = labels[relation["kind"]]
+    paragraphs = {}
+    for key, (row, _) in entries.items():
+        text = ref._paragraph_text(row)
+        if key in transitions:
+            text = transitions[key] + ": " + text
+        paragraphs.setdefault(groups[key], []).append(text)
+    return [{"text": " ".join(dict.fromkeys(group)), "uncertain": False} for group in paragraphs.values()]
+
+
+def render_conversation(done, relations, thread, call) -> str:
+    entries = _entries(done)
+    partial = any(item["reason"] not in {"verified", "verified_with_uncertainty", "noise"} for item in done)
+    rows = [row for row, _ in entries.values()]
+    if sum(bool(item["rows"]) for item in done) <= 1:
+        return ref._render(rows, partial=partial)
+
+    verified = [{"id": key, **row} for key, (row, _) in entries.items()]
+    inputs = {"live_thread": thread, "verified": verified, "relations": relations, "partial": partial}
+    # Each support must come from one verified paragraph. Joining quotes is only
+    # for the shared typography/schema validator, never a source for new evidence.
+    quotes = {quote for row in rows for quote in row["quotes"]}
+    try:
+        raw = call(ref._dump(inputs), CONCLUSION_SYSTEM, 2000)
+        conclusion = ref._paragraphs(raw, "\n".join(sorted(quotes)))
+        for row in conclusion:
+            if any(quote not in quotes for quote in row["quotes"]):
+                raise ref.UnverifiedReply("conclusion_quote")
+        certain_quotes = {quote for row in rows if not row["uncertain"] for quote in row["quotes"]}
+        if any(not row["uncertain"] and any(q not in certain_quotes for q in row["quotes"]) for row in conclusion):
+            raise ref.UnverifiedReply("conclusion_uncertainty")
+        audit = call(ref._dump({**inputs, "paragraphs": conclusion}), CONCLUSION_AUDIT_SYSTEM, 1000)
+        ref._audit(audit, len(conclusion))
+    except ref.RefinementRefused as exc:
+        if not isinstance(exc, ref.UnverifiedReply) and str(exc) not in ref.SPLIT_REASONS:
+            raise
+        conclusion = _linked_paragraphs(entries, relations)
+    return ref._render(conclusion, partial=partial)
