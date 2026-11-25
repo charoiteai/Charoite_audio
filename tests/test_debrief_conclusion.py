@@ -102,6 +102,12 @@ def test_partial_publication_keeps_only_supported_material(tmp_path, monkeypatch
         if system == ref.WINDOW_AUDIT_SYSTEM:
             return json.dumps({**rejected, "has_cross_window_correction": False,
                                "correction_quotes": [], "repair_quotes": [OWNER]})
+        if system == links.CONCLUSION_SYSTEM:
+            data = json.loads(prompt)
+            assert data["partial"] and [r["text"] for r in data["verified"]] == [FINAL, OPEN]
+            return json.dumps({"paragraphs": [confirmed, unknown]})
+        if system == links.CONCLUSION_AUDIT_SYSTEM:
+            return json.dumps(verdict([confirmed, unknown]))
         assert system.startswith(ref.WINDOW_REPAIR_SYSTEM)
         return json.dumps({"changes": [paragraph("Неверная правка.", ["Неподтверждённый фрагмент."])]})
 

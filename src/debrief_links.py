@@ -350,7 +350,7 @@ def render_conversation(done, relations, thread, call) -> str:
     entries = _entries(done)
     partial = any(item["reason"] not in {"verified", "verified_with_uncertainty", "noise"} for item in done)
     rows = [row for row, _ in entries.values()]
-    if sum(bool(item["rows"]) for item in done) <= 1:
+    if not rows or (len(done) == 1 and len(rows) == 1 and not partial):
         return ref._render(rows, partial=partial)
 
     verified = [{"id": key, **row} for key, (row, _) in entries.items()]

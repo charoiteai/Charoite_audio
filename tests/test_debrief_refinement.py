@@ -194,6 +194,8 @@ def test_quote_repair_keeps_full_input_and_still_requires_audit(monkeypatch, win
                             {**audit, "has_cross_window_correction": False,
                              "correction_quotes": [], "repair_quotes": [quote]}])
         replies.append({"changes": []})
+    if windowed or not audit_passes:
+        replies.extend([{"paragraphs": [first, valid]}, good_audit(2)])
     responses = iter(replies)
     calls, gates = [], []
 
