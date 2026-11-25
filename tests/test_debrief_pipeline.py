@@ -5,6 +5,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import unicodedata
 from types import SimpleNamespace
 
 import pytest
@@ -190,6 +191,218 @@ def test_retitle_keeps_exact_binding_and_updates_only_header(tmp_path, model):
     assert binding["full_sha256"] == live_sidecar.sha(renamed.read_text())
     assert renamed.with_name(renamed.stem + "_разбор.md").read_bytes() == before
     pipeline.run(renamed, CFG, handoff=None, final_sha=None, before_request=lambda: None, timeout=0)
+
+
+def alternate_title_spelling(tmp_path, form, *, keep_derivative_name=False, pending_publication=False):
+    import graph_updater
+
+    live, handoff = make_meeting(tmp_path)
+    run(live, handoff)
+    title = unicodedata.normalize(form, "Крайний полёт")
+    old = graph_updater.retitle(live, meeting_stamp.minute_of(STAMP), STAMP, title)
+    alternate = "NFD" if form == "NFC" else "NFC"
+    actual = old.with_name(unicodedata.normalize(alternate, old.name))
+    assert actual != old and old != live
+    if pending_publication:
+        proof = pipeline.prepare_for_graph(old, CFG, handoff=None, final_sha=None)
+        run(old, None, graph_input_sha=proof, defer_finalization=True)
+    if not actual.exists():
+        # A transfer to a byte-sensitive volume can change directory entries
+        # while retaining the exact existing JSON records and document bytes.
+        files = [old, pipeline.binding_path(old), old.with_name(old.name + ".live.json")]
+        if pending_publication:
+            files.append(pipeline.publication_path(old))
+        if not keep_derivative_name:
+            files.append(meeting_stamp.derivative_path(old, "debrief"))
+        for path in files:
+            path.rename(path.with_name(unicodedata.normalize(alternate, path.name)))
+    return actual, old, handoff
+
+
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_rebuild_after_retitle_accepts_equivalent_owner_spelling(tmp_path, model, monkeypatch, form):
+    import graph_updater
+    import rebuild_transcript as rebuild
+
+    live, original, handoff = alternate_title_spelling(tmp_path, form, keep_derivative_name=form == "NFD")
+    binding = pipeline.binding_path(live)
+    legacy = binding.read_bytes()
+    derivative_owner = original if form == "NFD" else live
+    before = meeting_stamp.derivative_path(derivative_owner, "debrief").read_bytes()
+    assert json.loads(legacy)["owner"] == original.name
+    receipt = pipeline.receipt_path(live, handoff)
+    export = tmp_path / handoff["file"]
+    stop_bytes = (receipt.read_bytes(), export.read_bytes())
+
+    # No audio survives. The regular retry still goes through rebuild(), the
+    # graph child, durable parent acknowledgement and the public ready status.
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/config.yaml").write_text("audio: {samplerate: 16000}\nsufler: {refined_debrief: true, graph: false}\n")
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    monkeypatch.setenv("CHAROITE_NO_RETRY", "1")
+    monkeypatch.setattr(rebuild, "_root", lambda: tmp_path)
+    monkeypatch.setattr(rebuild, "harden_umask", lambda: None)
+    monkeypatch.setattr(rebuild, "_yield_to_live", lambda *_: None)
+    monkeypatch.setattr(rebuild, "_take_rebuild_queue", lambda: None)
+    monkeypatch.setattr(rebuild, "running_elsewhere", lambda *_: None)
+    monkeypatch.setattr(rebuild, "mark_running", lambda *_: None)
+    ready = []
+    status = SimpleNamespace(processing=lambda *a: None, failed=lambda *a: None,
+                             has_transcript=lambda path: path.is_file(), ready=lambda *args: ready.append(args))
+    monkeypatch.setattr(rebuild, "MeetingStatusStore", lambda *_: status)
+    monkeypatch.setattr(graph_updater, "load_cfg", lambda: CFG)
+    monkeypatch.setattr(graph_updater, "_open_progress", lambda *_: None)
+    monkeypatch.setattr(graph_updater, "_report", lambda *_a, **_kw: None)
+    monkeypatch.setattr(graph_updater, "_yield_to_live", lambda: None)
+    monkeypatch.setattr(graph_updater, "harden_umask", lambda: None)
+    monkeypatch.setattr(pipeline.graphs, "graph_dir", lambda cfg: None)
+
+    graph_args = []
+
+    def graph_child(argv, *, check):
+        graph_args.extend(argv)
+        with monkeypatch.context() as child:
+            child.setattr(sys, "argv", argv[1:])
+            try:
+                graph_updater.main()
+            except SystemExit as result:
+                return SimpleNamespace(returncode=result.code)
+            except RuntimeError:
+                return SimpleNamespace(returncode=1)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", graph_child)
+    monkeypatch.setattr(sys, "argv", ["rebuild_transcript.py", str(live)])
+    rebuild.main()
+    assert "--debrief-parent-ack" in graph_args and "--refine-before-archive" in graph_args
+    assert len(ready) == 1 and ready[0][0] == live
+    assert len(model) == 2 and model[-1][2].encode() == before
+    assert live_sidecar.prev_path(live, pipeline.verify_publication(live)).read_bytes() == before
+    assert json.loads(binding.read_bytes())["handoff"] == handoff
+    assert not pipeline.publication_path(live).exists()
+
+    # A later title change must still move exactly this transcript and debrief.
+    renamed = graph_updater.retitle(live, meeting_stamp.minute_of(STAMP), STAMP, "Новый заголовок")
+    assert renamed != live and not binding.exists()
+    assert pipeline.verify_publication(renamed).is_file()
+    assert (receipt.read_bytes(), export.read_bytes()) == stop_bytes
+
+
+@pytest.mark.parametrize("hardlinked", [False, True])
+@pytest.mark.parametrize("field", ["owner", "debrief_file"])
+def test_distinct_unicode_filenames_never_share_a_binding(tmp_path, model, field, hardlinked):
+    live, original, _ = alternate_title_spelling(tmp_path, "NFC")
+    current = live if field == "owner" else meeting_stamp.derivative_path(live, "debrief")
+    competing = original if field == "owner" else meeting_stamp.derivative_path(original, "debrief")
+    if competing.exists():
+        pytest.skip("This volume aliases canonically equivalent names")
+    if hardlinked:
+        competing.hardlink_to(current)
+    else:
+        competing.write_bytes(current.read_bytes())
+    assert current.samefile(competing) is hardlinked
+    with pytest.raises(refinement.RefinementRefused):
+        pipeline.verify_publication(live)
+    assert not pipeline.can_retitle(live, live.with_name("different.md"))
+    if field == "debrief_file":
+        # Even a freshly written canonical transcript cannot authorize this
+        # other directory entry or alter its previous binding before refusing the retry.
+        live.write_text(live.read_text() + "Уточнили сроки.\n")
+        assert live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(live.read_text()))
+    evidence = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    with pytest.raises(refinement.RefinementRefused):
+        run(live, None)
+    assert len(model) == 1
+    assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == evidence
+
+
+@pytest.mark.parametrize("field", ["owner", "debrief_file"])
+def test_retitle_binding_refuses_an_unrelated_name_with_identical_bytes(tmp_path, model, field):
+    live, _, _ = alternate_title_spelling(tmp_path, "NFC")
+    binding = pipeline.binding_path(live)
+    value = json.loads(binding.read_bytes())
+    derivative = pipeline.verify_publication(live)
+    neighbor = live.with_name("2026-01-01_1200_Соседи.md")
+    neighbor.write_bytes((live if field == "owner" else derivative).read_bytes())
+    binding.write_text(json.dumps({**value, field: neighbor.name}))
+    evidence = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    with pytest.raises(refinement.RefinementRefused):
+        pipeline.verify_publication(live)
+    with pytest.raises(refinement.RefinementRefused):
+        run(live, None)
+    assert not pipeline.can_retitle(live, live.with_name("unused.md"))
+    assert len(model) == 1
+    assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == evidence
+
+
+def test_unicode_recovery_finishes_when_the_candidate_has_already_disappeared(tmp_path, model):
+    live, original, _ = alternate_title_spelling(tmp_path, "NFC", pending_publication=True)
+    marker = pipeline.publication_path(live)
+    previous = json.loads(marker.read_bytes())["binding"]
+    path = pipeline.verify_publication(live)
+    path.unlink()
+    with pytest.raises(refinement.RefinementRefused, match="debrief_binding_path"):
+        pipeline.verify_publication(live)
+    pipeline.recover_publication(live)
+    assert not marker.exists() and not path.exists()
+    assert json.loads(pipeline.binding_path(live).read_bytes()) == previous
+    assert previous["owner"] == original.name
+    # Rollback may finish with an absent file. A new graph must prove the
+    # identity of its differently spelled derivative before using that name.
+    with pytest.raises(refinement.RefinementRefused, match="debrief_binding_path"):
+        pipeline.prepare_for_graph(live, CFG, handoff=None, final_sha=None)
+
+
+@pytest.mark.parametrize("damage", [None, "old_binding", "retitle_from", "replaced_owner"])
+def test_interrupted_unicode_retitle_recovers_only_its_original_binding(tmp_path, model, damage):
+    old, recorded, handoff = alternate_title_spelling(tmp_path, "NFC")
+    old_binding = pipeline.binding_path(old)
+    previous = old_binding.read_bytes()
+    old_debrief = pipeline.verify_publication(old)
+    debrief = old_debrief.read_bytes()
+    assert old_binding.read_bytes() == previous
+    new = old.with_name("2026-01-01_1200_Новая_тема.md")
+    pipeline.prepare_retitle(old, new)
+    pipeline.move_retitle_file(old, new)
+    marker = pipeline.binding_path(new)
+    reservation = json.loads(marker.read_bytes())
+    assert reservation == {**json.loads(previous), "retitle_from": old.name, "retitle_header": None}
+    assert reservation["owner"] == recorded.name
+    if damage:
+        if damage == "old_binding":
+            old_binding.write_text(json.dumps({**json.loads(previous), "note": "changed"}))
+            reason = "retitle_binding_conflict"
+        elif damage == "replaced_owner":
+            recorded.write_bytes(new.read_bytes())
+            # On an aliasing volume this recreates the old source path. On a
+            # byte-sensitive volume it instead introduces a competing owner.
+            reason = "retitle_source_changed" if old.exists() else "retitle_owner"
+        else:
+            marker.write_text(json.dumps({**reservation, "retitle_from": "neighbor.md"}))
+            reason = "retitle_owner"
+        evidence = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+        with pytest.raises(refinement.RefinementRefused, match=f"^{reason}$"):
+            pipeline.recover_retitle(new)
+        assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == evidence
+    else:
+        # The previous process also moved its derivative before crashing.
+        pipeline.move_retitle_file(old_debrief, meeting_stamp.derivative_path(new, "debrief"))
+        pipeline.recover_retitle(new)
+        assert not old_binding.exists()
+        result = json.loads(marker.read_bytes())
+        assert set(result) == set(json.loads(previous)) and result["handoff"] == handoff
+        assert pipeline.verify_publication(new).read_bytes() == debrief
+
+
+def test_retitle_between_two_spellings_preserves_the_transcript(tmp_path, model):
+    old, target, _ = alternate_title_spelling(tmp_path, "NFC")
+    before = old.read_bytes()
+    assert pipeline.can_retitle(old, target)
+    pipeline.prepare_retitle(old, target)
+    pipeline.move_retitle_file(old, target)
+    pipeline.retitle_binding(old, target)
+    assert target.read_bytes() == before and pipeline.verify_publication(target).is_file()
 
 
 def test_foreign_retitle_binding_blocks_rename(tmp_path, model):

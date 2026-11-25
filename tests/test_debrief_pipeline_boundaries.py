@@ -2,6 +2,7 @@
 import errno
 import hashlib
 import json
+import unicodedata
 
 import pytest
 
@@ -626,6 +627,52 @@ def test_parent_cannot_resolve_a_replaced_or_withdrawn_child_after_its_first_rea
 # Retitle reservation, compensation and ownership
 
 
+@pytest.mark.parametrize("other", ["another_directory", "different_name"])
+def test_retitle_checks_the_directory_and_name_before_looking_up_an_alias(tmp_path, monkeypatch, other):
+    first = tmp_path / "Полёт.md"
+    second = (tmp_path / "subdir" / first.name if other == "another_directory"
+              else tmp_path / "Полет.md")
+    monkeypatch.setattr(pipeline, "_file_stat", lambda _: pytest.fail("lookup of an unrelated path"))
+    assert pipeline._same_entry(first, second) is False
+
+
+@pytest.mark.parametrize("linked_elsewhere", [False, True])
+def test_retitle_preserves_a_normalization_insensitive_directory_entry(tmp_path, monkeypatch, linked_elsewhere):
+    source = tmp_path / "Полёт.md"
+    alias = source.with_name(unicodedata.normalize("NFD", source.name))
+    source.write_bytes(b"owner")
+    if linked_elsewhere:
+        (tmp_path / "other-link.md").hardlink_to(source)
+    # Simulate the normalization-insensitive lookup on Linux. Directory
+    # enumeration, inode/link counts and the attempted move remain real.
+    lookup = pipeline._file_stat
+    with monkeypatch.context() as fs:
+        fs.setattr(pipeline, "_file_stat", lambda path: lookup(source if path == alias else path))
+        if not linked_elsewhere:
+            fs.setattr(pipeline.os, "scandir", lambda _: pytest.fail("listing for a single-link inode"))
+        assert pipeline._same_entry(source, alias) is True
+        pipeline.move_retitle_file(source, alias)
+    assert source.read_bytes() == b"owner"
+
+
+def test_retitle_keeps_different_inodes_and_resumes_a_real_hardlink_move(tmp_path):
+    source = tmp_path / "Полёт.md"
+    target = source.with_name(unicodedata.normalize("NFD", source.name))
+    source.write_bytes(b"owner")
+    if target.exists():
+        pytest.skip("The volume has one directory entry for both spellings")
+    target.write_bytes(b"neighbor")
+    assert pipeline._same_entry(source, target) is False
+    with pytest.raises(RefinementRefused, match="retitle_file_conflict"):
+        pipeline.move_retitle_file(source, target)
+    assert target.read_bytes() == b"neighbor"
+    target.unlink()
+    target.hardlink_to(source)
+    assert pipeline._same_entry(source, target) is False
+    pipeline.move_retitle_file(source, target)
+    assert not source.exists() and target.read_bytes() == b"owner"
+
+
 def test_unbound_unchanged_retitle_completes_without_a_binding(operation_dir):
     live = operation_dir / "legacy.md"
     live.write_bytes(b"synthetic speech")
@@ -633,7 +680,7 @@ def test_unbound_unchanged_retitle_completes_without_a_binding(operation_dir):
     assert list(operation_dir.iterdir()) == [live] and live.read_bytes() == b"synthetic speech"
 
 
-@pytest.mark.parametrize("damage", ["source", "bad_name", "human_edit", "occupied", "unreadable", "foreign_binding",
+@pytest.mark.parametrize("damage", ["source", "source_hash_only", "bad_name", "human_edit", "occupied", "unreadable", "foreign_binding",
                                     "old_stop", "new_publication"])
 def test_bound_retitle_refuses_unproven_derivative_or_transcript(tmp_path, damage):
     old, handoff = make_meeting(tmp_path)
@@ -644,6 +691,8 @@ def test_bound_retitle_refuses_unproven_derivative_or_transcript(tmp_path, damag
     path = pipeline.binding_path(old)
     if damage == "source":
         old.write_text(old.read_text() + "Новая речь.\n")
+    elif damage == "source_hash_only":
+        path.write_text(json.dumps({**pipeline._read_json(path), "source_sha256": "0" * 64}))
     elif damage == "bad_name":
         neighbor = tmp_path / "neighbor" / "summary.md"
         neighbor.parent.mkdir()

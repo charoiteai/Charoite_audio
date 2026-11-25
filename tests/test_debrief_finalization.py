@@ -122,6 +122,44 @@ def test_graph_child_defers_only_for_explicit_parent_ack(tmp_path, monkeypatch, 
     assert seen[0]["graph_input_sha"] == proof
 
 
+def test_graph_refinement_window_heartbeat_logs_only_closed_reasons(tmp_path, monkeypatch):
+    import sys
+    import graph_updater as graph
+
+    reports, hooks = [], []
+    monkeypatch.setattr(graph, "_report", lambda *a, **kw: reports.append((a, kw)))
+    secret = "Синтетический приватный текст"
+    log = tmp_path / "graph_synthetic.log"
+    expected = []
+
+    def fake_run(*args, **kwargs):
+        progress = kwargs["progress"]
+        progress({"phase": "request", "reason": secret})
+        for ordinal, reason, line in [
+            (1, "audit_refused", "source_window=1 reason=audit_refused"),
+            (2, secret, "source_window=2 reason=other"),
+            (0, "verified", "source_window=unknown reason=verified"),
+            (secret, "noise", "source_window=unknown reason=noise"),
+        ]:
+            progress({"phase": "source_window", "source_windows": ordinal, "reason": reason, "text": secret})
+            expected.append("debrief: " + line)
+            # The graph child redirects stdout to a regular file. Operators can
+            # read a completed window while later model requests are still running.
+            assert log.read_text().splitlines() == expected
+        progress({"phase": "complete", "reason": secret})
+        kwargs["before_commit"]()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    with log.open("w", buffering=8192) as stdout:
+        with monkeypatch.context() as stream:
+            stream.setattr(sys, "stdout", stdout)
+            graph._finish_refinement(tmp_path / "synthetic.md", CFG, ["--refine-before-archive", "a" * 64],
+                                     before_commit=lambda: hooks.append(True))
+    assert log.read_text().splitlines() == expected
+    assert len(reports) == 7 and all(kw == {"stage": "refining_debrief"} for _, kw in reports)
+    assert hooks == [True]
+
+
 def test_first_publication_retry_after_interrupted_ack_cleanup(tmp_path, monkeypatch):
     from pathlib import Path
     import live_sidecar

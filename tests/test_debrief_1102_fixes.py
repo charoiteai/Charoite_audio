@@ -114,7 +114,7 @@ def test_window_audit_accepts_normalized_repair_and_correction_quotes():
     assert feedback is not None
 
 
-def test_draft_retries_model_json_once_without_mutating_system_or_prompt():
+def test_draft_retries_model_json_with_repair_suffix():
     speech = "Релиз перенесли на пятницу после проверки нагрузочного стенда."
     prompt = json.dumps({"final_speech": speech, "live_thread": [], "previous_debrief": ""})
     seen = []
@@ -129,8 +129,10 @@ def test_draft_retries_model_json_once_without_mutating_system_or_prompt():
 
     rows = ref._draft(prompt, ref.WINDOW_REPAIR_SYSTEM, 2000, speech, call)
     assert len(rows) == 1
-    assert seen[0] == seen[1]
+    assert seen[0][0] == seen[1][0] and seen[0][2] == seen[1][2]
     assert seen[0][1] == ref.WINDOW_REPAIR_SYSTEM
+    assert seen[1][1].startswith(ref.WINDOW_REPAIR_SYSTEM)
+    assert "валидным JSON" in seen[1][1] and seen[1] != seen[0]
 
 
 def test_unsupported_quote_retry_passes_bounded_quote_feedback_and_respects_budget():
@@ -202,12 +204,11 @@ def test_unsupported_quote_retry_passes_bounded_quote_feedback_and_respects_budg
         }]}),
     ])
     tight_budget = len(prompt) + len(ref.SYSTEM) + 50
-    ref._draft(prompt, ref.SYSTEM, 3000, speech,
-               lambda p, s, pr: (seen_tight.append((p, s)), next(replies_tight))[1],
-               max_input=tight_budget)
-    assert seen_tight[1][0] == prompt
-    assert seen_tight[1][1] == ref.SYSTEM
-    assert len(seen_tight[1][0]) + len(seen_tight[1][1]) <= tight_budget
+    with pytest.raises(ref.RefinementRefused, match="complete_input_exceeds_context"):
+        ref._draft(prompt, ref.SYSTEM, 3000, speech,
+                   lambda p, s, pr: (seen_tight.append((p, s)), next(replies_tight))[1],
+                   max_input=tight_budget)
+    assert len(seen_tight) == 1
 
 
 def test_output_schema_covers_all_debrief_systems_and_refuses_bad_prompt(monkeypatch):
@@ -285,12 +286,15 @@ def test_progress_reports_closed_reason_for_short_and_windowed_paths():
         json.dumps({"paragraphs": [{"index": 0, "supported": True}],
                     "coverage_complete": True, "corrections_resolved": True}),
     ])
-    ref.refine(speech, [], "", {}, request=lambda *a: next(answers), progress=events.append)
+    body = ref.refine(speech, [], "", {}, request=lambda *a: next(answers), progress=events.append)
     win = [e for e in events if e["phase"] == "source_window"]
-    assert len(win) == 1 and win[0]["verbatim"] is True and win[0]["reason"] == "uncertain"
+    assert len(win) == 1 and win[0]["verbatim"] is False and win[0]["reason"] == "verified_with_uncertainty"
+    assert "**Требует уточнения.**" in body
 
     events2 = []
     answers2 = iter([
+        json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная цитата которой нет."], "uncertain": False}]}),
+        json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная цитата которой нет."], "uncertain": False}]}),
         json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная цитата которой нет."], "uncertain": False}]}),
         json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная цитата которой нет."], "uncertain": False}]}),
     ])
@@ -388,28 +392,27 @@ def test_quote_feedback_and_fit_retry_exact_length_boundaries():
     assert ref._fit_retry(p, sys_s, cand, full_s, min_s, exact_min) == (p, sys_s + min_s)
 
 
-def test_refine_short_budget_prevents_retry_from_overflowing_into_windowed():
+def test_refine_short_budget_routes_to_windows_without_identical_retry():
     cfg = {"llm": {"num_ctx": 8192}}
-    short_budget = (8192 - 3000 - ref.CONTEXT_RESERVE) * ref.CHARS_PER_TOKEN
-    anchor = "Ключевое решение перенести релиз на вторник."
-    base_prompt = json.dumps({"final_speech": anchor, "live_thread": [], "previous_debrief": ""}, ensure_ascii=False)
-    pad = short_budget - len(base_prompt) - len(ref.SYSTEM) - 100
-    assert pad > 0
-    speech = anchor + " " + ("б" * (pad - 1))
+    budget = (8192 - 3000 - ref.CONTEXT_RESERVE) * ref.CHARS_PER_TOKEN
+    speech = "Ключевое решение перенести релиз на вторник."
+    base = json.dumps({"final_speech": speech, "live_thread": [], "previous_debrief": ""}, ensure_ascii=False)
+    previous = "б" * (budget - len(base) - len(ref.SYSTEM) - 124)
     seen = []
-    answers = iter([
-        json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная фраза которой нет."], "uncertain": False}]}),
-        json.dumps({"paragraphs": [{"text": "Релиз перенесли на вторник.", "quotes": [anchor], "uncertain": False}]}),
-        json.dumps({"paragraphs": [{"index": 0, "supported": True}],
-                    "coverage_complete": True, "corrections_resolved": True}),
-    ])
+    row = {"text": "Релиз перенесли на вторник.", "quotes": [speech], "uncertain": False}
 
-    def req(_cfg, p, s, _pr):
-        seen.append((p, s))
-        return next(answers)
+    def request(cfg, prompt, system, predict):
+        seen.append(system)
+        assert json.loads(prompt)["final_speech"] == speech
+        if system == ref.SYSTEM:
+            assert len(system) + len(prompt) == budget - 124
+            return json.dumps({"paragraphs": [{**row, "quotes": ["Выдуманная фраза которой нет."]}]})
+        if system == ref.WINDOW_SYSTEM:
+            return json.dumps({"paragraphs": [row]})
+        assert system == ref.WINDOW_AUDIT_SYSTEM
+        return json.dumps({"paragraphs": [{"index": 0, "supported": True}], "coverage_complete": True,
+                           "corrections_resolved": True, "has_cross_window_correction": False, "correction_quotes": []})
 
-    out = ref.refine(speech, [], "", cfg, request=req)
-    assert "Релиз перенесли на вторник." in out
-    assert len(seen) == 3
-    assert len(seen[1][0]) + len(seen[1][1]) <= short_budget
-    assert "quote_feedback" not in seen[1][1]
+    body = ref.refine(speech, [], previous, cfg, request=request)
+    assert seen == [ref.SYSTEM, ref.WINDOW_SYSTEM, ref.WINDOW_AUDIT_SYSTEM]
+    assert row["text"] in body and "**Из стенограммы**" not in body

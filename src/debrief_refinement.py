@@ -7,7 +7,6 @@ Caller owns publication and resource admission before every model request.
 """
 from __future__ import annotations
 
-import contextvars
 import functools
 import hashlib
 import json
@@ -38,7 +37,7 @@ SYSTEM = (
     "уникальную цитату с предметом/автором либо отметь uncertain:true; не выбирай "
     "произвольное вхождение и не добавляй постороннюю цитату ради уникальности. "
     'Формат: {"paragraphs":[{"text":"связный абзац","quotes":["точная цитата"],"uncertain":false}]}. '
-    "Пиши по-русски; сомнения отмечай uncertain:true. Не добавляй новых советов. "
+    "Пиши по-русски; при сомнении поставь uncertain:true и укажи в тексте, что неизвестно. Не добавляй новых советов. "
     "ЗАПРЕЩЕНО ставить «...»/«…» внутри цитаты или склеивать два фрагмента в одну строку: "
     "для двух частей реплики верни две отдельные короткие дословные цитаты из текста реплики."
 )
@@ -48,7 +47,7 @@ AUDIT_SYSTEM = (
     "Открытый вопрос нельзя выдавать за отвеченный. Поздние уточнения не относятся автоматически "
     "к другому предмету. Догадка ассистента не является репликой. "
     "Откажи, если пропущено существенное обсуждение, середина, конец или не учтено уточнение. "
-    "Неопределённость допустима только с явной пометкой uncertain:true. "
+    "Сомнения требуют uncertain:true и явного указания в тексте, что неизвестно. Догадку об авторе отклони. "
     'Верни JSON {"paragraphs":[{"index":0,"supported":true}],'
     '"coverage_complete":true,"corrections_resolved":true}. При сомнении ставь false.'
 )
@@ -97,7 +96,8 @@ WINDOW_REPAIR_SYSTEM = (
     "предметную цитату для каждого нового предмета, общие условия процитируй один раз. "
     "Дай каждому абзацу уникальную дословную опору в принадлежащей окну речи. "
     "Не объединяй события по разные стороны уже сохранённого абзаца. Цитаты — непрерывные "
-    "фрагменты не короче 12 символов. Не вводи новых решений. Если требуется лишь удалить "
+    "фрагменты не короче 12 символов. Не вводи новых решений. При сомнении укажи в тексте, что неизвестно, "
+    "и поставь uncertain:true. Если требуется лишь удалить "
     'выдуманное, changes может быть пустым. Формат: {"changes":[{"text":"связный абзац",'
     '"quotes":["точная цитата"],"uncertain":false}]}.'
 )
@@ -112,7 +112,8 @@ WINDOW_AUDIT_SYSTEM = (
     "Все существенные ходы внутри final_speech должны сохраниться; повторы и шум можно убрать. "
     "Соседний контекст не должен появляться как новое событие; обрезанный контекст не разрешает догадку. "
     "Предложения и вопросы описаны на данном этапе, без ложного утверждения об окончательности за всю встречу. "
-    "Сомнения требуют uncertain:true. corrections_resolved означает корректное изложение поправок ВНУТРИ final_speech "
+    "Сомнения требуют uncertain:true и явного указания в тексте, что неизвестно. "
+    "corrections_resolved означает корректное изложение поправок ВНУТРИ final_speech "
     "(если поправок в final_speech нет, ставь true). "
     "При пропуске существенной реплики из final_speech поставь coverage_complete=false; "
     "при искажении смысла или чисел — supported=false для этого абзаца. "
@@ -126,9 +127,6 @@ WINDOW_AUDIT_SYSTEM = (
     '"coverage_complete":true,"corrections_resolved":true,'
     '"has_cross_window_correction":false,"correction_quotes":[],"repair_quotes":[]}.'
 )
-
-_WINDOW_REASON: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
-    "debrief_window_reason", default=None)
 
 _QUOTE_CHAR_MAP = str.maketrans({
     "ё": "е",
@@ -524,16 +522,20 @@ def _verbatim(speech: str) -> str:
     return f"**Из стенограммы**\n\n{fence}text\n{speech}\n{fence}"
 
 
-def _certain_rows(rows: list[dict]) -> list[dict]:
-    """An uncertain claim makes the whole owned slice eligible for verbatim rendering."""
-    return [] if any(row["uncertain"] for row in rows) else rows
+def _paragraph_text(row: dict) -> str:
+    text = row["text"].strip()
+    return f"**Требует уточнения.** {text}" if row["uncertain"] else text
+
+
+def _verified_reason(rows: list[dict]) -> str:
+    return "verified_with_uncertainty" if any(row["uncertain"] for row in rows) else "verified"
 
 
 def _render(rows: list[dict]) -> str:
     parts = [CONVERSATION_HEADING, "",
              "Уточнено локальной моделью по итоговой стенограмме; спорные места отмечены.", ""]
     for row in rows:
-        parts.extend([row["text"].strip(), ""])
+        parts.extend([_paragraph_text(row), ""])
     return "\n".join(parts)
 
 def _dump(value: dict) -> str:
@@ -729,7 +731,7 @@ def _fit_retry(prompt: str, system: str, candidate_prompt: str, full_suffix: str
         return candidate_prompt, system + full_suffix
     if len(prompt) + len(system) + len(minimal_suffix) <= max_input:
         return prompt, system + minimal_suffix
-    return prompt, system
+    raise RefinementRefused("complete_input_exceeds_context")
 
 
 def _draft(prompt: str, system: str, predict: int, source: str, call, *, window=None,
@@ -751,9 +753,8 @@ def _draft(prompt: str, system: str, predict: int, source: str, call, *, window=
             if attempt:
                 raise
             if str(exc) == "model_json":
-                if not repair:
-                    json_hint = " Предыдущий ответ не являлся валидным JSON. Верни строго валидный JSON."
-                    prompt, system = _fit_retry(prompt, system, prompt, json_hint, json_hint, max_input)
+                json_hint = " Предыдущий ответ не являлся валидным JSON. Верни строго валидный JSON."
+                prompt, system = _fit_retry(prompt, system, prompt, json_hint, json_hint, max_input)
                 continue
             if str(exc) == "missing_uncertainty":
                 suffix = (" У предыдущего ответа отсутствует обязательное поле uncertain. "
@@ -828,11 +829,7 @@ def _refine_window(window, thread, previous, call):
         if repaired == rows:
             raise UnverifiedReply("unchanged_repair")
         rows = repaired
-    certain = _certain_rows(rows)
-    holder = _WINDOW_REASON.get()
-    if holder is not None:
-        holder.append("verified" if certain else ("uncertain" if rows else "noise"))
-    return certain
+    return rows
 
 
 def _windowed(speech: str, thread: list[dict], previous: str, call, progress) -> str:
@@ -845,11 +842,9 @@ def _windowed(speech: str, thread: list[dict], previous: str, call, progress) ->
     relations = []
     while pending:
         window = _with_neighbors(speech, pending.pop(0))
-        holder: list[str] = []
-        token = _WINDOW_REASON.set(holder)
         try:
             rows = _refine_window(window, thread, previous, call)
-            reason = holder[0] if holder else ("verified" if rows else "noise")
+            reason = _verified_reason(rows) if rows else "noise"
             current_relations = link_window(done, window, rows, call) if rows else []
         except UnverifiedReply as exc:
             # Render only the exact canonical slice when its model text cannot be verified.
@@ -871,8 +866,6 @@ def _windowed(speech: str, thread: list[dict], previous: str, call, progress) ->
                 half["id"] = f"s{half['start']}-{half['end']}"
             pending = halves + pending
             continue
-        finally:
-            _WINDOW_REASON.reset(token)
         relations.extend(current_relations)
         ids = [f"{window['id']}:p{i}" for i in range(len(rows))]
         done.append({"window": window, "rows": rows, "ids": ids, "verbatim": not rows})
@@ -928,21 +921,17 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
     # to lossless windows before touching transport or the request budget.
     short_budget = (context - 3000 - CONTEXT_RESERVE) * CHARS_PER_TOKEN
     try:
-        raw_rows = _draft(prompt, SYSTEM, 3000, speech, call, max_input=short_budget)
-        audit = json.dumps({"final_speech": speech, "paragraphs": raw_rows}, ensure_ascii=False)
-        _audit(call(audit, AUDIT_SYSTEM, 1000), len(raw_rows))
-        rows = _certain_rows(raw_rows)
-        reason = "verified" if rows else "uncertain"
-    except UnverifiedReply as exc:
-        rows, reason = [], str(exc)
+        rows = _draft(prompt, SYSTEM, 3000, speech, call, max_input=short_budget)
+        audit = json.dumps({"final_speech": speech, "paragraphs": rows}, ensure_ascii=False)
+        _audit(call(audit, AUDIT_SYSTEM, 1000), len(rows))
     except RefinementRefused as exc:
-        if str(exc) not in SPLIT_REASONS:
+        if not isinstance(exc, UnverifiedReply) and str(exc) not in SPLIT_REASONS:
             raise
         return _windowed(speech, thread, previous, call, progress)
-    result = _render(rows) if rows else CONVERSATION_HEADING + "\n\n" + _verbatim(speech) + "\n"
+    result = _render(rows)
     if progress is not None:
         progress({"phase": "source_window", "source_windows": 1, "start_char": 0,
-                  "source_chars": len(speech), "verbatim": not rows, "reason": reason,
+                  "source_chars": len(speech), "verbatim": False, "reason": _verified_reason(rows),
                   "semantic_proof": False})
         progress({"phase": "complete", "source_windows": 1, "source_chars": len(speech),
                   "coverage_complete": True, "semantic_proof": False})
