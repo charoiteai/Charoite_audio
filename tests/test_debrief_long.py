@@ -229,7 +229,7 @@ def padded_window(line, size=3000):
 
 
 @pytest.mark.parametrize("uncertain_after_audit", [False, True])
-def test_unverified_middle_window_keeps_exact_owned_source_without_links(uncertain_after_audit):
+def test_middle_window_keeps_verified_uncertainty_or_exact_unverified_source(uncertain_after_audit):
     first = padded_window("Первое обсуждение описано полностью.")
     middle = padded_window("  Спорный фрагмент.\r\n**Из стенограммы**\n\n```text\n# Заголовок\n```\nСимволы ``````.  ")
     last = padded_window("После уточнения участники вернулись к вопросу.")
@@ -254,22 +254,33 @@ def test_unverified_middle_window_keeps_exact_owned_source_without_links(uncerta
         return json.dumps(response)
 
     body = ref.refine(source, [], "", {}, request=request, progress=events.append)
-    assert verbatim_slices(body) == [middle]
-    assert body.index(early_text) < body.index(middle) < body.index(late_text)
-    assert rejected_text not in body and "Осталась спорная формулировка." not in body
+    assert verbatim_slices(body) == ([] if uncertain_after_audit else [middle])
+    middle_rendered = rejected_text if uncertain_after_audit else middle
+    assert body.index(early_text) < body.index(middle_rendered) < body.index(late_text)
+    if uncertain_after_audit:
+        assert "**Требует уточнения.** Осталась спорная формулировка." in body
+    else:
+        assert rejected_text not in body and "Осталась спорная формулировка." not in body
     middle_audits = [value for system, value in model.calls
                      if system == ref.WINDOW_AUDIT_SYSTEM and value["final_speech"] == middle]
     assert len(middle_audits) == int(uncertain_after_audit)
     discoveries = [value for system, value in model.calls if system == links.DISCOVER_SYSTEM]
     assert discoveries
     for value in discoveries:
-        assert value["current_source"]["final_speech"] == last
-        assert [item["id"] for item in value["early_paragraphs"]] == [f"s0-{len(first)}:p0"]
+        ids = [item["id"] for item in value["early_paragraphs"]]
+        assert f"s{len(first)}-{len(first + middle)}:p1" not in ids
+        if value["current_source"]["final_speech"] == last:
+            expected = [f"s0-{len(first)}:p0"]
+            if uncertain_after_audit:
+                expected.append(f"s{len(first)}-{len(first + middle)}:p0")
+            assert ids == expected
     assert first not in body and last not in body
     visited = [event for event in events if event["phase"] == "source_window"]
     assert [(e["start_char"], e["source_chars"]) for e in visited] == [
         (0, len(first)), (len(first), len(first + middle)), (len(first + middle), len(source))]
-    assert [e["verbatim"] for e in visited] == [False, True, False]
+    assert [e["verbatim"] for e in visited] == [False, not uncertain_after_audit, False]
+    if uncertain_after_audit:
+        assert visited[1]["reason"] == "verified_with_uncertainty"
     assert all(type(e["verbatim"]) is bool for e in visited)
     assert events[-1]["phase"] == "complete" and events[-1]["source_chars"] == len(source)
 

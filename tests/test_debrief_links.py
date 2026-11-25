@@ -1,6 +1,8 @@
 """Synthetic contracts for chronological links; no model or storage required."""
 import copy
 import json
+from collections import Counter
+from time import perf_counter
 
 import pytest
 
@@ -65,8 +67,8 @@ def verify(call, done=None, current=None, candidate=None):
 def discover(call):
     done, current = fixture()
     ids, late_ids = done[0]["ids"], current["ids"]
-    inputs = {"early_paragraphs": [{"id": ids[0], "paragraph": done[0]["rows"][0]}],
-              "current_paragraphs": [{"id": late_ids[0], "paragraph": current["rows"][0]}],
+    inputs = {"early_paragraphs": [{"id": ids[0], "text": done[0]["rows"][0]["text"]}],
+              "current_paragraphs": [{"id": late_ids[0], "text": current["rows"][0]["text"]}],
               "current_source": links._source(current["window"])}
     return links._discover(inputs, ids, late_ids, call)
 
@@ -78,7 +80,12 @@ def test_negative_discovery_audits_all_ids_without_source_calls_or_truncation():
     assert links.link_window(done, current["window"], current["rows"], caller(maximum=2, calls=calls)) == []
     audited = [data for system, data in calls if system == links.DISCOVERY_AUDIT_SYSTEM]
     assert [row["id"] for data in audited for row in data["early_paragraphs"]] == [f"w{i}:p0" for i in range(5)]
-    assert audited[0]["early_paragraphs"][0]["paragraph"]["text"] == done[0]["rows"][0]["text"]
+    for system, data in calls:
+        if system in (links.DISCOVER_SYSTEM, links.DISCOVERY_AUDIT_SYSTEM):
+            assert all(set(row) == {"id", "text"} for row in data["early_paragraphs"])
+            assert data["current_paragraphs"] == [{"id": current["ids"][0], "text": current["rows"][0]["text"]}]
+            assert data["current_source"]["final_speech"] == current["window"]["text"]
+    assert audited[0]["early_paragraphs"][0]["text"] == done[0]["rows"][0]["text"]
     assert all(system != links.PAIR_AUDIT_SYSTEM for system, _ in calls)
 
 
@@ -95,6 +102,137 @@ def test_missing_link_is_independently_verified_and_input_stays_immutable():
     assert "Позднее уточнение — фрагмент 2" in body and "Уточнение к фрагменту 1" in body
     assert body.count(current["rows"][0]["text"]) == 1
     assert body.index(done[0]["rows"][0]["text"]) < body.index(current["rows"][0]["text"])
+
+
+def mixed_windows():
+    done, current = fixture()
+    for item in (done[0], current):
+        original = item["rows"][0]
+        uncertain = {**original, "text": "Спорный вывод.", "uncertain": True}
+        item["rows"] = [uncertain, original]
+        item["ids"].append(f"{item['window']['id']}:p1")
+    return done, current
+
+
+def test_uncertain_endpoints_keep_their_places_but_only_certain_pairs_reach_audits_and_notes():
+    done, current = mixed_windows()
+    valid = relation("w0:p1", "w1:p1")
+    calls = []
+    result = links.link_window(done, current["window"], current["rows"], caller(found=[valid], calls=calls))
+    assert result == [{**valid, "status": "supported"}]
+    assert [s for s, _ in calls] == [links.DISCOVER_SYSTEM, links.DISCOVERY_AUDIT_SYSTEM,
+                                     links.PAIR_AUDIT_SYSTEM, links.ANCHOR_AUDIT_SYSTEM]
+    for _, data in calls[:2]:
+        assert [r["id"] for r in data["early_paragraphs"]] == ["w0:p1"]
+        assert [r["id"] for r in data["current_paragraphs"]] == ["w1:p1"]
+    # Even a supplied supported edge cannot attach a note to an uncertain row.
+    forged = [{**result[0], "early_id": "w0:p0"}, {**result[0], "late_id": "w1:p0"}]
+    body = links.render_conversation(done + [current], result + forged)
+    assert body.count("Позднее уточнение") == body.count("Уточнение к фрагменту") == 1
+    assert "Позднее уточнение — фрагмент 4." in body
+    assert "Уточнение к фрагменту 2." in body
+    for number, row in enumerate(done[0]["rows"] + current["rows"], 1):
+        marker = "**Требует уточнения.** " if row["uncertain"] else ""
+        assert f"{number}. {marker}{row['text']}" in body
+
+
+@pytest.mark.parametrize("candidate", [relation("w0:p0", "w1:p1"), relation("w0:p1", "w1:p0")])
+def test_discovery_cannot_nominate_excluded_uncertain_id(candidate):
+    done, current = mixed_windows()
+    calls = []
+    assert links.link_window(done, current["window"], current["rows"], caller(found=[candidate], calls=calls)) == []
+    assert [system for system, _ in calls] == [links.DISCOVER_SYSTEM]
+
+
+@pytest.mark.parametrize("side", ["early", "late"])
+def test_all_uncertain_endpoints_need_no_requests(side):
+    done, current = fixture()
+    owner = done[0] if side == "early" else current
+    owner["rows"][0]["uncertain"] = True
+    calls = []
+    assert links.link_window(done, current["window"], current["rows"], caller(calls=calls)) == []
+    assert calls == []
+
+
+def test_bad_first_batch_does_not_hide_later_audited_candidate():
+    done, current = fixture(4)
+    candidate = relation("w3:p0", "w4:p0")
+    calls = []
+    normal = caller(maximum=2, calls=calls)
+
+    def call(prompt, system, predict):
+        response = json.loads(normal(prompt, system, predict))
+        if system == links.DISCOVERY_AUDIT_SYSTEM:
+            if candidate["early_id"] in response["checked_ids"]:
+                response.update(status="incomplete", missing_relations=[candidate])
+            else:
+                response["checked_ids"] = []
+        return json.dumps(response)
+
+    assert links.link_window(done, current["window"], current["rows"], call) == [{**candidate, "status": "supported"}]
+    audited = [row["id"] for system, payload in calls if system == links.DISCOVERY_AUDIT_SYSTEM
+               for row in payload["early_paragraphs"]]
+    assert audited == [f"w{i}:p0" for i in range(4)]
+    assert [s for s, _ in calls[-2:]] == [links.PAIR_AUDIT_SYSTEM, links.ANCHOR_AUDIT_SYSTEM]
+
+
+def long_synthetic_link_metrics():
+    """Compare revisions with identical evidence, replies and 8192-token admission."""
+    done, counts = [], Counter()
+    source_chars = refused = 0
+    expected = {**relation("w5:p5", "w7:p3"), "kind": "answers"}
+    stage = {links.DISCOVER_SYSTEM: "discover", links.DISCOVERY_AUDIT_SYSTEM: "discovery_audit",
+             links.PAIR_AUDIT_SYSTEM: "source_audit", links.ANCHOR_AUDIT_SYSTEM: "anchor_audit"}
+    started = perf_counter()
+    for i in range(8):
+        rows = []
+        for j in range(6):
+            key = f"w{i}:p{j}"
+            summary = f"Образец {i}-{j} принят на испытание."
+            if key == expected["early_id"]:
+                summary = "На какой площадке испытают синий образец?"
+            elif key == expected["late_id"]:
+                summary = "Синий образец испытают на северной площадке."
+            quote = (f"Докладчик: {summary} " +
+                     " ".join(f"В журнале образца {i}-{j} отдельно записано наблюдение номер {n}."
+                              for n in range(6)))
+            rows.append({"text": summary, "quotes": [quote], "uncertain": False})
+        source = "\n".join(r["quotes"][0] for r in rows)
+        window = {"id": f"w{i}", "start": source_chars, "end": source_chars + len(source), "text": source}
+        source_chars += len(source)
+        seen = {"discover": [], "discovery_audit": []}
+
+        def call(prompt, system, predict):
+            nonlocal refused
+            limit = (8192 - predict - ref.CONTEXT_RESERVE) * ref.CHARS_PER_TOKEN
+            if len(prompt) + len(system) > limit:
+                refused += 1
+                raise ref.RefinementRefused("complete_input_exceeds_context")
+            name = stage[system]
+            counts[name] += 1
+            if name in seen:
+                payload = json.loads(prompt)
+                ids = [entry["id"] for entry in payload["early_paragraphs"]]
+                seen[name].extend(ids)
+                target = [entry["id"] for entry in payload["current_paragraphs"]]
+                if expected["early_id"] in ids and expected["late_id"] in target:
+                    return caller(found=[expected])(prompt, system, predict)
+            return caller()(prompt, system, predict)
+
+        result = links.link_window(done, window, rows, call)
+        assert result == ([{**expected, "status": "supported"}] if i == 7 else [])
+        prior = [key for item in done for key in item["ids"]]
+        # An audit overflow may replay discovery on both halves of a batch.
+        assert list(dict.fromkeys(seen["discover"])) == seen["discovery_audit"] == prior
+        done.append({"window": window, "rows": rows, "ids": [f"w{i}:p{j}" for j in range(len(rows))]})
+    return {"calls": dict(counts), "total_calls": sum(counts.values()), "admission_refusals": refused,
+            "source_chars": source_chars, "scripted_seconds": perf_counter() - started}
+
+
+def test_long_discovery_fits_seven_batches_and_checks_the_supported_pair_twice():
+    metrics = long_synthetic_link_metrics()
+    assert metrics["calls"] == {"discover": 7, "discovery_audit": 7, "source_audit": 1, "anchor_audit": 1}
+    assert metrics["admission_refusals"] == 0
 
 
 @pytest.mark.parametrize("patch", [

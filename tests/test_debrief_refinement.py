@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import debrief_links as links
 import debrief_refinement as ref
 from grounded_feed.export import write_snapshot
 
@@ -55,7 +56,7 @@ def test_connected_conversation_corrects_date_and_adds_supported_old_fact():
     assert len(calls) == 2
 
 
-def test_audited_uncertain_windows_preserve_all_source_without_model_text_or_links():
+def test_audited_uncertain_windows_preserve_marked_text_without_links():
     speech = "Начало.\n" + "Промежуточное обсуждение.\n" * 1000 + "Кто согласует бюджет? Пока неизвестно."
     generated, audited = [], []
     def request(cfg, prompt, system, predict):
@@ -74,12 +75,69 @@ def test_audited_uncertain_windows_preserve_all_source_without_model_text_or_lin
     body = ref.refine(speech, [], "", {}, request=request)
     assert "".join(generated) == speech
     assert generated == audited
-    remainder = body
-    for owned in generated:
-        remainder = assert_verbatim_speech(remainder, owned)
-    assert "**Из стенограммы**" not in remainder
-    assert "Пока неизвестно, кто согласует бюджет." not in body
-    assert "Продолжение промежуточного обсуждения." not in body
+    assert "**Из стенограммы**" not in body
+    assert body.count("**Требует уточнения.**") == len(generated)
+    assert "**Требует уточнения.** Пока неизвестно, кто согласует бюджет." in body
+    assert "Продолжение промежуточного обсуждения." in body
+
+
+@pytest.mark.parametrize("long_meeting", [False, True])
+def test_mixed_verified_paragraphs_keep_one_local_uncertainty_marker(long_meeting):
+    quotes = ["Срок проверки перенесли на вторник.", "Собеседник 1 обещал прислать отчёт.",
+              "Публикацию назначили на пятницу."]
+    texts = ["Проверка пройдёт во вторник.", "Отчёт обещали прислать. Имя говорящего не установлено.",
+             "Публикация состоится в пятницу."]
+    rows = [{"text": text, "quotes": [quote], "uncertain": i == 1}
+            for i, (text, quote) in enumerate(zip(texts, quotes))]
+    speech = "".join(q.ljust(ref.WINDOW_CHARS - 1) + "\n" for q in quotes) if long_meeting else "\n".join(quotes)
+    events = []
+
+    def request(cfg, prompt, system, predict):
+        data = json.loads(prompt)
+        if system in (ref.SYSTEM, ref.WINDOW_SYSTEM):
+            items = [row for row in rows if row["quotes"][0] in data["final_speech"]]
+            return json.dumps({"paragraphs": items})
+        if system in (ref.AUDIT_SYSTEM, ref.WINDOW_AUDIT_SYSTEM):
+            verdict = good_audit(len(data["paragraphs"]))
+            if system == ref.WINDOW_AUDIT_SYSTEM:
+                verdict.update(has_cross_window_correction=False, correction_quotes=[])
+            return json.dumps(verdict)
+        ids = [item["id"] for item in data["early_paragraphs"]]
+        if system == links.DISCOVER_SYSTEM:
+            return json.dumps({"checked_ids": ids, "relations": []})
+        assert system == links.DISCOVERY_AUDIT_SYSTEM
+        return json.dumps({"checked_ids": ids, "status": "complete", "missing_relations": [], "uncertain_ids": []})
+
+    body = ref.refine(speech, [], "", {}, request=request, progress=events.append)
+    assert [line for line in body.splitlines() if any(text in line for text in texts)] == [
+        texts[0], "**Требует уточнения.** " + texts[1], texts[2]]
+    assert "**Из стенограммы**" not in body
+    windows = [e for e in events if e["phase"] == "source_window"]
+    assert len(windows) == (3 if long_meeting else 1)
+    assert sum(e["reason"] == "verified_with_uncertainty" for e in windows) == 1
+
+
+def test_failed_short_audit_reaches_window_repair_and_second_audit():
+    quote = "Срок проверки перенесли на пятницу."
+    wrong = {"text": "Срок проверки перенесли на среду.", "quotes": [quote], "uncertain": False}
+    fixed = {**wrong, "text": "Проверка пройдёт в пятницу."}
+    rejection = {**good_audit(), "paragraphs": [{"index": 0, "supported": False}]}
+    window_audit = {"has_cross_window_correction": False, "correction_quotes": []}
+    replies = iter([(ref.SYSTEM, {"paragraphs": [wrong]}), (ref.AUDIT_SYSTEM, rejection),
+                    (ref.WINDOW_SYSTEM, {"paragraphs": [wrong]}),
+                    (ref.WINDOW_AUDIT_SYSTEM, {**rejection, **window_audit, "repair_quotes": [quote]}),
+                    (ref.WINDOW_REPAIR_SYSTEM, {"changes": [fixed]}),
+                    (ref.WINDOW_AUDIT_SYSTEM, {**good_audit(), **window_audit, "repair_quotes": []})])
+
+    def request(cfg, prompt, system, predict):
+        expected_system, reply = next(replies)
+        assert system == expected_system
+        assert json.loads(prompt)["final_speech"] == quote
+        return json.dumps(reply)
+
+    body = ref.refine(quote, [], "", {}, request=request)
+    assert fixed["text"] in body and wrong["text"] not in body and "**Из стенограммы**" not in body
+    assert next(replies, None) is None
 
 
 def test_short_reversed_paragraph_order_uses_source_before_audit():
@@ -94,7 +152,7 @@ def test_short_reversed_paragraph_order_uses_source_before_audit():
 
     source = first + "\n" + second
     assert_verbatim_speech(ref.refine(source, [], "", {}, request=request), source)
-    assert len(calls) == 1
+    assert len(calls) == 2  # both short and window drafts are rejected before audit
 
 
 def test_short_repeated_ambiguous_quote_requires_uncertainty_before_audit():
@@ -110,7 +168,7 @@ def test_short_repeated_ambiguous_quote_requires_uncertainty_before_audit():
     body = ref.refine(source, [], "", {}, request=request)
     assert_verbatim_speech(body, source)
     assert row["text"] not in body
-    assert len(calls) == 2
+    assert len(calls) == 4  # draft and targeted retry on both paths
 
 
 @pytest.mark.parametrize("windowed", [False, True])
@@ -130,8 +188,14 @@ def test_quote_repair_keeps_full_input_and_still_requires_audit(monkeypatch, win
     if windowed:
         audit.update(has_cross_window_correction=False, correction_quotes=[],
                      repair_quotes=[] if audit_passes else [quote])
-    responses = iter([{"paragraphs": [first, invalid]}, {"paragraphs": [first, valid]}, audit]
-                     + ([{"changes": []}] if windowed and not audit_passes else []))
+    replies = [{"paragraphs": [first, invalid]}, {"paragraphs": [first, valid]}, audit]
+    if not audit_passes:
+        if not windowed:
+            replies.extend([{"paragraphs": [first, valid]},
+                            {**audit, "has_cross_window_correction": False,
+                             "correction_quotes": [], "repair_quotes": [quote]}])
+        replies.append({"changes": []})
+    responses = iter(replies)
     calls, gates = [], []
 
     def request(cfg, prompt, system, predict):
@@ -142,9 +206,14 @@ def test_quote_repair_keeps_full_input_and_still_requires_audit(monkeypatch, win
         return ref.refine(speech, [], "", {}, request=request, before_request=lambda: gates.append(1))
 
     body = run()
-    assert_verbatim_speech(body, speech)
-    assert valid["text"] not in body and invalid["text"] not in body
-    assert len(calls) == len(gates) == (4 if windowed and not audit_passes else 3)
+    if audit_passes:
+        assert first["text"] in body
+        assert f"**Требует уточнения.** {valid['text']}" in body
+    else:
+        assert_verbatim_speech(body, speech)
+        assert valid["text"] not in body
+    assert invalid["text"] not in body
+    assert len(calls) == len(gates) == len(replies)
     original, retried = [json.loads(prompt) for prompt, _ in calls[:2]]
     if bad_quote:
         assert retried.pop("quote_feedback") == {
@@ -201,10 +270,10 @@ def test_short_repeated_quote_with_uncertainty_reaches_audit():
     events = []
     result = ref.refine(source, [], "", {}, request=lambda *args: next(responses), progress=events.append)
     assert next(responses, None) is None
-    assert_verbatim_speech(result, source)
-    assert row["text"] not in result
+    assert "**Из стенограммы**" not in result
+    assert f"**Требует уточнения.** {row['text']}" in result
     windows = [event for event in events if event["phase"] == "source_window"]
-    assert len(windows) == 1 and windows[0]["verbatim"] is True
+    assert len(windows) == 1 and windows[0]["verbatim"] is False
     assert (windows[0]["start_char"], windows[0]["source_chars"]) == (0, len(source))
 
 
@@ -227,7 +296,8 @@ def test_invalid_candidate_uses_source_before_audit(mutate, reason, requests):
     body = ref.refine(SPEECH, [], "", {}, request=request)
     assert_verbatim_speech(body, SPEECH)
     assert ROWS[0]["text"] not in body
-    assert len(calls) == requests
+    assert len(calls) == 2 * requests
+    assert calls[requests] == ref.WINDOW_SYSTEM
     assert all(system.startswith(ref.SYSTEM) for system in calls)  # no invalid draft reaches audit
 
 
@@ -239,7 +309,9 @@ def test_invalid_candidate_uses_source_before_audit(mutate, reason, requests):
     {**good_audit(), "paragraphs": []},
 ])
 def test_failed_semantic_audit_returns_only_source_material(audit):
-    answers = iter([json.dumps({"paragraphs": ROWS}), json.dumps(audit)])
+    # The window retry independently rejects a draft with invalid evidence.
+    bad = {**ROWS[0], "quotes": ["Этих слов в исходной речи нет."]}
+    answers = iter(map(json.dumps, [{"paragraphs": ROWS}, audit, {"paragraphs": [bad]}, {"paragraphs": [bad]}]))
     with pytest.raises(ref.RefinementRefused, match="audit_refused"):
         ref._audit(json.dumps(audit), 1)
     body = ref.refine(SPEECH, [], "", {}, request=lambda *a: next(answers))
@@ -251,8 +323,11 @@ def test_failed_semantic_audit_returns_only_source_material(audit):
 def test_short_fallback_round_trips_source_markdown_and_whitespace(ending):
     source = " \tНачало.\r\n**Из стенограммы**\n\n```text\n# Маркер\n```\nВнутри ````` ряда.  " + ending
     candidate = "Выдуманная рекомендация."
-    answers = iter([json.dumps({"paragraphs": [{"text": candidate, "quotes": ["Внутри ````` ряда."],
-                                                "uncertain": False}]}), json.dumps({**good_audit(), "coverage_complete": False})])
+    row = {"text": candidate, "quotes": ["Внутри ````` ряда."], "uncertain": False}
+    audit = {**good_audit(), "coverage_complete": False}
+    answers = iter(map(json.dumps, [{"paragraphs": [row]}, audit, {"paragraphs": [row]},
+                                    {**audit, "has_cross_window_correction": False, "correction_quotes": [],
+                                     "repair_quotes": row["quotes"]}, {"changes": []}]))
     body = ref.refine(source, [{"text": "Ранний черновик."}], "Непроверенный совет.", {},
                       request=lambda *args: next(answers))
     assert_verbatim_speech(body, source)
@@ -529,11 +604,13 @@ def test_missing_uncertainty_requires_explicit_model_repair_and_audit(repair):
         return json.dumps({"paragraphs": [candidate]})
 
     if repair:
-        assert_verbatim_speech(ref.refine(quote, [], "", {}, request=request), quote)
+        body = ref.refine(quote, [], "", {}, request=request)
+        assert f"**Требует уточнения.** {quote}" in body
         assert len(seen) == 3
     else:
         with pytest.raises(ref.RefinementRefused, match="missing_uncertainty"):
             ref._paragraphs(json.dumps({"paragraphs": [row]}), quote)
         assert_verbatim_speech(ref.refine(quote, [], "", {}, request=request), quote)
-        assert len(seen) == 2
+        assert len(seen) == 4
+        assert seen[2][1] == ref.WINDOW_SYSTEM
     assert seen[0][0] == seen[1][0]

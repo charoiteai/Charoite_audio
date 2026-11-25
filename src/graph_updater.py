@@ -3733,6 +3733,17 @@ def _revise_meeting_cores(cfg: dict, graph: pathlib.Path, cores: list[dict]) -> 
         print(f"tier3: пропущен ({e})")
 
 
+_DEBRIEF_WINDOW_REASONS = frozenset({
+    "verified", "verified_with_uncertainty", "uncertain", "noise",
+    "unsupported_quote", "duplicate_json_key", "model_json", "paragraph_schema",
+    "missing_uncertainty", "audit_refused", "window_audit_schema",
+    "window_correction_unknown", "unsupported_correction_quote", "invalid_repair_evidence",
+    "ambiguous_source_anchor", "paragraph_source_order", "ambiguous_repair_anchor",
+    "repair_source_conflict", "context_only_paragraph", "correction_marked_as_noise",
+    "unchanged_repair",
+})
+
+
 def _finish_refinement(tpath: pathlib.Path, cfg: dict, options: list[str], *, before_commit=None) -> None:
     """Publish against the final graph name and source, immediately before archival."""
     import debrief_pipeline
@@ -3742,8 +3753,16 @@ def _finish_refinement(tpath: pathlib.Path, cfg: dict, options: list[str], *, be
         debrief_pipeline.verify_publication(tpath)
         return
 
-    def heartbeat(_event=None):
+    def heartbeat(event=None):
         _report(None, None, stage="refining_debrief")
+        if type(event) is dict and event.get("phase") == "source_window":
+            reason = event.get("reason")
+            if type(reason) is not str or reason not in _DEBRIEF_WINDOW_REASONS:
+                reason = "other"
+            number = event.get("source_windows")
+            if type(number) is not int or not 1 <= number <= 1000000:
+                number = "unknown"
+            print(f"debrief: source_window={number} reason={reason}", flush=True)
 
     proof = options[options.index("--refine-before-archive") + 1]
     heartbeat()

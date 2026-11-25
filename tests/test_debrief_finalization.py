@@ -122,6 +122,33 @@ def test_graph_child_defers_only_for_explicit_parent_ack(tmp_path, monkeypatch, 
     assert seen[0]["graph_input_sha"] == proof
 
 
+def test_graph_refinement_window_heartbeat_logs_only_closed_reasons(tmp_path, monkeypatch, capsys):
+    import graph_updater as graph
+
+    reports, hooks = [], []
+    monkeypatch.setattr(graph, "_report", lambda *a, **kw: reports.append((a, kw)))
+    secret = "Синтетический приватный текст"
+
+    def fake_run(*args, **kwargs):
+        progress = kwargs["progress"]
+        progress({"phase": "request", "reason": secret})
+        progress({"phase": "source_window", "source_windows": 1, "reason": "audit_refused", "text": secret})
+        progress({"phase": "source_window", "source_windows": 2, "reason": secret})
+        progress({"phase": "complete", "reason": secret})
+        kwargs["before_commit"]()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    graph._finish_refinement(tmp_path / "synthetic.md", CFG, ["--refine-before-archive", "a" * 64],
+                             before_commit=lambda: hooks.append(True))
+    output = capsys.readouterr().out
+    assert output.splitlines() == ["debrief: source_window=1 reason=audit_refused",
+                                   "debrief: source_window=2 reason=other"]
+    assert secret not in output
+    assert len(reports) == 5
+    assert all(kw == {"stage": "refining_debrief"} for _, kw in reports)
+    assert hooks == [True]
+
+
 def test_first_publication_retry_after_interrupted_ack_cleanup(tmp_path, monkeypatch):
     from pathlib import Path
     import live_sidecar

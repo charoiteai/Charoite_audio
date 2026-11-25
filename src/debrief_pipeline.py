@@ -16,6 +16,7 @@ import re
 import secrets
 import stat
 import time
+import unicodedata
 
 from charoite_graph import safe_write
 import debrief_refinement as refinement
@@ -34,6 +35,65 @@ def enabled(cfg: dict) -> bool:
 
 def binding_path(live: pathlib.Path) -> pathlib.Path:
     return live.with_name(live.name + BINDING_SUFFIX)
+
+
+def _equivalent_name(first: str, second: str) -> bool:
+    return unicodedata.normalize("NFC", first) == unicodedata.normalize("NFC", second)
+
+
+def _file_stat(path: pathlib.Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _same_entry(first: pathlib.Path, second: pathlib.Path) -> bool:
+    """An NFC/NFD alias of one directory entry must never be unlinked."""
+    if first == second:
+        return True
+    if first.parent != second.parent or not _equivalent_name(first.name, second.name):
+        return False
+    left, right = _file_stat(first), _file_stat(second)
+    if not left or not right or not stat.S_ISREG(left.st_mode) or not os.path.samestat(left, right):
+        return False
+    if left.st_nlink == 1:
+        return True
+    # A crash after link() on a byte-sensitive volume can leave two genuine
+    # hardlinks. Only unlink when both exact directory entries are present.
+    names = {first.name, second.name}
+    with os.scandir(first.parent) as entries:
+        for entry in entries:
+            names.discard(entry.name)
+            if not names:
+                return False
+    return True
+
+
+def _bound_file(expected: pathlib.Path, recorded: object, refusal: str, *, missing_ok: bool = False) -> pathlib.Path:
+    """Use only the two supplied spellings, and refuse distinct owners."""
+    if recorded == expected.name:
+        return expected
+    if isinstance(recorded, str) and _equivalent_name(recorded, expected.name):
+        stored = expected.with_name(recorded)
+        current, previous = _file_stat(expected), _file_stat(stored)
+        if all(stat.S_ISREG(st.st_mode) for st in (current, previous) if st is not None):
+            if current is not None and (previous is None or os.path.samestat(current, previous)):
+                return expected
+            if current is None and previous is not None:
+                return stored
+            if current is None and missing_ok:
+                return expected
+    raise refinement.RefinementRefused(refusal)
+
+
+def _named_debrief(live: pathlib.Path, name: str, *, missing_ok: bool = False) -> pathlib.Path:
+    expected = live.with_name(live.stem + meeting_stamp.DEBRIEF_FILE_SUFFIX)
+    parsed = meeting_stamp.decompose(live.stem)
+    if parsed and parsed[1]:
+        return _bound_file(expected, name, "debrief_binding_path", missing_ok=missing_ok)
+    # Untitled second-precision meetings can own a minute-precision derivative.
+    return live.with_name(name)
 
 
 def handoff_path(live: pathlib.Path) -> pathlib.Path:
@@ -132,7 +192,8 @@ def recover_publication(live: pathlib.Path, *, rejected: bool = False, finalize:
         _check_parent_journal(journal, parent_ack)
     name = journal.get("file")
     backup = journal.get("backup")
-    if (journal.get("owner") != live.name or not isinstance(name, str)
+    _bound_file(live, journal.get("owner"), "publication_journal")
+    if (not isinstance(name, str)
             or pathlib.Path(name).name != name
             or (backup is not None and (not isinstance(backup, str) or pathlib.Path(backup).name != backup))):
         raise refinement.RefinementRefused("publication_journal")
@@ -147,7 +208,7 @@ def recover_publication(live: pathlib.Path, *, rejected: bool = False, finalize:
     if rejected and not (journal.get("rejected") or journal.get("rollback_started")):
         journal = _update_publication(live, journal, {"rejected": True})
     binding = _read_json(binding_path(live))
-    destination = live.parent / name
+    destination = _named_debrief(live, name, missing_ok=True)
     passport = live.with_name(live.name + ".live.json")
     rejected = rejected or journal.get("rejected") is True or journal.get("rollback_started") is True
     invalid_commit = False
@@ -365,7 +426,8 @@ def _source(live: pathlib.Path):
 
 
 def _establish(live: pathlib.Path, handoff: dict | None, final_sha: str | None,
-               timeout: float) -> tuple[dict, dict]:
+               timeout: float) -> tuple[dict, dict, safe_write.Snapshot | None]:
+    refresh = None
     full_sha, source = _source(live)
     path = binding_path(live)
     if handoff is not None:
@@ -386,22 +448,21 @@ def _establish(live: pathlib.Path, handoff: dict | None, final_sha: str | None,
         else:
             _exclusive_json(path, value)
     else:
+        before = safe_write.stat_snapshot(path)
         value = _read_json(path)
-        if value.get("owner") != live.name:
-            raise refinement.RefinementRefused("binding_owner")
+        _bound_file(live, value.get("owner"), "binding_owner")
         handoff = value.get("handoff")
         _check_handoff(handoff)
         terminal = _terminal(live, handoff)
         # A new proven rebuild may change the speech. A no-op/human-edit path may not.
-        if final_sha != full_sha and (value.get("full_sha256") != full_sha
-                                     or value.get("source_sha256") != source.sha()):
-            raise refinement.RefinementRefused("canonical_final_unproven")
-        if final_sha == full_sha:
-            before = safe_write.stat_snapshot(path)
+        if value.get("full_sha256") != full_sha or value.get("source_sha256") != source.sha():
+            if final_sha != full_sha:
+                raise refinement.RefinementRefused("canonical_final_unproven")
             value = {**value, "full_sha256": full_sha, "source_sha256": source.sha()}
-            if not safe_write.write_text(path, json.dumps(value), expect=before):
+            if before is None:
                 raise refinement.RefinementRefused("binding_changed")
-    return value, terminal
+            refresh = before
+    return value, terminal, refresh
 
 
 def _inputs(live, cfg, handoff, final_sha, timeout):
@@ -409,7 +470,7 @@ def _inputs(live, cfg, handoff, final_sha, timeout):
         raise refinement.RefinementRefused("feature_disabled")
     recover_retitle(live)
     recover_publication(live)
-    binding, terminal = _establish(live, handoff, final_sha, timeout)
+    binding, terminal, refresh = _establish(live, handoff, final_sha, timeout)
     full_sha, source = _source(live)
     if full_sha != binding["full_sha256"] or source.sha() != binding["source_sha256"]:
         raise refinement.RefinementRefused("source_changed")
@@ -418,12 +479,13 @@ def _inputs(live, cfg, handoff, final_sha, timeout):
             or meta.get("transcript_sha256") != full_sha):
         raise refinement.RefinementRefused("canonical_passport")
     destination = meeting_stamp.derivative_path(live, "debrief", graphs.graph_dir(cfg))
-    if binding.get("debrief_file", destination.name) != destination.name:
-        raise refinement.RefinementRefused("debrief_binding_path")
+    destination = _bound_file(destination, binding.get("debrief_file", destination.name), "debrief_binding_path")
     before = safe_write.stat_snapshot(destination)
     state = live_sidecar.derivative_state(destination, meta, "debrief", source.sha())
     if state not in {live_sidecar.MISSING, live_sidecar.FRESH, live_sidecar.STALE}:
         raise refinement.RefinementRefused("debrief_not_owned")
+    if refresh is not None and not safe_write.write_text(binding_path(live), json.dumps(binding), expect=refresh):
+        raise refinement.RefinementRefused("binding_changed")
     return binding, terminal, source, meta, destination, before
 
 
@@ -473,6 +535,9 @@ def run(live: pathlib.Path, cfg: dict, *, handoff: dict | None, final_sha: str |
         raise refinement.RefinementRefused("empty_refinement")
 
     def unchanged():
+        _bound_file(live, binding["owner"], "binding_owner")
+        if "debrief_file" in binding:
+            _named_debrief(live, binding["debrief_file"], missing_ok=True)
         current_full, current_source = _source(live)
         if (current_full != full_sha or current_source.sha() != source.sha()
                 or _read_json(binding_path(live)) != binding
@@ -562,12 +627,13 @@ def verify_publication(live: pathlib.Path) -> pathlib.Path:
     value = _read_json(binding_path(live))
     full_sha, source = _source(live)
     name = value.get("debrief_file")
-    if (not value.get("publication_id") or value.get("owner") != live.name or value.get("full_sha256") != full_sha
+    _bound_file(live, value.get("owner"), "publication_source_changed")
+    if (not value.get("publication_id") or value.get("full_sha256") != full_sha
             or value.get("source_sha256") != source.sha()
             or not isinstance(name, str) or pathlib.Path(name).name != name):
         raise refinement.RefinementRefused("publication_source_changed")
     _terminal(live, value.get("handoff"))
-    path = live.parent / name
+    path = _named_debrief(live, name)
     meta = live_sidecar.read_direct(live) or {}
     if (hashlib.sha256(path.read_bytes()).hexdigest() != value.get("debrief_sha256")
             or meta.get("stamp") != value["handoff"]["stamp"]
@@ -629,7 +695,7 @@ def parent_publication(original: pathlib.Path, proof: str, *, reject: bool = Fal
 
 def move_retitle_file(origin: pathlib.Path, target: pathlib.Path) -> None:
     """A no-clobber move which can be resumed after either directory operation."""
-    if origin == target or not origin.exists():
+    if _same_entry(origin, target) or not origin.exists():
         return
     if origin.is_symlink() or target.is_symlink():
         raise refinement.RefinementRefused("retitle_file_conflict")
@@ -646,9 +712,18 @@ def move_retitle_file(origin: pathlib.Path, target: pathlib.Path) -> None:
 
 def _retitled_binding(value: dict, old: pathlib.Path, new: pathlib.Path, full_sha: str) -> dict:
     updated = {**value, "owner": new.name, "full_sha256": full_sha}
-    if old != new and value.get("debrief_file") is not None:
+    if not _same_entry(old, new) and value.get("debrief_file") is not None:
         updated["debrief_file"] = new.stem + meeting_stamp.DEBRIEF_FILE_SUFFIX
     return updated
+
+
+def _retitle_reservation(value: dict, old: pathlib.Path, header: list | None) -> dict:
+    pending = {**value, "retitle_header": header}
+    if old.name != value["owner"]:
+        # Once the transcript moves, a byte-sensitive volume needs the original
+        # spelling to locate the old binding and passport during crash recovery.
+        pending["retitle_from"] = old.name
+    return pending
 
 
 def prepare_retitle(old: pathlib.Path, new: pathlib.Path, *, header: tuple[str, str] | None = None) -> None:
@@ -659,16 +734,17 @@ def prepare_retitle(old: pathlib.Path, new: pathlib.Path, *, header: tuple[str, 
     snapshot = safe_write.stat_snapshot(path)
     value = _read_json(path)
     full_sha, source = _source(old)
-    if (old.parent != new.parent or value.get("owner") != old.name or "retitle_header" in value
+    _bound_file(old, value.get("owner"), "retitle_source_changed")
+    if (old.parent != new.parent or "retitle_header" in value
             or value.get("full_sha256") != full_sha or value.get("source_sha256") != source.sha()):
         raise refinement.RefinementRefused("retitle_source_changed")
-    pending = {**value, "retitle_header": list(header) if header else None}
+    pending = _retitle_reservation(value, old, list(header) if header else None)
     pending_text = _identity_json(pending)
     # The post-header SHA-256 has the same UTF-8 length as the verified old hash.
     # Measure the actual final filenames before reserving or moving anything.
     _identity_json(_retitled_binding(value, old, new, full_sha))
     destination = binding_path(new)
-    if old == new:
+    if _same_entry(old, new):
         if not safe_write.write_text(path, pending_text, expect=snapshot):
             raise refinement.RefinementRefused("binding_changed")
     elif not os.path.lexists(destination):
@@ -710,7 +786,16 @@ def recover_retitle(live: pathlib.Path) -> None:
     name = value.get("owner")
     if not isinstance(name, str) or pathlib.Path(name).name != name or not name.endswith(".md"):
         raise refinement.RefinementRefused("retitle_owner")
-    old = live.with_name(name)
+    old_name = value.pop("retitle_from", name)
+    if not isinstance(old_name, str) or not _equivalent_name(old_name, name):
+        raise refinement.RefinementRefused("retitle_owner")
+    old = live.with_name(old_name)
+    recorded = live.with_name(name)
+    if old_name != name and os.path.lexists(recorded):
+        if not (_same_entry(recorded, live) or _same_entry(recorded, old)):
+            raise refinement.RefinementRefused("retitle_owner")
+    if _same_entry(old, live):
+        old = live
     full_sha = live_sidecar.sha(next_body)
     updated = _retitled_binding(value, old, live, full_sha)
     text = _identity_json(updated)
@@ -734,8 +819,8 @@ def recover_retitle(live: pathlib.Path) -> None:
     if derivative is not None:
         if not isinstance(derivative, str) or pathlib.Path(derivative).name != derivative:
             raise refinement.RefinementRefused("retitle_debrief_conflict")
-        origin = old.with_name(derivative)
-        target = live.with_name(updated["debrief_file"])
+        origin = _named_debrief(old, derivative, missing_ok=True)
+        target = origin if old == live else live.with_name(updated["debrief_file"])
         existing = origin if origin.exists() else target
         if existing.is_symlink() or hashlib.sha256(existing.read_bytes()).hexdigest() != value.get("debrief_sha256"):
             raise refinement.RefinementRefused("retitle_debrief_changed")
@@ -771,21 +856,22 @@ def can_retitle(old: pathlib.Path, new: pathlib.Path) -> bool:
     try:
         value = _read_json(binding_path(old))
         full_sha, source = _source(old)
-        if (value.get("owner") != old.name or value.get("full_sha256") != full_sha
+        _bound_file(old, value.get("owner"), "retitle_source_changed")
+        if (value.get("full_sha256") != full_sha
                 or value.get("source_sha256") != source.sha()):
             return False
-        if old != new and os.path.lexists(binding_path(new)):
+        if not _same_entry(old, new) and os.path.lexists(binding_path(new)):
             pending = _read_json(binding_path(new))
-            if "retitle_header" not in pending or pending != {**value, "retitle_header": pending["retitle_header"]}:
+            if "retitle_header" not in pending or pending != _retitle_reservation(value, old, pending["retitle_header"]):
                 return False
         name = value.get("debrief_file")
         if name is not None:
             if not isinstance(name, str) or pathlib.Path(name).name != name:
                 return False
-            origin = old.parent / name
+            origin = _named_debrief(old, name)
             target = new.with_name(new.stem + meeting_stamp.DEBRIEF_FILE_SUFFIX)
             if (hashlib.sha256(origin.read_bytes()).hexdigest() != value.get("debrief_sha256")
-                    or (target != origin and target.exists())):
+                    or (target.exists() and not _same_entry(origin, target))):
                 return False
         return True
     except (OSError, refinement.RefinementRefused):
@@ -794,7 +880,7 @@ def can_retitle(old: pathlib.Path, new: pathlib.Path) -> bool:
 
 def retitle_binding(old: pathlib.Path, new: pathlib.Path, *, header_change: tuple[str, str] | None = None) -> None:
     """Move only the exact established binding; no minute or sidecar lookup."""
-    if old == new and binding_path(old).exists():
+    if _same_entry(old, new) and binding_path(old).exists():
         value = _read_json(binding_path(old))
         if header_change is not None and header_change != (value.get("full_sha256"), _source(new)[0]):
             raise refinement.RefinementRefused("retitle_source_changed")

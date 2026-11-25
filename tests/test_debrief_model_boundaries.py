@@ -337,6 +337,20 @@ def test_oversized_mandatory_audit_refuses_transport_and_returns_window_fallback
     assert calls == [ref.SYSTEM] and fallback == [speech]
 
 
+@pytest.mark.parametrize("reason", ["paragraph_schema", "audit_refused", "arbitrary_closed_failure"])
+def test_short_unverified_reply_routes_to_window_path(monkeypatch, reason):
+    speech = "Проверку макета проведут после обсуждения."
+    seen = []
+
+    def reject(*args, **kwargs):
+        raise ref.UnverifiedReply(reason)
+
+    monkeypatch.setattr(ref, "_draft", reject)
+    monkeypatch.setattr(ref, "_windowed", lambda source, *args: (seen.append(source), "windowed")[1])
+    assert ref.refine(speech, [], "", {}, request=lambda *a: pytest.fail("no transport")) == "windowed"
+    assert seen == [speech]
+
+
 def test_local_request_rejects_context_with_only_output_and_reserve_even_for_empty_input(monkeypatch):
     calls = fake_local(monkeypatch, context=612)
     with pytest.raises(ref.RefinementRefused, match="complete_input_exceeds_context"):
