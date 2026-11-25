@@ -39,9 +39,11 @@ def test_publication_requires_resolved_correction_and_marks_unknown_owner(tmp_pa
         if system == ref.SYSTEM or system == links.CONCLUSION_SYSTEM:
             assert [item["text"] for item in data["live_thread"]] == [THREAD]
             if system == links.CONCLUSION_SYSTEM:
+                assert predict == 2000
                 assert {q for row in data["verified"] for q in row["quotes"]} == {EARLY, LATE, OWNER}
             return json.dumps({"paragraphs": final})
         if system in (ref.AUDIT_SYSTEM, links.CONCLUSION_AUDIT_SYSTEM):
+            assert predict == 1000
             audit_inputs.append(data)
             return json.dumps({**verdict(data["paragraphs"]), "corrections_resolved": not unresolved})
         if system == ref.WINDOW_SYSTEM:
@@ -70,6 +72,7 @@ def test_publication_requires_resolved_correction_and_marks_unknown_owner(tmp_pa
     assert pipeline.verify_publication(live) == destination
     assert live.read_bytes() == original
     body = destination.read_text()
+    assert ref.PARTIAL_NOTE not in body
     assert body.count(FINAL) == 1 and "**Требует уточнения.** " + OPEN in body
     assert not any(value in body for value in (EARLY, LATE, OWNER, "Ольг", "среду", "**Из стенограммы**"))
     assert len(audit_inputs) == 1 and audit_inputs[0]["paragraphs"] == final

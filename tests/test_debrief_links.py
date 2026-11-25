@@ -514,3 +514,9 @@ def test_bad_discovery_reply_discards_its_batch_without_source_calls():
     calls = []
     assert run(caller(audit_patch={"checked_ids": []}, calls=calls), count=3) == []
     assert links.PAIR_AUDIT_SYSTEM not in [system for system, _ in calls]
+
+
+@pytest.mark.parametrize("ids,rows", [([], [{}]), ((), []), ([], ())])
+def test_entries_refuses_inconsistent_window_identity(ids, rows):
+    with pytest.raises(ref.RefinementRefused, match="link_input_identity"):
+        links._entries([{"ids": ids, "rows": rows, "window": {}}])
