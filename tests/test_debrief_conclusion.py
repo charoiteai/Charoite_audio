@@ -142,3 +142,34 @@ def test_final_edit_failure_cannot_add_a_fact_or_hide_uncertainty(failure):
     with pytest.raises(ref.RefinementRefused):
         links.render_conversation(done, [], [], call)
     assert len(calls) == (2 if failure == "audit" else 1)
+
+
+def test_audits_receive_speakers_bound_to_their_own_evidence():
+    question = "Кто проверит подписи к экспонатам?"
+    answer = "Я возьму проверку подписей."
+    first = "**Координатор** [12:00]:\n" + question + "\n"
+    speech = first + "**Собеседник** [12:01]:\n" + answer + "\n" + question
+    rows = [paragraph("Проверку обещал собеседник.", [answer, question])]
+    expected = {answer: ["Собеседник"], question: ["Координатор", "Собеседник"]}
+    assert ref._quote_speakers(speech, rows) == {"quote_speakers": expected}
+    assert ref._quote_speakers(answer, rows, "Собеседник")["quote_speakers"][answer] == ["Собеседник"]
+    assert ref._quote_speakers(answer, rows) == {}
+
+    prompts = {}
+
+    def request(cfg, prompt, system, predict):
+        data = json.loads(prompt)
+        if system == ref.SYSTEM:
+            return json.dumps({"paragraphs": rows}, ensure_ascii=False)
+        prompts[system] = data
+        if system == ref.AUDIT_SYSTEM:
+            return json.dumps(verdict(rows))
+        assert system == ref.WINDOW_AUDIT_SYSTEM
+        return json.dumps({**verdict(rows), "has_cross_window_correction": False,
+                           "correction_quotes": [], "repair_quotes": []})
+
+    ref.refine(speech, [], "", {}, request=request)
+    window = ref._windows(speech, len(speech))[0]
+    assert ref._refine_window(window, [], "", lambda p, s, n: request({}, p, s, n))[0] == rows
+    assert prompts[ref.AUDIT_SYSTEM]["quote_speakers"] == expected
+    assert prompts[ref.WINDOW_AUDIT_SYSTEM]["quote_speakers"] == expected
