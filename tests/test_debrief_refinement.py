@@ -267,9 +267,18 @@ def test_local_context_admits_exact_limit_and_rejects_one_character_over(monkeyp
 @pytest.mark.parametrize("bad_ctx", [None, "8192", True, 612, 500])
 def test_local_request_rejects_invalid_or_too_small_context(monkeypatch, bad_ctx):
     calls = fake_local(monkeypatch, context=bad_ctx)
+    # Empty prompt/system ensures context <= predict + CONTEXT_RESERVE is exercised directly
+    # (not shadowed by len(system) + len(prompt) > _max_input_chars), killing LtE->Lt and Add->Sub mutants.
     with pytest.raises(ref.RefinementRefused, match="complete_input_exceeds_context"):
-        ref.local_request({"llm": {"engine": "ollama"}}, "p", "s", 100)
+        ref.local_request({"llm": {"engine": "ollama"}}, "", "", 100)
     assert calls == []
+
+
+def test_local_request_accepts_minimal_valid_context_and_empty_cfg(monkeypatch):
+    calls = fake_local(monkeypatch, context=613)
+    assert ref.local_request({}, "", "", 100) == "{}"
+    assert ref.local_request({"llm": None}, "p", "s", 100) == "{}"
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("system,expected", [
@@ -683,3 +692,28 @@ def test_render_deduplicates_before_headings_and_merges_adjacent_topics():
 def test_clean_topic_strips_leading_hashes():
     parsed = ref._parse_paragraphs(ok_reply([{"topic": "##   Релиз  ", "text": "Готово."}]))
     assert parsed == [{"topic": "Релиз", "text": "Готово."}]
+
+
+def test_snap_boundary_stays_strictly_below_high_on_trailing_space():
+    assert ref._snap_boundary("a" * 300 + " ", [], 300, 0, 301) == 300
+
+
+@pytest.mark.parametrize("extra_budget", [0, 1])
+def test_merge_falls_back_to_collected_when_request_budget_exhausted(monkeypatch, extra_budget):
+    speech = "\n".join(f"**Участник A** [00:{i:02d}]:\nРеплика {i} " + ("текст " * 60) for i in range(40))
+    thread = [{"kind": "paragraph", "text": f"Пункт {i}."} for i in range(12)]
+    headers, speakers = ref._extract_headers(speech)
+    batch_count = len(ref._plan_initial_tasks(speech, thread, headers, 8192, speakers))
+    monkeypatch.setattr(ref, "MAX_REQUESTS", batch_count + extra_budget)
+    merge_attempts = []
+
+    def request(cfg, prompt, system, predict):
+        if system == ref.MERGE_SYSTEM:
+            merge_attempts.append(1)
+            return "bad-json"  # triggers retry which exceeds MAX_REQUESTS when extra_budget == 1
+        return ok_reply([{"topic": "План", "text": f"Пункт {len(prompt)}_{len(json.loads(prompt)['live_thread'])}."}])
+
+    out = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=request)
+    assert len(merge_attempts) == extra_budget
+    assert "## План" in out
+    assert "Пункт" in out

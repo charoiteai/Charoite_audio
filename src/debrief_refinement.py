@@ -213,7 +213,7 @@ def _paragraphs_schema(*, min_items: int = 0) -> dict:
     }
 
 
-def _output_schema(system: str, prompt: str) -> dict | None:
+def _output_schema(system: str) -> dict | None:
     if system.startswith(EDIT_BATCH_SYSTEM):
         return _paragraphs_schema(min_items=0)
     if system.startswith(EDIT_SINGLE_SYSTEM) or system.startswith(MERGE_SYSTEM):
@@ -238,7 +238,8 @@ def local_request(cfg: dict, prompt: str, system: str, predict: int) -> str:
     import threading
     from llm import LLM, LLMHTTPError
 
-    local = {**cfg, "llm": {**cfg["llm"], "cloud_fallback_local": False, "allow_remote": False}}
+    llm_cfg = cfg.get("llm") or {}
+    local = {**cfg, "llm": {**llm_cfg, "cloud_fallback_local": False, "allow_remote": False}}
     client = LLM(local)
     authority = LocalLoopbackAuthority.verify(client)
     context = client.num_ctx
@@ -247,7 +248,7 @@ def local_request(cfg: dict, prompt: str, system: str, predict: int) -> str:
     if (type(context) is not int or context <= predict + CONTEXT_RESERVE
             or len(system) + len(prompt) > _max_input_chars(context, predict)):
         raise RefinementRefused("complete_input_exceeds_context")
-    schema = _output_schema(system, prompt)
+    schema = _output_schema(system)
     options = {"output_schema": schema} if schema is not None else {}
     try:
         return "".join(client.grounded_answer(
@@ -400,7 +401,7 @@ def _snap_boundary(speech: str, headers: list[tuple[int, str]], target: int,
         return min(high - 1, chosen + 1)
     sp_before = speech.rfind(" ", left, target + 1)
     if sp_before > low:
-        return sp_before + 1
+        return min(high - 1, sp_before + 1)
     return target
 
 
@@ -670,7 +671,7 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
                       "verbatim": False, "reason": reason, "semantic_proof": False})
 
     final_rows = collected
-    if completed > 1 and len(collected) > 1:
+    if completed > 1 and len(collected) > 1 and count < MAX_REQUESTS:
         merge_prompt = _dump({"speakers": speakers, "paragraphs": collected})
         merge_budget = _max_input_chars(context, MERGE_PREDICT)
         if len(merge_prompt) + len(MERGE_SYSTEM) <= merge_budget:
@@ -680,7 +681,7 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
             except UnverifiedReply:
                 final_rows = collected
             except RefinementRefused as exc:
-                if str(exc) not in SPLIT_REASONS:
+                if str(exc) not in SPLIT_REASONS and str(exc) != "model_request_budget":
                     raise
                 final_rows = collected
 
