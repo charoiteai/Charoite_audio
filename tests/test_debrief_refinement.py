@@ -474,12 +474,20 @@ def test_snap_boundary_exact_cases():
     speech = "x" * 100 + "\n" + "y" * 50 + "**A** [00:01]:\n" + "z" * 100
     hdr_pos = speech.index("**A**")
     assert ref._snap_boundary(speech, [(hdr_pos, "A")], hdr_pos - 20, 0, len(speech)) == hdr_pos
+    # Nearest of two headers in radius is chosen by abs(pos - target)
+    assert ref._snap_boundary("a" * 300, [(100, "A"), (190, "B")], 180, 0, 300) == 190
+    # Headers directly on low or high are excluded (strictly inside (low, high))
+    assert ref._snap_boundary("a" * 300, [(10, "A")], 50, 10, 200) == 50
+    assert ref._snap_boundary("a" * 300, [(200, "B")], 150, 10, 200) == 150
     # Header at exact lo and hi bounds
     assert ref._snap_boundary("a" * 600, [(50, "A")], 300, 0, 600) == 50
     assert ref._snap_boundary("a" * 600, [(550, "B")], 300, 0, 600) == 550
     # Header outside radius (400 +- 250 = [150, 650]) is ignored; newline before target is picked
     nl_speech = "a" * 320 + "\n" + "b" * 400
     assert ref._snap_boundary(nl_speech, [(10, "A"), (700, "B")], 400, 0, len(nl_speech)) == 321
+    # Newline at exact target index is found (target + 1 inclusive end); newline at high is NOT found
+    assert ref._snap_boundary("a" * 10 + "\n" + "b" * 20, [], 10, 0, 30) == 11
+    assert ref._snap_boundary("a" * 20 + "\n" + "b" * 5, [], 25, 0, 20) == 19
     # Trailing newline at high-1 stays strictly below high
     assert ref._snap_boundary("a" * 20 + "\n", [], 20, 0, 21) == 20
     # No header, no newline -> clamped inside (low, high)
@@ -530,9 +538,18 @@ def test_plan_initial_tasks_exact_batch_count_and_contiguous_coverage():
     assert len(tasks) == 2
     assert tasks[0][1] == 0 and tasks[0][2] == tasks[1][1] and tasks[1][2] == len(speech)
     assert sum(len(b) for b, _, _ in tasks) == 4
-    # Exact boundary total_chars == BATCH_TARGET_CHARS -> 1 batch
-    exact = ref._plan_initial_tasks("x" * 5500, [{"kind": "paragraph", "text": "y" * 500}], [])
+    # Exact boundary total_chars == BATCH_TARGET_CHARS (6000) -> 1 batch; 6001 -> 2 batches
+    exact = ref._plan_initial_tasks("x" * 5500, [{"kind": "paragraph", "text": "y" * 500}, {"kind": "paragraph", "text": ""}], [])
     assert len(exact) == 1 and exact[0][1:] == (0, 5500)
+    over = ref._plan_initial_tasks("x" * 5501, [{"kind": "paragraph", "text": "y" * 500}, {"kind": "paragraph", "text": ""}], [])
+    assert len(over) == 2
+    # Ratio lookup uses end_row - 1 (not end_row)
+    pos_thread = [
+        {"kind": "paragraph", "text": "a", "position": 100, "source_tail": 1000},
+        {"kind": "paragraph", "text": "b", "position": 900, "source_tail": 1000},
+    ]
+    pos_tasks = ref._plan_initial_tasks("x" * 6500, pos_thread, [])
+    assert len(pos_tasks) == 2 and pos_tasks[0][2] == 650
 
 
 def test_build_batch_payload_overlap_and_speaker_at_start():
@@ -554,11 +571,12 @@ def test_split_task_covers_multiblock_speech_longblock_and_none():
     two = [{"text": "x"}, {"text": "y"}]
     res = ref._split_task(speech, [], two, 0, 1200)
     assert res == [([two[0]], 0, 600), ([two[1]], 600, 1200)]
-    # 2. Single block, speech > MIN_SPEECH_SLICE (513) vs == MIN_SPEECH_SLICE (512)
+    # 2. Single block, speech > MIN_SPEECH_SLICE (513) vs == MIN_SPEECH_SLICE (512) vs offset slice (500 chars at 400..900)
     one_short = [{"text": "короткий"}]
     res_sp = ref._split_task("a" * 513, [], one_short, 0, 513)
     assert res_sp == [(one_short, 0, 256), (one_short, 256, 513)]
     assert ref._split_task("a" * 512, [], one_short, 0, 512) is None
+    assert ref._split_task("a" * 1000, [], one_short, 400, 900) is None
     # 3. Single block, speech <= 512, long block == MIN_BLOCK_SPLIT_CHARS (600) vs 599
     long_row = [{"text": "б" * 600}]
     res_blk = ref._split_task("a" * 512, [], long_row, 0, 512)
@@ -768,16 +786,55 @@ def test_adaptive_split_on_provider_limit_for_multiblock_batch(split_reason):
 
 def test_source_window_budget_enforced_initial_and_on_split(monkeypatch):
     speech = "а" * 15000
-    thread = [{"kind": "paragraph", "text": f"Пункт {i}"} for i in range(5)]
+    thread = [{"kind": "paragraph", "text": f"Пункт {i}"} for i in range(6)]
+    # Initial tasks == 3: MAX_CHUNKS == 2 refuses, MAX_CHUNKS == 3 succeeds
     monkeypatch.setattr(ref, "MAX_CHUNKS", 2)
     with pytest.raises(ref.RefinementRefused, match="source_window_budget"):
         ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=lambda *a: ok_reply([]))
+    monkeypatch.setattr(ref, "MAX_CHUNKS", 3)
+    out = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}},
+                     request=lambda c, p, s, pr: ok_reply([{"topic": "Т", "text": f"Ок {len(p)}"}]))
+    assert "Ок" in out
 
-    # Split exceeding MAX_CHUNKS or unsplittable raises source_window_budget
+    # Split boundary: 3 initial tasks; batch 1 completes (completed=1), batch 2 splits (pending=1, halves=2 -> total 4).
+    # MAX_CHUNKS == 4 must succeed; MAX_CHUNKS == 3 must refuse source_window_budget.
+    def make_split_req():
+        state = {"n": 0, "split": False}
+        def req(cfg, prompt, system, predict):
+            if system == ref.MERGE_SYSTEM:
+                return ok_reply([{"topic": "Т", "text": "Итог"}])
+            state["n"] += 1
+            if state["n"] == 2 and not state["split"]:
+                state["split"] = True
+                raise ref.RefinementRefused("output_budget")
+            return ok_reply([{"topic": "Т", "text": f"Чанк {state['n']}"}])
+        return req
+
+    monkeypatch.setattr(ref, "MAX_CHUNKS", 4)
+    assert "Итог" in ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=make_split_req())
     monkeypatch.setattr(ref, "MAX_CHUNKS", 3)
     with pytest.raises(ref.RefinementRefused, match="source_window_budget"):
-        ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}},
-                   request=lambda *a: (_ for _ in ()).throw(ref.RefinementRefused("output_budget")))
+        ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=make_split_req())
+
+
+def test_batch_preserves_overlap_when_it_fits_and_drops_overlap_only_when_over_budget():
+    # Two batches: batch 1 owns [0..cut], batch 2 owns [cut..end].
+    # When overlap fits, batch 1 must include characters strictly past cut (overlap > 0).
+    speech = "A" * 3500 + "M" * 400 + "B" * 3500
+    thread = [{"kind": "paragraph", "text": "t1"}, {"kind": "paragraph", "text": "t2"}]
+    seen_speeches = []
+    def req(cfg, prompt, system, predict):
+        if system == ref.MERGE_SYSTEM:
+            return ok_reply([{"topic": "Т", "text": "Ок."}])
+        if system == ref.EDIT_SINGLE_SYSTEM:
+            raise ref.RefinementRefused("output_budget")
+        seen_speeches.append(json.loads(prompt)["final_speech"])
+        return ok_reply([{"topic": "Т", "text": f"Ф{len(seen_speeches)}"}])
+    ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=req)
+    assert len(seen_speeches) == 2
+    # Both batches must strictly include OVERLAP_CHARS beyond the midpoint cut (3700).
+    assert len(seen_speeches[0]) == 3700 + ref.OVERLAP_CHARS
+    assert len(seen_speeches[1]) == 3700 + ref.OVERLAP_CHARS
 
 
 def test_merge_skipped_when_single_batch_or_single_paragraph_or_over_budget():

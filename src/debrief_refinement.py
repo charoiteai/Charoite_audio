@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import pathlib
 import unicodedata
 
@@ -432,7 +433,7 @@ def _plan_initial_tasks(speech: str, thread: list[dict],
     """Build contiguous batch tasks covering speech [0 .. len(speech)] without gaps."""
     total_speech = len(speech)
     total_chars = total_speech + sum(len(row["text"]) for row in thread)
-    num_batches = min(len(thread), max(1, (total_chars + BATCH_TARGET_CHARS - 1) // BATCH_TARGET_CHARS))
+    num_batches = min(len(thread), math.ceil(total_chars / BATCH_TARGET_CHARS))
     ratios = _thread_end_ratios(thread)
     tasks: list[tuple[list[dict], int, int]] = []
     cursor = 0
@@ -594,7 +595,7 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
                          "verbatim": False, "reason": reason})
 
     final_rows = collected
-    if completed > 1 and len(collected) > 1 and count < MAX_REQUESTS:
+    if completed > 1 and len(collected) > 1:
         merge_prompt = _dump({"speakers": speakers, "paragraphs": collected})
         merge_budget = _max_input_chars(context, MERGE_PREDICT)
         if _fits(merge_prompt, MERGE_SYSTEM, merge_budget):
