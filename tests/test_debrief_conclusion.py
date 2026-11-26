@@ -180,3 +180,36 @@ def test_audits_receive_speakers_bound_to_their_own_evidence():
     assert ref._refine_window(window, [], "", lambda p, s, n: request({}, p, s, n))[0] == rows
     assert prompts[ref.AUDIT_SYSTEM]["quote_speakers"] == expected
     assert prompts[ref.WINDOW_AUDIT_SYSTEM]["quote_speakers"] == {answer: ["Собеседник"], question: ["Координатор"]}
+
+
+def test_repeated_turns_keep_the_complete_source_together_for_draft_and_audit():
+    early = "**Host** [09:00]:\n" + EARLY + "\n"
+    late = "**Host** [10:01]:\n" + LATE
+    routine = "**Guest** [09:01]:\nThe microphone is ready.\n"
+    speech = "Before the first speaker\n" + early + routine * 128 + late
+    stages = []
+
+    def request(cfg, prompt, system, predict):
+        data = json.loads(prompt)
+        source = data["final_speech"]
+        assert source["turns"] == [early, routine, late]
+        assert source["order"] == [0] + [1] * 128 + [2]
+        assert source["prefix"] + "".join(source["turns"][i] for i in source["order"]) == speech
+        assert ref._output_schema(system, prompt) is not None
+        stages.append(predict)
+        if predict == 3000:
+            return json.dumps({"paragraphs": [paragraph(FINAL, [EARLY, LATE])]})
+        assert data["quote_speakers"] == {EARLY: ["Host"], LATE: ["Host"]}
+        return json.dumps(verdict(data["paragraphs"]))
+
+    result = ref.refine(speech, [{"text": THREAD}], "", {"llm": {"num_ctx": 6200}}, request=request)
+    assert stages == [3000, 1000]
+    assert FINAL in result and ref.PARTIAL_NOTE not in result
+
+
+@pytest.mark.parametrize("source", [
+    "plain text without speaker headers",
+    "**Guest** [09:00]:\nA routine answer.\n**Guest** [09:01]:\nA routine answer.\n",
+])
+def test_indexing_keeps_distinct_timestamps_and_ignores_unstructured_input(source):
+    assert ref._indexed_speech(source) is None
