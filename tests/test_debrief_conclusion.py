@@ -220,3 +220,26 @@ def test_repeated_turns_keep_the_complete_source_together_for_draft_and_audit(mo
 ])
 def test_indexing_keeps_distinct_timestamps_and_ignores_unstructured_input(source):
     assert ref._indexed_speech(source) is None
+
+
+def test_full_text_at_the_model_budget_stays_plain():
+    turn = "**Guest** [09:00]:\n" + EARLY + "\n"
+    speech = turn * 10 + "**Host** [09:10]:\n" + LATE
+    thread = [{"text": THREAD}]
+    prompt = json.dumps({"final_speech": speech, "live_thread": thread, "previous_debrief": ""}, ensure_ascii=False)
+    length = len(ref.SYSTEM) + len(prompt)
+    padding = -length % ref.CHARS_PER_TOKEN
+    speech += " " * padding
+    context = 3000 + ref.CONTEXT_RESERVE + (length + padding) // ref.CHARS_PER_TOKEN
+    requests = []
+
+    def request(cfg, prompt, system, predict):
+        data = json.loads(prompt)
+        assert data["final_speech"] == speech
+        requests.append(predict)
+        if predict == 3000:
+            return json.dumps({"paragraphs": [paragraph(FINAL, [LATE])]})
+        return json.dumps(verdict(data["paragraphs"]))
+
+    assert FINAL in ref.refine(speech, thread, "", {"llm": {"num_ctx": context}}, request=request)
+    assert requests == [3000, 1000]
