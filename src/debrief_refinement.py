@@ -268,7 +268,7 @@ def _find_quote_spans(quote: str, source: str) -> list[tuple[int, int]]:
 
 def _quote_speakers(speech, rows, speaker_at_start=None):
     """Resolve the speakers of each support against the canonical transcript headers."""
-    from bisect import bisect_right
+    from bisect import bisect_left, bisect_right
     from transcript import BLOCK_RE
 
     headers = list(BLOCK_RE.finditer(speech))
@@ -284,7 +284,7 @@ def _quote_speakers(speech, rows, speaker_at_start=None):
             owners = []
             for start, end in _find_quote_spans(quote, speech):
                 first = bisect_right(starts, start)
-                last = bisect_right(starts, end - 1)
+                last = bisect_left(starts, end)
                 for speaker in speakers[first:last + 1]:
                     if speaker not in owners:
                         owners.append(speaker)

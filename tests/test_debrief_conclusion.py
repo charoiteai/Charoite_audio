@@ -154,6 +154,10 @@ def test_audits_receive_speakers_bound_to_their_own_evidence():
     assert ref._quote_speakers(speech, rows) == {"quote_speakers": expected}
     assert ref._quote_speakers(answer, rows, "Собеседник")["quote_speakers"][answer] == ["Собеседник"]
     assert ref._quote_speakers(answer, rows) == {}
+    across = question + "\n**Собеседник** [12:01]:\n" + answer
+    assert ref._quote_speakers(first + "**Собеседник** [12:01]:\n" + answer,
+                               [paragraph("Два участника.", [across])])["quote_speakers"][across] == ["Координатор", "Собеседник"]
+
 
     prompts = {}
 
