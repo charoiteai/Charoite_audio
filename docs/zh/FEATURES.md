@@ -20,6 +20,7 @@
 
 - **两遍说话人分离重跑**：停止录音后对完整双声道重跑分离（默认 sherpa-onnx，可选 `sufler.diarize_backend: nemotron`，`src/diarize_nemotron.py`）。
 - **分层文档输出**：按 `sufler.language: ru|en|zh`（支持自定义 `sufler.minutes_template`）输出纯 Markdown BLUF 文档：**一分钟摘要** → **纪要** → **复盘** → **完整逐字稿**，带便携会议卡片归档。
+- **复盘核实**：启用 `sufler.refined_debrief` 后，复盘会根据实时讨论整理结论，并对照最终逐字稿核实人名、事实和约定。结论以最后的更正为准，有疑问的细节会在对应结论旁标注。原话保留在逐字稿标签页。
 - **规范化待办**：自动草稿、`scripts/protocol.py` 和 MCP 生成的待办均确定性整理为 `- [ ]` 复选框并归属真实参会人；历史文件可用 `scripts/fix_action_items.py` 迁移。
 - **自更新知识图谱（`src/charoite_graph/graph_nodes.py`）**：自动维护会议、人物、系统、核心与阻碍节点，不把占位标签或背景偶提名字建成人物节点。
 - **保留手工编辑与异常恢复**：自动生成的纪要在重跑后平滑刷新（旧版备份至 `transcripts/.prev/`），手工修改过的文件仅回填解析出的姓名。

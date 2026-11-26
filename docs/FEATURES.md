@@ -19,7 +19,7 @@
 
 ## After the meeting (automatic)
 
-- **Refined debrief** — with `sufler.refined_debrief` enabled, paragraphs that pass the audit stay in the debrief. A marker identifies uncertain details such as the speaker’s identity. If a passage still fails verification after correction, the debrief shows the corresponding transcript excerpt.
+- **Refined debrief** — with `sufler.refined_debrief` enabled, Analysis summarizes the live thread and checks names, facts and agreements against the final transcript. Later corrections take precedence. Uncertain details are marked beside the relevant conclusion. The Transcript tab keeps the original wording.
 - **Two-pass diarization rebuild** — re-runs speaker separation over the full channel recordings after Stop (sherpa-onnx by default, or optional Nemotron via `sufler.diarize_backend: nemotron`, `src/diarize_nemotron.py`). Unfinished rebuilds and silent recordings are surfaced visibly.
 - **Layered documents** — produces plain-markdown BLUF outputs in your configured language (`sufler.language: ru|en|zh`, custom `sufler.minutes_template` supported): one-minute **Summary** → **Minutes** → **Debrief** → full **Transcript**, exported into timestamped archive folders (`YYYY-MM-DD HH-MM — Topic`) with a portable meeting card.
 - **Normalized action items** — assignments in minutes (auto-drafts, manual `scripts/protocol.py`, and MCP tool output) are deterministically normalized into `- [ ]` checkboxes scoped to actual participants so they appear reliably in the Tasks window. Existing files can be migrated with `scripts/fix_action_items.py`.
