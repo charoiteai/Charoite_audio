@@ -182,11 +182,13 @@ def test_audits_receive_speakers_bound_to_their_own_evidence():
     assert prompts[ref.WINDOW_AUDIT_SYSTEM]["quote_speakers"] == {answer: ["Собеседник"], question: ["Координатор"]}
 
 
-def test_repeated_turns_keep_the_complete_source_together_for_draft_and_audit():
+def test_repeated_turns_keep_the_complete_source_together_for_draft_and_audit(monkeypatch):
     early = "**Host** [09:00]:\n" + EARLY + "\n"
     late = "**Host** [10:01]:\n" + LATE
     routine = "**Guest** [09:01]:\nThe microphone is ready.\n"
     speech = "Before the first speaker\n" + early + routine * 128 + late
+    monkeypatch.setattr(ref, "MAX_WINDOWS", 1)
+    monkeypatch.setattr(ref, "WINDOW_CHARS", len(speech))
     stages = []
 
     def request(cfg, prompt, system, predict):
@@ -205,6 +207,11 @@ def test_repeated_turns_keep_the_complete_source_together_for_draft_and_audit():
     result = ref.refine(speech, [{"text": THREAD}], "", {"llm": {"num_ctx": 6200}}, request=request)
     assert stages == [3000, 1000]
     assert FINAL in result and ref.PARTIAL_NOTE not in result
+
+    # One additional character exceeds the source budget even when turns repeat.
+    with pytest.raises(ref.RefinementRefused, match="source_window_budget"):
+        ref.refine(speech + "!", [{"text": THREAD}], "", {"llm": {"num_ctx": 6200}}, request=request)
+    assert stages == [3000, 1000]
 
 
 @pytest.mark.parametrize("source", [
