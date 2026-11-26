@@ -122,7 +122,7 @@ def test_partial_publication_keeps_only_supported_material(tmp_path, monkeypatch
     assert ref.PARTIAL_NOTE in body and "Из стенограммы" not in body
 
 
-@pytest.mark.parametrize("failure", ["unverified_quote", "uncertainty", "audit", "context", "transport"])
+@pytest.mark.parametrize("failure", ["unverified_quote", "uncertainty", "audit", "transport"])
 def test_final_edit_failure_cannot_add_a_fact_or_hide_uncertainty(failure):
     certain = paragraph(FINAL, [LATE])
     uncertain = paragraph(OPEN, [OWNER], True)
@@ -131,8 +131,8 @@ def test_final_edit_failure_cannot_add_a_fact_or_hide_uncertainty(failure):
     calls = []
     def call(prompt, system, predict):
         calls.append(system)
-        if failure in ("context", "transport"):
-            raise ref.RefinementRefused("complete_input_exceeds_context" if failure == "context" else "local_request_failed")
+        if failure == "transport":
+            raise ref.RefinementRefused("local_request_failed")
         if system == links.CONCLUSION_SYSTEM:
             quote = { "unverified_quote": OWNER + " " + LATE, "uncertainty": OWNER, "audit": LATE }[failure]
             return json.dumps({"paragraphs": [paragraph("Выдуманное назначение.", [quote])]})
@@ -142,6 +142,56 @@ def test_final_edit_failure_cannot_add_a_fact_or_hide_uncertainty(failure):
     with pytest.raises(ref.RefinementRefused):
         links.render_conversation(done, [], [], call)
     assert len(calls) == (2 if failure == "audit" else 1)
+
+
+def chronology_windows(*rows, reason="verified"):
+    return [{"ids": [f"w{i}:p0"], "rows": [row], "window": {}, "reason": reason} for i, row in enumerate(rows)]
+
+
+@pytest.mark.parametrize("reason", sorted(ref.SPLIT_REASONS))
+@pytest.mark.parametrize("stage", [links.CONCLUSION_SYSTEM, links.CONCLUSION_AUDIT_SYSTEM], ids=["conclusion", "audit"])
+def test_over_budget_conclusion_publishes_verified_chronology(stage, reason):
+    early, late = paragraph("Открытие наметили на среду.", [EARLY]), paragraph(FINAL, [LATE])
+    unknown = paragraph(OPEN, [OWNER], True)
+    calls = []
+
+    def call(prompt, system, predict):
+        calls.append(system)
+        if system == stage:
+            raise ref.RefinementRefused(reason)
+        if system == links.CONCLUSION_SYSTEM:
+            return json.dumps({"paragraphs": [paragraph("Модельный вывод.", [LATE])]})
+        raise AssertionError("audit after refusal")
+
+    body = links.render_conversation(chronology_windows(early, late, late, unknown), [], [{"text": THREAD}], call)
+    assert calls == [links.CONCLUSION_SYSTEM, links.CONCLUSION_AUDIT_SYSTEM][:1 + (stage == links.CONCLUSION_AUDIT_SYSTEM)]
+    assert body.startswith(ref.CONVERSATION_HEADING + "\n\n" + links.CHRONOLOGY_NOTE + "\n\n")
+    assert body.index(early["text"]) < body.index(FINAL) < body.index("**Требует уточнения.** " + OPEN)
+    assert body.count(FINAL) == 1
+    assert "Модельный вывод." not in body and THREAD not in body and ref.PARTIAL_NOTE not in body
+    assert not any(quote in body for quote in (EARLY, LATE, OWNER))
+
+
+def test_over_budget_chronology_keeps_partial_note_and_only_certain_relation_notes():
+    early, late = paragraph("Открытие наметили на среду.", [EARLY]), paragraph(FINAL, [LATE])
+    unknown = paragraph(OPEN, [OWNER], True)
+    done = chronology_windows(early, late, unknown, reason="audit_refused")
+    relations = [{"early_id": "w0:p0", "late_id": "w1:p0", "kind": "replaces", "status": "supported"},
+                 {"early_id": "w0:p0", "late_id": "w2:p0", "kind": "answers", "status": "supported"},
+                 {"early_id": "w1:p0", "late_id": "w2:p0", "kind": "clarifies", "status": "uncertain"}]
+
+    def call(prompt, system, predict):
+        raise ref.RefinementRefused("complete_input_exceeds_context")
+
+    body = links.render_conversation(done, relations, [], call)
+    assert ref.PARTIAL_NOTE in body and links.CHRONOLOGY_NOTE in body
+    assert "1. " + early["text"] in body and "2. " + FINAL in body
+    assert "3. **Требует уточнения.** " + OPEN in body
+    assert "Поздний пересмотр — фрагмент 2." in body and "Пересмотр к фрагменту 1." in body
+    assert "Поздний ответ" not in body and "Уточнение к" not in body
+    forged = [{**relations[0], "early_id": "w1:p0", "late_id": "w0:p0"}]
+    with pytest.raises(ref.RefinementRefused, match="link_render_identity"):
+        links.render_conversation(done, forged, [], call)
 
 
 def test_audits_receive_speakers_bound_to_their_own_evidence():
@@ -243,3 +293,16 @@ def test_full_text_at_the_model_budget_stays_plain():
 
     assert FINAL in ref.refine(speech, thread, "", {"llm": {"num_ctx": context}}, request=request)
     assert requests == [3000, 1000]
+
+
+def test_reply_validation_failure_is_not_mistaken_for_budget():
+    rows = chronology_windows(paragraph("Открытие наметили на среду.", [EARLY]), paragraph(FINAL, [LATE]))
+    calls = []
+
+    def call(prompt, system, predict):
+        calls.append(system)
+        return json.dumps({"paragraphs": [paragraph("Выдуманный вывод.", [OWNER])]})
+
+    with pytest.raises(ref.UnverifiedReply):
+        links.render_conversation(rows, [], [], call)
+    assert calls == [links.CONCLUSION_SYSTEM]

@@ -347,6 +347,49 @@ CONCLUSION_AUDIT_SYSTEM = (
 )
 
 
+CHRONOLOGY_NOTE = ("Общее заключение не поместилось в контекст локальной модели. Ниже приведены "
+                   "проверенные выводы по ходу разговора: более поздние решения могут менять ранние.")
+_RELATION_LABELS = {"clarifies": ("Позднее уточнение", "Уточнение к"),
+                    "replaces": ("Поздний пересмотр", "Пересмотр к"),
+                    "answers": ("Поздний ответ", "Ответ к"),
+                    "contradicts": ("Позднее противоречие", "Противоречие к")}
+
+
+class _OverBudget(Exception):
+    """The conclusion or its audit does not fit the local model budget."""
+
+
+def _chronology(entries, relations, partial) -> str:
+    """Over-budget fallback: verified rows and fixed relation notes; no model-authored text is added."""
+    numbers = {key: number for number, key in enumerate(entries, 1)}
+    notes = {key: [] for key in entries}
+    for relation in relations:
+        _closed(relation, ("early_id", "late_id", "kind", "status"), "link_render_schema")
+        early, late, kind, status = (relation[key] for key in ("early_id", "late_id", "kind", "status"))
+        if status == "uncertain":
+            continue
+        if (not isinstance(early, str) or early not in entries or not isinstance(late, str)
+                or late not in entries or numbers[early] >= numbers[late]
+                or not isinstance(kind, str) or kind not in KINDS or status != "supported"):
+            raise ref.RefinementRefused("link_render_identity")
+        if entries[early][0]["uncertain"] or entries[late][0]["uncertain"]:
+            continue
+        early_label, late_label = _RELATION_LABELS[kind]
+        notes[early].append(f"{early_label} — фрагмент {numbers[late]}.")
+        notes[late].append(f"{late_label} фрагменту {numbers[early]}.")
+    numbered = any(notes.values())
+    parts = [ref.CONVERSATION_HEADING, CHRONOLOGY_NOTE] + ([ref.PARTIAL_NOTE] if partial else [])
+    if not numbered:
+        parts.extend(dict.fromkeys(ref._paragraph_text(row) for row, _ in entries.values()))
+        return "\n\n".join(parts) + "\n"
+    for key, (row, _) in entries.items():
+        text = ref._paragraph_text(row)
+        parts.append(f"{numbers[key]}. {text}")
+        if notes[key]:
+            parts.append(" ".join(dict.fromkeys(notes[key])))
+    return "\n\n".join(parts) + "\n"
+
+
 def render_conversation(done, relations, thread, call) -> str:
     entries = _entries(done)
     partial = any(item["reason"] not in {"verified", "verified_with_uncertainty", "noise"} for item in done)
@@ -359,14 +402,29 @@ def render_conversation(done, relations, thread, call) -> str:
     # Each support must come from one verified paragraph. Joining quotes is only
     # for the shared typography/schema validator, never a source for new evidence.
     quotes = {quote for row in rows for quote in row["quotes"]}
-    raw = call(ref._dump(inputs), CONCLUSION_SYSTEM, 2000)
-    conclusion = ref._paragraphs(raw, "\n".join(sorted(quotes)))
-    for row in conclusion:
-        if any(quote not in quotes for quote in row["quotes"]):
-            raise ref.UnverifiedReply("conclusion_quote")
-    certain_quotes = {quote for row in rows if not row["uncertain"] for quote in row["quotes"]}
-    if any(not row["uncertain"] and any(q not in certain_quotes for q in row["quotes"]) for row in conclusion):
-        raise ref.UnverifiedReply("conclusion_uncertainty")
-    audit = call(ref._dump({**inputs, "paragraphs": conclusion}), CONCLUSION_AUDIT_SYSTEM, 1000)
+
+    def admitted(prompt, system, predict):
+        # A long meeting cannot fit the whole thread and every verified row into
+        # one local request (input admission) or one reply (output budget).
+        try:
+            return call(prompt, system, predict)
+        except ref.RefinementRefused as exc:
+            if str(exc) in ref.SPLIT_REASONS:
+                raise _OverBudget from None
+            raise
+
+    try:
+        raw = admitted(ref._dump(inputs), CONCLUSION_SYSTEM, 2000)
+        conclusion = ref._paragraphs(raw, "\n".join(sorted(quotes)))
+        for row in conclusion:
+            if any(quote not in quotes for quote in row["quotes"]):
+                raise ref.UnverifiedReply("conclusion_quote")
+        certain_quotes = {quote for row in rows if not row["uncertain"] for quote in row["quotes"]}
+        if any(not row["uncertain"] and any(q not in certain_quotes for q in row["quotes"]) for row in conclusion):
+            raise ref.UnverifiedReply("conclusion_uncertainty")
+        audit = admitted(ref._dump({**inputs, "paragraphs": conclusion}), CONCLUSION_AUDIT_SYSTEM, 1000)
+    except _OverBudget:
+        # Publish the already verified chronology instead of failing the meeting rebuild.
+        return _chronology(entries, relations, partial)
     ref._audit(audit, len(conclusion))
     return ref._render(conclusion, partial=partial)

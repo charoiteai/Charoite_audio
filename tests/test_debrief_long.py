@@ -116,6 +116,20 @@ def test_context_refusal_splits_full_window_without_losing_source():
     assert all(len(part) <= 1600 for part in model.accepted_sources)
 
 
+def test_long_meeting_over_conclusion_budget_publishes_chronology_without_the_request():
+    # Real 30–60 min meetings: windows fit num_ctx 8192, thread + all verified rows do not.
+    source = speech_lines()
+    thread = [{"text": f"Нить {i:02d}: участники обсуждали тему подробно. " * 8} for i in range(30)]
+    model = ScriptedModel()
+    body = ref.refine(source, thread, "", {"llm": {"num_ctx": 8192}}, request=model)
+    systems = [system for system, _ in model.calls]
+    assert links.CONCLUSION_SYSTEM not in systems and links.CONCLUSION_AUDIT_SYSTEM not in systems
+    assert "".join(model.accepted_sources) == source
+    ids = [value["source_window"]["id"] for system, value in model.calls if system == ref.WINDOW_SYSTEM]
+    assert len(ids) > 2 and links.CHRONOLOGY_NOTE in body and "Нить 00" not in body
+    assert [body.index(f"Обсуждение {i} ") for i in ids] == sorted(body.index(f"Обсуждение {i} ") for i in ids)
+
+
 @pytest.mark.parametrize("field,value", [("has_cross_window_correction", None),
                                         ("has_cross_window_correction", "false"),
                                         ("correction_quotes", ["Несуществующая поправка."]),
