@@ -735,7 +735,8 @@ def test_source_relevance_retries_once_on_bad_quote_and_recovers_cleanly(world, 
     assert len(seen_prompts) == 2
     retry_payload, _ = json.JSONDecoder().raw_decode(seen_prompts[1][0])
     assert "quote_feedback" in retry_payload
-    assert len(retry_payload["quote_feedback"]["previous_quote"]) == 200
+    assert "previous_quote" not in retry_payload["quote_feedback"]
+    assert "prefer 4-12 words" in retry_payload["quote_feedback"]["instruction"]
     assert seen_prompts[0][1] == seen_prompts[1][1]
     assert snap["committed_topics"] == 1
     assert snap["final_refusals"] == 0
@@ -1525,7 +1526,7 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     assert "correction_feedback" not in payload_retry
     fb = payload_retry["quote_feedback"]
     assert fb["failure"] == "your previous judge output had claim quote(s) not found verbatim in new_sources"
-    assert fb["missing_quotes"] == [{"text": fact1, "source": m1, "quote": "Valve pressure ... 4 bar."}]
+    assert fb["missing_quotes"] == [{"text": fact1, "source": m1, "problem": "contains_ellipsis"}]
     assert "supported=false and verdict=reject" in fb["instruction"]
     assert len(audited) == 1 and audited[0]["quote"] == fact1
 
@@ -1571,7 +1572,7 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     fb_long = json.loads(long_prompts[1].split("\n", 1)[0])["quote_feedback"]
     assert len(fb_long["missing_quotes"]) == inc.QUOTE_FEEDBACK_LIMIT
     assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["missing_quotes"])
-    assert all(len(item["quote"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["missing_quotes"])
+    assert all("quote" not in item and item["problem"] == "not_found_verbatim_in_new_source" for item in fb_long["missing_quotes"])
 
     # 4) Retry turning into verdict=reject refuses immediately as semantic conservation rejected
     reject_replies = iter([
@@ -2491,7 +2492,7 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     assert all(len(t) == inc.QUOTE_FEEDBACK_CHARS for t in fb_miss["rejected_claims"])
     assert len(fb_miss["missing_quotes"]) == inc.QUOTE_FEEDBACK_LIMIT
     assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_miss["missing_quotes"])
-    assert all(len(item["quote"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_miss["missing_quotes"])
+    assert all("quote" not in item and item["problem"] == "not_found_verbatim_in_new_source" for item in fb_miss["missing_quotes"])
     judge_payload = json.loads(seen_calls[2][1].split("\n", 1)[0])
     assert judge_payload["candidate_anchors"] == [
         {"text": f"- {fact_ok} [[{m1}]]", "source": m1, "quote": fact_ok}
@@ -2715,7 +2716,7 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
         assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
     fb_pq = json.loads(miss_prompts[1].split("\n", 1)[0])["correction_feedback"]
     assert "previous_response" not in fb_pq
-    assert fb_pq["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "quote": "wrong quote"}]
+    assert fb_pq["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "problem": "not_found_verbatim_in_new_source"}]
     assert fb_pq["instruction"].startswith(inc._PATCH_QUOTE_MISSING_HINT + " Return ONLY valid patch JSON")
 
     # 5) Single-source downstream judge JSON_MALFORMED / JSON_SCHEMA (body is not None):
@@ -2800,6 +2801,181 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
     with pytest.raises(inc.Refused, match="malformed patch entry"):
         inc.append("Glasshouse", loaded_m, [m1, m2], files_m, LOCAL)
     assert len(bad_schema_calls) == 2
+
+
+def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
+    m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
+    loaded = _loaded_with_body(BODY)
+    fact1 = "Valve pressure stabilized at 4 bar."
+    files1 = {m1: {"text": fact1}}
+    files2 = {m1: {"text": fact1}, m2: {"text": "Second source update."}}
+    valid_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1}],
+        "corrections": [],
+    })
+    bad_quote_patch = json.dumps({
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": "Vent A is open."}],
+        "corrections": [],
+    })
+    valid_judge = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact1, "source": m1, "quote": fact1, "relevant": True, "supported": True, "reason": "ok"}],
+    })
+    reject_judge = json.dumps({
+        "verdict": "reject", "conserved": True, "supported": False, "corrections_valid": True,
+        "reason": "unsupported", "claims": [],
+    })
+
+    # 1) _missing_quote_problem covers all 3 branches, ASCII/Unicode ellipsis, and intersection precedence
+    body_with_dots = BODY + "\n- Existing note with ... ellipsis.\n"
+    assert inc._missing_quote_problem(BODY, "part a ... part b") == "contains_ellipsis"
+    assert inc._missing_quote_problem(BODY, "part a \u2026 part b") == "contains_ellipsis"
+    assert inc._missing_quote_problem(body_with_dots, "Existing note with ... ellipsis.") == "contains_ellipsis"
+    assert inc._missing_quote_problem(BODY, "Vent A is open.") == "copied_from_existing_dossier"
+    assert inc._missing_quote_problem(BODY, "absent text") == "not_found_verbatim_in_new_source"
+
+    # 2) _append_failure_stage exact rank values and shared diarization / hint contracts
+    assert inc.MAX_APPEND_ATTEMPTS == 3
+    assert inc._append_failure_stage(None, telemetry.Detail.CLAIM_QUOTE_MISSING) == 0
+    assert inc._append_failure_stage(None, telemetry.Detail.AUDIT_SUPPORT_REJECTED) == 0
+    assert inc._append_failure_stage(BODY, telemetry.Detail.SEMANTIC_SUPPORTED_FALSE) == 1
+    assert inc._append_failure_stage(BODY, None) == 1
+    assert inc._append_failure_stage(BODY, telemetry.Detail.AUDIT_SUPPORT_REJECTED) == 2
+    assert inc._append_failure_stage(BODY, telemetry.Detail.AUDIT_TOPIC_REJECTED) == 2
+    assert inc._DIARIZATION_ANONYMIZATION_RULE in inc.SUPPORT_AUDIT_INSTRUCTION
+    assert "widening quote" in inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.AUDIT_SUPPORT_REJECTED]
+
+    # 3) source_relevance omits previous_quote and uses prefer 4-12 words
+    sr_prompts: list[str] = []
+    sr_seq = iter([
+        json.dumps({"verdict": "relevant", "reason": "r", "quote": "bad quote"}),
+        json.dumps({"verdict": "relevant", "reason": "r", "quote": fact1}),
+    ])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (sr_prompts.append(p), next(sr_seq))[1])
+        assert inc.source_relevance("Glasshouse", loaded, m1, files1[m1], LOCAL) is True
+    assert "prefer 4-12 words, or the full shorter line" in sr_prompts[0]
+    sr_fb = json.loads(sr_prompts[1].split("\n", 1)[0])["quote_feedback"]
+    assert "previous_quote" not in sr_fb
+    assert "prefer 4-12 words, or the full shorter line" in sr_fb["instruction"]
+
+    # 4) semantic_check includes shared diarization rule, anchor copy note, and problem tag without bad quote
+    sc_prompts: list[str] = []
+    sc_seq = iter([
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": fact1, "source": m1, "quote": "Vent A is open.", "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        valid_judge,
+    ])
+    small_body = BODY.replace("## Как пришли", f"- {fact1} [[{m1}]]\n## Как пришли")
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (sc_prompts.append(p), next(sc_seq))[1])
+        mp.setattr(inc, "audit_claim", lambda *a, **kw: None)
+        inc.semantic_check("Glasshouse", loaded, [m1], files1, LOCAL, small_body, [],
+                           anchors=[{"text": fact1, "source": m1, "quote": fact1}])
+    assert inc._DIARIZATION_ANONYMIZATION_RULE in sc_prompts[0]
+    assert "copy an accurate single-bullet quote verbatim" in sc_prompts[0]
+    sc_fb = json.loads(sc_prompts[1].split("\n", 1)[0])["quote_feedback"]
+    assert sc_fb["missing_quotes"] == [{"text": fact1, "source": m1, "problem": "copied_from_existing_dossier"}]
+    assert "do NOT reject a supported claim solely for a prior judge quote mismatch" in sc_fb["instruction"]
+
+    # 5) Stage-progress retry (0 -> 1 -> PASS and 1 -> 2 -> PASS) recovers on attempt 2 for single source,
+    #    and includes 4-key schema reminder on non-judge_json_failure retries
+    p01_prompts: list[str] = []
+    p01_seq = iter([bad_quote_patch, valid_patch, reject_judge, valid_patch, valid_judge])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (p01_prompts.append(p), next(p01_seq))[1])
+        mp.setattr(inc, "audit_claim", lambda *a, **kw: None)
+        assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+    assert len(p01_prompts) == 5
+    fb_patch = json.loads(p01_prompts[1].split("\n", 1)[0])["correction_feedback"]
+    assert fb_patch["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "problem": "copied_from_existing_dossier"}]
+    assert '{"section","text","source","quote"}' in fb_patch["instruction"]
+    fb_sem = json.loads(p01_prompts[3].split("\n", 1)[0])["correction_feedback"]
+    assert '{"section","text","source","quote"}' in fb_sem["instruction"]
+
+    # 1 -> 2 -> PASS for both AUDIT_SUPPORT_REJECTED and AUDIT_TOPIC_REJECTED
+    for audit_detail, audit_msg in (
+        (telemetry.Detail.AUDIT_SUPPORT_REJECTED, "independent claim audit was not accepted (supported)"),
+        (telemetry.Detail.AUDIT_TOPIC_REJECTED, "independent claim audit was not accepted (relevant)"),
+    ):
+        gen_n: list[int] = []
+        audit_n = [0]
+        seq12 = iter([valid_patch, reject_judge, valid_patch, valid_judge, valid_patch, valid_judge])
+
+        def fake_audit(*a, **kw):
+            audit_n[0] += 1
+            if audit_n[0] == 1:
+                raise inc.Refused(audit_msg, detail=audit_detail, rejected_claims=(fact1,))
+
+        with monkeypatch.context() as mp:
+            mp.setattr(inc, "local_complete", lambda p, cfg, *, system, **kw: (gen_n.append(1) if system == inc.GENERATE_SYSTEM else None, next(seq12))[1])
+            mp.setattr(inc, "audit_claim", fake_audit)
+            assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+        assert len(gen_n) == 3
+
+    # 6) Exhaustion at MAX_APPEND_ATTEMPTS=3 on strict 0 -> 1 -> 2 stops after exactly 3 generator calls
+    gen_012: list[int] = []
+    seq012 = iter([bad_quote_patch, valid_patch, reject_judge, valid_patch, valid_judge])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, cfg, *, system, **kw: (gen_012.append(1) if system == inc.GENERATE_SYSTEM else None, next(seq012))[1])
+        mp.setattr(inc, "audit_claim", lambda *a, **kw: (_ for _ in ()).throw(
+            inc.Refused("independent claim audit was not accepted (supported)", detail=telemetry.Detail.AUDIT_SUPPORT_REJECTED)
+        ))
+        with pytest.raises(inc.Refused, match="independent claim audit was not accepted"):
+            inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+    assert len(gen_012) == 3
+
+    # 7) Stage regression (1 -> 0) and same-stage repeat (2 -> 2) both stop after 2 generator calls
+    gen_reg: list[int] = []
+    seq_reg = iter([valid_patch, reject_judge, bad_quote_patch])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, cfg, *, system, **kw: (gen_reg.append(1) if system == inc.GENERATE_SYSTEM else None, next(seq_reg))[1])
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+    assert len(gen_reg) == 2
+
+    gen_22: list[int] = []
+    seq_22 = iter([valid_patch, valid_judge, valid_patch, valid_judge])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, cfg, *, system, **kw: (gen_22.append(1) if system == inc.GENERATE_SYSTEM else None, next(seq_22))[1])
+        mp.setattr(inc, "audit_claim", lambda *a, **kw: (_ for _ in ()).throw(
+            inc.Refused("independent claim audit was not accepted (supported)", detail=telemetry.Detail.AUDIT_SUPPORT_REJECTED)
+        ))
+        with pytest.raises(inc.Refused, match="independent claim audit was not accepted"):
+            inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+    assert len(gen_22) == 2
+
+    # 8) Multi-source (len(names) > 1) stops after 2 calls even when stage progresses 0 -> 1
+    valid_patch_2 = json.dumps({
+        "additions": [
+            {"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1},
+            {"section": "Сейчас", "text": "Second source update.", "source": m2, "quote": "Second source update."},
+        ],
+        "corrections": [],
+    })
+    gen_multi: list[int] = []
+    seq_multi = iter([bad_quote_patch, valid_patch_2, reject_judge])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, cfg, *, system, **kw: (gen_multi.append(1) if system == inc.GENERATE_SYSTEM else None, next(seq_multi))[1])
+        with pytest.raises(inc.Refused, match="semantic conservation was not accepted"):
+            inc.append("Glasshouse", loaded, [m1, m2], files2, LOCAL)
+    assert len(gen_multi) == 2
+
+    # 9) Non-validation Refused (Reason.PREFLIGHT / Reason.CONTRACT) stops immediately without retrying
+    for non_val_reason in (telemetry.Reason.PREFLIGHT, telemetry.Reason.CONTRACT):
+        gen_nv: list[int] = []
+        with monkeypatch.context() as mp:
+            mp.setattr(inc, "local_complete", lambda *a, **kw: (gen_nv.append(1), valid_patch)[1])
+            mp.setattr(inc, "validate_candidate", lambda *a, **kw: (_ for _ in ()).throw(
+                inc.Refused("preflight or contract error", reason=non_val_reason)
+            ))
+            with pytest.raises(inc.Refused, match="preflight or contract error"):
+                inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+        assert len(gen_nv) == 1
 
 
 
