@@ -74,7 +74,6 @@
       "meeting_thread",
       "meeting_processing",
       "debrief_refinement",
-      "debrief_links",
       "debrief_pipeline",
       "meeting_archive",
       "transcript",
@@ -670,7 +669,6 @@
     "grounded_feed.local_runner": "локальный раннер живой нити и ручного ответа: loopback-проверка и отказ от облачного шлюза — ошибка выпускает стенограмму встречи за машину"
   },
   "mutation_not_critical": {
-    "debrief_links": "Pure chronological link validation and rendering; no storage or transport authority, local request admission belongs to debrief_refinement::local_request",
     "busy_signals": "сторож занятости: в сеть — только GET переписи моделей Ollama на loopback (№595); пишет лишь свой замок мутатора, не данные владельца",
     "channel_trace": "журнал трассировки канала — производная, восстановима",
     "charoite_graph.graph_search": "кэш индекса поиска — производная, пересобирается",
