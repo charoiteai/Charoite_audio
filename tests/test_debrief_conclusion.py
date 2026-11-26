@@ -169,7 +169,10 @@ def test_audits_receive_speakers_bound_to_their_own_evidence():
                            "correction_quotes": [], "repair_quotes": []})
 
     ref.refine(speech, [], "", {}, request=request)
-    window = ref._windows(speech, len(speech))[0]
+    # Only the answer belongs to this window. Its question is available as context.
+    owned = "**Собеседник** [12:01]:\n" + answer
+    window = {"start": len(first), "text": owned, "context_before": first, "context_after": "",
+              "speaker_at_start": "Собеседник", "context_speaker": "Координатор"}
     assert ref._refine_window(window, [], "", lambda p, s, n: request({}, p, s, n))[0] == rows
     assert prompts[ref.AUDIT_SYSTEM]["quote_speakers"] == expected
-    assert prompts[ref.WINDOW_AUDIT_SYSTEM]["quote_speakers"] == expected
+    assert prompts[ref.WINDOW_AUDIT_SYSTEM]["quote_speakers"] == {answer: ["Собеседник"], question: ["Координатор"]}

@@ -853,7 +853,7 @@ def _refine_window(window, thread, previous, call):
     for attempt in range(2):
         audit = {"source_window": meta, "final_speech": window["text"],
                  "paragraphs": rows, "neighbor_context": neighbors,
-                 **_quote_speakers(window["text"], rows, window.get("speaker_at_start"))}
+                 **_quote_speakers(_source_context(window), rows, window.get("context_speaker"))}
         audit_raw = call(_dump(audit), WINDOW_AUDIT_SYSTEM, 1000)
         try:
             corrections, feedback = _window_audit(audit_raw, len(rows), window["text"])
