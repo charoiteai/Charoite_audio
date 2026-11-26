@@ -159,7 +159,7 @@ def test_audits_receive_speakers_bound_to_their_own_evidence():
 
     def request(cfg, prompt, system, predict):
         data = json.loads(prompt)
-        if system == ref.SYSTEM:
+        if system in (ref.SYSTEM, ref.WINDOW_SYSTEM):
             return json.dumps({"paragraphs": rows}, ensure_ascii=False)
         prompts[system] = data
         if system == ref.AUDIT_SYSTEM:
