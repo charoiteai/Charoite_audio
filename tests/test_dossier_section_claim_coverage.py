@@ -7,7 +7,7 @@ import json
 import pytest
 
 import dossier_incremental as inc
-from test_dossier_model_contract import A, B, BODY, _claim, _old, _verdict
+from test_dossier_model_contract import A, B, BODY, _claim, _old, _span_claim, _verdict
 
 FACT = "A rain cover was fitted."
 OPEN = f"- Vent A is open. [[{A}]]"
@@ -34,7 +34,7 @@ def test_aggregate_acceptance_cannot_hide_recontextualized_or_duplicated_old_lin
         destination, copied = "## Как пришли", OPEN
     candidate = prior.replace("## Как пришли", f"- {FACT} [[{B}]]\n## Как пришли")
     candidate = candidate.replace(destination, copied + "\n" + destination)
-    audited = _transport(monkeypatch, [_claim()])
+    audited = _transport(monkeypatch, [_span_claim()])
     with pytest.raises(inc.Refused, match="uncovered new significant text"):
         inc.validate_candidate("Glasshouse", _old(prior), [B], {B: {"text": FACT}}, {}, candidate, [])
     assert audited == []
@@ -44,7 +44,7 @@ def test_aggregate_acceptance_cannot_hide_recontextualized_or_duplicated_old_lin
 def test_retained_current_and_historical_occurrences_do_not_need_new_source_proof(monkeypatch):
     prior = BODY.replace("## Как пришли\n—", "## Как пришли\n" + OPEN)
     candidate = prior.replace("## Как пришли", f"- {FACT} [[{B}]]\n## Как пришли")
-    audited = _transport(monkeypatch, [_claim()])
+    audited = _transport(monkeypatch, [_span_claim()])
     inc.validate_candidate("Glasshouse", _old(prior), [B], {B: {"text": FACT}}, {}, candidate, [])
     assert audited == [_claim()] and candidate.count(OPEN) == prior.count(OPEN) == 2
 
@@ -56,7 +56,7 @@ def test_only_declared_current_correction_can_move_retained_line_to_history(monk
     quote = "Vent A is closed now."
     claim = _claim(quote, quote=quote)
     changes = [{"before": OPEN, "after": replacement, "source": B, "quote": quote}] if declared else []
-    audited = _transport(monkeypatch, [claim])
+    audited = _transport(monkeypatch, [_span_claim(quote, line_span=[1, 1])])
     if declared:
         inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": quote}}, {}, candidate, changes)
         assert audited == [claim]

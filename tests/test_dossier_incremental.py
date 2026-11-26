@@ -69,7 +69,7 @@ def _new(graph, name=B, body="A rain cover was fitted."):
 
 
 DEFAULT_PATCH = {"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B,
-                                "quote": "A rain cover was fitted."}],
+                                "line_span": [2, 2]}],
                  "corrections": []}
 
 
@@ -83,20 +83,33 @@ def _responses(monkeypatch, *, patch=None, irrelevant=(), failure=None):
         data = json.loads(prompt.split("\n", 1)[0])
         if system == "You judge source relevance conservatively.":
             no = data["source"] in irrelevant
+            nonempty = [i for i, ln in enumerate(data["source_text"].splitlines(), 1)
+                        if ln.split(": ", 1)[1].strip()]
+            idx = nonempty[-1] if nonempty else 1
             return json.dumps({"verdict": "irrelevant" if no else "relevant", "reason": "invented judgment",
-                               "quote": "" if no else data["source_text"].splitlines()[-1]})
+                               "line_span": [] if no else [idx, idx]})
         if system == "You extend factual dossiers conservatively.":
-            return json.dumps(DEFAULT_PATCH if patch is None else patch)
+            if patch is not None:
+                return json.dumps(patch)
+            src_lines = data["new_sources"][B].splitlines()
+            nonempty = [i for i, ln in enumerate(src_lines, 1) if ln.split(": ", 1)[1].strip()]
+            idx = nonempty[-1] if nonempty else 1
+            return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B,
+                                              "line_span": [idx, idx]}],
+                               "corrections": []})
         if system == inc.SUPPORT_AUDIT_SYSTEM:
             return json.dumps({"verdict": "accept", "supported": True,
                                "reason": "Invented source support judgment."})
         if system == inc.TOPIC_AUDIT_SYSTEM:
             return json.dumps({"verdict": "accept", "relevant": True,
                                "reason": "Invented independent topic judgment."})
+        src_lines = data["new_sources"][B].splitlines()
+        nonempty = [i for i, ln in enumerate(src_lines, 1) if ln.split(": ", 1)[1].strip()]
+        idx = nonempty[-1] if nonempty else 1
         return json.dumps({"verdict": "accept", "conserved": True, "supported": True,
                            "corrections_valid": True, "reason": "invented judgment",
                            "claims": [{"text": "A rain cover was fitted.", "source": B,
-                                       "quote": "A rain cover was fitted.", "relevant": True,
+                                       "line_span": [idx, idx], "relevant": True,
                                        "supported": True, "reason": "Invented source-backed addition."}]})
     monkeypatch.setattr(inc, "local_complete", complete)
     return calls
@@ -170,11 +183,11 @@ def test_legacy_rejection_is_reassessed(world, monkeypatch):
 @pytest.mark.parametrize("patch", [
     {"additions": [], "corrections": []},
     {"additions": [{"section": "Сейчас", "text": "A rain cover `code` fitted.", "source": B,
-                    "quote": "A rain cover was fitted."}], "corrections": []},
+                    "line_span": [2, 2]}], "corrections": []},
     {"additions": [{"section": "Правки автора", "text": "changed", "source": B,
-                    "quote": "A rain cover was fitted."}], "corrections": []},
+                    "line_span": [2, 2]}], "corrections": []},
     {"additions": [{"section": "Сейчас", "text": "ok\n## Правки автора\nchanged", "source": B,
-                    "quote": "A rain cover was fitted."}], "corrections": []},
+                    "line_span": [2, 2]}], "corrections": []},
 ])
 def test_bad_candidate_never_stamps_a_relevant_source(world, monkeypatch, patch):
     nd, graph, path = world

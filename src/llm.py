@@ -873,12 +873,18 @@ class LLM:
                busy_wait: float = BUSY_WAIT_LIVE,
                timeout: tuple[float, float] = STREAM_TIMEOUT,
                _method: str = "stream", *, truncate: bool | None = None,
-               shift: bool | None = None) -> Iterator[str]:
+               shift: bool | None = None,
+               output_schema: dict | None = None) -> Iterator[str]:
         for name, value in (("truncate", truncate), ("shift", shift)):
             if value is not None and type(value) is not bool:
                 raise ValueError(f"{name} must be a boolean or None")
         if (truncate is not None or shift is not None) and (self.engine != "ollama" or self.cloud_ready):
             raise privacy.PrivacyRefused("truncate/shift request flags require Ollama")
+        if output_schema is not None:
+            if self.engine != "ollama" or self.cloud_ready or not privacy.is_loopback_url(self.base):
+                raise privacy.PrivacyRefused("output_schema requires local Ollama")
+            if not isinstance(output_schema, dict) or not output_schema:
+                raise ValueError("output_schema must be a non-empty JSON schema object")
         # `_method` — имя обёртки для журнала вызовов (№807): к первому next()
         # её кадра на стеке уже нет.
         #
@@ -925,8 +931,10 @@ class LLM:
         }
         if num_predict:
             options["num_predict"] = num_predict
+        sent = model or self.resolve_model()
+        strict_key = (self.base, sent)
         payload = {
-            "model": model or self.resolve_model(),
+            "model": sent,
             "messages": messages,
             "stream": True,
             "think": think,
@@ -937,31 +945,73 @@ class LLM:
             payload["truncate"] = truncate
         if shift is not None:
             payload["shift"] = shift
-        with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
-                               timeout=timeout, method=_method) as r:
-            done = False
-            for line in r.iter_lines():
-                if not line:
-                    continue
-                data = self._json_line(r, line)
-                if data.get("error"):
-                    # ошибка ПОСРЕДИ 200-стрима приходит строкой {"error": …}:
-                    # без этой проверки поток заканчивался «нормально» пустым,
-                    # и подсказка тихо не приходила (аудит 18.08)
-                    raise self._fail(r.status_code, str(data["error"]))
-                chunk = self._ndjson_chunk(r, data, line)
+        if output_schema is not None and _strict_json_known(strict_key) is None:
+            payload["format"] = output_schema
+
+        yield from self._iter_strict_stream(
+            f"{self.base}/api/chat", payload, strict_key=strict_key, selected=sent,
+            busy_wait=busy_wait, timeout=timeout, method=_method,
+            iter_fn=lambda r: self._iter_ollama_stream(r, require_natural_stop=output_schema is not None),
+        )
+
+    def _iter_ollama_stream(self, r, *, require_natural_stop: bool) -> Iterator[str]:
+        done = False
+        for line in r.iter_lines():
+            if not line:
+                continue
+            data = self._json_line(r, line)
+            if data.get("error"):
+                # ошибка ПОСРЕДИ 200-стрима приходит строкой {"error": …}:
+                # без этой проверки поток заканчивался «нормально» пустым,
+                # и подсказка тихо не приходила (аудит 18.08)
+                raise self._fail(r.status_code, str(data["error"]),
+                                 body=line.decode("utf-8", "replace"))
+            chunk = self._ndjson_chunk(r, data, line)
+            if data.get("done"):
+                done_reason = data.get("done_reason")
+                if require_natural_stop and done_reason not in (None, "stop"):
+                    raise self._fail(r.status_code, f"stream stopped ({done_reason})")
                 if chunk:
                     self._ledger_first(r)
                     yield chunk
-                if data.get("done"):
-                    self._ledger_note(r, data)
-                    done = True
-                    break
-            if not done:
-                # соединение закрылось без терминатора: сервер упал или сеть
-                # оборвалась. Усечённый ответ не выдаём за целый — минутки
-                # без хвоста встречи внешне неотличимы от готовых.
-                raise self._fail(r.status_code, "стрим оборван без завершения")
+                self._ledger_note(r, data)
+                done = True
+                break
+            if chunk:
+                self._ledger_first(r)
+                yield chunk
+        if not done:
+            # соединение закрылось без терминатора: сервер упал или сеть
+            # оборвалась. Усечённый ответ не выдаём за целый — минутки
+            # без хвоста встречи внешне неотличимы от готовых.
+            raise self._fail(r.status_code, "стрим оборван без завершения")
+
+    def _iter_strict_stream(
+        self, url: str, payload: dict, *, strict_key: tuple[str, str], selected: str,
+        busy_wait: float, timeout: tuple[float, float], method: str,
+        cancel_event=None, iter_fn,
+    ) -> Iterator[str]:
+        sends_format = "format" in payload
+        yielded = False
+        try:
+            with self._open_stream(url, payload, busy_wait, timeout=timeout,
+                                   method=method, cancel_event=cancel_event) as response:
+                for chunk in iter_fn(response):
+                    yielded = True
+                    yield chunk
+            if sends_format:
+                _strict_json_restored(strict_key)
+            return
+        except LLMHTTPError as e:
+            verdict, reason = strict_json_verdict(e.status, e.body)
+            if not sends_format or yielded or verdict != STRICT_NO:
+                raise
+            _strict_json_record(strict_key, reason)
+            _strict_json_announce(strict_key, selected, self.base, reason)
+            del payload["format"]
+        with self._open_stream(url, payload, busy_wait, timeout=timeout,
+                               method=method, cancel_event=cancel_event) as response:
+            yield from iter_fn(response)
 
     def _iter_local_stream(self, response, *, allow_length: bool, label: str) -> Iterator[str]:
         valid_sse = ("stop", "length") if allow_length else ("stop",)
@@ -1089,27 +1139,12 @@ class LLM:
                 payload["format"] = output_schema
             url = f"{self.base}/api/chat"
         strict_key = (self.base, selected)
-        sends_format = "format" in payload
-        yielded = False
-        try:
-            with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
-                                   method="grounded_answer", cancel_event=cancel_event) as response:
-                for chunk in self._iter_local_stream(response, allow_length=allow_length, label="grounded answer"):
-                    yielded = True
-                    yield chunk
-            if sends_format:
-                _strict_json_restored(strict_key)
-            return
-        except LLMHTTPError as e:
-            verdict, reason = strict_json_verdict(e.status, e.body)
-            if not sends_format or yielded or verdict != STRICT_NO:
-                raise
-            _strict_json_record(strict_key, reason)
-            _strict_json_announce(strict_key, selected, self.base, reason)
-            del payload["format"]
-        with self._open_stream(url, payload, LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
-                               method="grounded_answer", cancel_event=cancel_event) as response:
-            yield from self._iter_local_stream(response, allow_length=allow_length, label="grounded answer")
+        yield from self._iter_strict_stream(
+            url, payload, strict_key=strict_key, selected=selected,
+            busy_wait=LOCAL_FEED_BUSY_WAIT, timeout=STREAM_TIMEOUT,
+            method="grounded_answer", cancel_event=cancel_event,
+            iter_fn=lambda r: self._iter_local_stream(r, allow_length=allow_length, label="grounded answer"),
+        )
 
     def _ndjson_chunk(self, r, data: dict, line: bytes) -> str:
         """Текст чанка NDJSON-строки Ollama; `message: null` — пустой чанк, иная

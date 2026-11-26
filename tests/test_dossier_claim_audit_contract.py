@@ -19,7 +19,7 @@ import dossier_incremental as inc
 from charoite_graph import dossier, frontmatter
 from charoite_schema import CHAROITE
 from test_dossier_incremental import world as world, _new, LOCAL
-from test_dossier_model_contract import _old, _claim, _verdict, BODY, ADDED, A, B
+from test_dossier_model_contract import _old, _claim, _span_claim, _verdict, BODY, ADDED, A, B
 
 C = "2099-01-03_100000"
 FACT = "A rain cover was fitted."
@@ -29,6 +29,16 @@ MAIN_SYSTEM = "You are an independent conservative dossier judge."
 SOURCE_SYSTEM = "You judge source relevance conservatively."
 GENERATE_SYSTEM = "You extend factual dossiers conservatively."
 CASES = json.loads((Path(__file__).parent / "fixtures/dossier_claim_audit_cases.json").read_text(encoding="utf-8"))["cases"]
+
+
+def _span_for(source: str, quote: str) -> list[int]:
+    lines = inc._split_source_lines(source)
+    q_lines = inc._split_source_lines(quote)
+    for i in range(len(lines) - len(q_lines) + 1):
+        block = "\n".join(lines[i : i + len(q_lines)])
+        if quote in block:
+            return [i + 1, i + len(q_lines)]
+    return [1, 1]
 
 
 def _transport(monkeypatch, aggregate, *, support=SUPPORT_ACCEPT, topic=TOPIC_ACCEPT,
@@ -194,7 +204,7 @@ def test_aggregate_true_and_full_text_coverage_cannot_override_either_independen
     complete_claim = FACT + "; " + foreign
     candidate = ADDED.replace(FACT, complete_claim)
     quote = FACT if proof == "one-clause" else complete_claim
-    verdict = _verdict([_claim(complete_claim, quote=quote)])
+    verdict = _verdict([_span_claim(complete_claim, line_span=[1, 1])])
     support = SUPPORT_ACCEPT if proof == "both-clauses" else SUPPORT_ACCEPT | {
         "verdict": "reject", "supported": False, "reason": "Synthetic missing support for the second assertion."}
     topic = TOPIC_ACCEPT | {"verdict": "reject", "relevant": False,
@@ -213,13 +223,14 @@ def test_aggregate_true_and_full_text_coverage_cannot_override_either_independen
 def test_valid_addition_runs_separate_audits_with_complete_source_and_prior_dossier(monkeypatch):
     source = "Unrelated preceding source line.\n[[Ядра/Glasshouse]] " + FACT + "\nUnrelated following source line.\n"
     old = _old()
-    calls = _transport(monkeypatch, _verdict())
+    calls = _transport(monkeypatch, _verdict([_span_claim(line_span=[2, 2])]))
     inc.validate_candidate("Glasshouse", old, [B], {B: {"text": source}}, {}, ADDED, [])
     assert [call[0] for call in calls] == [MAIN_SYSTEM, inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM]
     assert inc.SUPPORT_AUDIT_SYSTEM != inc.TOPIC_AUDIT_SYSTEM
     for _, payload, options, _ in calls[1:]:
         assert payload == {"topic": "Glasshouse", "prior_dossier": old.parsed.body,
-                           "candidate_text": FACT, "source_quotation": FACT, "source_context": source}
+                           "candidate_text": FACT, "source_quotation": f"[[Ядра/Glasshouse]] {FACT}",
+                           "source_context": source}
         assert type(options["num_predict"]) is int and options["num_predict"] > 0
         assert "Unrelated preceding" in payload["source_context"] and "Unrelated following" in payload["source_context"]
         assert "author_notes" not in payload and "new_sources" not in payload
@@ -239,7 +250,9 @@ def test_invented_case_outcomes_follow_support_then_topic_without_borrowing_old_
                                 "supported": case["expected_support"]}
     topic = TOPIC_ACCEPT | {"verdict": "accept" if case["expected_topic"] else "reject",
                             "relevant": case["expected_topic"]}
-    claim = _claim(case["candidate"], quote=case["quote"])
+    span = _span_for(case["source"], case["quote"])
+    resolved_quote, _ = inc._resolve_line_span(case["source"], span, max_lines=inc.MAX_CLAIM_SPAN_LINES)
+    claim = _span_claim(case["candidate"], line_span=span)
     calls = _transport(monkeypatch, _verdict([claim]), support=support, topic=topic)
     files = {A: {"text": "OLD_SOURCE_A_MUST_NOT_PROVE_THIS_NEW_EVENT"}, B: {"text": case["source"]}}
     if case["expected_support"] and case["expected_topic"]:
@@ -253,8 +266,9 @@ def test_invented_case_outcomes_follow_support_then_topic_without_borrowing_old_
     assert [call[0] for call in calls] == expected
     for _, payload, _, prompt in calls[1:]:
         assert payload == {"topic": "Glasshouse", "prior_dossier": prior,
-                           "candidate_text": case["candidate"], "source_quotation": case["quote"],
+                           "candidate_text": case["candidate"], "source_quotation": resolved_quote,
                            "source_context": case["source"]}
+        assert case["quote"] in payload["source_quotation"]
         assert "OLD_SOURCE_A_MUST_NOT_PROVE_THIS_NEW_EVENT" not in prompt
 
 
@@ -265,47 +279,48 @@ def test_invented_case_outcomes_follow_support_then_topic_without_borrowing_old_
 def test_support_audit_sees_negation_or_qualifiers_outside_the_selected_quote(monkeypatch, quote, expected):
     candidate = ADDED.replace(FACT, quote)
     files = {B: {"text": "Other topic before.\n" + expected + "Other topic after.\n"}}
-    calls = _transport(monkeypatch, _verdict([_claim(quote, quote=quote)]), support=SUPPORT_ACCEPT | {
+    calls = _transport(monkeypatch, _verdict([_span_claim(quote, line_span=[2, 2])]), support=SUPPORT_ACCEPT | {
         "verdict": "uncertain", "supported": False, "reason": "Synthetic quotation qualification refusal."})
     with pytest.raises(inc.Refused, match="independent claim audit"):
         inc.validate_candidate("Glasshouse", _old(), [B], files, {}, candidate, [])
     assert [call[0] for call in calls] == [MAIN_SYSTEM, inc.SUPPORT_AUDIT_SYSTEM]
-    assert calls[1][1]["source_quotation"] == quote
+    assert calls[1][1]["source_quotation"] == expected.rstrip("\n")
     assert calls[1][1]["source_context"] == files[B]["text"]
 
 
 def test_multiline_evidence_anchor_keeps_the_complete_source_context(monkeypatch):
     quote = "A rain cover\nwas fitted."
     source = "Unrelated first line.\n[[Ядра/Glasshouse]] " + quote + " Done today.\nUnrelated last line.\n"
-    calls = _transport(monkeypatch, _verdict([_claim(quote=quote)]))
+    expected_span_quote = "[[Ядра/Glasshouse]] A rain cover\nwas fitted. Done today."
+    calls = _transport(monkeypatch, _verdict([_span_claim(line_span=[2, 3])]))
     inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, ADDED, [])
     assert [call[0] for call in calls] == [MAIN_SYSTEM, inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM]
-    assert all(call[1]["source_quotation"] == quote and call[1]["source_context"] == source
+    assert all(call[1]["source_quotation"] == expected_span_quote and call[1]["source_context"] == source
                for call in calls[1:])
 
 
 def test_repeated_literal_quote_is_refused_before_either_independent_stage(monkeypatch):
-    source = f"[[Ядра/Glasshouse]] {FACT}\n[[Ядра/WaterTank]] {FACT}\n"
-    calls = _transport(monkeypatch, _verdict())
+    source = f"{FACT}\n{FACT}\n"
+    calls = _transport(monkeypatch, _verdict([_span_claim(line_span=[1, 1])]))
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, ADDED, [])
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_every_anchor_is_checked_before_the_first_support_or_topic_call(monkeypatch):
     second = "A synthetic drain was cleared."
     candidate = ADDED.replace("## Как пришли", f"- {second} [[{C}]]\n## Как пришли")
-    calls = _transport(monkeypatch, _verdict([_claim(), _claim(second, quote=second, source=C)]))
+    calls = _transport(monkeypatch, _verdict([_span_claim(), _span_claim(second, line_span=[1, 1], source=C)]))
     files = {B: {"text": FACT}, C: {"text": f"{second}\nOther object.\n{second}\n"}}
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
         inc.validate_candidate("Glasshouse", _old(), [B, C], files, {}, candidate, [])
-    assert [call[0] for call in calls] == [MAIN_SYSTEM]
+    assert [call[0] for call in calls] == [MAIN_SYSTEM, MAIN_SYSTEM]
 
 
 def test_two_new_sources_can_prove_the_same_new_claim_with_separate_quotes(monkeypatch):
     second_quote = "A rain cover was fitted today."
     candidate = ADDED.replace(f"[[{B}]]", f"[[{B}]] [[{C}]]")
-    claims = [_claim(), _claim(source=C, quote=second_quote)]
+    claims = [_span_claim(), _span_claim(source=C, line_span=[1, 1])]
     calls = _transport(monkeypatch, _verdict(claims))
     inc.validate_candidate("Glasshouse", _old(), [B, C],
                            {B: {"text": FACT}, C: {"text": second_quote}}, {}, candidate, [])
@@ -317,8 +332,8 @@ def test_two_new_sources_can_prove_the_same_new_claim_with_separate_quotes(monke
 def test_all_claim_audits_share_the_largest_required_window(monkeypatch):
     second_quote = "A rain cover was fitted today."
     candidate = ADDED.replace(f"[[{B}]]", f"[[{B}]] [[{C}]]")
-    claims = [_claim(), _claim(source=C, quote=second_quote)]
-    long_source = "Unrelated qualification. " * 600 + second_quote
+    claims = [_span_claim(), _span_claim(source=C, line_span=[2, 2])]
+    long_source = "Unrelated qualification. " * 600 + "\n" + second_quote
     configs = []
     calls = _transport(monkeypatch, _verdict(claims), configs=configs)
     inc.validate_candidate("Glasshouse", _old(), [B, C],
@@ -329,9 +344,9 @@ def test_all_claim_audits_share_the_largest_required_window(monkeypatch):
 
 def test_repeating_a_text_source_pair_is_refused_even_with_a_different_quote(monkeypatch):
     second_quote = "A rain cover was fitted today."
-    calls = _transport(monkeypatch, _verdict([_claim(), _claim(quote=second_quote)]))
+    calls = _transport(monkeypatch, _verdict([_span_claim(line_span=[1, 1]), _span_claim(line_span=[2, 2])]))
     with pytest.raises(inc.Refused, match="duplicate candidate claim"):
-        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": FACT + " " + second_quote}}, {}, ADDED, [])
+        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": FACT + "\n" + second_quote}}, {}, ADDED, [])
     assert len(calls) == 1
 
 
@@ -373,13 +388,13 @@ def test_writer_keeps_body_membership_index_and_backups_and_retries_either_stage
     def complete(prompt, config, *, system, **kwargs):
         calls.append(system)
         if system == SOURCE_SYSTEM:
-            return json.dumps({"verdict": "relevant", "reason": "Synthetic supported source.", "quote": FACT})
+            return json.dumps({"verdict": "relevant", "reason": "Synthetic supported source.", "line_span": [2, 2]})
         if system == GENERATE_SYSTEM:
             if failure == "no-contribution":
                 return json.dumps({"additions": [{"section": "Кто в теме", "text": f"[[{B}]]", "source": B,
-                                                  "quote": FACT}],
+                                                  "line_span": [2, 2]}],
                                    "corrections": []})
-            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
+            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "line_span": [2, 2]}],
                                "corrections": []})
         if system in (inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM):
             current_stage = "support" if system == inc.SUPPORT_AUDIT_SYSTEM else "topic"
@@ -393,7 +408,7 @@ def test_writer_keeps_body_membership_index_and_backups_and_retries_either_stage
                 response["supported" if stage == "support" else "relevant"] = False
             return json.dumps(response)
         assert system == MAIN_SYSTEM
-        return json.dumps(_verdict([] if failure == "no-contribution" else [_claim()]))
+        return json.dumps(_verdict([] if failure == "no-contribution" else [_span_claim(line_span=[2, 2])]))
     monkeypatch.setattr(inc, "local_complete", complete)
     attempt = [GENERATE_SYSTEM, MAIN_SYSTEM]
     if stage != "main":
@@ -485,7 +500,7 @@ def test_stage_config_boundaries_and_auto_stepping(monkeypatch):
 
 
 def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry(monkeypatch):
-    long_text = ("Подробная запись наблюдения по теплице. " * 380) + FACT
+    long_text = ("Подробная запись наблюдения по теплице. " * 380) + "\n" + FACT
     files = {B: {"text": long_text}}
     cfg = {"llm": {"engine": "ollama", "base_url": "http://127.0.0.1:11434", "model": "invented", "num_ctx": 8192}}
     seen = []
@@ -493,12 +508,12 @@ def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry
     def complete(prompt, config, *, system, **kwargs):
         seen.append((system, config["llm"]["num_ctx"]))
         if system == SOURCE_SYSTEM:
-            return json.dumps({"verdict": "relevant", "reason": "Supported topic fact.", "quote": FACT})
+            return json.dumps({"verdict": "relevant", "reason": "Supported topic fact.", "line_span": [2, 2]})
         if system == GENERATE_SYSTEM:
-            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
+            return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "line_span": [2, 2]}],
                                "corrections": []})
         if system == MAIN_SYSTEM:
-            return json.dumps(_verdict())
+            return json.dumps(_verdict([_span_claim(line_span=[2, 2])]))
         if system == inc.SUPPORT_AUDIT_SYSTEM:
             return json.dumps(SUPPORT_ACCEPT)
         if system == inc.TOPIC_AUDIT_SYSTEM:
@@ -518,7 +533,7 @@ def test_all_dossier_stages_auto_step_default_8192_window_and_skip_context_retry
 
     def overflow_downstream(prompt, config, *, system, **kwargs):
         gen_calls.append(system)
-        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
+        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "line_span": [1, 1]}],
                            "corrections": []})
 
     monkeypatch.setattr(inc, "local_complete", overflow_downstream)
@@ -539,53 +554,41 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
     plain_quote = "| Glasshouse | A rain cover was fitted. |"
     raw_quote = "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |"
     unescaped_quote = "| [[Ядра/Glasshouse|Glasshouse]] | A rain cover was fitted. |"
-    # Plain display quote, verbatim raw wikilink quote, and dropped-backslash table wikilink quote all pass.
-    for quote in (plain_quote, raw_quote, unescaped_quote):
-        monkeypatch.setattr(
-            inc, "local_complete",
-            lambda *a, q=quote, **k: json.dumps({"verdict": "relevant", "reason": "Table row fact.", "quote": q}),
-        )
-        assert inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {}) is True
-    # Stem without alias ("[[Ядра/Glasshouse]]") also resolves to "Glasshouse".
+    # Valid line_span passes source_relevance; empty/out-of-range/inverted spans refuse.
     monkeypatch.setattr(
         inc, "local_complete",
-        lambda *a, **k: json.dumps({"verdict": "relevant", "reason": "Stem quote.", "quote": "Тема Glasshouse обновлена."}),
+        lambda *a, **k: json.dumps({"verdict": "relevant", "reason": "Table row fact.", "line_span": [2, 2]}),
     )
-    assert inc.source_relevance("Glasshouse", _old(), B, {"text": "Тема [[Ядра/Glasshouse]] обновлена."}, {}) is True
-    # Whitespace-only quote, empty/anchor wikilinks, unclosed [[ across newline, and fabricated targets fail.
-    for bad_source, bad_quote in [
-        ("A rain cover was fitted.", "   "),
-        ("A [[Цель| ]] B", "A  B"),
-        ("A [[Раздел/Имя\\| ]] B", "A  B"),
-        ("A [[#Раздел]] B", "A  B"),
-        ("A [[]] B", "A  B"),
-        ("Первая [[незакрытая\nвторая]] строка", "Первая строка"),
-        ("A Glasshouse B", "A [[Выдуманная/Glasshouse|Glasshouse]] B"),
+    assert inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {}) is True
+    for bad_source, bad_span in [
+        ("A rain cover was fitted.\n   \n", [2, 2]),
+        ("A rain cover was fitted.", [2, 2]),
+        ("A rain cover was fitted.", [2, 1]),
+        ("A rain cover was fitted.", []),
     ]:
         monkeypatch.setattr(
             inc, "local_complete",
-            lambda *a, q=bad_quote, **k: json.dumps({"verdict": "relevant", "reason": "Bad quote.", "quote": q}),
+            lambda *a, sp=bad_span, **k: json.dumps({"verdict": "relevant", "reason": "Bad span.", "line_span": sp}),
         )
         with pytest.raises(inc.Refused, match="uncertain or unsupported"):
             inc.source_relevance("Glasshouse", _old(), B, {"text": bad_source}, {})
 
-    # Downstream validate_candidate (claims + changes + _quote_context) accepts unique plain and unescaped table quotes...
+    # Direct _check_claims accepts unique plain and unescaped table quotes...
     for valid_quote in (plain_quote, unescaped_quote):
-        calls = _transport(monkeypatch, _verdict([_claim(quote=valid_quote)]))
-        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": table_source}}, {}, ADDED, [])
-        assert len(calls) == 3
+        inc._check_claims(_old(), ADDED, [B], {B: {"text": table_source}}, [_claim(quote=valid_quote)], [])
     # ...and still refuses when two different wikilinks collapse to the same plain quote!
     ambiguous_table = (
         "| [[Ядра/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
         "| [[Архив/Glasshouse\\|Glasshouse]] | A rain cover was fitted. |\n"
     )
-    _transport(monkeypatch, _verdict([_claim(quote=plain_quote)]))
     with pytest.raises(inc.Refused, match="ambiguous claim evidence"):
-        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
-    # Distinct target wikilink quotes (both raw \| and unescaped |) on the two-row table remain unambiguous and pass!
+        inc._check_claims(_old(), ADDED, [B], {B: {"text": ambiguous_table}}, [_claim(quote=plain_quote)], [])
+    # Distinct target wikilink quotes (both raw \| and unescaped |) and line_span on the two-row table pass!
     for specific_quote in (raw_quote, unescaped_quote):
-        _transport(monkeypatch, _verdict([_claim(quote=specific_quote)]))
-        inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+        inc._check_claims(_old(), ADDED, [B], {B: {"text": ambiguous_table}}, [_claim(quote=specific_quote)], [])
+    calls = _transport(monkeypatch, _verdict([_span_claim(line_span=[1, 1])]))
+    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": ambiguous_table}}, {}, ADDED, [])
+    assert len(calls) == 3
 
     # Direct projection invariants: bytes inside hidden blocks stay verbatim (never stripped to empty).
     hidden_only = "Решили %%не%% ставить `[[Ядра/Glasshouse\\|крышу]]`.\n```md\n[[X|y]]\n```"
@@ -658,7 +661,7 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
     def capture_prompt(prompt, config, *, system, **kwargs):
         tails_by_system[system] = prompt.split("\n", 1)[1]
         if system == SOURCE_SYSTEM:
-            return json.dumps({"verdict": "relevant", "reason": "Open question.", "quote": plain_quote})
+            return json.dumps({"verdict": "relevant", "reason": "Open question.", "line_span": [2, 2]})
         if system == GENERATE_SYSTEM:
             return json.dumps({"additions": [], "corrections": []})
         if system == MAIN_SYSTEM:
@@ -674,12 +677,11 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
     assert "adds a supported fact, decision, open question or risk about the topic" in tails_by_system[SOURCE_SYSTEM]
     assert "without any topic fact, decision, open question or risk" in tails_by_system[SOURCE_SYSTEM]
     for stage_system in (SOURCE_SYSTEM, GENERATE_SYSTEM, MAIN_SYSTEM):
-        assert "visible link text" in tails_by_system[stage_system]
-        assert "valid JSON escaping" in tails_by_system[stage_system]
+        assert "line_span" in tails_by_system[stage_system]
         assert re.search(r"(?<!\\)\\\|", tails_by_system[stage_system]) is None
     monkeypatch.setattr(
         inc, "local_complete",
-        lambda *a, **k: '{"verdict":"relevant","reason":"r","quote":"[[A\\|B]]"}',
+        lambda *a, **k: '{"verdict":"relevant","reason":"r","line_span":[\\|]}',
     )
     with pytest.raises(inc.Refused, match="malformed model JSON"):
         inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {})

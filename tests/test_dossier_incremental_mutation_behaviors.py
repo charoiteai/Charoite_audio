@@ -56,11 +56,11 @@ def _answer(payload, system, *, irrelevant=(), candidate=None):
     if "source relevance" in system:
         no = payload["source"] in irrelevant
         return json.dumps({"verdict": "irrelevant" if no else "relevant", "reason": "Synthetic source judgment.",
-                           "quote": "" if no else FACT})
+                           "line_span": [] if no else [2, 2]})
     if "extend factual" in system:
         if candidate is not None:
             return json.dumps(candidate)
-        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "quote": FACT}],
+        return json.dumps({"additions": [{"section": "Сейчас", "text": FACT, "source": B, "line_span": [2, 2]}],
                            "corrections": []})
     if system == inc.SUPPORT_AUDIT_SYSTEM:
         return json.dumps({"verdict": "accept", "supported": True,
@@ -70,7 +70,7 @@ def _answer(payload, system, *, irrelevant=(), candidate=None):
                            "reason": "Synthetic topic judgment."})
     return json.dumps({"verdict": "accept", "conserved": True, "supported": True,
                        "corrections_valid": True, "reason": "Synthetic candidate judgment.",
-                       "claims": [{"text": FACT, "source": B, "quote": FACT,
+                       "claims": [{"text": FACT, "source": B, "line_span": [2, 2],
                                    "relevant": True, "supported": True, "reason": "Synthetic source evidence."}]})
 
 

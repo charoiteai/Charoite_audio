@@ -306,3 +306,144 @@ def test_retag_between_version_and_chat_cannot_forward_explicit_local_request(ba
     assert [call["method"] for call in backend.calls] == ["GET", "POST"]
     assert backend.calls[-1]["payload"]["model"] == MODEL + ":local"
     assert backend.responses[-1][1].closed
+
+
+_SAMPLE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ok"],
+    "properties": {"ok": {"type": "boolean"}},
+}
+
+
+def test_stream_output_schema_serializes_format_and_rejects_non_dict_or_non_ollama(backend):
+    llm._strict_json_clear()
+    try:
+        answer = "".join(
+            llm.LLM(copy.deepcopy(CONFIG)).stream(
+                PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA
+            )
+        )
+        assert json.loads(answer) == {"ok": True}
+        assert backend.calls[-1]["payload"]["format"] == _SAMPLE_SCHEMA
+        assert "format" not in backend.calls[-1]["payload"]["options"]
+
+        for bad in ("json", [], 123, True, {}):
+            before = len(backend.calls)
+            with pytest.raises(ValueError, match="output_schema"):
+                list(llm.LLM(copy.deepcopy(CONFIG)).stream(PROMPT, model=MODEL, output_schema=bad))
+            assert len(backend.calls) == before
+
+        mlx_cfg = copy.deepcopy(CONFIG)
+        mlx_cfg["llm"]["engine"] = "mlx-server"
+        before = len(backend.calls)
+        with pytest.raises(privacy.PrivacyRefused, match="output_schema"):
+            list(llm.LLM(mlx_cfg).stream(PROMPT, output_schema=_SAMPLE_SCHEMA))
+        assert len(backend.calls) == before
+
+        remote_cfg = copy.deepcopy(CONFIG)
+        remote_cfg["llm"]["base_url"] = "http://10.0.0.2:11434"
+        remote_cfg["llm"]["allow_remote"] = True
+        with pytest.raises(privacy.PrivacyRefused, match="output_schema"):
+            list(llm.LLM(remote_cfg).stream(PROMPT, model=MODEL, output_schema=_SAMPLE_SCHEMA))
+        assert len(backend.calls) == before
+
+        cloud_client = llm.LLM(copy.deepcopy(CONFIG))
+        cloud_client.cloud_ready = True
+        with pytest.raises(privacy.PrivacyRefused, match="output_schema"):
+            list(cloud_client.stream(PROMPT, model=MODEL, output_schema=_SAMPLE_SCHEMA))
+        assert len(backend.calls) == before
+    finally:
+        llm._strict_json_clear()
+
+
+@pytest.mark.parametrize("mode", ["http_501", "ndjson_200"])
+def test_stream_output_schema_strict_no_falls_back_once_and_caches(monkeypatch, tmp_path, _сеть_закрыта, mode):
+    llm._strict_json_clear()
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    base = CONFIG["llm"]["base_url"]
+    calls = []
+
+    def fake_post(url, *, json, **kwargs):
+        payload = copy.deepcopy(json)
+        calls.append(payload)
+        if "format" in payload:
+            if mode == "http_501":
+                return Response({"error": "structured output is unavailable"}, status=501)
+            return Response({}, frames=[{"error": "structured output is unavailable"}])
+        return Response({}, frames=[{"message": {"content": '{"ok":true}'}, "done": True, "done_reason": "stop"}])
+
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = fake_post
+    try:
+        client = llm.LLM(copy.deepcopy(CONFIG))
+        first = "".join(client.stream(PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA))
+        assert json.loads(first) == {"ok": True}
+        assert len(calls) == 2
+        assert calls[0]["format"] == _SAMPLE_SCHEMA
+        assert "format" not in calls[1]
+        assert llm._strict_json_known((base, MODEL)) is not None
+
+        second = "".join(client.stream(PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA))
+        assert json.loads(second) == {"ok": True}
+        assert len(calls) == 3
+        assert "format" not in calls[2]
+    finally:
+        llm._strict_json_clear()
+
+
+def test_stream_output_schema_no_fallback_after_yield_or_non_strict_error(monkeypatch, tmp_path, _сеть_закрыта):
+    llm._strict_json_clear()
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    base = CONFIG["llm"]["base_url"]
+    calls = []
+    mode = {"kind": "after_yield"}
+
+    def fake_post(url, *, json, **kwargs):
+        calls.append(copy.deepcopy(json))
+        if mode["kind"] == "after_yield":
+            return Response({}, frames=[
+                {"message": {"content": '{"ok":'}, "done": False},
+                {"error": "structured output is unavailable"},
+            ])
+        return Response({"error": "internal server error"}, status=500)
+
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = fake_post
+    try:
+        client = llm.LLM(copy.deepcopy(CONFIG))
+        with pytest.raises(llm.LLMHTTPError):
+            "".join(client.stream(PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA))
+        assert len(calls) == 1
+        assert llm._strict_json_known((base, MODEL)) is None
+
+        mode["kind"] = "http_500"
+        with pytest.raises(llm.LLMHTTPError):
+            "".join(client.stream(PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA))
+        assert len(calls) == 2
+        assert llm._strict_json_known((base, MODEL)) is None
+    finally:
+        llm._strict_json_clear()
+
+
+@pytest.mark.parametrize("done_reason", ["length", "unload"])
+def test_stream_output_schema_refuses_non_stop_before_yielding_but_plain_stream_allows_it(
+    monkeypatch, tmp_path, _сеть_закрыта, done_reason,
+):
+    llm._strict_json_clear()
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    base = CONFIG["llm"]["base_url"]
+
+    def fake_post(url, *, json, **kwargs):
+        return Response({}, frames=[{"message": {"content": '{"ok":true'}, "done": True, "done_reason": done_reason}])
+
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = fake_post
+    try:
+        client = llm.LLM(copy.deepcopy(CONFIG))
+        emitted: list[str] = []
+        with pytest.raises(llm.LLMHTTPError, match=f"stream stopped \\({done_reason}\\)"):
+            for chunk in client.stream(PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA):
+                emitted.append(chunk)
+        assert emitted == []
+        assert "".join(client.stream(PROMPT, model=MODEL, num_predict=64)) == '{"ok":true'
+    finally:
+        llm._strict_json_clear()
+

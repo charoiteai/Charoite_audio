@@ -143,7 +143,7 @@ def test_source_relevance_and_semantic_check_accept_bold_stripped_quotes(monkeyp
         json.dumps({
             "verdict": "relevant",
             "reason": "concrete latency metric",
-            "quote": "Glasshouse: latency dropped from 12s to 4s, owner [[People/Alex|Alex]].",
+            "line_span": [1, 1],
         }),
     ]))
     assert inc.source_relevance("Glasshouse", loaded, name, files[name], LOCAL) is True
@@ -164,7 +164,7 @@ def test_source_relevance_and_semantic_check_accept_bold_stripped_quotes(monkeyp
             "claims": [{
                 "text": "Latency dropped to 4s.",
                 "source": name,
-                "quote": "Glasshouse: latency dropped from 12s to 4s, owner Alex.",
+                "line_span": [1, 1],
                 "relevant": True,
                 "supported": True,
                 "reason": "direct Glasshouse metric",
@@ -173,6 +173,7 @@ def test_source_relevance_and_semantic_check_accept_bold_stripped_quotes(monkeyp
     ]))
     inc.semantic_check("Glasshouse", loaded, [name], files, LOCAL, body, [])
     assert len(audited) == 1
+    assert audited[0][0]["quote"] == source_text
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +246,7 @@ def test_semantic_check_canonicalizes_wikilink_claim_source_and_catches_duplicat
             "claims": [{
                 "text": "Cover fitted on Monday.",
                 "source": f"[[{name}]]",
-                "quote": "Cover fitted on Monday.",
+                "line_span": [1, 1],
                 "relevant": True,
                 "supported": True,
                 "reason": "about Glasshouse",
@@ -396,11 +397,17 @@ def test_semantic_check_runs_emphasis_fallback_once_per_claim(monkeypatch):
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
             "claims": [{"text": "Glasshouse vent is sealed.", "source": name,
-                        "quote": "Glasshouse vent is sealed.", "relevant": True, "supported": True, "reason": "ok"}],
+                        "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
         }),
     ]))
     inc.semantic_check("Glasshouse", loaded, [name], files, LOCAL, body, [])
-    # 1 call for text + 1 call for quote (not doubled in semantic_check)
+    # Verbatim line_span slices match raw text directly without invoking emphasis fallback
+    assert calls == []
+    # Direct _check_claims with stripped bold quote still runs emphasis fallback once per claim (text + quote)
+    inc._check_claims(loaded, body, [name], files, [{
+        "text": "Glasshouse vent is sealed.", "source": name,
+        "quote": "Glasshouse vent is sealed.", "relevant": True, "supported": True, "reason": "ok",
+    }], [])
     assert len(calls) == 2
 
 
@@ -495,10 +502,10 @@ def test_stage_and_detail_reject_freeform_strings():
 @pytest.mark.parametrize("replies,expected_detail", [
     (["not json at all " + SENTINEL], "json_malformed"),
     ([json.dumps({"verdict": "relevant", "reason": "ok"})], "json_schema"),
-    ([json.dumps({"verdict": "relevant", "reason": "   ", "quote": "x"})], "relevance_incomplete"),
-    ([json.dumps({"verdict": "relevant", "reason": "ok", "quote": "   "})] * 2, "relevance_quote_empty"),
-    ([json.dumps({"verdict": "relevant", "reason": "ok", "quote": "absent quote"})] * 2, "relevance_quote_missing"),
-    ([json.dumps({"verdict": "uncertain", "reason": "ambiguous", "quote": ""})], "relevance_uncertain"),
+    ([json.dumps({"verdict": "relevant", "reason": "   ", "line_span": [2, 2]})], "relevance_incomplete"),
+    ([json.dumps({"verdict": "relevant", "reason": "ok", "line_span": []})] * 2, "relevance_quote_empty"),
+    ([json.dumps({"verdict": "relevant", "reason": "ok", "line_span": [99, 99]})] * 2, "relevance_quote_missing"),
+    ([json.dumps({"verdict": "uncertain", "reason": "ambiguous", "line_span": []})], "relevance_uncertain"),
 ])
 def test_stage_refusals_classifies_source_relevance_failures(world, monkeypatch, replies, expected_detail):
     nd, graph, _ = world
@@ -526,18 +533,18 @@ def test_stage_refusals_stays_empty_when_append_recovers_on_retry(world, monkeyp
     _new(graph, name, "Glasshouse vent sealed.")
     good_patch = json.dumps({
         "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
-                       "quote": "Glasshouse vent sealed."}],
+                       "line_span": [2, 2]}],
         "corrections": [],
     })
     monkeypatch.setattr(inc, "local_complete", _seq_replies([
-        json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Glasshouse vent sealed."}),
+        json.dumps({"verdict": "relevant", "reason": "fact", "line_span": [2, 2]}),
         "bad json attempt 0",
         good_patch,
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
             "claims": [{"text": "Glasshouse vent sealed.", "source": name,
-                        "quote": "Glasshouse vent sealed.", "relevant": True, "supported": True, "reason": "ok"}],
+                        "line_span": [2, 2], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
         json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
@@ -556,7 +563,7 @@ def test_stage_refusals_captures_audit_topic_rejection(world, monkeypatch):
     _new(graph, name, "Glasshouse vent sealed.")
     good_patch = json.dumps({
         "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
-                       "quote": "Glasshouse vent sealed."}],
+                       "line_span": [2, 2]}],
         "corrections": [],
     })
     one_attempt = [
@@ -565,13 +572,13 @@ def test_stage_refusals_captures_audit_topic_rejection(world, monkeypatch):
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
             "claims": [{"text": "Glasshouse vent sealed.", "source": name,
-                        "quote": "Glasshouse vent sealed.", "relevant": True, "supported": True, "reason": "ok"}],
+                        "line_span": [2, 2], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
         json.dumps({"verdict": "reject", "relevant": False, "reason": "off topic"}),
     ]
     monkeypatch.setattr(inc, "local_complete", _seq_replies([
-        json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Glasshouse vent sealed."}),
+        json.dumps({"verdict": "relevant", "reason": "fact", "line_span": [2, 2]}),
         *one_attempt,
         *one_attempt,
     ]))
@@ -588,21 +595,21 @@ def test_stage_refusals_covers_append_deterministic_semantic_and_audit_support(w
     _new(graph, name, "Glasshouse vent sealed.")
     good_patch = json.dumps({
         "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
-                       "quote": "Glasshouse vent sealed."}],
+                       "line_span": [2, 2]}],
         "corrections": [],
     })
     bad_section_patch = json.dumps({
         "additions": [{"section": "Источники", "text": "Glasshouse vent sealed.", "source": name,
-                       "quote": "Glasshouse vent sealed."}],
+                       "line_span": [2, 2]}],
         "corrections": [],
     })
     empty_patch = json.dumps({"additions": [], "corrections": []})
-    rel_ok = json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Glasshouse vent sealed."})
+    rel_ok = json.dumps({"verdict": "relevant", "reason": "fact", "line_span": [2, 2]})
     sem_ok = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
         "claims": [{"text": "Glasshouse vent sealed.", "source": name,
-                    "quote": "Glasshouse vent sealed.", "relevant": True, "supported": True, "reason": "ok"}],
+                    "line_span": [2, 2], "relevant": True, "supported": True, "reason": "ok"}],
     })
     cases = [
         ([rel_ok, "not json", "still not json"], {"append": {"json_malformed": 1}}),
@@ -707,18 +714,17 @@ def test_source_relevance_retries_once_on_bad_quote_and_recovers_cleanly(world, 
     name = "2099-01-02_100000"
     _new(graph, name, "| [[Ядра/Glasshouse\\|Glasshouse]] | Vent sealed on Monday. |")
     seen_prompts = []
-    long_bad_quote = "missing " + ("x" * 260)
     replies = iter([
-        json.dumps({"verdict": "relevant", "reason": "fact", "quote": long_bad_quote}),
-        json.dumps({"verdict": "relevant", "reason": "fact", "quote": "Vent sealed on Monday."}),
+        json.dumps({"verdict": "relevant", "reason": "fact", "line_span": [99, 99]}),
+        json.dumps({"verdict": "relevant", "reason": "fact", "line_span": [2, 2]}),
         json.dumps({"additions": [{"section": "Сейчас", "text": "Vent sealed on Monday.", "source": name,
-                                   "quote": "Vent sealed on Monday."}],
+                                   "line_span": [2, 2]}],
                     "corrections": []}),
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
             "claims": [{"text": "Vent sealed on Monday.", "source": name,
-                        "quote": "Vent sealed on Monday.", "relevant": True, "supported": True, "reason": "ok"}],
+                        "line_span": [2, 2], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
         json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
@@ -734,9 +740,9 @@ def test_source_relevance_retries_once_on_bad_quote_and_recovers_cleanly(world, 
     snap = result.telemetry.snapshot()
     assert len(seen_prompts) == 2
     retry_payload, _ = json.JSONDecoder().raw_decode(seen_prompts[1][0])
-    assert "quote_feedback" in retry_payload
-    assert "previous_quote" not in retry_payload["quote_feedback"]
-    assert "prefer 4-12 words" in retry_payload["quote_feedback"]["instruction"]
+    assert "span_feedback" in retry_payload
+    assert retry_payload["span_feedback"]["problem"] == "span_out_of_range"
+    assert "1 <= start <= end" in retry_payload["span_feedback"]["instruction"]
     assert seen_prompts[0][1] == seen_prompts[1][1]
     assert snap["committed_topics"] == 1
     assert snap["final_refusals"] == 0
@@ -749,7 +755,7 @@ def test_source_relevance_retry_preserves_stage_on_second_failure_and_skips_retr
     _new(graph, name, "Glasshouse vent sealed.")
     # Failure on attempt 1 (malformed JSON) must still be recorded under source_relevance, not unknown.
     monkeypatch.setattr(inc, "local_complete", _seq_replies([
-        json.dumps({"verdict": "relevant", "reason": "fact", "quote": "wrong quote"}),
+        json.dumps({"verdict": "relevant", "reason": "fact", "line_span": [99, 99]}),
         "not json on retry",
     ]))
     result = nd.run_all([graph], LOCAL, full=False, dry=False)
@@ -764,7 +770,7 @@ def test_source_relevance_retry_preserves_stage_on_second_failure_and_skips_retr
 
         def bad_quote(prompt, config, **kwargs):
             seen_ctx.append((config["llm"]["num_ctx"], inc._stage_needed_tokens(len(inc.SOURCE_RELEVANCE_SYSTEM), prompt, inc.SOURCE_PREDICT)))
-            return json.dumps({"verdict": "relevant", "reason": "fact", "quote": "absent quote"})
+            return json.dumps({"verdict": "relevant", "reason": "fact", "line_span": [99, 99]})
 
         monkeypatch.setattr(inc, "local_complete", bad_quote)
         res = nd.run_all([graph], LOCAL, full=False, dry=False)
@@ -813,7 +819,7 @@ def test_append_uses_fixed_gen_predict_and_trims_retry_feedback(monkeypatch):
     huge_bad = "{" + ("z" * 4500)
     good_patch = json.dumps({
         "additions": [{"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": name,
-                       "quote": "Glasshouse vent sealed."}],
+                       "line_span": [1, 1]}],
         "corrections": [],
     })
     replies = iter([huge_bad, good_patch])
@@ -878,14 +884,14 @@ def test_append_retry_feedback_missing_citations_covers_all_four_outcomes(monkey
     }
     full_patch = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": "F1", "source": m1, "quote": "Glasshouse fact 1."},
-            {"section": "Сейчас", "text": "F2", "source": m2, "quote": "Glasshouse fact 2."},
-            {"section": "Сейчас", "text": "F3", "source": m3, "quote": "Glasshouse fact 3."},
+            {"section": "Сейчас", "text": "F1", "source": m1, "line_span": [1, 1]},
+            {"section": "Сейчас", "text": "F2", "source": m2, "line_span": [1, 1]},
+            {"section": "Сейчас", "text": "F3", "source": m3, "line_span": [1, 1]},
         ],
         "corrections": [],
     })
     partial_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": "F3", "source": m3, "quote": "Glasshouse fact 3."}],
+        "additions": [{"section": "Сейчас", "text": "F3", "source": m3, "line_span": [1, 1]}],
         "corrections": [],
     })
 
@@ -996,13 +1002,13 @@ def test_nightly_add_falls_back_sequentially_on_multi_source_unattributed_only(w
             # Drop one accepted source so real inc.append -> deterministic_check raises source_unattributed
             return json.dumps({
                 "additions": [{"section": "Сейчас", "text": f"Fact {names[0]}.", "source": names[0],
-                               "quote": payload["new_sources"][names[0]].splitlines()[-1]}],
+                               "line_span": [2, 2]}],
                 "corrections": [],
             })
         src = names[0]
         return json.dumps({
             "additions": [{"section": "Сейчас", "text": f"Fact {src}.", "source": src,
-                           "quote": payload["new_sources"][src].splitlines()[-1]}],
+                           "line_span": [2, 2]}],
             "corrections": [],
         })
 
@@ -1066,19 +1072,19 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
     )
     loaded = _loaded_with_body(prior_body)
     files = {
-        b: {"text": "Second replaced. First replaced. Duplicate test. Bob joined."},
+        b: {"text": "Second replaced.\nFirst replaced.\nDuplicate test.\nBob joined."},
         c_src: {"text": "Extra decision."},
     }
     # Reverse order in corrections + duplicate of correction.after in additions + last-section append
     patch = {
         "additions": [
-            {"section": "  ##  Сейчас  ", "text": "  - First now updated.  ", "source": b, "quote": "Duplicate test."},
-            {"section": "Решено", "text": "Extra decision.", "source": c_src, "quote": "Extra decision."},
-            {"section": "Кто в теме", "text": "Bob joined.", "source": b, "quote": "Bob joined."},
+            {"section": "  ##  Сейчас  ", "text": "  - First now updated.  ", "source": b, "line_span": [3, 3]},
+            {"section": "Решено", "text": "Extra decision.", "source": c_src, "line_span": [1, 1]},
+            {"section": "Кто в теме", "text": "Bob joined.", "source": b, "line_span": [4, 4]},
         ],
         "corrections": [
-            {"before": "Second line.", "after": "Second now updated.", "source": f"[[{b}]]", "quote": "Second replaced."},
-            {"before": "First line.", "after": "First now updated.", "source": b, "quote": "First replaced."},
+            {"before": "Second line.", "after": "Second now updated.", "source": f"[[{b}]]", "line_span": [1, 1]},
+            {"before": "First line.", "after": "First now updated.", "source": b, "line_span": [2, 2]},
         ],
     }
     body, changes, anchors = inc._apply_patch(loaded, [b, c_src], files, patch)
@@ -1107,8 +1113,8 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
     merge_patch = {
         "additions": [],
         "corrections": [
-            {"before": "First line.", "after": "Unified state.", "source": b, "quote": "First replaced."},
-            {"before": "Second line.", "after": "Unified state.", "source": b, "quote": "Second replaced."},
+            {"before": "First line.", "after": "Unified state.", "source": b, "line_span": [2, 2]},
+            {"before": "Second line.", "after": "Unified state.", "source": b, "line_span": [1, 1]},
         ],
     }
     merged_body, merged_changes, merged_anchors = inc._apply_patch(loaded, [b], files, merge_patch)
@@ -1122,7 +1128,7 @@ def test_apply_patch_corrections_preserve_physical_order_and_never_dedup_moved_l
 
 def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malformed():
     m1 = "2099-01-02_100000"
-    files = {m1: {"text": "History note. Open question. Vent A q."}}
+    files = {m1: {"text": "History note.\nOpen question.\nVent A q."}}
     empty_current_body = (
         "## Сейчас\n—\n"
         "## Как пришли\n— \n"
@@ -1134,8 +1140,8 @@ def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malfor
     # Addition to Открыто must leave untouched ## Сейчас with "—" intact, and clean "— " when Как пришли is edited
     body, changes, anchors = inc._apply_patch(loaded_empty, [m1], files, {
         "additions": [
-            {"section": "Как пришли", "text": "History note.", "source": m1, "quote": "History note."},
-            {"section": "Открыто", "text": "Open question.", "source": m1, "quote": "Open question."},
+            {"section": "Как пришли", "text": "History note.", "source": m1, "line_span": [1, 1]},
+            {"section": "Открыто", "text": "Open question.", "source": m1, "line_span": [2, 2]},
         ],
         "corrections": [],
     })
@@ -1148,7 +1154,7 @@ def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malfor
     with pytest.raises(inc.Refused, match="must identify one current line"):
         inc._apply_patch(loaded_empty, [m1], files, {
             "additions": [],
-            "corrections": [{"before": "—", "after": "New state.", "source": m1, "quote": "q"}],
+            "corrections": [{"before": "—", "after": "New state.", "source": m1, "line_span": [1, 1]}],
         })
 
     loaded = _loaded_dossier()
@@ -1158,22 +1164,22 @@ def test_apply_patch_preserves_untouched_sections_and_em_dash_and_rejects_malfor
         ({"additions": ["bad"], "corrections": []}, "malformed patch entry"),
         ({"additions": [{"section": "Сейчас", "text": "x"}], "corrections": []}, "malformed patch entry"),
         ({"additions": [{"section": "Сейчас", "text": "x", "source": m1}], "corrections": []}, "malformed patch entry"),
-        ({"additions": [{"section": 123, "text": "x", "source": m1, "quote": "q"}], "corrections": []}, "invalid patch section"),
-        ({"additions": [{"section": "Правки автора", "text": "x", "source": m1, "quote": "q"}], "corrections": []}, "invalid patch section"),
-        ({"additions": [{"section": "Сейчас", "text": "x", "source": m1, "quote": 123}], "corrections": []}, "empty or invalid patch entry"),
-        ({"additions": [{"section": "Сейчас", "text": "x", "source": m1, "quote": "   "}], "corrections": []}, "empty or invalid patch entry"),
-        ({"additions": [{"section": "Сейчас", "text": "x", "source": "other", "quote": "q"}], "corrections": []}, "unsupported patch source"),
+        ({"additions": [{"section": 123, "text": "x", "source": m1, "line_span": [1, 1]}], "corrections": []}, "invalid patch section"),
+        ({"additions": [{"section": "Правки автора", "text": "x", "source": m1, "line_span": [1, 1]}], "corrections": []}, "invalid patch section"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": m1, "line_span": 123}], "corrections": []}, "lacks exact new-source evidence"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": m1, "line_span": []}], "corrections": []}, "lacks exact new-source evidence"),
+        ({"additions": [{"section": "Сейчас", "text": "x", "source": "other", "line_span": [1, 1]}], "corrections": []}, "unsupported patch source"),
         ({"additions": [], "corrections": ["bad"]}, "malformed correction ledger"),
         ({"additions": [], "corrections": [{"before": "Vent A"}]}, "malformed correction ledger"),
-        ({"additions": [], "corrections": [{"before": 123, "after": "x", "source": m1, "quote": "q"}]}, "empty correction ledger entry"),
-        ({"additions": [], "corrections": [{"before": "   ", "after": "x", "source": m1, "quote": "q"}]}, "empty correction ledger entry"),
-        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": m1, "quote": 123}]}, "empty correction ledger entry"),
-        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": m1, "quote": "   "}]}, "empty correction ledger entry"),
-        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": "other", "quote": "q"}]}, "unsupported or unattributed correction ledger"),
-        ({"additions": [], "corrections": [{"before": "Absent claim", "after": "x", "source": m1, "quote": "q"}]}, "must identify one current line"),
+        ({"additions": [], "corrections": [{"before": 123, "after": "x", "source": m1, "line_span": [1, 1]}]}, "empty correction ledger entry"),
+        ({"additions": [], "corrections": [{"before": "   ", "after": "x", "source": m1, "line_span": [1, 1]}]}, "empty correction ledger entry"),
+        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": m1, "line_span": 123}]}, "lacks exact new-source evidence"),
+        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": m1, "line_span": []}]}, "lacks exact new-source evidence"),
+        ({"additions": [], "corrections": [{"before": "Vent A", "after": "x", "source": "other", "line_span": [1, 1]}]}, "unsupported or unattributed correction ledger"),
+        ({"additions": [], "corrections": [{"before": "Absent claim", "after": "x", "source": m1, "line_span": [1, 1]}]}, "must identify one current line"),
         ({"additions": [], "corrections": [
-            {"before": "Vent A", "after": "Closed 1.", "source": m1, "quote": "q"},
-            {"before": "Vent A", "after": "Closed 2.", "source": m1, "quote": "q"},
+            {"before": "Vent A", "after": "Closed 1.", "source": m1, "line_span": [1, 1]},
+            {"before": "Vent A", "after": "Closed 2.", "source": m1, "line_span": [1, 1]},
         ]}, "must identify one current line"),
     ]
     for bad_patch, pattern in bad_cases:
@@ -1223,26 +1229,26 @@ def test_normalize_patch_line_unlabels_speakers_and_validates_after_unlabel():
 def test_apply_patch_unlabels_body_sections_and_omits_anonymous_who_in_topic():
     m1 = "2099-01-02_100000"
     loaded = _loaded_dossier()
-    files = {m1: {"text": "Собеседник 1 сообщил: Vent A закрыт. Спикер 2 отметил риск. Анна Смирнова. Иван Петров. Соучастник встречи Борис."}}
+    files = {m1: {"text": "Собеседник 1 сообщил: Vent A закрыт.\nСпикер 2 отметил риск.\nАнна Смирнова.\nИван Петров.\nСоучастник встречи Борис."}}
     patch = {
         "additions": [
-            {"section": "Открыто", "text": "Спикер 2 отметил риск.", "source": m1, "quote": "Спикер 2 отметил риск."},
-            {"section": "Кто в теме", "text": "Собеседник 3 назначен ответственным.", "source": m1, "quote": "отсутствующая фраза"},
-            {"section": "Кто в теме", "text": "[[Люди/Спикер 1]]", "source": m1, "quote": "отсутствующая фраза"},
-            {"section": "Кто в теме", "text": "участника встречи", "source": m1, "quote": "отсутствующая фраза"},
-            {"section": "Кто в теме", "text": "участнику встречи", "source": m1, "quote": "отсутствующая фраза"},
-            {"section": "Кто в теме", "text": "с участником встречи", "source": m1, "quote": "отсутствующая фраза"},
-            {"section": "Кто в теме", "text": "об участнике встречи", "source": m1, "quote": "отсутствующая фраза"},
-            {"section": "Кто в теме", "text": "[[Люди/Спикер 1|Анна Смирнова]]", "source": m1, "quote": "Анна Смирнова."},
-            {"section": "Кто в теме", "text": "Иван Петров (Спикер 2)", "source": m1, "quote": "Иван Петров."},
-            {"section": "Кто в теме", "text": "Соучастник встречи Борис", "source": m1, "quote": "Соучастник встречи Борис."},
+            {"section": "Открыто", "text": "Спикер 2 отметил риск.", "source": m1, "line_span": [2, 2]},
+            {"section": "Кто в теме", "text": "Собеседник 3 назначен ответственным.", "source": m1, "line_span": [99, 99]},
+            {"section": "Кто в теме", "text": "[[Люди/Спикер 1]]", "source": m1, "line_span": [99, 99]},
+            {"section": "Кто в теме", "text": "участника встречи", "source": m1, "line_span": [99, 99]},
+            {"section": "Кто в теме", "text": "участнику встречи", "source": m1, "line_span": [99, 99]},
+            {"section": "Кто в теме", "text": "с участником встречи", "source": m1, "line_span": [99, 99]},
+            {"section": "Кто в теме", "text": "об участнике встречи", "source": m1, "line_span": [99, 99]},
+            {"section": "Кто в теме", "text": "[[Люди/Спикер 1|Анна Смирнова]]", "source": m1, "line_span": [3, 3]},
+            {"section": "Кто в теме", "text": "Иван Петров (Спикер 2)", "source": m1, "line_span": [4, 4]},
+            {"section": "Кто в теме", "text": "Соучастник встречи Борис", "source": m1, "line_span": [5, 5]},
         ],
         "corrections": [
             {
                 "before": "Vent A is open.",
                 "after": "Собеседник 1 сообщил: Vent A закрыт.",
                 "source": m1,
-                "quote": "Собеседник 1 сообщил: Vent A закрыт.",
+                "line_span": [1, 1],
             }
         ],
     }
@@ -1261,7 +1267,7 @@ def test_apply_patch_unlabels_body_sections_and_omits_anonymous_who_in_topic():
     # Source filename containing the phrase must not drop a real named person in Кто в теме.
     weird_src = "2099-01-02_участник встречи"
     body_weird, _, _ = inc._apply_patch(loaded, [weird_src], {weird_src: {"text": "Анна Смирнова."}}, {
-        "additions": [{"section": "Кто в теме", "text": "Анна Смирнова", "source": weird_src, "quote": "Анна Смирнова."}],
+        "additions": [{"section": "Кто в теме", "text": "Анна Смирнова", "source": weird_src, "line_span": [1, 1]}],
         "corrections": [],
     })
     assert f"- Анна Смирнова [[{weird_src}]]" in body_weird.split("## Кто в теме", 1)[1]
@@ -1269,12 +1275,12 @@ def test_apply_patch_unlabels_body_sections_and_omits_anonymous_who_in_topic():
     # Validation still runs BEFORE omitting anonymous Кто в теме entries (bad source/multiline refused).
     with pytest.raises(inc.Refused, match="unsupported patch source"):
         inc._apply_patch(loaded, [m1], files, {
-            "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": "unknown", "quote": "q"}],
+            "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": "unknown", "line_span": [1, 1]}],
             "corrections": [],
         })
     # When an anonymous Кто в теме entry is the ONLY entry for a source, deterministic_check refuses attribution.
     body_only_anon, changes_only_anon, anchors_only_anon = inc._apply_patch(loaded, [m1], files, {
-        "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": m1, "quote": "отсутствующая фраза"}],
+        "additions": [{"section": "Кто в теме", "text": "Собеседник 3", "source": m1, "line_span": [99, 99]}],
         "corrections": [],
     })
     assert anchors_only_anon == []
@@ -1296,8 +1302,8 @@ def test_round5_unlabeled_rule_in_prompts_and_audit_predict(monkeypatch):
         json.dumps({
             "additions": [
                 {"section": "Сейчас", "text": "Glasshouse vent sealed.", "source": m1,
-                 "quote": "Glasshouse vent sealed."},
-                {"section": "Кто в теме", "text": "Собеседник 3", "source": m1, "quote": "Собеседник 3"},
+                 "line_span": [1, 1]},
+                {"section": "Кто в теме", "text": "Собеседник 3", "source": m1, "line_span": [1, 1]},
             ],
             "corrections": [],
         }),
@@ -1305,7 +1311,7 @@ def test_round5_unlabeled_rule_in_prompts_and_audit_predict(monkeypatch):
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
             "claims": [{"text": "Glasshouse vent sealed.", "source": m1,
-                        "quote": "Glasshouse vent sealed.", "relevant": True, "supported": True, "reason": "ok"}],
+                        "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
         json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
@@ -1369,7 +1375,7 @@ def test_round6_main_judge_predict_quote_contract_and_source_telemetry(monkeypat
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
             "claims": [{"text": "Glasshouse vent sealed.", "source": m1,
-                        "quote": "- Header\n  - Glasshouse vent sealed.",
+                        "line_span": [1, 2],
                         "relevant": True, "supported": True, "reason": "ok"}],
         })
 
@@ -1379,8 +1385,8 @@ def test_round6_main_judge_predict_quote_contract_and_source_telemetry(monkeypat
     assert len(seen_calls) == 1
     _, prompt, num_predict = seen_calls[0]
     assert num_predict == inc.MAIN_JUDGE_PREDICT
-    assert "without joining separate lines, bullets, or speaker turns with a space" in prompt
-    assert "for a multiline span, preserve exact newlines, indentation, bullet markers, and prefixes" in prompt
+    assert "line_span=[start_line, end_line]" in prompt
+    assert "NEVER stretch a span across separate sections" in prompt
 
     # Unsupported claim source maps to claim_source_missing, distinct from claim_quote_missing.
     for bad_claim, expected_msg, expected_detail in (
@@ -1496,7 +1502,7 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     }
     body = BODY.replace("## Как пришли", f"- {fact1} [[{m1}]]\n## Как пришли")
 
-    # 1) Pure claim_quote_missing triggers exactly 1 bounded retry with correction_feedback and succeeds
+    # 1) Pure claim_quote_missing triggers exactly 1 bounded retry with span_feedback and succeeds
     seen_prompts: list[str] = []
     audited: list[dict] = []
     replies = iter([
@@ -1504,13 +1510,13 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
             "claims": [{"text": fact1, "source": f"[[{m1}]]",
-                        "quote": "Valve pressure ... 4 bar.", "relevant": True, "supported": True, "reason": "ok"}],
+                        "line_span": [5, 2], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
-            "reason": "fixed quote",
+            "reason": "fixed span",
             "claims": [{"text": fact1, "source": m1,
-                        "quote": fact1, "relevant": True, "supported": True, "reason": "ok"}],
+                        "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
         }),
     ])
 
@@ -1524,11 +1530,11 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     assert len(seen_prompts) == 2
     payload_retry = json.loads(seen_prompts[1].split("\n", 1)[0])
     assert "correction_feedback" not in payload_retry
-    fb = payload_retry["quote_feedback"]
-    assert fb["failure"] == "your previous judge output had claim quote(s) not found verbatim in new_sources"
-    assert fb["missing_quotes"] == [{"text": fact1, "source": m1, "problem": "contains_ellipsis"}]
+    fb = payload_retry["span_feedback"]
+    assert fb["failure"] == "your previous judge output had invalid or ambiguous claim line_span(s)"
+    assert fb["invalid_spans"] == [{"text": fact1, "source": m1, "problem": "span_inverted"}]
     assert "supported=false and verdict=reject" in fb["instruction"]
-    assert len(audited) == 1 and audited[0]["quote"] == fact1
+    assert len(audited) == 1 and audited[0]["quote"] == f"Inspection log: {fact1}"
 
     # 2) Bounded retry: 2 consecutive misses stop after 2 calls and record claim_quote_missing
     calls_twice: list[str] = []
@@ -1536,7 +1542,7 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
         "claims": [{"text": fact1, "source": m1,
-                    "quote": "not in source", "relevant": True, "supported": True, "reason": "ok"}],
+                    "line_span": [99, 99], "relevant": True, "supported": True, "reason": "ok"}],
     })
     monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (calls_twice.append(p), bad_verdict)[1])
     col = telemetry.Collector()
@@ -1551,7 +1557,7 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     assert len(calls_twice) == 2
     assert col.snapshot()["stage_refusals"] == {"semantic_check": {"claim_quote_missing": 1}}
 
-    # 3) Truncation limits: at most QUOTE_FEEDBACK_LIMIT items and QUOTE_FEEDBACK_CHARS per text/quote
+    # 3) Truncation limits: at most QUOTE_FEEDBACK_LIMIT items and QUOTE_FEEDBACK_CHARS per text
     long_facts = [f"Fact{i} " + ("x" * 230) + "." for i in range(6)]
     long_body = BODY.replace("## Как пришли", "".join(f"- {f} [[{m1}]]\n" for f in long_facts) + "## Как пришли")
     long_files = {m1: {"text": "completely different text"}}
@@ -1560,19 +1566,22 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
         "claims": [
-            {"text": f, "source": m1, "quote": f"Quote{i} " + ("y" * 230),
+            {"text": f, "source": m1, "line_span": [99, 99],
              "relevant": True, "supported": True, "reason": "ok"}
             for i, f in enumerate(long_facts)
         ],
     })
     monkeypatch.setattr(inc, "local_complete", lambda p, *a, **kw: (long_prompts.append(p), long_verdict)[1])
     with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
-        inc.semantic_check("Glasshouse", loaded, [m1], long_files, LOCAL, long_body, [])
+        inc.semantic_check(
+            "Glasshouse", loaded, [m1], long_files,
+            {"llm": {**LOCAL["llm"], "num_ctx": inc.MID_AUTO_CONTEXT}}, long_body, [],
+        )
     assert len(long_prompts) == 2
-    fb_long = json.loads(long_prompts[1].split("\n", 1)[0])["quote_feedback"]
-    assert len(fb_long["missing_quotes"]) == inc.QUOTE_FEEDBACK_LIMIT
-    assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["missing_quotes"])
-    assert all("quote" not in item and item["problem"] == "not_found_verbatim_in_new_source" for item in fb_long["missing_quotes"])
+    fb_long = json.loads(long_prompts[1].split("\n", 1)[0])["span_feedback"]
+    assert len(fb_long["invalid_spans"]) == inc.QUOTE_FEEDBACK_LIMIT
+    assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_long["invalid_spans"])
+    assert all(item["problem"] == "span_out_of_range" for item in fb_long["invalid_spans"])
 
     # 4) Retry turning into verdict=reject refuses immediately as semantic conservation rejected
     reject_replies = iter([
@@ -1586,23 +1595,18 @@ def test_round7_semantic_check_quote_feedback_retry_and_invariants(monkeypatch):
     with pytest.raises(inc.Refused, match="semantic conservation was not accepted"):
         inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
 
-    # 5) Critical invariant: missing quote on claim[0] NEVER triggers retry when ANY other check fails
+    # 5) Critical invariant: invalid span on claim[0] NEVER triggers retry when ANY structural/semantic check fails
     two_body = BODY.replace("## Как пришли", f"- {fact1} [[{m1}]]\n- {fact2} [[{m2}]]\n## Как пришли")
-    ambig_files = {m1: {"text": f"Log: {fact1}"}, m2: {"text": f"{fact2}\n{fact2}"}}
-    missing_c1 = {"text": fact1, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"}
+    missing_c1 = {"text": fact1, "source": m1, "line_span": [99, 99], "relevant": True, "supported": True, "reason": "ok"}
     for bad_claims, err_re, use_names, use_files, use_body in (
-        ([missing_c1, {"text": fact2, "source": m2, "quote": fact2, "relevant": True, "supported": True, "reason": "ok"}],
-         "ambiguous claim evidence", [m1, m2], ambig_files, two_body),
         ([missing_c1, {"text": "broken"}], "malformed candidate claim", [m1, m2], files, two_body),
-        ([missing_c1, {"text": fact2, "source": m2, "quote": fact2, "relevant": True, "supported": False, "reason": "no"}],
+        ([missing_c1, {"text": fact2, "source": m2, "line_span": [], "relevant": True, "supported": False, "reason": "no"}],
          "not relevant and supported", [m1, m2], files, two_body),
-        ([missing_c1, {"text": fact2, "source": "unknown", "quote": fact2, "relevant": True, "supported": True, "reason": "ok"}],
+        ([missing_c1, {"text": fact2, "source": "unknown", "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
          "unsupported new source", [m1, m2], files, two_body),
         ([missing_c1, missing_c1], "duplicate candidate claim", [m1], files, body),
-        ([missing_c1, {"text": "not in body", "source": m2, "quote": fact2, "relevant": True, "supported": True, "reason": "ok"}],
+        ([missing_c1, {"text": "not in body", "source": m2, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
          "not an exact candidate span", [m1, m2], files, two_body),
-        ([missing_c1], "uncovered new significant text", [m1, m2], files, two_body),
-        ([missing_c1], "contribution", [m1, m2], files, body),
     ):
         one_shot: list[int] = []
         v = json.dumps({
@@ -1671,7 +1675,7 @@ def test_round8_semantic_detail_classification_and_quote_retry_override(monkeypa
     fact = "Valve pressure stabilized at 4 bar."
     files = {m1: {"text": f"Inspection log: {fact}"}}
     body = BODY.replace("## Как пришли", f"- {fact} [[{m1}]]\n## Как пришли")
-    claim_ok = {"text": fact, "source": m1, "quote": fact, "relevant": True, "supported": True, "reason": "ok"}
+    claim_ok = {"text": fact, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}
 
     for reply_obj, expected_detail in (
         ({**base, "conserved": False, "claims": []}, telemetry.Detail.SEMANTIC_CONSERVED_FALSE),
@@ -1695,18 +1699,18 @@ def test_round8_semantic_detail_classification_and_quote_retry_override(monkeypa
                 col.complete_topic(attempted=True, committed=0, refused=1)
         assert col.snapshot()["stage_refusals"] == {"semantic_check": {expected_detail.value: 1}}
 
-    # 3) quote_feedback retry (attempt=1) overrides verdict reject AND claim relevant/supported reject to SEMANTIC_QUOTE_RETRY_REJECTED,
+    # 3) span_feedback retry (attempt=1) overrides verdict reject AND claim relevant/supported reject to SEMANTIC_QUOTE_RETRY_REJECTED,
     # while non-semantic claim failures (uncovered / ambiguous / quote_missing) keep their own Detail.
     miss_reply = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
-        "reason": "ok", "claims": [{**claim_ok, "quote": "missing quote"}],
+        "reason": "ok", "claims": [{**claim_ok, "line_span": [99, 99]}],
     })
     for retry_reply_obj, expected_detail, expected_exc_detail in (
         ({**base, "supported": False, "claims": []}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
         ({**base, "verdict": "accept", "claims": [{**claim_ok, "relevant": False}]}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
         ({**base, "verdict": "accept", "claims": [{**claim_ok, "supported": False}]}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED),
         ({**base, "verdict": "accept", "claims": []}, telemetry.Detail.CLAIM_UNCOVERED, None),
-        ({**base, "verdict": "accept", "claims": [{**claim_ok, "quote": "still missing"}]}, telemetry.Detail.CLAIM_QUOTE_MISSING, telemetry.Detail.CLAIM_QUOTE_MISSING),
+        ({**base, "verdict": "accept", "claims": [{**claim_ok, "line_span": [99, 99]}]}, telemetry.Detail.CLAIM_QUOTE_MISSING, telemetry.Detail.CLAIM_QUOTE_MISSING),
     ):
         replies = iter([miss_reply, json.dumps(retry_reply_obj)])
         monkeypatch.setattr(inc, "local_complete", lambda *a, **kw: next(replies))
@@ -1782,8 +1786,8 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
 
     # 3) Standalone append (NO Collector active!) receives Detail hint + filtered rejected_claims without leaking judge reason
     orig_validate = inc.validate_candidate
-    patch_bad = json.dumps({"additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b}], "corrections": []})
-    patch_good = json.dumps({"additions": [{"section": "Сейчас", "text": fact_a, "source": m1, "quote": fact_a}], "corrections": []})
+    patch_bad = json.dumps({"additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "line_span": [1, 1]}], "corrections": []})
+    patch_good = json.dumps({"additions": [{"section": "Сейчас", "text": fact_a, "source": m1, "line_span": [1, 1]}], "corrections": []})
     prompts: list[str] = []
     call_idx = {"n": 0}
 
@@ -1817,7 +1821,7 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
     # 4) Fallback via detail_for_message when external Refused has detail=None + truncation/limit on rejected_claims
     long_items = [f"Item{i} " + ("z" * 230) for i in range(6)]
     patch_long = json.dumps({
-        "additions": [{"section": "Сейчас", "text": t, "source": m1, "quote": fact_a} for t in long_items],
+        "additions": [{"section": "Сейчас", "text": t, "source": m1, "line_span": [1, 1]} for t in long_items],
         "corrections": [],
     })
     prompts_fb: list[str] = []
@@ -1855,14 +1859,14 @@ def test_round8_rejected_claims_filtering_and_append_structured_feedback(monkeyp
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "SECRET_MAIN_REASON",
-            "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"}],
+            "claims": [{"text": fact_b, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({"verdict": "reject", "supported": False, "reason": "SECRET_AUDIT_REASON"}),
         patch_good,
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
-            "claims": [{"text": fact_a, "source": m1, "quote": fact_a, "relevant": True, "supported": True, "reason": "ok"}],
+            "claims": [{"text": fact_a, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
         json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
@@ -1977,19 +1981,19 @@ def test_round9_verdict_rejected_claims_and_open_item_contract(monkeypatch):
         inc.semantic_check("Glasshouse", loaded, [m1], files, LOCAL, body, [])
     assert exc_mix.value.rejected_claims == (fact_b,)
 
-    # 4) quote_feedback retry (attempt=1) fallback to last_missing ONLY for genuine support/relevance reject
+    # 4) span_feedback retry (attempt=1) fallback to last_missing ONLY for genuine support/relevance reject
     miss_reply = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
         "claims": [
-            {"text": fact_a, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"},
-            {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"},
+            {"text": fact_a, "source": m1, "line_span": [99, 99], "relevant": True, "supported": True, "reason": "ok"},
+            {"text": fact_b, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"},
         ],
     })
     for retry_obj, exp_detail, exp_rejected in (
         ({**base_rej, "claims": []}, telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED, (fact_a,)),
         (
-            {**base_rej, "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": False, "reason": "no"}]},
+            {**base_rej, "claims": [{"text": fact_b, "source": m1, "line_span": [1, 1], "relevant": True, "supported": False, "reason": "no"}]},
             telemetry.Detail.SEMANTIC_QUOTE_RETRY_REJECTED,
             (fact_b,),
         ),
@@ -2008,13 +2012,13 @@ def test_round9_verdict_rejected_claims_and_open_item_contract(monkeypatch):
     #    and MAIN_JUDGE prompt aligns ## Открыто -> ## Решено contract while protecting ⚠ warnings.
     patch_bad = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": fact_a, "source": m1, "quote": fact_a},
-            {"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b},
+            {"section": "Сейчас", "text": fact_a, "source": m1, "line_span": [1, 1]},
+            {"section": "Сейчас", "text": fact_b, "source": m1, "line_span": [1, 1]},
         ],
         "corrections": [],
     })
     patch_good = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b}],
+        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "line_span": [1, 1]}],
         "corrections": [],
     })
     append_prompts: list[str] = []
@@ -2027,7 +2031,7 @@ def test_round9_verdict_rejected_claims_and_open_item_contract(monkeypatch):
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
-            "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"}],
+            "claims": [{"text": fact_b, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         json.dumps({"verdict": "accept", "supported": True, "reason": "ok"}),
         json.dumps({"verdict": "accept", "relevant": True, "reason": "ok"}),
@@ -2165,7 +2169,7 @@ def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feed
             return json.dumps({
                 "additions": [{
                     "section": "Сейчас", "text": f"Fact {n}.", "source": n,
-                    "quote": f"Glasshouse update {'one' if n == m1 else 'two'}.",
+                    "line_span": [2, 2],
                 } for n in names],
                 "corrections": [],
             })
@@ -2180,7 +2184,7 @@ def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feed
                 "reason": "ok",
                 "claims": [{
                     "text": f"- Fact {src}. [[{src}]]", "source": src,
-                    "quote": f"Glasshouse update {'one' if src == m1 else 'two'}.",
+                    "line_span": [2, 2],
                     "relevant": True, "supported": True, "reason": "ok",
                 }],
             })
@@ -2213,27 +2217,27 @@ def test_round10_append_predict_judge_json_skip_can_split_and_missing_quote_feed
     files = {m1: {"text": f"{fact_a} {fact_b}"}}
     patch_bad = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": fact_a, "source": m1, "quote": fact_a},
-            {"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b},
+            {"section": "Сейчас", "text": fact_a, "source": m1, "line_span": [1, 1]},
+            {"section": "Сейчас", "text": fact_b, "source": m1, "line_span": [1, 1]},
         ],
         "corrections": [],
     })
     patch_good = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "quote": fact_b}],
+        "additions": [{"section": "Сейчас", "text": fact_b, "source": m1, "line_span": [1, 1]}],
         "corrections": [],
     })
     miss_reply = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
         "claims": [
-            {"text": fact_a, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"},
-            {"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"},
+            {"text": fact_a, "source": m1, "line_span": [99, 99], "relevant": True, "supported": True, "reason": "ok"},
+            {"text": fact_b, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"},
         ],
     })
     good_judge = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
-        "claims": [{"text": fact_b, "source": m1, "quote": fact_b, "relevant": True, "supported": True, "reason": "ok"}],
+        "claims": [{"text": fact_b, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
     })
     seq = iter([patch_bad, miss_reply, miss_reply, patch_good, good_judge])
     append_prompts: list[str] = []
@@ -2263,27 +2267,27 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
     loaded = _loaded_with_body(BODY)
 
-    # 1) _apply_patch addition quote validation: missing (0), ambiguous (2), unique (1), existing kept skipped
-    files_q = {m1: {"text": "Alpha unique quote. Repeat phrase. Repeat phrase."}}
+    # 1) _apply_patch addition line_span validation: invalid/out-of-range, ambiguous (2), unique (1), existing kept skipped
+    files_q = {m1: {"text": "Alpha unique quote.\nRepeat phrase.\nRepeat phrase."}}
     with pytest.raises(inc._MissingClaimQuotes) as exc_miss:
         inc._apply_patch(loaded, [m1], files_q, {
             "additions": [
-                {"section": "Сейчас", "text": "Bad quote fact.", "source": m1, "quote": "Absent substring."},
-                {"section": "Открыто", "text": "Ambiguous fact.", "source": m1, "quote": "Repeat phrase."},
+                {"section": "Сейчас", "text": "Bad quote fact.", "source": m1, "line_span": [9, 9]},
+                {"section": "Открыто", "text": "Ambiguous fact.", "source": m1, "line_span": [2, 2]},
             ],
             "corrections": [],
         })
     assert exc_miss.value.detail is telemetry.Detail.CLAIM_QUOTE_MISSING
     assert exc_miss.value.rejected_claims == (f"- Bad quote fact. [[{m1}]]",)
     assert exc_miss.value.missing_quotes == [
-        {"text": f"- Bad quote fact. [[{m1}]]", "source": m1, "quote": "Absent substring."}
+        {"text": f"- Bad quote fact. [[{m1}]]", "source": m1, "problem": "span_out_of_range"}
     ]
 
     with pytest.raises(inc.Refused, match="ambiguous claim evidence") as exc_amb:
         inc._apply_patch(loaded, [m1], files_q, {
             "additions": [
-                {"section": "Сейчас", "text": "Ambiguous fact.", "source": m1, "quote": "Repeat phrase."},
-                {"section": "Открыто", "text": "Ambiguous fact.", "source": m1, "quote": "Repeat phrase."},
+                {"section": "Сейчас", "text": "Ambiguous fact.", "source": m1, "line_span": [2, 2]},
+                {"section": "Открыто", "text": "Ambiguous fact.", "source": m1, "line_span": [2, 2]},
             ],
             "corrections": [],
         })
@@ -2293,55 +2297,57 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     # Duplicate exact line already in kept must be skipped BEFORE _quote_hits and NOT added to anchors
     body_dup_old, ch_dup_old, anc_dup_old = inc._apply_patch(loaded, [m1], files_q, {
         "additions": [
-            {"section": "Сейчас", "text": "Alpha unique fact.", "source": m1, "quote": "Alpha unique quote."},
-            {"section": "Сейчас", "text": "Alpha unique fact.", "source": m1, "quote": "Absent!"},
+            {"section": "Сейчас", "text": "Alpha unique fact.", "source": m1, "line_span": [1, 1]},
+            {"section": "Сейчас", "text": "Alpha unique fact.", "source": m1, "line_span": [99, 99]},
         ],
         "corrections": [],
     })
     assert len(anc_dup_old) == 1
     assert anc_dup_old[0] == {
-        "text": f"- Alpha unique fact. [[{m1}]]", "source": m1, "quote": "Alpha unique quote.",
+        "text": f"- Alpha unique fact. [[{m1}]]", "source": m1, "line_span": [1, 1],
     }
     assert ch_dup_old == [] and "Alpha unique fact." in body_dup_old
 
-    # 2) Corrections with hits == 2 pass _apply_patch + deterministic_check (not placed in anchors),
-    #    corrections with hits == 0 fail in deterministic_check with LEDGER_SOURCE, hits == 1 placed in anchors.
-    body_c2, ch_c2, anc_c2 = inc._apply_patch(loaded, [m1], files_q, {
-        "additions": [],
-        "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "quote": "Repeat phrase."}],
-    })
-    assert anc_c2 == []
-    inc.deterministic_check(loaded, body_c2, [m1], files_q, ch_c2)
+    # 2) Corrections also enforce hits == 1 and valid line_span in _apply_patch (hits == 2 -> ambiguous, invalid -> missing, hits == 1 -> anchor).
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence") as exc_c2:
+        inc._apply_patch(loaded, [m1], files_q, {
+            "additions": [],
+            "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [2, 2]}],
+        })
+    assert exc_c2.value.detail is telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS
 
-    body_c0, ch_c0, anc_c0 = inc._apply_patch(loaded, [m1], files_q, {
-        "additions": [],
-        "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "quote": "Not in file."}],
-    })
-    assert anc_c0 == []
-    with pytest.raises(inc.Refused, match="unsupported or unattributed correction ledger"):
-        inc.deterministic_check(loaded, body_c0, [m1], files_q, ch_c0)
+    with pytest.raises(inc._MissingClaimQuotes) as exc_c0:
+        inc._apply_patch(loaded, [m1], files_q, {
+            "additions": [],
+            "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [9, 9]}],
+        })
+    assert exc_c0.value.missing_quotes == [
+        {"text": f"- Vent A closed. [[{m1}]]", "source": m1, "problem": "span_out_of_range"}
+    ]
 
-    _, _, anc_c1 = inc._apply_patch(loaded, [m1], files_q, {
+    body_c1, ch_c1, anc_c1 = inc._apply_patch(loaded, [m1], files_q, {
         "additions": [],
-        "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "quote": "Alpha unique quote."}],
+        "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [1, 1]}],
     })
-    assert anc_c1 == [{"text": f"- Vent A closed. [[{m1}]]", "source": m1, "quote": "Alpha unique quote."}]
+    assert anc_c1 == [{"text": f"- Vent A closed. [[{m1}]]", "source": m1, "line_span": [1, 1]}]
+    assert ch_c1[0]["quote"] == "Alpha unique quote."
+    inc.deterministic_check(loaded, body_c1, [m1], files_q, ch_c1)
 
     # 3) Safe deduplication of addition against correction.after in ## Сейчас (wikilink target & source protection)
     dedup_files = {
-        m1: {"text": "Q1 unique. Q2 unique. Q3 unique."},
+        m1: {"text": "Q1 unique.\nQ2 unique.\nQ3 unique."},
         m2: {"text": "M2 unique."},
     }
     # (a) Same source, identical plain text, addition links subset of after links -> safely dropped
     body_da, _, anc_da = inc._apply_patch(loaded, [m1], dedup_files, {
         "additions": [
-            {"section": "Сейчас", "text": "Пилот Дельта перенесён на 25 мая.", "source": m1, "quote": "Absent ok!"},
+            {"section": "Сейчас", "text": "Пилот Дельта перенесён на 25 мая.", "source": m1, "line_span": [99, 99]},
         ],
         "corrections": [{
             "before": "Vent A is open.",
             "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
             "source": m1,
-            "quote": "Q1 unique.",
+            "line_span": [1, 1],
         }],
     })
     cur_da = body_da.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
@@ -2351,13 +2357,13 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     # (b) Same plain alias but DIFFERENT wikilink target -> MUST NOT drop
     body_db, _, anc_db = inc._apply_patch(loaded, [m1], dedup_files, {
         "additions": [
-            {"section": "Сейчас", "text": "Срок [[Ядра/Бета|Проект]] — 5 дек.", "source": m1, "quote": "Q2 unique."},
+            {"section": "Сейчас", "text": "Срок [[Ядра/Бета|Проект]] — 5 дек.", "source": m1, "line_span": [2, 2]},
         ],
         "corrections": [{
             "before": "Vent A is open.",
             "after": "Срок [[Ядра/Альфа|Проект]] — 5 дек.",
             "source": m1,
-            "quote": "Q1 unique.",
+            "line_span": [1, 1],
         }],
     })
     cur_db = body_db.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
@@ -2367,13 +2373,13 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     # (c) after lacks wikilink while addition carries one -> MUST NOT drop
     body_dc, _, anc_dc = inc._apply_patch(loaded, [m1], dedup_files, {
         "additions": [
-            {"section": "Сейчас", "text": "Срок [[Ядра/Альфа|Альфа]] — 5 дек.", "source": m1, "quote": "Q2 unique."},
+            {"section": "Сейчас", "text": "Срок [[Ядра/Альфа|Альфа]] — 5 дек.", "source": m1, "line_span": [2, 2]},
         ],
         "corrections": [{
             "before": "Vent A is open.",
             "after": "Срок Альфа — 5 дек.",
             "source": m1,
-            "quote": "Q1 unique.",
+            "line_span": [1, 1],
         }],
     })
     cur_dc = body_dc.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
@@ -2382,13 +2388,13 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     # (d) Different source with identical plain text -> MUST NOT drop
     body_dd, _, anc_dd = inc._apply_patch(loaded, [m1, m2], dedup_files, {
         "additions": [
-            {"section": "Сейчас", "text": "Пилот Дельта перенесён на 25 мая.", "source": m2, "quote": "M2 unique."},
+            {"section": "Сейчас", "text": "Пилот Дельта перенесён на 25 мая.", "source": m2, "line_span": [1, 1]},
         ],
         "corrections": [{
             "before": "Vent A is open.",
             "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
             "source": m1,
-            "quote": "Q1 unique.",
+            "line_span": [1, 1],
         }],
     })
     cur_dd = body_dd.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
@@ -2397,13 +2403,13 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     # (e) Same source, DIFFERENT text in ## Сейчас alongside a correction -> MUST NOT drop (kills plain_line==r_plain -> True)
     body_de, _, anc_de = inc._apply_patch(loaded, [m1], dedup_files, {
         "additions": [
-            {"section": "Сейчас", "text": "Отдельный новый факт.", "source": m1, "quote": "Q2 unique."},
+            {"section": "Сейчас", "text": "Отдельный новый факт.", "source": m1, "line_span": [2, 2]},
         ],
         "corrections": [{
             "before": "Vent A is open.",
             "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
             "source": m1,
-            "quote": "Q1 unique.",
+            "line_span": [1, 1],
         }],
     })
     cur_de = body_de.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
@@ -2412,13 +2418,13 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     # (f) Mixed-case non-stem alias shared between after and addition -> kills canonical=False -> True on either side
     body_df, _, anc_df = inc._apply_patch(loaded, [m1], dedup_files, {
         "additions": [
-            {"section": "Сейчас", "text": "Пилот Дельта по [[Ядра/Альфа|Проект]] — 5 дек.", "source": m1, "quote": "Absent ok!"},
+            {"section": "Сейчас", "text": "Пилот Дельта по [[Ядра/Альфа|Проект]] — 5 дек.", "source": m1, "line_span": [99, 99]},
         ],
         "corrections": [{
             "before": "Vent A is open.",
             "after": "Пилот [[Ядра/Дельта|Дельта]] по [[Ядра/Альфа|Проект]] — 5 дек.",
             "source": m1,
-            "quote": "Q1 unique.",
+            "line_span": [1, 1],
         }],
     })
     cur_df = body_df.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
@@ -2428,13 +2434,13 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     # (g) Equal canonical link sets with different raw syntax ([[X|X]] vs [[X]]) -> kills line_links <= r_links -> <
     body_dg, _, anc_dg = inc._apply_patch(loaded, [m1], dedup_files, {
         "additions": [
-            {"section": "Сейчас", "text": "Пилот [[Ядра/Дельта]] перенесён на 25 мая.", "source": m1, "quote": "Absent ok!"},
+            {"section": "Сейчас", "text": "Пилот [[Ядра/Дельта]] перенесён на 25 мая.", "source": m1, "line_span": [99, 99]},
         ],
         "corrections": [{
             "before": "Vent A is open.",
             "after": "Пилот [[Ядра/Дельта|Дельта]] перенесён на 25 мая.",
             "source": m1,
-            "quote": "Q1 unique.",
+            "line_span": [1, 1],
         }],
     })
     cur_dg = body_dg.split("## Сейчас\n", 1)[1].split("\n## Как пришли", 1)[0]
@@ -2442,25 +2448,24 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     assert len(anc_dg) == 1
 
     # 4) append retry on _apply_patch missing_quotes: skips MAIN_JUDGE on attempt 0,
-    #    uses _PATCH_QUOTE_MISSING_HINT + missing_quotes + rejected_claims, passes candidate_anchors to MAIN_JUDGE only.
+    #    uses _PATCH_QUOTE_MISSING_HINT + missing_quotes + rejected_claims, passes compact candidate_anchors to MAIN_JUDGE only.
     fact_ok = "Pressure sensor calibrated at 4 bar."
-    files_e2e = {m1: {"text": f"{fact_ok} Repeat tag. Repeat tag."}}
-    long_bad_q = "bad " + ("x" * 240)
+    files_e2e = {m1: {"text": f"{fact_ok}\nRepeat tag.\nRepeat tag."}}
     patch_miss = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": f"LongClaim{i} " + ("y" * 230), "source": m1, "quote": long_bad_q}
+            {"section": "Сейчас", "text": f"LongClaim{i} " + ("y" * 230), "source": m1, "line_span": [99, 99]}
             for i in range(6)
         ],
         "corrections": [],
     })
     patch_ok = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact_ok, "source": m1, "quote": fact_ok}],
+        "additions": [{"section": "Сейчас", "text": fact_ok, "source": m1, "line_span": [1, 1]}],
         "corrections": [],
     })
     judge_ok = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
-        "claims": [{"text": fact_ok, "source": m1, "quote": fact_ok, "relevant": True, "supported": True, "reason": "ok"}],
+        "claims": [{"text": fact_ok, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
     })
     seen_calls: list[tuple[str, str]] = []
     seq = iter([
@@ -2485,17 +2490,17 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
     assert "existing ⚠ warnings are preserved automatically" in seen_calls[0][1]
     assert "do NOT duplicate them" in seen_calls[0][1]
     assert "never add a contradicting ## Сейчас line via additions" in seen_calls[0][1]
-    assert "short exact contiguous verbatim" in seen_calls[0][1]
+    assert "line_span" in seen_calls[0][1]
     fb_miss = json.loads(seen_calls[1][1].split("\n", 1)[0])["correction_feedback"]
     assert fb_miss["instruction"].startswith(inc._PATCH_QUOTE_MISSING_HINT + " Return ONLY valid patch JSON")
     assert len(fb_miss["rejected_claims"]) == inc.QUOTE_FEEDBACK_LIMIT
     assert all(len(t) == inc.QUOTE_FEEDBACK_CHARS for t in fb_miss["rejected_claims"])
     assert len(fb_miss["missing_quotes"]) == inc.QUOTE_FEEDBACK_LIMIT
     assert all(len(item["text"]) == inc.QUOTE_FEEDBACK_CHARS for item in fb_miss["missing_quotes"])
-    assert all("quote" not in item and item["problem"] == "not_found_verbatim_in_new_source" for item in fb_miss["missing_quotes"])
+    assert all(item["problem"] == "span_out_of_range" for item in fb_miss["missing_quotes"])
     judge_payload = json.loads(seen_calls[2][1].split("\n", 1)[0])
     assert judge_payload["candidate_anchors"] == [
-        {"text": f"- {fact_ok} [[{m1}]]", "source": m1, "quote": fact_ok}
+        {"text": f"- {fact_ok} [[{m1}]]", "source": m1, "line_span": [1, 1]}
     ]
     assert "candidate_anchors are UNTRUSTED" in seen_calls[2][1]
     assert "candidate_anchors" not in seen_calls[3][1]
@@ -2510,7 +2515,7 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
 
     # 5) _apply_patch CLAIM_QUOTE_AMBIGUOUS retry feedback + telemetry recording on double refusal
     patch_amb = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact_ok, "source": m1, "quote": "Repeat tag."}],
+        "additions": [{"section": "Сейчас", "text": fact_ok, "source": m1, "line_span": [2, 2]}],
         "corrections": [],
     })
     amb_prompts: list[str] = []
@@ -2547,7 +2552,7 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
             return json.dumps({
                 "additions": [{
                     "section": "Сейчас", "text": f"Update {n}.", "source": n,
-                    "quote": f"Glasshouse update {'alpha' if n == m1 else 'beta'}.",
+                    "line_span": [2, 2],
                 } for n in names],
                 "corrections": [],
             })
@@ -2563,7 +2568,7 @@ def test_round11_anchor_quotes_dedup_feedback_and_semantic_split(world, monkeypa
                 "reason": "ok",
                 "claims": [{
                     "text": f"- Update {src}. [[{src}]]", "source": src,
-                    "quote": f"Glasshouse update {'alpha' if src == m1 else 'beta'}.",
+                    "line_span": [2, 2],
                     "relevant": True, "supported": True, "reason": "ok",
                 }],
             })
@@ -2587,13 +2592,13 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
     fact1 = "Valve pressure stabilized at 4 bar."
     files1 = {m1: {"text": fact1}}
     valid_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1}],
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "line_span": [1, 1]}],
         "corrections": [],
     })
     valid_judge = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
-        "claims": [{"text": fact1, "source": m1, "quote": fact1, "relevant": True, "supported": True, "reason": "ok"}],
+        "claims": [{"text": fact1, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
     })
 
     # 1) Predict ceilings, adaptive MAIN_JUDGE_LARGE_PREDICT threshold, and prompt contracts
@@ -2605,13 +2610,14 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
     for count, expected_pred in ((inc.MAIN_JUDGE_LARGE_THRESHOLD, inc.MAIN_JUDGE_PREDICT),
                                  (inc.MAIN_JUDGE_LARGE_THRESHOLD + 1, inc.MAIN_JUDGE_LARGE_PREDICT)):
         lines = [f"Claim {i} verified." for i in range(count)]
-        many_src = " ".join(lines)
+        many_src = "\n".join(lines)
         many_body = BODY.replace("## Как пришли", "\n".join(f"- {ln} [[{m1}]]" for ln in lines) + "\n## Как пришли")
         seen_pred: list[int] = []
         many_verdict = json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
-            "claims": [{"text": ln, "source": m1, "quote": ln, "relevant": True, "supported": True, "reason": "ok"} for ln in lines],
+            "claims": [{"text": ln, "source": m1, "line_span": [idx, idx], "relevant": True, "supported": True, "reason": "ok"}
+                       for idx, ln in enumerate(lines, 1)],
         })
         with monkeypatch.context() as mp:
             mp.setattr(inc, "local_complete", lambda p, cfg, *, num_predict, **kw: (seen_pred.append(num_predict), many_verdict)[1])
@@ -2623,7 +2629,7 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
     for anc_count, expected_pred in ((inc.MAIN_JUDGE_LARGE_THRESHOLD, inc.MAIN_JUDGE_PREDICT),
                                      (inc.MAIN_JUDGE_LARGE_THRESHOLD + 1, inc.MAIN_JUDGE_LARGE_PREDICT)):
         seen_anc: list[tuple[int, int]] = []
-        anc_list = [{"text": fact1, "source": m1, "quote": fact1} for _ in range(anc_count)]
+        anc_list = [{"text": fact1, "source": m1, "line_span": [1, 1]} for _ in range(anc_count)]
         with monkeypatch.context() as mp:
             mp.setattr(inc, "local_complete", lambda p, cfg, *, num_predict, **kw: (seen_anc.append((cfg["llm"]["num_ctx"], num_predict)), valid_judge)[1])
             mp.setattr(inc, "audit_claim", lambda *a, **kw: None)
@@ -2635,9 +2641,9 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
     large_bad_verdict = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
-        "claims": [{"text": fact1, "source": m1, "quote": "absent quote", "relevant": True, "supported": True, "reason": "ok"}],
+        "claims": [{"text": fact1, "source": m1, "line_span": [99, 99], "relevant": True, "supported": True, "reason": "ok"}],
     })
-    large_anchors = [{"text": fact1, "source": m1, "quote": fact1} for _ in range(inc.MAIN_JUDGE_LARGE_THRESHOLD + 1)]
+    large_anchors = [{"text": fact1, "source": m1, "line_span": [1, 1]} for _ in range(inc.MAIN_JUDGE_LARGE_THRESHOLD + 1)]
     sys_len = len(inc.MAIN_JUDGE_SYSTEM)
     mid_large_budget = (inc.MID_AUTO_CONTEXT - inc.MAIN_JUDGE_LARGE_PREDICT - inc.CONTEXT_RESERVE) * inc.ADMISSION_CHARS_PER_TOKEN
     probe_large: list[str] = []
@@ -2657,8 +2663,8 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
 
     rel_prompts: list[str] = []
     rel_seq = iter([
-        json.dumps({"verdict": "relevant", "reason": "r", "quote": "absent line"}),
-        json.dumps({"verdict": "relevant", "reason": "r", "quote": fact1}),
+        json.dumps({"verdict": "relevant", "reason": "r", "line_span": [99, 99]}),
+        json.dumps({"verdict": "relevant", "reason": "r", "line_span": [1, 1]}),
     ])
     with monkeypatch.context() as mp:
         mp.setattr(inc, "local_complete", lambda p, *a, **kw: (rel_prompts.append(p), next(rel_seq))[1])
@@ -2666,15 +2672,15 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
     assert len(rel_prompts) == 2
     for rp in rel_prompts:
         assert "single-line" not in rp
-        assert "NEVER replace a line break with a space" in rp
-    rel_fb = json.loads(rel_prompts[1].split("\n", 1)[0])["quote_feedback"]
-    assert "single-line" not in rel_fb["instruction"]
-    assert "NEVER replace a line break with a space" in rel_fb["instruction"]
+        assert "line_span" in rp
+    rel_fb = json.loads(rel_prompts[1].split("\n", 1)[0])["span_feedback"]
+    assert rel_fb["problem"] == "span_out_of_range"
+    assert rel_fb["line_count"] == 1
 
-    # 2) append retry on body is None + JSON_SCHEMA (missing quote key / extra key) sends 4-key hint + previous_response
+    # 2) append retry on body is None + JSON_SCHEMA (missing line_span key / extra key) sends 4-key hint + previous_response
     for bad_patch in (
         json.dumps({"additions": [{"section": "Сейчас", "text": fact1, "source": m1}], "corrections": []}),
-        json.dumps({"additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1, "reason": "extra"}], "corrections": []}),
+        json.dumps({"additions": [{"section": "Сейчас", "text": fact1, "source": m1, "line_span": [1, 1], "reason": "extra"}], "corrections": []}),
     ):
         prompts: list[str] = []
         seq = iter([bad_patch, valid_patch])
@@ -2683,12 +2689,11 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
             mp.setattr(inc, "validate_candidate", lambda *a, **kw: None)
             out = inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
         assert fact1 in out and len(prompts) == 2
-        assert "applies ONLY to text and after" in prompts[0]
         fb = json.loads(prompts[1].split("\n", 1)[0])["correction_feedback"]
         assert fb["failure"] == "malformed patch entry"
         assert fb["previous_response"] == bad_patch
         assert fb["instruction"].startswith(inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.JSON_SCHEMA] + " Return ONLY valid patch JSON")
-        for key in ('"section"', '"text"', '"source"', '"quote"', '"before"', '"after"'):
+        for key in ('"section"', '"text"', '"source"', '"line_span"', '"before"', '"after"'):
             assert key in fb["instruction"]
 
     # 3) append retry on body is None + JSON_MALFORMED sends JSON_MALFORMED hint + previous_response
@@ -2706,7 +2711,7 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
     # 4) append retry on patch_quote_missing omits previous_response while preserving missing_quotes + rejected_claims
     miss_prompts: list[str] = []
     miss_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": "wrong quote"}],
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "line_span": [99, 99]}],
         "corrections": [],
     })
     miss_seq = iter([miss_patch, valid_patch])
@@ -2716,7 +2721,7 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
         assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
     fb_pq = json.loads(miss_prompts[1].split("\n", 1)[0])["correction_feedback"]
     assert "previous_response" not in fb_pq
-    assert fb_pq["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "problem": "not_found_verbatim_in_new_source"}]
+    assert fb_pq["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "problem": "span_out_of_range"}]
     assert fb_pq["instruction"].startswith(inc._PATCH_QUOTE_MISSING_HINT + " Return ONLY valid patch JSON")
 
     # 5) Single-source downstream judge JSON_MALFORMED / JSON_SCHEMA (body is not None):
@@ -2762,7 +2767,7 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
             return json.dumps({
                 "additions": [{
                     "section": "Сейчас", "text": f"Fact {n}.", "source": n,
-                    "quote": f"Glasshouse update {'alpha' if n == m1 else 'beta'}.",
+                    "line_span": [2, 2],
                 } for n in names],
                 "corrections": [],
             })
@@ -2776,7 +2781,7 @@ def test_round12_predict_ceilings_schema_feedback_and_quote_contracts(world, mon
                 "reason": "ok",
                 "claims": [{
                     "text": f"- Fact {src}. [[{src}]]", "source": src,
-                    "quote": f"Glasshouse update {'alpha' if src == m1 else 'beta'}.",
+                    "line_span": [2, 2],
                     "relevant": True, "supported": True, "reason": "ok",
                 }],
             })
@@ -2810,63 +2815,56 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
     files1 = {m1: {"text": fact1}}
     files2 = {m1: {"text": fact1}, m2: {"text": "Second source update."}}
     valid_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1}],
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "line_span": [1, 1]}],
         "corrections": [],
     })
     bad_quote_patch = json.dumps({
-        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "quote": "Vent A is open."}],
+        "additions": [{"section": "Сейчас", "text": fact1, "source": m1, "line_span": [9, 9]}],
         "corrections": [],
     })
     valid_judge = json.dumps({
         "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
         "reason": "ok",
-        "claims": [{"text": fact1, "source": m1, "quote": fact1, "relevant": True, "supported": True, "reason": "ok"}],
+        "claims": [{"text": fact1, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
     })
     reject_judge = json.dumps({
         "verdict": "reject", "conserved": True, "supported": False, "corrections_valid": True,
         "reason": "unsupported", "claims": [],
     })
 
-    # 1) _missing_quote_problem covers all 3 branches, ASCII/Unicode ellipsis, and intersection precedence
-    body_with_dots = BODY + "\n- Existing note with ... ellipsis.\n"
-    assert inc._missing_quote_problem(BODY, "part a ... part b") == "contains_ellipsis"
-    assert inc._missing_quote_problem(BODY, "part a \u2026 part b") == "contains_ellipsis"
-    assert inc._missing_quote_problem(body_with_dots, "Existing note with ... ellipsis.") == "contains_ellipsis"
-    assert inc._missing_quote_problem(BODY, "Vent A is open.") == "copied_from_existing_dossier"
-    assert inc._missing_quote_problem(BODY, "absent text") == "not_found_verbatim_in_new_source"
-
-    # 2) _append_failure_stage exact rank values and shared diarization / hint contracts
+    # 1) _append_failure_stage exact rank values (deterministic_check -> 0) and shared diarization / hint contracts
     assert inc.MAX_APPEND_ATTEMPTS == 3
     assert inc._append_failure_stage(None, telemetry.Detail.CLAIM_QUOTE_MISSING) == 0
     assert inc._append_failure_stage(None, telemetry.Detail.AUDIT_SUPPORT_REJECTED) == 0
+    for det_detail in inc._DETERMINISTIC_DETAILS:
+        assert inc._append_failure_stage(BODY, det_detail) == 0
     assert inc._append_failure_stage(BODY, telemetry.Detail.SEMANTIC_SUPPORTED_FALSE) == 1
     assert inc._append_failure_stage(BODY, None) == 1
     assert inc._append_failure_stage(BODY, telemetry.Detail.AUDIT_SUPPORT_REJECTED) == 2
     assert inc._append_failure_stage(BODY, telemetry.Detail.AUDIT_TOPIC_REJECTED) == 2
     assert inc._DIARIZATION_ANONYMIZATION_RULE in inc.SUPPORT_AUDIT_INSTRUCTION
-    assert "widening quote" in inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.AUDIT_SUPPORT_REJECTED]
+    assert "widening line_span" in inc._APPEND_FEEDBACK_HINTS[telemetry.Detail.AUDIT_SUPPORT_REJECTED]
 
-    # 3) source_relevance omits previous_quote and uses prefer 4-12 words
+    # 2) source_relevance uses span_feedback with closed problem tag and recovers on retry
     sr_prompts: list[str] = []
     sr_seq = iter([
-        json.dumps({"verdict": "relevant", "reason": "r", "quote": "bad quote"}),
-        json.dumps({"verdict": "relevant", "reason": "r", "quote": fact1}),
+        json.dumps({"verdict": "relevant", "reason": "r", "line_span": [9, 9]}),
+        json.dumps({"verdict": "relevant", "reason": "r", "line_span": [1, 1]}),
     ])
     with monkeypatch.context() as mp:
         mp.setattr(inc, "local_complete", lambda p, *a, **kw: (sr_prompts.append(p), next(sr_seq))[1])
         assert inc.source_relevance("Glasshouse", loaded, m1, files1[m1], LOCAL) is True
-    assert "prefer 4-12 words, or the full shorter line" in sr_prompts[0]
-    sr_fb = json.loads(sr_prompts[1].split("\n", 1)[0])["quote_feedback"]
-    assert "previous_quote" not in sr_fb
-    assert "prefer 4-12 words, or the full shorter line" in sr_fb["instruction"]
+    sr_fb = json.loads(sr_prompts[1].split("\n", 1)[0])["span_feedback"]
+    assert sr_fb["problem"] == "span_out_of_range"
+    assert sr_fb["line_count"] == 1
 
-    # 4) semantic_check includes shared diarization rule, anchor copy note, and problem tag without bad quote
+    # 3) semantic_check includes shared diarization rule, anchor copy note, and span_feedback problem tag
     sc_prompts: list[str] = []
     sc_seq = iter([
         json.dumps({
             "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
             "reason": "ok",
-            "claims": [{"text": fact1, "source": m1, "quote": "Vent A is open.", "relevant": True, "supported": True, "reason": "ok"}],
+            "claims": [{"text": fact1, "source": m1, "line_span": [9, 9], "relevant": True, "supported": True, "reason": "ok"}],
         }),
         valid_judge,
     ])
@@ -2875,15 +2873,15 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
         mp.setattr(inc, "local_complete", lambda p, *a, **kw: (sc_prompts.append(p), next(sc_seq))[1])
         mp.setattr(inc, "audit_claim", lambda *a, **kw: None)
         inc.semantic_check("Glasshouse", loaded, [m1], files1, LOCAL, small_body, [],
-                           anchors=[{"text": fact1, "source": m1, "quote": fact1}])
+                           anchors=[{"text": fact1, "source": m1, "line_span": [1, 1]}])
     assert inc._DIARIZATION_ANONYMIZATION_RULE in sc_prompts[0]
-    assert "copy an accurate single-bullet quote verbatim" in sc_prompts[0]
-    sc_fb = json.loads(sc_prompts[1].split("\n", 1)[0])["quote_feedback"]
-    assert sc_fb["missing_quotes"] == [{"text": fact1, "source": m1, "problem": "copied_from_existing_dossier"}]
-    assert "do NOT reject a supported claim solely for a prior judge quote mismatch" in sc_fb["instruction"]
+    assert "reuse an accurate single-block line_span" in sc_prompts[0]
+    sc_fb = json.loads(sc_prompts[1].split("\n", 1)[0])["span_feedback"]
+    assert sc_fb["invalid_spans"] == [{"text": fact1, "source": m1, "problem": "span_out_of_range"}]
+    assert "do NOT reject a supported claim solely for a prior judge line_span error" in sc_fb["instruction"]
 
-    # 5) Stage-progress retry (0 -> 1 -> PASS and 1 -> 2 -> PASS) recovers on attempt 2 for single source,
-    #    and includes 4-key schema reminder on non-judge_json_failure retries
+    # 4) Stage-progress retry (0 -> 1 -> PASS and 1 -> 2 -> PASS) recovers on attempt 2 for single source,
+    #    and includes unconditional 4-key schema reminder on retries
     p01_prompts: list[str] = []
     p01_seq = iter([bad_quote_patch, valid_patch, reject_judge, valid_patch, valid_judge])
     with monkeypatch.context() as mp:
@@ -2892,10 +2890,20 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
         assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
     assert len(p01_prompts) == 5
     fb_patch = json.loads(p01_prompts[1].split("\n", 1)[0])["correction_feedback"]
-    assert fb_patch["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "problem": "copied_from_existing_dossier"}]
-    assert '{"section","text","source","quote"}' in fb_patch["instruction"]
+    assert fb_patch["missing_quotes"] == [{"text": f"- {fact1} [[{m1}]]", "source": m1, "problem": "span_out_of_range"}]
+    assert '{"section","text","source","line_span"}' in fb_patch["instruction"]
     fb_sem = json.loads(p01_prompts[3].split("\n", 1)[0])["correction_feedback"]
-    assert '{"section","text","source","quote"}' in fb_sem["instruction"]
+    assert '{"section","text","source","line_span"}' in fb_sem["instruction"]
+
+    # Empty patch after bad_quote_patch (0 -> deterministic 0) is NOT progress and stops after 2 calls!
+    empty_patch = json.dumps({"additions": [], "corrections": []})
+    gen_det: list[int] = []
+    det_seq = iter([bad_quote_patch, empty_patch])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, cfg, *, system, **kw: (gen_det.append(1) if system == inc.GENERATE_SYSTEM else None, next(det_seq))[1])
+        with pytest.raises(inc.Refused, match="does not attribute each accepted source"):
+            inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
+    assert len(gen_det) == 2
 
     # 1 -> 2 -> PASS for both AUDIT_SUPPORT_REJECTED and AUDIT_TOPIC_REJECTED
     for audit_detail, audit_msg in (
@@ -2917,7 +2925,7 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
             assert fact1 in inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
         assert len(gen_n) == 3
 
-    # 6) Exhaustion at MAX_APPEND_ATTEMPTS=3 on strict 0 -> 1 -> 2 stops after exactly 3 generator calls
+    # 5) Exhaustion at MAX_APPEND_ATTEMPTS=3 on strict 0 -> 1 -> 2 stops after exactly 3 generator calls
     gen_012: list[int] = []
     seq012 = iter([bad_quote_patch, valid_patch, reject_judge, valid_patch, valid_judge])
     with monkeypatch.context() as mp:
@@ -2929,7 +2937,7 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
             inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
     assert len(gen_012) == 3
 
-    # 7) Stage regression (1 -> 0) and same-stage repeat (2 -> 2) both stop after 2 generator calls
+    # 6) Stage regression (1 -> 0) and same-stage repeat (2 -> 2) both stop after 2 generator calls
     gen_reg: list[int] = []
     seq_reg = iter([valid_patch, reject_judge, bad_quote_patch])
     with monkeypatch.context() as mp:
@@ -2949,11 +2957,11 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
             inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
     assert len(gen_22) == 2
 
-    # 8) Multi-source (len(names) > 1) stops after 2 calls even when stage progresses 0 -> 1
+    # 7) Multi-source (len(names) > 1) stops after 2 calls even when stage progresses 0 -> 1
     valid_patch_2 = json.dumps({
         "additions": [
-            {"section": "Сейчас", "text": fact1, "source": m1, "quote": fact1},
-            {"section": "Сейчас", "text": "Second source update.", "source": m2, "quote": "Second source update."},
+            {"section": "Сейчас", "text": fact1, "source": m1, "line_span": [1, 1]},
+            {"section": "Сейчас", "text": "Second source update.", "source": m2, "line_span": [1, 1]},
         ],
         "corrections": [],
     })
@@ -2965,7 +2973,7 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
             inc.append("Glasshouse", loaded, [m1, m2], files2, LOCAL)
     assert len(gen_multi) == 2
 
-    # 9) Non-validation Refused (Reason.PREFLIGHT / Reason.CONTRACT) stops immediately without retrying
+    # 8) Non-validation Refused (Reason.PREFLIGHT / Reason.CONTRACT) stops immediately without retrying
     for non_val_reason in (telemetry.Reason.PREFLIGHT, telemetry.Reason.CONTRACT):
         gen_nv: list[int] = []
         with monkeypatch.context() as mp:
@@ -2976,6 +2984,153 @@ def test_round13_quote_echo_diarization_and_stage_progress_retries(monkeypatch):
             with pytest.raises(inc.Refused, match="preflight or contract error"):
                 inc.append("Glasshouse", loaded, [m1], files1, LOCAL)
         assert len(gen_nv) == 1
+
+
+def test_round14_ollama_schema_line_span_and_invariants(monkeypatch):
+    # 1) _split_source_lines, _format_indexed_source, _quote_hits CR normalization, and _resolve_line_span boundaries
+    cr_text = "First line.\rSecond line.\r\nThird line.\n   \nFifth line."
+    assert inc._split_source_lines(cr_text) == ["First line.", "Second line.", "Third line.", "   ", "Fifth line."]
+    assert inc._format_indexed_source("Alpha\nBeta") == "L1: Alpha\nL2: Beta"
+    assert inc._quote_hits(cr_text, "First line.\nSecond line.") == 1
+    assert inc._quote_hits("First line.\nSecond line.", "First line.\rSecond line.") == 1
+
+    assert inc._resolve_line_span(cr_text, [1, 2], max_lines=2) == ("First line.\nSecond line.", "")
+    assert inc._resolve_line_span(cr_text, [1, 3], max_lines=2) == (None, "span_too_wide")
+    assert inc._resolve_line_span(cr_text, [2, 1], max_lines=5) == (None, "span_inverted")
+    assert inc._resolve_line_span(cr_text, [0, 1], max_lines=5) == (None, "span_out_of_range")
+    assert inc._resolve_line_span(cr_text, [1, 6], max_lines=10) == (None, "span_out_of_range")
+    assert inc._resolve_line_span(cr_text, [4, 4], max_lines=5) == (None, "span_empty")
+    for bad_span in ([], [1], [1, 2, 3], [True, 1], [1, False], ["1", "2"], None, "1-2"):
+        assert inc._resolve_line_span(cr_text, bad_span, max_lines=5) == (None, "span_invalid")
+    assert inc._span_schema(0)["items"]["maximum"] == 1
+
+    # 2) Schema builders: source_relevance anyOf, append enum, semantic_check empty vs non-empty names
+    sr_schema = inc._source_relevance_schema(25)
+    assert "anyOf" in sr_schema and len(sr_schema["anyOf"]) == 2
+    assert sr_schema["anyOf"][0]["additionalProperties"] is False
+    assert sr_schema["anyOf"][1]["additionalProperties"] is False
+    assert sr_schema["anyOf"][0]["properties"]["verdict"] == {"const": "relevant"}
+    assert sr_schema["anyOf"][0]["properties"]["line_span"]["minItems"] == 2
+    assert sr_schema["anyOf"][0]["properties"]["line_span"]["maxItems"] == 2
+    assert sr_schema["anyOf"][0]["properties"]["line_span"]["items"]["minimum"] == 1
+    assert sr_schema["anyOf"][0]["properties"]["line_span"]["items"]["maximum"] == 25
+    assert sr_schema["anyOf"][1]["properties"]["line_span"] == {"type": "array", "maxItems": 0}
+
+    m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
+    app_schema = inc._append_schema([m1, m2], 40)
+    assert app_schema["additionalProperties"] is False
+    assert app_schema["properties"]["additions"]["items"]["additionalProperties"] is False
+    assert app_schema["properties"]["corrections"]["items"]["additionalProperties"] is False
+    assert app_schema["properties"]["additions"]["items"]["properties"]["source"] == {"type": "string", "enum": [m1, m2]}
+    assert app_schema["properties"]["corrections"]["items"]["properties"]["source"] == {"type": "string", "enum": [m1, m2]}
+    assert app_schema["properties"]["additions"]["items"]["properties"]["line_span"]["items"]["maximum"] == 40
+
+    sem_empty = inc._semantic_check_schema([], {})
+    assert sem_empty["additionalProperties"] is False
+    assert sem_empty["properties"]["claims"] == {"type": "array", "maxItems": 0}
+    sem_full = inc._semantic_check_schema([m1], {m1: 30})
+    assert sem_full["additionalProperties"] is False
+    assert sem_full["properties"]["claims"]["items"]["additionalProperties"] is False
+    assert sem_full["properties"]["claims"]["items"]["properties"]["source"] == {"type": "string", "enum": [m1]}
+    assert "anyOf" in sem_full["properties"]["claims"]["items"]["properties"]["line_span"]
+
+    # 3) _normalize_patch_line strips leaked 'L<n>: ' prefixes (with or without leading '- ') and rejects empty result
+    assert inc._normalize_patch_line("L7: Valve sealed.", m1, [m1], bad_source_msg="bad") == (f"- Valve sealed. [[{m1}]]", m1)
+    assert inc._normalize_patch_line("- L12: Valve sealed.", m1, [m1], bad_source_msg="bad") == (f"- Valve sealed. [[{m1}]]", m1)
+    assert inc._normalize_patch_line("L3:port open.", m1, [m1], bad_source_msg="bad") == (f"- L3:port open. [[{m1}]]", m1)
+    with pytest.raises(inc.Refused, match="empty or invalid patch entry"):
+        inc._normalize_patch_line("- L3:   ", m1, [m1], bad_source_msg="bad")
+    with pytest.raises(inc.Refused, match="empty or invalid patch entry"):
+        inc._normalize_patch_line("L3: # Heading", m1, [m1], bad_source_msg="bad")
+
+    # 4) append refuses empty names before building schema; source_relevance accepts irrelevant with non-empty line_span
+    loaded = _loaded_with_body(BODY)
+    with pytest.raises(inc.Refused, match="at least one new source is required"):
+        inc.append("Glasshouse", loaded, [], {}, LOCAL)
+
+    monkeypatch.setattr(
+        inc, "local_complete",
+        lambda *a, **kw: json.dumps({"verdict": "irrelevant", "reason": "off topic", "line_span": [1, 1]}),
+    )
+    assert inc.source_relevance("Glasshouse", loaded, m1, {"text": "Off-topic line."}, LOCAL) is False
+
+    # 5) _apply_patch enforces valid unique line_span on corrections too (span_out_of_range & span_ambiguous)
+    corr_files = {m1: {"text": "Vent A closed.\nOther line.\nVent A closed."}}
+    with pytest.raises(inc._MissingClaimQuotes) as corr_miss:
+        inc._apply_patch(loaded, [m1], corr_files, {
+            "additions": [],
+            "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [9, 9]}],
+        })
+    assert corr_miss.value.missing_quotes[0]["problem"] == "span_out_of_range"
+    with pytest.raises(inc.Refused, match="ambiguous claim evidence") as corr_amb:
+        inc._apply_patch(loaded, [m1], corr_files, {
+            "additions": [],
+            "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [1, 1]}],
+        })
+    assert corr_amb.value.detail is telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS
+
+    # 6) semantic_check retries once on span_ambiguous and succeeds when judge widens line_span on attempt 1
+    amb_src = "Да.\nКонтекст теплицы.\nДа.\n"
+    fact_amb = "Подтверждён контекст теплицы."
+    amb_body = BODY.replace("## Как пришли", f"- {fact_amb} [[{m1}]]\n## Как пришли")
+    amb_prompts: list[str] = []
+    amb_audited: list[dict] = []
+    amb_seq = iter([
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "ok",
+            "claims": [{"text": fact_amb, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+        json.dumps({
+            "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+            "reason": "widened",
+            "claims": [{"text": fact_amb, "source": m1, "line_span": [1, 2], "relevant": True, "supported": True, "reason": "ok"}],
+        }),
+    ])
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (amb_prompts.append(p), next(amb_seq))[1])
+        mp.setattr(inc, "audit_claim", lambda *a, **kw: amb_audited.append(a[2]))
+        inc.semantic_check("Glasshouse", loaded, [m1], {m1: {"text": amb_src}}, LOCAL, amb_body, [])
+    assert len(amb_prompts) == 2
+    amb_fb = json.loads(amb_prompts[1].split("\n", 1)[0])["span_feedback"]
+    assert amb_fb["invalid_spans"] == [{"text": fact_amb, "source": m1, "problem": "span_ambiguous"}]
+    assert amb_audited[0]["quote"] == "Да.\nКонтекст теплицы."
+
+    # 7) Sentinel char (\ufdd0) produces span_unmatchable (never KeyError: 'problem') in semantic_check & _apply_patch,
+    #    and duplicate corrections targeting the same ## Сейчас line are rejected even when the first span is invalid.
+    sent_src = "Vent A closed \ufdd0.\nVent A verified."
+    assert inc._resolve_unique_span(sent_src, [1, 1], max_lines=5) == (None, "span_unmatchable")
+    sent_prompts: list[str] = []
+    sent_reply = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact_amb, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
+    })
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (sent_prompts.append(p), sent_reply)[1])
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc.semantic_check("Glasshouse", loaded, [m1], {m1: {"text": sent_src}}, LOCAL, amb_body, [])
+    assert len(sent_prompts) == 2
+    assert json.loads(sent_prompts[1].split("\n", 1)[0])["span_feedback"]["invalid_spans"] == [
+        {"text": fact_amb, "source": m1, "problem": "span_unmatchable"}
+    ]
+
+    with pytest.raises(inc._MissingClaimQuotes) as sent_corr:
+        inc._apply_patch(loaded, [m1], {m1: {"text": sent_src}}, {
+            "additions": [],
+            "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [1, 1]}],
+        })
+    assert sent_corr.value.missing_quotes[0]["problem"] == "span_unmatchable"
+
+    with pytest.raises(inc.Refused, match="before must identify one current line in ## Сейчас"):
+        inc._apply_patch(loaded, [m1], {m1: {"text": "Vent A closed.\nVent A verified."}}, {
+            "additions": [],
+            "corrections": [
+                {"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [99, 99]},
+                {"before": "Vent A is open.", "after": "Vent A verified.", "source": m1, "line_span": [2, 2]},
+            ],
+        })
+
 
 
 
