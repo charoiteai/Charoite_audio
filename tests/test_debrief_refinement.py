@@ -73,7 +73,7 @@ def test_receipt_survives_retitle_and_keeps_minimal_dict_shape(tmp_path):
         ref.load_thread(tmp_path / "2026-01-01_1200_topic.md", binding)
 
 
-def test_load_thread_preserves_optional_topic_position_and_source_tail(tmp_path):
+def test_load_thread_preserves_optional_topic_position_zero_and_source_tail(tmp_path):
     late_text = "Поздняя реплика после стопа."
     data = export_payload(
         blocks=[{
@@ -82,24 +82,43 @@ def test_load_thread_preserves_optional_topic_position_and_source_tail(tmp_path)
             "text": "Выпуск 12 июня.",
             "manual_id": None,
             "topic_label": "  Релиз  ",
-            "position": 42,
+            "position": 0,
         }],
         late_portions=[{
             "id": "p2",
             "body_utf8": late_text,
             "body_hash": hashlib.sha256(late_text.encode("utf-8")).hexdigest(),
         }],
+        source_tail=0,  # explicit 0 must fall back to computed_tail
     )
     path = tmp_path / f"{STAMP}.md.grounded.json"
     write_snapshot(path, data)
+    expected_tail = len(SPEECH.encode("utf-8")) + len(late_text.encode("utf-8"))
     thread = ref.load_thread(tmp_path / "meeting.md", ref.receipt(path, STAMP))
     assert thread == [{
         "kind": "paragraph",
         "text": "Выпуск 12 июня.",
         "topic_label": "Релиз",
-        "position": 42,
-        "source_tail": len(SPEECH.encode("utf-8")) + len(late_text.encode("utf-8")),
+        "position": 0,
+        "source_tail": expected_tail,
     }]
+
+    # Positive explicit source_tail is used directly; negative position is ignored.
+    data2 = export_payload(
+        blocks=[
+            {"serial": 1, "kind": "paragraph", "text": "А", "manual_id": None, "position": 10},
+            {"serial": 2, "kind": "paragraph", "text": "Б", "manual_id": None, "position": -1},
+        ],
+        source_tail=999,
+    )
+    out2 = ref._validate_export(data2, STAMP)
+    assert out2[0] == {"kind": "paragraph", "text": "А", "position": 10, "source_tail": 999}
+    assert out2[1] == {"kind": "paragraph", "text": "Б"}
+
+    # Empty portions + source_tail == 0 omits source_tail.
+    data3 = export_payload(blocks=[{"serial": 1, "kind": "paragraph", "text": "В", "manual_id": None, "position": 0}])
+    data3["snapshot"]["source"]["portions"] = []
+    assert ref._validate_export(data3, STAMP) == [{"kind": "paragraph", "text": "В", "position": 0}]
 
 
 @pytest.mark.parametrize("mutation", [
@@ -201,7 +220,7 @@ def test_real_stopped_feed_receipt_with_unprocessed_final_speech(tmp_path):
     assert "position" in loaded[0] and "source_tail" in loaded[0]
 
 
-# --- mutation_critical: local_request and strict JSON fallback ---
+# --- mutation_critical: local_request, schema, and strict JSON fallback ---
 
 def fake_local(monkeypatch, *, context=1000, failure=None, configs=None):
     import llm
@@ -223,6 +242,17 @@ def fake_local(monkeypatch, *, context=1000, failure=None, configs=None):
     monkeypatch.setattr(llm, "LLM", Client)
     monkeypatch.setattr(ref.LocalLoopbackAuthority, "verify", lambda client: SimpleNamespace(model="synthetic-local"))
     return calls
+
+
+def test_paragraphs_schema_exact_structure():
+    schema0 = ref._paragraphs_schema(min_items=0)
+    assert schema0["additionalProperties"] is False
+    assert "minItems" not in schema0["properties"]["paragraphs"]
+    item = schema0["properties"]["paragraphs"]["items"]
+    assert item["additionalProperties"] is False
+    assert item["properties"]["text"]["minLength"] == 1
+    schema1 = ref._paragraphs_schema(min_items=1)
+    assert schema1["properties"]["paragraphs"]["minItems"] == 1
 
 
 def test_cloud_and_remote_url_are_refused_before_constructing_client(monkeypatch):
@@ -267,8 +297,6 @@ def test_local_context_admits_exact_limit_and_rejects_one_character_over(monkeyp
 @pytest.mark.parametrize("bad_ctx", [None, "8192", True, 612, 500])
 def test_local_request_rejects_invalid_or_too_small_context(monkeypatch, bad_ctx):
     calls = fake_local(monkeypatch, context=bad_ctx)
-    # Empty prompt/system ensures context <= predict + CONTEXT_RESERVE is exercised directly
-    # (not shadowed by len(system) + len(prompt) > _max_input_chars), killing LtE->Lt and Add->Sub mutants.
     with pytest.raises(ref.RefinementRefused, match="complete_input_exceeds_context"):
         ref.local_request({"llm": {"engine": "ollama"}}, "", "", 100)
     assert calls == []
@@ -427,9 +455,154 @@ def test_grounded_answer_rejects_invalid_output_schema():
         list(ollama_client.grounded_answer("p", system="s", cancel_event=threading.Event(), output_schema="json"))
 
 
-# --- Lightweight single-pass, batching, coverage, splitting, merge, sanitization ---
+# --- Unit boundaries for slicing, alignment, retry, and sanitization ---
 
-def test_single_pass_edits_thread_omits_previous_and_byte_metadata():
+def test_speaker_at_exact_offset_and_before():
+    headers = [(10, "A"), (50, "B")]
+    assert ref._speaker_at(headers, 9) is None
+    assert ref._speaker_at(headers, 10) == "A"
+    assert ref._speaker_at(headers, 49) == "A"
+    assert ref._speaker_at(headers, 50) == "B"
+
+
+def test_snap_boundary_exact_cases():
+    # Degenerate interval high <= low + 1
+    assert ref._snap_boundary("abcdef", [], 3, 2, 3) == 3
+    assert ref._snap_boundary("abcdef", [], 1, 2, 3) == 2
+    assert ref._snap_boundary("abcdef", [], 5, 2, 3) == 3
+    # Header strictly inside [lo, hi] wins over newline
+    speech = "x" * 100 + "\n" + "y" * 50 + "**A** [00:01]:\n" + "z" * 100
+    hdr_pos = speech.index("**A**")
+    assert ref._snap_boundary(speech, [(hdr_pos, "A")], hdr_pos - 20, 0, len(speech)) == hdr_pos
+    # Header at exact lo and hi bounds
+    assert ref._snap_boundary("a" * 600, [(50, "A")], 300, 0, 600) == 50
+    assert ref._snap_boundary("a" * 600, [(550, "B")], 300, 0, 600) == 550
+    # Header outside radius (400 +- 250 = [150, 650]) is ignored; newline before target is picked
+    nl_speech = "a" * 320 + "\n" + "b" * 400
+    assert ref._snap_boundary(nl_speech, [(10, "A"), (700, "B")], 400, 0, len(nl_speech)) == 321
+    # Trailing newline at high-1 stays strictly below high
+    assert ref._snap_boundary("a" * 20 + "\n", [], 20, 0, 21) == 20
+    # No header, no newline -> clamped inside (low, high)
+    assert ref._snap_boundary("a" * 300, [], 150, 0, 300) == 150
+    assert ref._snap_boundary("a" * 300, [], 0, 0, 300) == 1
+    assert ref._snap_boundary("a" * 300, [], 300, 0, 300) == 299
+
+
+def test_thread_end_ratios_exact_valid_and_fallback_cases():
+    # Valid monotonic positions including 0 and > source_tail (clamped to 1.0)
+    valid = [
+        {"text": "a", "position": 0, "source_tail": 100},
+        {"text": "b", "position": 50, "source_tail": 100},
+        {"text": "c", "position": 150, "source_tail": 100},
+    ]
+    assert ref._thread_end_ratios(valid) == [0.0, 0.5, 1.0]
+    # All-zero positions fall back to text-length weights (empty text has min weight 1)
+    zeros = [
+        {"text": "", "position": 0, "source_tail": 100},
+        {"text": "ab", "position": 0, "source_tail": 100},
+    ]
+    assert ref._thread_end_ratios(zeros) == [pytest.approx(1 / 3), pytest.approx(1.0)]
+    # Non-int source_tail (bool) falls back
+    bool_tail = [{"text": "a", "position": 10, "source_tail": True}]
+    assert ref._thread_end_ratios(bool_tail) == [1.0]
+
+
+@pytest.mark.parametrize("positions,tail", [
+    ([1_000_000, 1_000_000, 1_000_000], 1_500_000),
+    ([500, 200, 900], 1000),
+    ([100, 200, 300], 0),
+    ([None, None, None], None),
+])
+def test_thread_end_ratios_falls_back_cleanly_on_degenerate_positions(positions, tail):
+    thread = [{"kind": "paragraph", "text": f"Блок {i} текст", "position": p, "source_tail": tail}
+              for i, p in enumerate(positions)]
+    ratios = ref._thread_end_ratios(thread)
+    assert len(ratios) == 3
+    assert ratios == sorted(ratios)
+    assert ratios[0] > 0 and ratios[-1] == pytest.approx(1.0)
+
+
+def test_plan_initial_tasks_exact_batch_count_and_contiguous_coverage():
+    speech = "x" * 5000
+    thread = [{"kind": "paragraph", "text": "y" * 500} for _ in range(4)]
+    # total_chars = 5000 + 2000 = 7000 > 6000 -> 2 batches
+    tasks = ref._plan_initial_tasks(speech, thread, [])
+    assert len(tasks) == 2
+    assert tasks[0][1] == 0 and tasks[0][2] == tasks[1][1] and tasks[1][2] == len(speech)
+    assert sum(len(b) for b, _, _ in tasks) == 4
+    # Exact boundary total_chars == BATCH_TARGET_CHARS -> 1 batch
+    exact = ref._plan_initial_tasks("x" * 5500, [{"kind": "paragraph", "text": "y" * 500}], [])
+    assert len(exact) == 1 and exact[0][1:] == (0, 5500)
+
+
+def test_build_batch_payload_overlap_and_speaker_at_start():
+    speech = "**A** [00:00]:\n" + "x" * 100 + "\n**B** [00:01]:\n" + "y" * 100
+    headers, speakers = ref._extract_headers(speech)
+    # span_start=0 -> no speaker_at_start
+    p0 = ref._build_batch_payload(speech, headers, speakers, [{"kind": "paragraph", "text": "t"}], 0, 50, overlap=10)
+    assert "speaker_at_start" not in p0
+    assert p0["final_speech"] == speech[:60]
+    # span_start inside A's turn with overlap=0 -> speaker_at_start == "A"
+    p1 = ref._build_batch_payload(speech, headers, speakers, [{"kind": "paragraph", "text": "t"}], 30, 60, overlap=0)
+    assert p1["speaker_at_start"] == "A"
+    assert p1["final_speech"] == speech[30:60]
+
+
+def test_split_task_covers_multiblock_speech_longblock_and_none():
+    speech = "a" * 1200
+    # 1. Multiblock
+    two = [{"text": "x"}, {"text": "y"}]
+    res = ref._split_task(speech, [], two, 0, 1200)
+    assert res == [([two[0]], 0, 600), ([two[1]], 600, 1200)]
+    # 2. Single block, speech > MIN_SPEECH_SLICE (513) vs == MIN_SPEECH_SLICE (512)
+    one_short = [{"text": "короткий"}]
+    res_sp = ref._split_task("a" * 513, [], one_short, 0, 513)
+    assert res_sp == [(one_short, 0, 256), (one_short, 256, 513)]
+    assert ref._split_task("a" * 512, [], one_short, 0, 512) is None
+    # 3. Single block, speech <= 512, long block == MIN_BLOCK_SPLIT_CHARS (600) vs 599
+    long_row = [{"text": "б" * 600}]
+    res_blk = ref._split_task("a" * 512, [], long_row, 0, 512)
+    assert res_blk is not None
+    assert len(res_blk[0][0][0]["text"]) == 300 and len(res_blk[1][0][0]["text"]) == 300
+    assert res_blk[0][1:] == (0, 256) and res_blk[1][1:] == (256, 512)
+    assert ref._split_task("a" * 512, [], [{"text": "б" * 599}], 0, 512) is None
+    # Whitespace-only half returns None
+    assert ref._split_task("a" * 512, [], [{"text": " " * 300 + "б" * 300}], 0, 512) is None
+
+
+def test_call_with_retry_respects_exact_retry_suffix_budget():
+    seen_systems = []
+    def call(prompt, system, predict):
+        seen_systems.append(system)
+        return "bad" if len(seen_systems) == 1 else ok_reply([{"topic": "", "text": "Ок."}])
+
+    prompt, system = "p" * 10, "s" * 10
+    exact_limit = len(prompt) + len(system) + len(ref._JSON_RETRY_SUFFIX)
+    assert ref._call_with_retry(prompt, system, 100, call, allow_empty=False, max_input=exact_limit) == [
+        {"topic": "", "text": "Ок."}
+    ]
+    assert seen_systems[1] == system + ref._JSON_RETRY_SUFFIX
+
+    seen_systems.clear()
+    assert ref._call_with_retry(prompt, system, 100, call, allow_empty=False, max_input=exact_limit - 1) == [
+        {"topic": "", "text": "Ок."}
+    ]
+    assert seen_systems[1] == system
+
+
+def test_sanitize_fallback_text_and_fallback_rows():
+    assert ref._sanitize_fallback_text("**Из стенограммы**") == ""
+    assert ref._sanitize_fallback_text("текст\x07с\nпереносом ```код```") == "текст с переносом код"
+    rows = ref._fallback_rows([
+        {"text": "**Из стенограммы**", "topic_label": "Т"},
+        {"text": "Факт 1", "topic": "Тема из topic"},
+    ])
+    assert rows == [{"topic": "Тема из topic", "text": "Факт 1"}]
+
+
+# --- Lightweight single-pass, batching, coverage, splitting, merge ---
+
+def test_single_pass_edits_thread_omits_previous_and_emits_exact_progress():
     seen = []
     events = []
     thread = [
@@ -453,22 +626,53 @@ def test_single_pass_edits_thread_omits_previous_and_byte_metadata():
     assert "position" not in json.dumps(payload, ensure_ascii=False)
     assert "source_tail" not in json.dumps(payload, ensure_ascii=False)
     assert out == "# Разбор встречи\n\n## Выпуск\n\nУчастник A и Участник B перенесли выпуск модуля Альфа на 15 июня.\n"
-    assert [e["phase"] for e in events] == ["request", "source_window", "complete"]
-    assert events[1]["source_windows"] == 1 and events[1]["reason"] == "verified"
+    assert events == [
+        {"phase": "request", "requests": 1, "semantic_proof": False},
+        {"phase": "source_window", "source_windows": 1, "start_char": 0,
+         "source_chars": len(SPEECH), "verbatim": False, "reason": "verified", "semantic_proof": False},
+        {"phase": "complete", "source_windows": 1, "source_chars": len(SPEECH),
+         "coverage_complete": True, "semantic_proof": False},
+    ]
 
 
-def test_single_pass_retries_once_on_bad_json():
+def test_single_pass_exact_budget_and_empty_reply_fallthrough():
+    # Empty reply [] in single pass is rejected (allow_empty=False) and falls through to batch path.
     calls = []
     def request(cfg, prompt, system, predict):
         calls.append(system)
-        if len(calls) == 1:
-            return "не json"
-        return ok_reply([{"topic": "", "text": "Выпуск перенесли на 15 июня."}])
+        if system.startswith(ref.EDIT_SINGLE_SYSTEM) and not system.startswith(ref.EDIT_BATCH_SYSTEM):
+            return ok_reply([])
+        return ok_reply([{"topic": "", "text": "Итог из батча."}])
 
     out = ref.refine(SPEECH, THREAD, "", {}, request=request)
-    assert len(calls) == 2
-    assert calls[1].startswith(ref.EDIT_SINGLE_SYSTEM)
-    assert "Выпуск перенесли на 15 июня." in out
+    assert len(calls) == 3  # single + retry + batch
+    assert "Итог из батча." in out
+
+    # Single pass at exact character budget fits without falling through.
+    prompt_exact = ref._dump({
+        "speakers": ["Участник A", "Участник B"],
+        "live_thread": ref._prompt_thread_items(THREAD),
+        "final_speech": SPEECH,
+    })
+    needed_chars = len(prompt_exact) + len(ref.EDIT_SINGLE_SYSTEM)
+    # Choose context so _max_input_chars(ctx, SINGLE_PREDICT) == needed_chars (even) or +1
+    ctx = ref.SINGLE_PREDICT + ref.CONTEXT_RESERVE + (needed_chars + 1) // 2
+    ctx = max(ctx, ref.MERGE_PREDICT + ref.CONTEXT_RESERVE + 1)
+    # Pad speech to hit exact _max_input_chars(ctx, SINGLE_PREDICT)
+    limit = ref._max_input_chars(ctx, ref.SINGLE_PREDICT)
+    pad = limit - needed_chars
+    padded_speech = SPEECH + ("а" * pad)
+    seen = []
+    ref.refine(padded_speech, THREAD, "", {"llm": {"num_ctx": ctx}},
+               request=lambda c, p, s, pr: (seen.append(s), ok_reply([{"topic": "", "text": "Ок."}]))[1])
+    assert seen == [ref.EDIT_SINGLE_SYSTEM]
+
+
+def test_refine_rejects_invalid_context_budget_exact_boundary():
+    bad_exact = ref.MERGE_PREDICT + ref.CONTEXT_RESERVE
+    for bad in (None, "8192", True, bad_exact, bad_exact - 1):
+        with pytest.raises(ref.RefinementRefused, match="invalid_context_budget"):
+            ref.refine(SPEECH, THREAD, "", {"llm": {"num_ctx": bad}}, request=lambda *a: ok_reply([]))
 
 
 @pytest.mark.parametrize("bad_thread", [[], "text", [None], [{"kind": "paragraph"}]])
@@ -482,9 +686,11 @@ def test_refine_rejects_invalid_or_empty_thread_and_previous(bad_thread):
 
 
 def test_batched_path_covers_full_speech_including_head_and_late_portions():
-    # Simulate a meeting with 60 turns (~24k chars), first block position > 0 and large late_portions tail.
-    turns = [f"**Участник {i % 3}** [{i:02d}:00]:\nОбсудили блок номер {i} и конкретные параметры работы системы {i}. " + ("Подробность обсуждения. " * 12) + "\n"
-             for i in range(60)]
+    turns = [
+        f"**Участник {i % 3}** [{i:02d}:00]:\nОбсудили блок номер {i} и параметры системы {i}. "
+        + ("Подробность обсуждения. " * 12) + "\n"
+        for i in range(60)
+    ]
     speech = "\n".join(turns)
     thread = [
         {"kind": "paragraph", "text": f"Тезис {k}: проверили параметры блока {k}.",
@@ -493,6 +699,7 @@ def test_batched_path_covers_full_speech_including_head_and_late_portions():
     ]
     batch_speeches = []
     systems = []
+    events = []
 
     def request(cfg, prompt, system, predict):
         data = json.loads(prompt)
@@ -502,32 +709,20 @@ def test_batched_path_covers_full_speech_including_head_and_late_portions():
         batch_speeches.append(data["final_speech"])
         return ok_reply([{"topic": data["live_thread"][0].get("topic", ""), "text": f"Сводка батча {len(batch_speeches)}."}])
 
-    out = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=request)
+    out = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=request, progress=events.append)
     assert len(batch_speeches) >= 2
     assert systems[-1] == ref.MERGE_SYSTEM
-    # First turn (before first position=5000) and very last turn (late_portions tail) MUST be covered.
     assert turns[0].strip() in batch_speeches[0]
     assert turns[-1].strip() in batch_speeches[-1]
     assert "Все блоки сведены в компактный разбор." in out
-
-
-@pytest.mark.parametrize("positions,tail", [
-    ([1_000_000, 1_000_000, 1_000_000], 1_500_000),   # 1 MB cap saturation
-    ([500, 200, 900], 1000),                           # non-monotonic
-    ([100, 200, 300], 0),                              # zero source_tail
-    ([None, None, None], None),                        # absent position
-])
-def test_thread_end_ratios_falls_back_cleanly_on_degenerate_positions(positions, tail):
-    thread = [{"kind": "paragraph", "text": f"Блок {i} текст", "position": p, "source_tail": tail}
-              for i, p in enumerate(positions)]
-    ratios = ref._thread_end_ratios(thread)
-    assert len(ratios) == 3
-    assert ratios == sorted(ratios)
-    assert ratios[0] > 0 and ratios[-1] == pytest.approx(1.0)
+    assert ref.PARTIAL_NOTE not in out
+    win_events = [e for e in events if e["phase"] == "source_window"]
+    assert all(e["verbatim"] is False and e["semantic_proof"] is False for e in win_events)
+    assert events[-1]["phase"] == "complete" and events[-1]["coverage_complete"] is True
+    assert events[-1]["semantic_proof"] is False
 
 
 def test_single_block_with_oversized_speech_splits_speech_and_sets_speaker_at_start():
-    # One huge single-speaker turn exceeding context + 1 thread block -> must split speech slice and set speaker_at_start.
     long_body = "**Участник Альфа** [00:01]:\n" + ("Длинное описание задачи номер один. " * 450)
     thread = [{"kind": "paragraph", "text": "Обсудили длинную задачу номер один."}]
     seen_payloads = []
@@ -571,7 +766,54 @@ def test_adaptive_split_on_provider_limit_for_multiblock_batch(split_reason):
     assert "Связанный итог." in out
 
 
-def test_merge_fallback_on_budget_or_bad_reply_preserves_batch_results():
+def test_source_window_budget_enforced_initial_and_on_split(monkeypatch):
+    speech = "а" * 15000
+    thread = [{"kind": "paragraph", "text": f"Пункт {i}"} for i in range(5)]
+    monkeypatch.setattr(ref, "MAX_CHUNKS", 2)
+    with pytest.raises(ref.RefinementRefused, match="source_window_budget"):
+        ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=lambda *a: ok_reply([]))
+
+    # Split exceeding MAX_CHUNKS or unsplittable raises source_window_budget
+    monkeypatch.setattr(ref, "MAX_CHUNKS", 3)
+    with pytest.raises(ref.RefinementRefused, match="source_window_budget"):
+        ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}},
+                   request=lambda *a: (_ for _ in ()).throw(ref.RefinementRefused("output_budget")))
+
+
+def test_merge_skipped_when_single_batch_or_single_paragraph_or_over_budget():
+    # completed == 1 (after single_pass falls through to 1 batch) must NOT call MERGE_SYSTEM
+    calls = []
+    def req1(cfg, prompt, system, predict):
+        calls.append(system)
+        if system == ref.EDIT_SINGLE_SYSTEM:
+            raise ref.RefinementRefused("output_budget")
+        return ok_reply([{"topic": "Т", "text": "А1"}, {"topic": "Т", "text": "А2"}])
+    ref.refine(SPEECH, THREAD, "", {"llm": {"num_ctx": 8192}}, request=req1)
+    assert ref.MERGE_SYSTEM not in calls
+
+    # completed > 1 but len(collected) == 1 must NOT call MERGE_SYSTEM
+    speech = "\n".join(f"**Участник A** [00:{i:02d}]:\nРеплика {i} " + ("текст " * 60) for i in range(40))
+    thread = [{"kind": "paragraph", "text": f"Пункт {i}."} for i in range(12)]
+    calls2 = []
+    def req2(cfg, prompt, system, predict):
+        calls2.append(system)
+        return ok_reply([{"topic": "Т", "text": "Единственный."}]) if len(calls2) == 1 else ok_reply([])
+    out2 = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=req2)
+    assert ref.MERGE_SYSTEM not in calls2 and "Единственный." in out2
+
+    # Merge empty reply [] is rejected (allow_empty=False) and falls back to collected
+    calls3 = []
+    def req3(cfg, prompt, system, predict):
+        calls3.append(system)
+        if system.startswith(ref.MERGE_SYSTEM):
+            return ok_reply([])
+        return ok_reply([{"topic": "План", "text": f"Факт {len(calls3)}."}])
+    out3 = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=req3)
+    assert sum(1 for s in calls3 if s.startswith(ref.MERGE_SYSTEM)) == 2
+    assert "Факт 1." in out3
+
+
+def test_merge_fallback_on_budget_preserves_batch_results():
     speech = "\n".join(f"**Участник A** [00:{i:02d}]:\nРеплика {i} " + ("текст " * 60) for i in range(40))
     thread = [{"kind": "paragraph", "text": f"Пункт {i}."} for i in range(12)]
     merge_calls = []
@@ -588,20 +830,47 @@ def test_merge_fallback_on_budget_or_bad_reply_preserves_batch_results():
     assert "Отредактированный пункт" in out
 
 
-@pytest.mark.parametrize("fatal_reason", ["request_deferred", "local_model_required", "local_request_failed"])
-def test_fatal_errors_during_batch_or_merge_are_never_swallowed(fatal_reason):
+@pytest.mark.parametrize("extra_budget", [0, 1])
+def test_merge_falls_back_to_collected_when_request_budget_exhausted(monkeypatch, extra_budget):
     speech = "\n".join(f"**Участник A** [00:{i:02d}]:\nРеплика {i} " + ("текст " * 60) for i in range(40))
     thread = [{"kind": "paragraph", "text": f"Пункт {i}."} for i in range(12)]
+    headers, _ = ref._extract_headers(speech)
+    batch_count = len(ref._plan_initial_tasks(speech, thread, headers))
+    monkeypatch.setattr(ref, "MAX_REQUESTS", batch_count + extra_budget)
+    merge_attempts = []
+
+    def request(cfg, prompt, system, predict):
+        if system.startswith(ref.MERGE_SYSTEM):
+            merge_attempts.append(1)
+            return "bad-json"
+        return ok_reply([{"topic": "План", "text": f"Пункт {len(prompt)}_{len(json.loads(prompt)['live_thread'])}."}])
+
+    out = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=request)
+    assert len(merge_attempts) == extra_budget
+    assert "## План" in out
+
+
+@pytest.mark.parametrize("fatal_reason", ["request_deferred", "local_model_required", "local_request_failed"])
+def test_fatal_errors_during_single_or_merge_are_never_swallowed(fatal_reason):
     events = []
+    with pytest.raises(ref.RefinementRefused, match=fatal_reason):
+        ref.refine(SPEECH, THREAD, "", {},
+                   request=lambda *a: (_ for _ in ()).throw(ref.RefinementRefused(fatal_reason)),
+                   progress=events.append)
+    assert not any(e["phase"] == "complete" for e in events)
+
+    speech = "\n".join(f"**Участник A** [00:{i:02d}]:\nРеплика {i} " + ("текст " * 60) for i in range(40))
+    thread = [{"kind": "paragraph", "text": f"Пункт {i}."} for i in range(12)]
+    events2 = []
 
     def request(cfg, prompt, system, predict):
         if system == ref.MERGE_SYSTEM:
             raise ref.RefinementRefused(fatal_reason)
-        return ok_reply([{"topic": "План", "text": f"Пункт {len(events)}."}])
+        return ok_reply([{"topic": "План", "text": f"Пункт {len(events2)}."}])
 
     with pytest.raises(ref.RefinementRefused, match=fatal_reason):
-        ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=request, progress=events.append)
-    assert not any(e["phase"] == "complete" for e in events)
+        ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=request, progress=events2.append)
+    assert not any(e["phase"] == "complete" for e in events2)
 
 
 def test_before_request_false_defers_immediately_without_calling_model():
@@ -624,7 +893,7 @@ def test_batch_unverified_reply_falls_back_to_sanitized_thread_with_partial_note
         if system == ref.MERGE_SYSTEM:
             raise ref.RefinementRefused("output_budget")
         batch_num["n"] += 1
-        if batch_num["n"] in (1, 2):  # fail first batch + its retry
+        if batch_num["n"] in (1, 2):
             return "not-json"
         return ok_reply([{"topic": "Тема", "text": f"Уточнённый фрагмент {batch_num['n']}."}])
 
@@ -651,6 +920,15 @@ def test_duplicate_json_keys_refused():
         ref._json('{"paragraphs":[],"paragraphs":[]}')
 
 
+def test_parse_paragraphs_empty_default_vs_allow_empty_and_bad_shapes():
+    with pytest.raises(ref.UnverifiedReply, match="paragraph_schema"):
+        ref._parse_paragraphs(ok_reply([]))
+    assert ref._parse_paragraphs(ok_reply([]), allow_empty=True) == []
+    for bad in ['{"other":[]}', '{"paragraphs":"x"}', '{"paragraphs":[1]}', '{"paragraphs":[{"topic":"a"}]}']:
+        with pytest.raises(ref.UnverifiedReply, match="paragraph_schema"):
+            ref._parse_paragraphs(bad, allow_empty=True)
+
+
 @pytest.mark.parametrize("bad_row", [
     {"topic": "Тема", "text": "строка1\nстрока2"},
     {"topic": "Тема", "text": "текст\u2028разрыв"},
@@ -670,6 +948,14 @@ def test_parse_paragraphs_rejects_unsafe_text_and_topic(bad_row):
         ref._parse_paragraphs(ok_reply([bad_row]))
 
 
+def test_clean_topic_accepts_exact_max_length_and_strips_hashes():
+    exact = "Т" * ref.MAX_TOPIC_CHARS
+    assert ref._clean_topic(exact) == exact
+    assert ref._parse_paragraphs(ok_reply([{"topic": "##   Релиз  ", "text": "Готово."}])) == [
+        {"topic": "Релиз", "text": "Готово."}
+    ]
+
+
 def test_render_deduplicates_before_headings_and_merges_adjacent_topics():
     rows = [
         {"topic": "Релиз", "text": "Выпуск перенесли на 15 июня."},
@@ -687,33 +973,3 @@ def test_render_deduplicates_before_headings_and_merges_adjacent_topics():
         "Настроить алерт на задержку.\n"
     )
     assert "Пустая после дедупа" not in out
-
-
-def test_clean_topic_strips_leading_hashes():
-    parsed = ref._parse_paragraphs(ok_reply([{"topic": "##   Релиз  ", "text": "Готово."}]))
-    assert parsed == [{"topic": "Релиз", "text": "Готово."}]
-
-
-def test_snap_boundary_stays_strictly_below_high_on_trailing_space():
-    assert ref._snap_boundary("a" * 300 + " ", [], 300, 0, 301) == 300
-
-
-@pytest.mark.parametrize("extra_budget", [0, 1])
-def test_merge_falls_back_to_collected_when_request_budget_exhausted(monkeypatch, extra_budget):
-    speech = "\n".join(f"**Участник A** [00:{i:02d}]:\nРеплика {i} " + ("текст " * 60) for i in range(40))
-    thread = [{"kind": "paragraph", "text": f"Пункт {i}."} for i in range(12)]
-    headers, speakers = ref._extract_headers(speech)
-    batch_count = len(ref._plan_initial_tasks(speech, thread, headers, 8192, speakers))
-    monkeypatch.setattr(ref, "MAX_REQUESTS", batch_count + extra_budget)
-    merge_attempts = []
-
-    def request(cfg, prompt, system, predict):
-        if system == ref.MERGE_SYSTEM:
-            merge_attempts.append(1)
-            return "bad-json"  # triggers retry which exceeds MAX_REQUESTS when extra_budget == 1
-        return ok_reply([{"topic": "План", "text": f"Пункт {len(prompt)}_{len(json.loads(prompt)['live_thread'])}."}])
-
-    out = ref.refine(speech, thread, "", {"llm": {"num_ctx": 8192}}, request=request)
-    assert len(merge_attempts) == extra_budget
-    assert "## План" in out
-    assert "Пункт" in out

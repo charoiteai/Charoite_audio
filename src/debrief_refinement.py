@@ -27,6 +27,7 @@ CONTEXT_RESERVE = 512
 BATCH_PREDICT = 1600
 SINGLE_PREDICT = 2000
 MERGE_PREDICT = 2400
+BATCH_TARGET_CHARS = 6000
 OVERLAP_CHARS = 400
 BOUNDARY_SNAP_CHARS = 250
 MIN_SPEECH_SLICE = 512
@@ -225,6 +226,10 @@ def _max_input_chars(context: int, predict: int) -> int:
     return (context - predict - CONTEXT_RESERVE) * CHARS_PER_TOKEN
 
 
+def _fits(prompt: str, system: str, limit: int) -> bool:
+    return len(prompt) + len(system) <= limit
+
+
 def local_request(cfg: dict, prompt: str, system: str, predict: int) -> str:
     # Before constructing LLM: a cloud configuration must not read credentials.
     if privacy.llm_engine(cfg) != "ollama":
@@ -246,7 +251,7 @@ def local_request(cfg: dict, prompt: str, system: str, predict: int) -> str:
     # Heuristic admission, followed by strict server no-truncation enforcement.
     # MLX has no equivalent proven contract here and is deliberately refused.
     if (type(context) is not int or context <= predict + CONTEXT_RESERVE
-            or len(system) + len(prompt) > _max_input_chars(context, predict)):
+            or not _fits(prompt, system, _max_input_chars(context, predict))):
         raise RefinementRefused("complete_input_exceeds_context")
     schema = _output_schema(system)
     options = {"output_schema": schema} if schema is not None else {}
@@ -305,12 +310,9 @@ def _parse_paragraphs(raw: str, *, allow_empty: bool = False) -> list[dict]:
 
 
 def _sanitize_fallback_text(text: str) -> str:
-    stripped = "".join(" " if ch in "\n\r\u2028\u2029" or unicodedata.category(ch).startswith("C") else ch
-                       for ch in text)
+    stripped = "".join(" " if _has_control(ch) else ch for ch in text)
     cleaned = " ".join(stripped.replace("```", "").split()).lstrip("#>< ")
-    if cleaned == _TRANSCRIPT_MARKER:
-        return ""
-    return cleaned
+    return "" if cleaned == _TRANSCRIPT_MARKER else cleaned
 
 
 def _fallback_rows(batch: list[dict]) -> list[dict]:
@@ -373,36 +375,19 @@ def _speaker_at(headers: list[tuple[int, str]], offset: int) -> str | None:
 
 
 def _snap_boundary(speech: str, headers: list[tuple[int, str]], target: int,
-                   low: int, high: int, *, radius: int = BOUNDARY_SNAP_CHARS) -> int:
-    """Snap a cut point inside (low, high) to a speaker header, newline, or space."""
+                   low: int, high: int) -> int:
+    """Snap a cut point strictly inside (low, high) to a speaker header or newline."""
     if high <= low + 1:
         return max(low, min(high, target))
-    target = max(low + 1, min(high - 1, target))
-    best_header = None
-    best_dist = radius + 1
-    for pos, _ in headers:
-        if pos <= low:
-            continue
-        if pos >= high:
-            break
-        dist = abs(pos - target)
-        if dist < best_dist:
-            best_dist = dist
-            best_header = pos
-    if best_header is not None:
-        return best_header
-    left = max(low + 1, target - radius)
-    right = min(high - 1, target + radius)
-    nl_before = speech.rfind("\n", left, target + 1)
-    nl_after = speech.find("\n", target, right + 1)
-    candidates = [c for c in (nl_before, nl_after) if c != -1]
-    if candidates:
-        chosen = min(candidates, key=lambda c: abs(c - target))
-        return min(high - 1, chosen + 1)
-    sp_before = speech.rfind(" ", left, target + 1)
-    if sp_before > low:
-        return min(high - 1, sp_before + 1)
-    return target
+    lo = max(low + 1, target - BOUNDARY_SNAP_CHARS)
+    hi = min(high - 1, target + BOUNDARY_SNAP_CHARS)
+    near = [pos for pos, _ in headers if lo <= pos <= hi]
+    if near:
+        return min(near, key=lambda pos: abs(pos - target))
+    cut = speech.rfind("\n", lo, min(high - 1, target) + 1)
+    if cut != -1:
+        return min(high - 1, cut + 1)
+    return max(low + 1, min(high - 1, target))
 
 
 def _thread_end_ratios(thread: list[dict]) -> list[float]:
@@ -414,7 +399,7 @@ def _thread_end_ratios(thread: list[dict]) -> list[float]:
     """
     positions = [row.get("position") for row in thread]
     tails = [row.get("source_tail") for row in thread]
-    if (positions and all(type(p) is int and 0 <= p < POSITION_CAP for p in positions)
+    if (all(type(p) is int and 0 <= p < POSITION_CAP for p in positions)
             and all(type(t) is int and t > 0 for t in tails)
             and positions == sorted(positions)):
         tail = max(tails)
@@ -442,50 +427,24 @@ def _prompt_thread_items(batch: list[dict]) -> list[dict]:
     return items
 
 
-def _plan_initial_tasks(speech: str, thread: list[dict], headers: list[tuple[int, str]],
-                        context: int, speakers: list[str]) -> list[tuple[list[dict], int, int]]:
+def _plan_initial_tasks(speech: str, thread: list[dict],
+                        headers: list[tuple[int, str]]) -> list[tuple[list[dict], int, int]]:
     """Build contiguous batch tasks covering speech [0 .. len(speech)] without gaps."""
-    max_in = _max_input_chars(context, BATCH_PREDICT)
-    overhead = len(EDIT_BATCH_SYSTEM) + len(_dump({"speakers": speakers})) + OVERLAP_CHARS * 2 + 700
-    target_combined = max(1200, int(max(1200, max_in - overhead) * 0.78))
-    ratios = _thread_end_ratios(thread)
     total_speech = len(speech)
-
-    batches: list[tuple[list[dict], int]] = []
-    start_idx = 0
-    prev_cut = 0
-    batch_thread_chars = 0
-    for idx, row in enumerate(thread):
-        row_chars = len(row["text"]) + len(str(row.get("topic_label") or "")) + 40
-        next_ratio = ratios[idx]
-        est_end = total_speech if idx == len(thread) - 1 else int(next_ratio * total_speech)
-        est_combined = batch_thread_chars + row_chars + max(0, est_end - prev_cut)
-        prev_topic = thread[idx - 1].get("topic_label") if idx > start_idx else None
-        cur_topic = row.get("topic_label")
-        topic_changed = bool(prev_topic and cur_topic and prev_topic != cur_topic)
-        should_close = (idx > start_idx and (
-            est_combined > target_combined
-            or (topic_changed and (batch_thread_chars + max(0, est_end - prev_cut)) >= int(target_combined * 0.65))
-        ))
-        if should_close:
-            batches.append((thread[start_idx:idx], idx - 1))
-            prev_cut = int(ratios[idx - 1] * total_speech)
-            start_idx = idx
-            batch_thread_chars = row_chars
-        else:
-            batch_thread_chars += row_chars
-    batches.append((thread[start_idx:], len(thread) - 1))
-
+    total_chars = total_speech + sum(len(row["text"]) for row in thread)
+    num_batches = min(len(thread), max(1, (total_chars + BATCH_TARGET_CHARS - 1) // BATCH_TARGET_CHARS))
+    ratios = _thread_end_ratios(thread)
     tasks: list[tuple[list[dict], int, int]] = []
     cursor = 0
-    for b_idx, (batch_rows, last_row_idx) in enumerate(batches):
-        if b_idx == len(batches) - 1:
+    for idx in range(num_batches):
+        start_row = idx * len(thread) // num_batches
+        end_row = (idx + 1) * len(thread) // num_batches
+        batch_rows = thread[start_row:end_row]
+        if idx == num_batches - 1:
             end_pos = total_speech
         else:
-            raw_end = int(ratios[last_row_idx] * total_speech)
+            raw_end = int(ratios[end_row - 1] * total_speech)
             end_pos = _snap_boundary(speech, headers, raw_end, cursor, total_speech)
-            if end_pos < cursor:
-                end_pos = cursor
         tasks.append((batch_rows, cursor, end_pos))
         cursor = end_pos
     return tasks
@@ -496,66 +455,35 @@ def _build_batch_payload(speech: str, headers: list[tuple[int, str]], speakers: 
                          *, overlap: int = OVERLAP_CHARS) -> dict:
     ov_start = max(0, span_start - overlap)
     ov_end = min(len(speech), span_end + overlap)
-    if overlap > 0:
-        if ov_start > 0:
-            ov_start = _snap_boundary(speech, headers, ov_start, max(0, ov_start - BOUNDARY_SNAP_CHARS),
-                                      span_start + 1 if span_start > ov_start else ov_start + 1,
-                                      radius=BOUNDARY_SNAP_CHARS)
-        if ov_end < len(speech):
-            ov_end = _snap_boundary(speech, headers, ov_end, max(span_end, ov_end - BOUNDARY_SNAP_CHARS),
-                                    min(len(speech), ov_end + BOUNDARY_SNAP_CHARS),
-                                    radius=BOUNDARY_SNAP_CHARS)
     payload: dict = {
         "speakers": speakers,
         "live_thread": _prompt_thread_items(batch_rows),
         "final_speech": speech[ov_start:ov_end],
     }
-    if ov_start > 0 and not any(pos == ov_start for pos, _ in headers):
-        speaker = _speaker_at(headers, ov_start)
-        if speaker:
-            payload["speaker_at_start"] = speaker
+    speaker = _speaker_at(headers, ov_start) if ov_start > 0 else None
+    if speaker:
+        payload["speaker_at_start"] = speaker
     return payload
-
-
-def _split_long_block(row: dict) -> tuple[dict, dict] | None:
-    text = row["text"]
-    if len(text) < MIN_BLOCK_SPLIT_CHARS:
-        return None
-    mid = len(text) // 2
-    cut = text.rfind("\n", mid // 2, mid + mid // 2)
-    if cut == -1:
-        cut = text.rfind(" ", mid // 2, mid + mid // 2)
-    if cut <= 0 or cut >= len(text) - 1:
-        cut = mid
-    left = {**row, "text": text[:cut].strip()}
-    right = {**row, "text": text[cut:].strip()}
-    if not left["text"] or not right["text"]:
-        return None
-    return left, right
 
 
 def _split_task(speech: str, headers: list[tuple[int, str]],
                 batch_rows: list[dict], span_start: int, span_end: int) -> list[tuple[list[dict], int, int]] | None:
     if len(batch_rows) > 1:
         mid = len(batch_rows) // 2
-        left_rows, right_rows = batch_rows[:mid], batch_rows[mid:]
-        left_w = sum(max(1, len(r["text"])) for r in left_rows)
-        total_w = left_w + sum(max(1, len(r["text"])) for r in right_rows)
-        if span_end - span_start > 1:
-            raw_mid = span_start + int((span_end - span_start) * (left_w / total_w))
-            mid_pos = _snap_boundary(speech, headers, raw_mid, span_start, span_end)
-        else:
-            mid_pos = span_start
-        return [(left_rows, span_start, mid_pos), (right_rows, mid_pos, span_end)]
+        mid_pos = _snap_boundary(speech, headers, (span_start + span_end) // 2, span_start, span_end)
+        return [(batch_rows[:mid], span_start, mid_pos), (batch_rows[mid:], mid_pos, span_end)]
     if span_end - span_start > MIN_SPEECH_SLICE:
         mid_pos = _snap_boundary(speech, headers, (span_start + span_end) // 2, span_start, span_end)
-        if span_start < mid_pos < span_end:
-            return [(batch_rows, span_start, mid_pos), (batch_rows, mid_pos, span_end)]
-    split_block = _split_long_block(batch_rows[0])
-    if split_block is not None:
-        left_row, right_row = split_block
-        mid_pos = (span_start + span_end) // 2
-        return [([left_row], span_start, mid_pos), ([right_row], mid_pos, span_end)]
+        return [(batch_rows, span_start, mid_pos), (batch_rows, mid_pos, span_end)]
+    text = batch_rows[0]["text"]
+    if len(text) >= MIN_BLOCK_SPLIT_CHARS:
+        mid = len(text) // 2
+        left_text, right_text = text[:mid].strip(), text[mid:].strip()
+        if left_text and right_text:
+            left_row = {**batch_rows[0], "text": left_text}
+            right_row = {**batch_rows[0], "text": right_text}
+            mid_pos = (span_start + span_end) // 2
+            return [([left_row], span_start, mid_pos), ([right_row], mid_pos, span_end)]
     return None
 
 
@@ -569,11 +497,14 @@ def _call_with_retry(prompt: str, system: str, predict: int, call, *,
         except UnverifiedReply:
             if attempt:
                 raise
-            if len(prompt) + len(system) + len(_JSON_RETRY_SUFFIX) <= max_input:
-                current_system = system + _JSON_RETRY_SUFFIX
-            else:
-                current_system = system
+            retry_system = system + _JSON_RETRY_SUFFIX
+            current_system = retry_system if _fits(prompt, retry_system, max_input) else system
     raise AssertionError("unreachable")
+
+
+def _emit(progress, event: dict) -> None:
+    if progress is not None:
+        progress({**event, "semantic_proof": False})
 
 
 def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request=None,
@@ -598,41 +529,36 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
         nonlocal count
         if count >= MAX_REQUESTS:
             raise RefinementRefused("model_request_budget")
-        if len(prompt) + len(system) > _max_input_chars(context, predict):
+        if not _fits(prompt, system, _max_input_chars(context, predict)):
             raise RefinementRefused("complete_input_exceeds_context")
         if before_request is not None and before_request() is False:
             raise RefinementRefused("request_deferred")
         count += 1
-        if progress is not None:
-            progress({"phase": "request", "requests": count, "semantic_proof": False})
+        _emit(progress, {"phase": "request", "requests": count})
         return request(cfg, prompt, system, predict)
 
     headers, speakers = _extract_headers(speech)
-    single_payload = {
+    single_prompt = _dump({
         "speakers": speakers,
         "live_thread": _prompt_thread_items(thread),
         "final_speech": speech,
-    }
-    single_prompt = _dump(single_payload)
+    })
     single_budget = _max_input_chars(context, SINGLE_PREDICT)
-    if len(single_prompt) + len(EDIT_SINGLE_SYSTEM) <= single_budget:
+    if _fits(single_prompt, EDIT_SINGLE_SYSTEM, single_budget):
         try:
             rows = _call_with_retry(single_prompt, EDIT_SINGLE_SYSTEM, SINGLE_PREDICT, call,
                                     allow_empty=False, max_input=single_budget)
             result = _render(rows, partial=False)
-            if progress is not None:
-                progress({"phase": "source_window", "source_windows": 1, "start_char": 0,
-                          "source_chars": len(speech), "verbatim": False, "reason": "verified",
-                          "semantic_proof": False})
-                progress({"phase": "complete", "source_windows": 1, "source_chars": len(speech),
-                          "coverage_complete": True, "semantic_proof": False})
+            _emit(progress, {"phase": "source_window", "source_windows": 1, "start_char": 0,
+                             "source_chars": len(speech), "verbatim": False, "reason": "verified"})
+            _emit(progress, {"phase": "complete", "source_windows": 1,
+                             "source_chars": len(speech), "coverage_complete": True})
             return result
         except RefinementRefused as exc:
             if not isinstance(exc, UnverifiedReply) and str(exc) not in SPLIT_REASONS:
                 raise
-            # Fall through to batched path on context/output limit or unverified single reply.
 
-    pending = _plan_initial_tasks(speech, thread, headers, context, speakers)
+    pending = _plan_initial_tasks(speech, thread, headers)
     if len(pending) > MAX_CHUNKS:
         raise RefinementRefused("source_window_budget")
     batch_budget = _max_input_chars(context, BATCH_PREDICT)
@@ -641,12 +567,10 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
     partial = False
     while pending:
         batch_rows, span_start, span_end = pending.pop(0)
-        payload = _build_batch_payload(speech, headers, speakers, batch_rows, span_start, span_end)
-        prompt = _dump(payload)
-        if len(prompt) + len(EDIT_BATCH_SYSTEM) > batch_budget:
-            # First retry without overlap before splitting the task.
-            payload = _build_batch_payload(speech, headers, speakers, batch_rows, span_start, span_end, overlap=0)
-            prompt = _dump(payload)
+        prompt = _dump(_build_batch_payload(speech, headers, speakers, batch_rows, span_start, span_end))
+        if not _fits(prompt, EDIT_BATCH_SYSTEM, batch_budget):
+            prompt = _dump(_build_batch_payload(speech, headers, speakers, batch_rows,
+                                                span_start, span_end, overlap=0))
         try:
             rows = _call_with_retry(prompt, EDIT_BATCH_SYSTEM, BATCH_PREDICT, call,
                                     allow_empty=True, max_input=batch_budget)
@@ -665,16 +589,15 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
             pending = halves + pending
             continue
         completed += 1
-        if progress is not None:
-            progress({"phase": "source_window", "source_windows": completed,
-                      "start_char": span_start, "source_chars": span_end,
-                      "verbatim": False, "reason": reason, "semantic_proof": False})
+        _emit(progress, {"phase": "source_window", "source_windows": completed,
+                         "start_char": span_start, "source_chars": span_end,
+                         "verbatim": False, "reason": reason})
 
     final_rows = collected
     if completed > 1 and len(collected) > 1 and count < MAX_REQUESTS:
         merge_prompt = _dump({"speakers": speakers, "paragraphs": collected})
         merge_budget = _max_input_chars(context, MERGE_PREDICT)
-        if len(merge_prompt) + len(MERGE_SYSTEM) <= merge_budget:
+        if _fits(merge_prompt, MERGE_SYSTEM, merge_budget):
             try:
                 final_rows = _call_with_retry(merge_prompt, MERGE_SYSTEM, MERGE_PREDICT, call,
                                               allow_empty=False, max_input=merge_budget)
@@ -686,7 +609,6 @@ def refine(speech: str, thread: list[dict], previous: str, cfg: dict, *, request
                 final_rows = collected
 
     result = _render(final_rows, partial=partial)
-    if progress is not None:
-        progress({"phase": "complete", "source_windows": completed, "source_chars": len(speech),
-                  "coverage_complete": True, "semantic_proof": False})
+    _emit(progress, {"phase": "complete", "source_windows": completed,
+                     "source_chars": len(speech), "coverage_complete": True})
     return result
