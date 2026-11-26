@@ -3007,22 +3007,30 @@ def test_round14_ollama_schema_line_span_and_invariants(monkeypatch):
     # 2) Schema builders: source_relevance anyOf, append enum, semantic_check empty vs non-empty names
     sr_schema = inc._source_relevance_schema(25)
     assert "anyOf" in sr_schema and len(sr_schema["anyOf"]) == 2
+    assert sr_schema["anyOf"][0]["additionalProperties"] is False
+    assert sr_schema["anyOf"][1]["additionalProperties"] is False
     assert sr_schema["anyOf"][0]["properties"]["verdict"] == {"const": "relevant"}
     assert sr_schema["anyOf"][0]["properties"]["line_span"]["minItems"] == 2
     assert sr_schema["anyOf"][0]["properties"]["line_span"]["maxItems"] == 2
+    assert sr_schema["anyOf"][0]["properties"]["line_span"]["items"]["minimum"] == 1
     assert sr_schema["anyOf"][0]["properties"]["line_span"]["items"]["maximum"] == 25
     assert sr_schema["anyOf"][1]["properties"]["line_span"] == {"type": "array", "maxItems": 0}
 
     m1, m2 = "2099-01-02_100000", "2099-01-03_100000"
     app_schema = inc._append_schema([m1, m2], 40)
     assert app_schema["additionalProperties"] is False
+    assert app_schema["properties"]["additions"]["items"]["additionalProperties"] is False
+    assert app_schema["properties"]["corrections"]["items"]["additionalProperties"] is False
     assert app_schema["properties"]["additions"]["items"]["properties"]["source"] == {"type": "string", "enum": [m1, m2]}
     assert app_schema["properties"]["corrections"]["items"]["properties"]["source"] == {"type": "string", "enum": [m1, m2]}
     assert app_schema["properties"]["additions"]["items"]["properties"]["line_span"]["items"]["maximum"] == 40
 
-    sem_empty = inc._semantic_check_schema([], 1)
+    sem_empty = inc._semantic_check_schema([], {})
+    assert sem_empty["additionalProperties"] is False
     assert sem_empty["properties"]["claims"] == {"type": "array", "maxItems": 0}
-    sem_full = inc._semantic_check_schema([m1], 30)
+    sem_full = inc._semantic_check_schema([m1], {m1: 30})
+    assert sem_full["additionalProperties"] is False
+    assert sem_full["properties"]["claims"]["items"]["additionalProperties"] is False
     assert sem_full["properties"]["claims"]["items"]["properties"]["source"] == {"type": "string", "enum": [m1]}
     assert "anyOf" in sem_full["properties"]["claims"]["items"]["properties"]["line_span"]
 

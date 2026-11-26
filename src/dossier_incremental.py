@@ -338,7 +338,7 @@ def _append_schema(names: list[str], max_line: int) -> dict:
     }
 
 
-def _semantic_check_schema(names: list[str], max_line: int) -> dict:
+def _semantic_check_schema(names: list[str], line_counts: dict[str, int]) -> dict:
     if not names:
         claims_schema: dict = {"type": "array", "maxItems": 0}
     else:
@@ -349,7 +349,7 @@ def _semantic_check_schema(names: list[str], max_line: int) -> dict:
             "properties": {
                 "text": {"type": "string"},
                 "source": {"type": "string", "enum": list(names)},
-                "line_span": _span_schema(max_line, allow_empty=True),
+                "line_span": _span_schema(max(line_counts.values()), allow_empty=True),
                 "relevant": {"type": "boolean"},
                 "supported": {"type": "boolean"},
                 "reason": {"type": "string"},
@@ -714,7 +714,7 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
         "Use uncertain only when identity or topic connection is genuinely ambiguous. "
         "Do not judge a generated candidate.")
     feedback = None
-    last_empty = False
+    last_empty: bool
     stage_c = c
     for attempt in range(2):
         payload = {**data, **({"span_feedback": feedback} if feedback else {})}
@@ -1271,8 +1271,7 @@ def semantic_check(theme: str, loaded: dossier.DossierLoad, names: list[str],
     old_lines = set(loaded.parsed.body.splitlines())
     missing_warnings = [line for line in warnings if line not in body]
     line_counts = {name: len(_split_source_lines(source_text(files[name]))) for name in names}
-    max_line = max(line_counts.values(), default=1)
-    schema = _semantic_check_schema(names, max_line)
+    schema = _semantic_check_schema(names, line_counts)
     data = {**_inputs(theme, loaded, names, files), "candidate": body, "changes": changes,
             **({"candidate_anchors": anchors} if anchors else {}),
             "new_statements": [line for line in body.splitlines() if line.strip()
@@ -1423,7 +1422,7 @@ def _normalize_patch_line(raw_text: object, raw_source: object, names: list[str]
         raise Refused("multiline patch entry")
     text = graph_names.unlabel_speakers(raw_text).strip()
     has_bullet = text.startswith("- ")
-    body_text = _LINE_PREFIX_LEAK_RE.sub("", text[2:] if has_bullet else text, count=1).strip()
+    body_text = _LINE_PREFIX_LEAK_RE.sub("", text[2:] if has_bullet else text).strip()
     text = f"- {body_text}" if has_bullet and body_text else body_text
     if text.startswith("#") or _PATCH_EMPTY_BODY.fullmatch(text):
         raise Refused("empty or invalid patch entry")
