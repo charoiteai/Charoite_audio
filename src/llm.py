@@ -881,10 +881,10 @@ class LLM:
         if (truncate is not None or shift is not None) and (self.engine != "ollama" or self.cloud_ready):
             raise privacy.PrivacyRefused("truncate/shift request flags require Ollama")
         if output_schema is not None:
-            if self.engine != "ollama" or self.cloud_ready:
+            if self.engine != "ollama" or self.cloud_ready or not privacy.is_loopback_url(self.base):
                 raise privacy.PrivacyRefused("output_schema requires local Ollama")
-            if not isinstance(output_schema, dict):
-                raise ValueError("output_schema must be a JSON schema object")
+            if not isinstance(output_schema, dict) or not output_schema:
+                raise ValueError("output_schema must be a non-empty JSON schema object")
         # `_method` — имя обёртки для журнала вызовов (№807): к первому next()
         # её кадра на стеке уже нет.
         #
@@ -967,15 +967,19 @@ class LLM:
                 raise self._fail(r.status_code, str(data["error"]),
                                  body=line.decode("utf-8", "replace"))
             chunk = self._ndjson_chunk(r, data, line)
-            if chunk:
-                self._ledger_first(r)
-                yield chunk
             if data.get("done"):
-                if require_natural_stop and data.get("done_reason") == "length":
-                    raise self._fail(r.status_code, "stream stopped at token budget")
+                done_reason = data.get("done_reason")
+                if require_natural_stop and done_reason not in (None, "stop"):
+                    raise self._fail(r.status_code, f"stream stopped ({done_reason})")
+                if chunk:
+                    self._ledger_first(r)
+                    yield chunk
                 self._ledger_note(r, data)
                 done = True
                 break
+            if chunk:
+                self._ledger_first(r)
+                yield chunk
         if not done:
             # соединение закрылось без терминатора: сервер упал или сеть
             # оборвалась. Усечённый ответ не выдаём за целый — минутки

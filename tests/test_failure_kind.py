@@ -244,7 +244,7 @@ CATALOG = [
     ("_iter_local_stream", _p_grounded_answer([]),
      "broken", "grounded answer stream ended without completion"),
     ("_iter_ollama_stream", _p_stream_error, "broken", "boom"),
-    ("_iter_ollama_stream", _p_stream_length, "broken", "token budget"),
+    ("_iter_ollama_stream", _p_stream_length, "broken", "stream stopped (length)"),
     ("_iter_ollama_stream", _p_stream_unterminated, "broken", "стрим оборван"),
     ("_ndjson_chunk", _p_ndjson_form, "broken", "неожиданная форма"),
     ("_json_line", _p_json_not_json, "broken", "не-JSON"),

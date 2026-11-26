@@ -254,6 +254,18 @@ def _resolve_line_span(text: str, span: object, *, max_lines: int) -> tuple[str 
     return snippet, ""
 
 
+def _resolve_unique_span(raw_text: str, span: object, *, max_lines: int) -> tuple[str | None, str]:
+    quote, problem = _resolve_line_span(raw_text, span, max_lines=max_lines)
+    if quote is None:
+        return None, problem
+    hits = _quote_hits(raw_text, quote)
+    if hits < 1:
+        return None, "span_unmatchable"
+    if hits > 1:
+        return None, "span_ambiguous"
+    return quote, ""
+
+
 def _span_schema(max_line: int, *, allow_empty: bool = False) -> dict:
     pair = {
         "type": "array",
@@ -821,7 +833,7 @@ def deterministic_check(loaded: dossier.DossierLoad, body: str, names: list[str]
 
 def validate_candidate(theme: str, loaded: dossier.DossierLoad, names: list[str],
                        files: dict, c: dict, body: str, changes: list,
-                       *, anchors: list[dict[str, str]] | None = None) -> None:
+                       *, anchors: list[dict] | None = None) -> None:
     with telemetry.stage(telemetry.Stage.DETERMINISTIC):
         deterministic_check(loaded, body, names, files, changes)
     with telemetry.stage(telemetry.Stage.SEMANTIC):
@@ -1225,19 +1237,16 @@ def _resolve_judge_claims(loaded: dossier.DossierLoad, body: str, names: list[st
         if not represented.intersection(required):
             raise Refused("candidate claim does not represent new significant text")
         raw_text = source_text(files[name])
-        quote, problem = _resolve_line_span(raw_text, claim["line_span"], max_lines=MAX_CLAIM_SPAN_LINES)
+        quote, problem = _resolve_unique_span(raw_text, claim["line_span"], max_lines=MAX_CLAIM_SPAN_LINES)
         if quote is None:
+            if problem == "span_ambiguous" and not allow_ambiguous_retry:
+                raise Refused(
+                    "ambiguous claim evidence: quote must identify one source occurrence",
+                    detail=telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS,
+                    rejected_claims=(text,),
+                )
             missing.append({"text": text, "source": name, "problem": problem})
             continue
-        if _quote_hits(raw_text, quote) > 1:
-            if allow_ambiguous_retry:
-                missing.append({"text": text, "source": name, "problem": "span_ambiguous"})
-                continue
-            raise Refused(
-                "ambiguous claim evidence: quote must identify one source occurrence",
-                detail=telemetry.Detail.CLAIM_QUOTE_AMBIGUOUS,
-                rejected_claims=(text,),
-            )
         resolved.append({
             "text": text, "source": name, "quote": quote,
             "relevant": True, "supported": True, "reason": claim["reason"],
@@ -1434,6 +1443,7 @@ def _apply_patch(loaded: dossier.DossierLoad, names: list[str], files: dict,
         raise Refused("malformed patch entry")
     old = dossier.DossierLoad("ok", loaded.parsed.body)
     replacements: dict[int, tuple[str, str, list[int]]] = {}
+    seen_correction_offsets: set[int] = set()
     changes: list[dict] = []
     missing_quotes: list[dict[str, str]] = []
     ambiguous_claims: list[str] = []
@@ -1447,15 +1457,16 @@ def _apply_patch(loaded: dossier.DossierLoad, names: list[str], files: dict,
             raw_after, raw_source, names, bad_source_msg="unsupported or unattributed correction ledger",
         )
         current = _current_line_before(old, before)
-        if current is None or current[0] in replacements or current[1].strip() == "—":
+        if current is None or current[0] in seen_correction_offsets or current[1].strip() == "—":
             raise Refused("unsupported correction: before must identify one current line in ## Сейчас")
+        seen_correction_offsets.add(current[0])
         raw_text = source_text(files[name])
-        quote, problem = _resolve_line_span(raw_text, raw_span, max_lines=MAX_CLAIM_SPAN_LINES)
+        quote, problem = _resolve_unique_span(raw_text, raw_span, max_lines=MAX_CLAIM_SPAN_LINES)
         if quote is None:
-            missing_quotes.append({"text": after_line, "source": name, "problem": problem})
-            continue
-        if _quote_hits(raw_text, quote) > 1:
-            ambiguous_claims.append(after_line)
+            if problem == "span_ambiguous":
+                ambiguous_claims.append(after_line)
+            else:
+                missing_quotes.append({"text": after_line, "source": name, "problem": problem})
             continue
         replacements[current[0]] = (after_line, name, list(raw_span))
         changes.append({"before": before, "after": after_line, "source": name, "quote": quote})
@@ -1525,11 +1536,12 @@ def _apply_patch(loaded: dossier.DossierLoad, names: list[str], files: dict,
                 ):
                     continue
             raw_text = source_text(files[src_name])
-            quote, problem = _resolve_line_span(raw_text, raw_span, max_lines=MAX_CLAIM_SPAN_LINES)
+            quote, problem = _resolve_unique_span(raw_text, raw_span, max_lines=MAX_CLAIM_SPAN_LINES)
             if quote is None:
-                missing_quotes.append({"text": line, "source": src_name, "problem": problem})
-            elif _quote_hits(raw_text, quote) > 1:
-                ambiguous_claims.append(line)
+                if problem == "span_ambiguous":
+                    ambiguous_claims.append(line)
+                else:
+                    missing_quotes.append({"text": line, "source": src_name, "problem": problem})
             else:
                 anchors.append({"text": line, "source": src_name, "line_span": list(raw_span)})
             kept.append(line)

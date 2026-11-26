@@ -328,7 +328,7 @@ def test_stream_output_schema_serializes_format_and_rejects_non_dict_or_non_olla
         assert backend.calls[-1]["payload"]["format"] == _SAMPLE_SCHEMA
         assert "format" not in backend.calls[-1]["payload"]["options"]
 
-        for bad in ("json", [], 123, True):
+        for bad in ("json", [], 123, True, {}):
             before = len(backend.calls)
             with pytest.raises(ValueError, match="output_schema"):
                 list(llm.LLM(copy.deepcopy(CONFIG)).stream(PROMPT, model=MODEL, output_schema=bad))
@@ -339,6 +339,13 @@ def test_stream_output_schema_serializes_format_and_rejects_non_dict_or_non_olla
         before = len(backend.calls)
         with pytest.raises(privacy.PrivacyRefused, match="output_schema"):
             list(llm.LLM(mlx_cfg).stream(PROMPT, output_schema=_SAMPLE_SCHEMA))
+        assert len(backend.calls) == before
+
+        remote_cfg = copy.deepcopy(CONFIG)
+        remote_cfg["llm"]["base_url"] = "http://10.0.0.2:11434"
+        remote_cfg["llm"]["allow_remote"] = True
+        with pytest.raises(privacy.PrivacyRefused, match="output_schema"):
+            list(llm.LLM(remote_cfg).stream(PROMPT, model=MODEL, output_schema=_SAMPLE_SCHEMA))
         assert len(backend.calls) == before
 
         cloud_client = llm.LLM(copy.deepcopy(CONFIG))
@@ -417,19 +424,25 @@ def test_stream_output_schema_no_fallback_after_yield_or_non_strict_error(monkey
         llm._strict_json_clear()
 
 
-def test_stream_output_schema_refuses_length_truncation_but_plain_stream_allows_it(monkeypatch, tmp_path, _сеть_закрыта):
+@pytest.mark.parametrize("done_reason", ["length", "unload"])
+def test_stream_output_schema_refuses_non_stop_before_yielding_but_plain_stream_allows_it(
+    monkeypatch, tmp_path, _сеть_закрыта, done_reason,
+):
     llm._strict_json_clear()
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
     base = CONFIG["llm"]["base_url"]
 
     def fake_post(url, *, json, **kwargs):
-        return Response({}, frames=[{"message": {"content": '{"ok":true'}, "done": True, "done_reason": "length"}])
+        return Response({}, frames=[{"message": {"content": '{"ok":true'}, "done": True, "done_reason": done_reason}])
 
     _сеть_закрыта[("POST", f"{base}/api/chat")] = fake_post
     try:
         client = llm.LLM(copy.deepcopy(CONFIG))
-        with pytest.raises(llm.LLMHTTPError, match="token budget"):
-            "".join(client.stream(PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA))
+        emitted: list[str] = []
+        with pytest.raises(llm.LLMHTTPError, match=f"stream stopped \\({done_reason}\\)"):
+            for chunk in client.stream(PROMPT, model=MODEL, num_predict=64, output_schema=_SAMPLE_SCHEMA):
+                emitted.append(chunk)
+        assert emitted == []
         assert "".join(client.stream(PROMPT, model=MODEL, num_predict=64)) == '{"ok":true'
     finally:
         llm._strict_json_clear()

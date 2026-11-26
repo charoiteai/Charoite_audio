@@ -3088,6 +3088,41 @@ def test_round14_ollama_schema_line_span_and_invariants(monkeypatch):
     assert amb_fb["invalid_spans"] == [{"text": fact_amb, "source": m1, "problem": "span_ambiguous"}]
     assert amb_audited[0]["quote"] == "Да.\nКонтекст теплицы."
 
+    # 7) Sentinel char (\ufdd0) produces span_unmatchable (never KeyError: 'problem') in semantic_check & _apply_patch,
+    #    and duplicate corrections targeting the same ## Сейчас line are rejected even when the first span is invalid.
+    sent_src = "Vent A closed \ufdd0.\nVent A verified."
+    assert inc._resolve_unique_span(sent_src, [1, 1], max_lines=5) == (None, "span_unmatchable")
+    sent_prompts: list[str] = []
+    sent_reply = json.dumps({
+        "verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
+        "reason": "ok",
+        "claims": [{"text": fact_amb, "source": m1, "line_span": [1, 1], "relevant": True, "supported": True, "reason": "ok"}],
+    })
+    with monkeypatch.context() as mp:
+        mp.setattr(inc, "local_complete", lambda p, *a, **kw: (sent_prompts.append(p), sent_reply)[1])
+        with pytest.raises(inc.Refused, match="lacks exact new-source evidence"):
+            inc.semantic_check("Glasshouse", loaded, [m1], {m1: {"text": sent_src}}, LOCAL, amb_body, [])
+    assert len(sent_prompts) == 2
+    assert json.loads(sent_prompts[1].split("\n", 1)[0])["span_feedback"]["invalid_spans"] == [
+        {"text": fact_amb, "source": m1, "problem": "span_unmatchable"}
+    ]
+
+    with pytest.raises(inc._MissingClaimQuotes) as sent_corr:
+        inc._apply_patch(loaded, [m1], {m1: {"text": sent_src}}, {
+            "additions": [],
+            "corrections": [{"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [1, 1]}],
+        })
+    assert sent_corr.value.missing_quotes[0]["problem"] == "span_unmatchable"
+
+    with pytest.raises(inc.Refused, match="before must identify one current line in ## Сейчас"):
+        inc._apply_patch(loaded, [m1], {m1: {"text": "Vent A closed.\nVent A verified."}}, {
+            "additions": [],
+            "corrections": [
+                {"before": "Vent A is open.", "after": "Vent A closed.", "source": m1, "line_span": [99, 99]},
+                {"before": "Vent A is open.", "after": "Vent A verified.", "source": m1, "line_span": [2, 2]},
+            ],
+        })
+
 
 
 
