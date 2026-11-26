@@ -92,6 +92,12 @@ def _p_stream_unterminated(tmp_path, monkeypatch, сеть=None):
     return _raised(lambda: list(c.stream("?")))
 
 
+def _p_stream_length(tmp_path, monkeypatch, сеть=None):
+    c = llm.LLM(LOCAL)
+    _stream_lines(monkeypatch, c, [b'{"message": {"content": "{"}, "done": true, "done_reason": "length"}'])
+    return _raised(lambda: list(c.stream("?", output_schema={"type": "object"})))
+
+
 def _p_ndjson_form(tmp_path, monkeypatch, сеть=None):
     c = llm.LLM(LOCAL)
     _stream_lines(monkeypatch, c, ['{"message": "строкой"}'.encode()])
@@ -237,8 +243,9 @@ CATALOG = [
      "broken", "grounded answer unsupported terminal reason"),
     ("_iter_local_stream", _p_grounded_answer([]),
      "broken", "grounded answer stream ended without completion"),
-    ("stream", _p_stream_error, "broken", "boom"),
-    ("stream", _p_stream_unterminated, "broken", "стрим оборван"),
+    ("_iter_ollama_stream", _p_stream_error, "broken", "boom"),
+    ("_iter_ollama_stream", _p_stream_length, "broken", "token budget"),
+    ("_iter_ollama_stream", _p_stream_unterminated, "broken", "стрим оборван"),
     ("_ndjson_chunk", _p_ndjson_form, "broken", "неожиданная форма"),
     ("_json_line", _p_json_not_json, "broken", "не-JSON"),
     ("_json_line", _p_json_not_object, "broken", "неожиданная форма"),
@@ -289,7 +296,7 @@ def test_каталог_покрывает_каждое_место_отказа(
     per_status = {"_open_stream": 1, "_checked_body": 1, "_iter_local_stream": 8}
     expected_rows = Counter({fn: n + per_status.get(fn, 0) for fn, n in sites.items()})
     assert rows == expected_rows, (dict(sites), dict(rows))
-    assert sum(sites.values()) == 26  # local-feed and grounded_answer share _iter_local_stream
+    assert sum(sites.values()) == 27  # local-feed and grounded_answer share _iter_local_stream; stream uses _iter_ollama_stream
 
 
 def test_явный_вид_только_у_синтетических_отказов():
@@ -412,7 +419,7 @@ READERS = {
     ("src/llm.py", "_stream_cloud"): "статус: 4xx шлюза запасом не лечится — решение самой двери",
     ("src/llm.py", "warmup"): "статус: текст про ключ и имя модели",
     ("src/llm.py", "complete"): "статус и тело: запас облака и дверь строгого JSON",
-    ("src/llm.py", "grounded_answer"): "статус и тело: дверь строгого JSON (откат с output_schema на запрос без format)",
+    ("src/llm.py", "_iter_strict_stream"): "статус и тело: общая дверь строгого JSON для stream и grounded_answer (откат с output_schema на запрос без format)",
     ("src/mcp_server.py", "sufler_make_minutes"): "статус и причина — в тексте отказа",
     ("src/retro_fill.py", "gen"): "строка ошибки целиком",
 }

@@ -7,7 +7,7 @@ import pytest
 
 import dossier_incremental as inc
 import llm
-from test_dossier_model_contract import A, B, BODY, _claim, _old, _verdict
+from test_dossier_model_contract import A, B, BODY, _old, _span_claim, _verdict
 
 
 FACT = "A rain cover was fitted."
@@ -90,7 +90,7 @@ def test_an_explicit_historical_correction_does_not_require_moving_a_current_lin
     quote = "The earlier inspection was at 13:00; the earlier noon time is incorrect."
     change = {"before": "An earlier inspection was recorded at noon.", "after": replacement,
               "source": B, "quote": quote}
-    _judges(monkeypatch, [_claim(new_fact, quote=quote)])
+    _judges(monkeypatch, [_span_claim(new_fact, line_span=[1, 1])])
     inc.validate_candidate("Glasshouse", _old(prior), [B], {B: {"text": quote}}, {}, candidate, [change])
     assert candidate.split("## Как пришли")[0] == prior.split("## Как пришли")[0]
 
@@ -124,12 +124,12 @@ def test_a_qualified_provenance_identifier_alias_does_not_need_a_second_factual_
     candidate = BODY.replace("## Как пришли", f"- {FACT} {citation}\n## Как пришли")
     calls = _judges(monkeypatch)
     inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": FACT}}, {}, candidate, [])
-    assert len(calls) == 1 and calls[0]["new_sources"] == {B: FACT}
+    assert len(calls) == 1 and calls[0]["new_sources"] == {B: inc._format_indexed_source(FACT)}
 
 
 def test_an_evidenced_leading_current_span_is_not_misclassified_as_missing(monkeypatch):
     leading = f"## Сейчас\n- {FACT}"
     candidate = EMPTY.replace("## Сейчас\n—", leading + f" [[{B}]]")
-    _judges(monkeypatch, [_claim(leading, quote=FACT)])
+    _judges(monkeypatch, [_span_claim(leading, line_span=[1, 1])])
     inc.validate_candidate("Glasshouse", _old(EMPTY), [B], {B: {"text": FACT}}, {}, candidate, [])
     assert candidate.startswith(leading)

@@ -218,7 +218,7 @@ def test_retryable_rejection_is_rejudged_once_without_rewriting_accepted_content
         assert "source relevance" in system, "Retry metadata must not generate an addition."
         payload, _ = json.JSONDecoder().raw_decode(prompt)
         calls.append(payload["source"])
-        return json.dumps({"verdict": "irrelevant", "reason": "Invented unrelated recipe.", "quote": ""})
+        return json.dumps({"verdict": "irrelevant", "reason": "Invented unrelated recipe.", "line_span": []})
 
     monkeypatch.setattr(inc, "local_complete", irrelevant)
     result = night.run(graph, {}, full=False, dry=False, limit=None)

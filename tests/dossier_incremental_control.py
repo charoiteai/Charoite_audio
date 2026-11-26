@@ -168,12 +168,12 @@ for scenario, revised, new_fact in [
                 payload, _ = json.JSONDecoder().raw_decode(prompt)
                 if "source relevance" in system:
                     return json.dumps({"verdict": "relevant", "reason": "fixed test input",
-                                       "quote": new_fact})
+                                       "line_span": [2, 2]})
                 if "extend factual" in system:
                     seen.append(list(payload["new_sources"]))
                     src = next(iter(payload["new_sources"]))
                     return json.dumps({"additions": [{"section": "Сейчас", "text": new_fact, "source": src,
-                                                      "quote": new_fact}],
+                                                      "line_span": [2, 2]}],
                                        "corrections": []})
                 return json.dumps({"verdict": "accept", "conserved": True, "supported": True,
                                    "corrections_valid": True, "reason": "fixed test input"})

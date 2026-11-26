@@ -31,10 +31,15 @@ def _claim(text="A rain cover was fitted.", quote="A rain cover was fitted.", **
             "supported": True, "reason": "The new source explicitly supports this topic fact."} | fields
 
 
+def _span_claim(text="A rain cover was fitted.", line_span=None, **fields):
+    return {"text": text, "source": B, "line_span": [1, 1] if line_span is None else line_span, "relevant": True,
+            "supported": True, "reason": "The new source explicitly supports this topic fact."} | fields
+
+
 def _verdict(claims=None, **fields):
     return {"verdict": "accept", "conserved": True, "supported": True,
             "corrections_valid": True, "reason": "Supported addition.",
-            "claims": [_claim()] if claims is None else claims} | fields
+            "claims": [_span_claim()] if claims is None else claims} | fields
 
 
 @pytest.mark.parametrize("literal", ["inline ## Источники text", "> ## Правки автора",
@@ -64,10 +69,10 @@ def test_generation_feedback_preserves_guards_and_is_bounded(monkeypatch, correc
         calls.append(payload)
         if len(calls) == 2 and correct_second:
             return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B,
-                                              "quote": "A rain cover was fitted."}],
+                                              "line_span": [1, 1]}],
                                "corrections": []})
         return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover `bad` fitted.", "source": B,
-                                          "quote": "A rain cover was fitted."}],
+                                          "line_span": [1, 1]}],
                            "corrections": []})
 
     monkeypatch.setattr(inc, "local_complete", complete)
@@ -96,7 +101,7 @@ def test_generation_retry_requires_only_verbatim_content_lines(monkeypatch):
         if len(calls) == 1:
             return "not JSON"
         return json.dumps({"additions": [{"section": "Сейчас", "text": "A rain cover was fitted.", "source": B,
-                                          "quote": "A rain cover was fitted."}],
+                                          "line_span": [1, 1]}],
                            "corrections": []})
 
     # Exercise the real retry and deterministic validation; only completion and
@@ -112,11 +117,11 @@ def test_generation_retry_requires_only_verbatim_content_lines(monkeypatch):
 
 
 @pytest.mark.parametrize("raw", ["not JSON", "null", "[]", "{}",
-    '{"verdict":"relevant","reason":"supported","quote":"absent from source"}',
-    '{"verdict":"irrelevant","reason":"","quote":""}',
-    '{"verdict":"uncertain","reason":"ambiguous","quote":"rain cover"}',
-    '{"verdict":"irrelevant","reason":"off topic","quote":"","extra":true}',
-    '{"verdict":"irrelevant","verdict":"relevant","reason":"ambiguous","quote":"rain cover"}',
+    '{"verdict":"relevant","reason":"supported","line_span":[9,9]}',
+    '{"verdict":"irrelevant","reason":"","line_span":[]}',
+    '{"verdict":"uncertain","reason":"ambiguous","line_span":[]}',
+    '{"verdict":"irrelevant","reason":"off topic","line_span":[],"extra":true}',
+    '{"verdict":"irrelevant","verdict":"relevant","reason":"ambiguous","line_span":[1,1]}',
 ])
 def test_incomplete_source_verdict_is_operational_refusal(monkeypatch, raw):
     text = dossier.render("Glasshouse", BODY, [], {}, "fixture", "2099-01-01")
@@ -141,10 +146,10 @@ def test_nonaccepting_candidate_verdict_cannot_authorize_update(monkeypatch, cha
 
 
 @pytest.mark.parametrize("claims", [None, {}, "claims", [None], [{}],
-    [_claim(relevant=False)], [_claim(relevant=1)], [_claim(supported=False)],
-    [_claim(supported="true")], [_claim(source=A)], [_claim(quote="not in source")],
-    [_claim(quote="")], [_claim(reason="")], [_claim(text="")], [_claim(text="not in candidate")],
-    [_claim(extra=True)], [_claim(), _claim()], []])
+    [_span_claim(relevant=False)], [_span_claim(relevant=1)], [_span_claim(supported=False)],
+    [_span_claim(supported="true")], [_span_claim(source=A)], [_span_claim(line_span=[9, 9])],
+    [_span_claim(line_span=[])], [_span_claim(reason="")], [_span_claim(text="")], [_span_claim(text="not in candidate")],
+    [_span_claim(extra=True)], [_span_claim(), _span_claim()], []])
 def test_aggregate_accept_does_not_override_invalid_or_missing_claims(monkeypatch, claims):
     # All aggregate booleans remain true: only the per-assertion contract refuses.
     verdict = _verdict() | {"claims": claims}
@@ -183,7 +188,7 @@ def test_two_atomic_spans_on_one_line_have_complete_evidence(monkeypatch, newlin
     first, second = "A rain cover was fitted.", "The glasshouse drain is clear."
     candidate = ADDED.replace(first, first + "; " + second).replace("\n", newline)
     files = {B: {"text": first + " " + second}}
-    verdict = _verdict([_claim(first), _claim(second, quote=second)])
+    verdict = _verdict([_span_claim(first), _span_claim(second)])
     calls = []
     def complete(prompt, config, **kwargs):
         calls.append((prompt, kwargs))
@@ -208,7 +213,7 @@ def test_new_prose_appended_to_an_old_line_requires_its_own_claim(monkeypatch):
     payload, system = judgments[0]
     assert system == "You are an independent conservative dossier judge."
     assert payload["candidate"] == candidate and payload["existing_dossier"] == BODY
-    assert payload["new_sources"] == {B: fact}
+    assert payload["new_sources"] == {B: inc._format_indexed_source(fact)}
     assert payload["new_statements"] == [f"- Vent A is open. [[{A}]]; {fact} [[{B}]]"]
 
 
@@ -217,7 +222,7 @@ def test_relationship_requires_its_own_explicit_source_support(monkeypatch, expl
     fact = "The WaterTank pump supplies irrigation water to the Glasshouse."
     source = fact if explicit else "A connection between WaterTank and Glasshouse is suspected but unverified."
     candidate = BODY.replace("## Как пришли", f"- {fact} [[{B}]]\n## Как пришли")
-    claim = _claim(fact, quote=source, supported=explicit)
+    claim = _span_claim(fact, line_span=[1, 1], supported=explicit)
     monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(_verdict([claim])))
     if explicit:
         inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source}}, {}, candidate, [])
@@ -234,7 +239,7 @@ def test_correction_retains_old_history_without_unsourced_explanation(monkeypatc
     quote = "Vent A is now closed; this supersedes the earlier open state."
     candidate = BODY.replace(before, after).replace("## Как пришли\n—", f"## Как пришли\n- {before}")
     changes = [{"before": before, "after": after, "source": B, "quote": quote}]
-    verdict = _verdict([_claim("Vent A is now closed.", quote=quote)])
+    verdict = _verdict([_span_claim("Vent A is now closed.", line_span=[1, 1])])
     judgments = []
     def complete(prompt, config, **kwargs):
         payload, _ = json.JSONDecoder().raw_decode(prompt)
@@ -246,7 +251,7 @@ def test_correction_retains_old_history_without_unsourced_explanation(monkeypatc
     payload, system = judgments[0]
     assert system == "You are an independent conservative dossier judge."
     assert payload["candidate"] == candidate and payload["changes"] == changes
-    assert payload["new_sources"] == {B: quote} and payload["existing_dossier"] == BODY
+    assert payload["new_sources"] == {B: inc._format_indexed_source(quote)} and payload["existing_dossier"] == BODY
     assert payload["candidate"].split("## Как пришли\n", 1)[1].startswith(f"- {before}\n")
     assert payload["new_statements"] == [f"- {after}"]
 
@@ -265,25 +270,26 @@ def test_preserved_old_offtopic_claim_does_not_need_a_new_source(monkeypatch):
     payload, system = judgments[0]
     assert system == "You are an independent conservative dossier judge."
     assert payload["existing_dossier"] == old_body and payload["candidate"] == candidate
-    assert payload["new_sources"] == {B: "A rain cover was fitted."}
+    assert payload["new_sources"] == {B: inc._format_indexed_source("A rain cover was fitted.")}
     assert payload["new_statements"] == [f"- A rain cover was fitted. [[{B}]]"]
 
 
-@pytest.mark.parametrize("quote", ["A rain cover was fitted", "rain cover was fitted."])
-def test_claim_quote_is_an_exact_nonempty_source_substring(monkeypatch, quote):
+@pytest.mark.parametrize("span,expected_quote", [([1, 1], "A rain cover was fitted."), ([1, 2], "A rain cover was fitted.\nExtra context.")])
+def test_claim_quote_is_an_exact_nonempty_source_substring(monkeypatch, span, expected_quote):
+    source_body = "A rain cover was fitted.\nExtra context."
     judgments, audited = [], []
     def complete(prompt, config, **kwargs):
         payload, _ = json.JSONDecoder().raw_decode(prompt)
         judgments.append((payload, kwargs["system"]))
-        return json.dumps(_verdict([_claim(quote=quote)]))
+        return json.dumps(_verdict([_span_claim(line_span=span)]))
     monkeypatch.setattr(inc, "local_complete", complete)
     monkeypatch.setattr(inc, "audit_claim", lambda *args, **kwargs: audited.append((args[2], kwargs["quote_context"])))
-    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": "A rain cover was fitted."}}, {}, ADDED, [])
+    inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": source_body}}, {}, ADDED, [])
     assert len(judgments) == 1 and len(audited) == 1
     payload, system = judgments[0]
     assert system == "You are an independent conservative dossier judge."
-    assert payload["candidate"] == ADDED and payload["new_sources"] == {B: "A rain cover was fitted."}
-    assert audited[0][0]["quote"] == quote and audited[0][1] == "A rain cover was fitted."
+    assert payload["candidate"] == ADDED and payload["new_sources"] == {B: inc._format_indexed_source(source_body)}
+    assert audited[0][0]["quote"] == expected_quote and audited[0][1] == source_body
 
 
 def test_new_citation_without_a_claim_is_not_a_source_contribution(monkeypatch):
@@ -294,7 +300,7 @@ def test_new_citation_without_a_claim_is_not_a_source_contribution(monkeypatch):
 
 
 def test_claim_for_only_an_old_fact_does_not_cover_new_text(monkeypatch):
-    verdict = _verdict([_claim("Vent A is open.", quote="Vent A is open.")])
+    verdict = _verdict([_span_claim("Vent A is open.", line_span=[1, 1])])
     monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(verdict))
     with pytest.raises(inc.Refused, match="new significant"):
         inc.validate_candidate("Glasshouse", _old(), [B], {B: {"text": "Vent A is open. A rain cover was fitted."}}, {}, ADDED, [])

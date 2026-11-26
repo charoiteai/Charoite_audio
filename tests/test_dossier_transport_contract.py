@@ -43,11 +43,14 @@ def _scenario(*, russian=False, long_source=False):
                      "стёкла целы, а план следующего наблюдения согласован.")
         context = "".join(f"Запись {i}: {paragraph}\n" for i in range(1, 57))
     source = context + f"[[Ядра/{topic}]] {fact}\nCOMPLETE_NEW_SOURCE_TAIL\n"
+    fact_line = len(context.splitlines()) + 1
     candidate = body.replace("## Как пришли", f"- {fact} [[{B}]]\n## Как пришли")
     files = {A: {"text": OLD_SOURCE_ONLY}, B: {"text": source}}
-    claim = {"text": fact, "source": B, "quote": fact, "relevant": True, "supported": True,
+    claim = {"text": fact, "source": B, "line_span": [fact_line, fact_line], "relevant": True, "supported": True,
              "reason": "Synthetic quotation supports this one topic fact."}
-    return SimpleNamespace(topic=topic, fact=fact, old=old, candidate=candidate, source=source,
+    return SimpleNamespace(topic=topic, fact=fact, fact_line=fact_line,
+                           fact_source_line=f"[[Ядра/{topic}]] {fact}",
+                           old=old, candidate=candidate, source=source,
                            files=files, claim=claim)
 
 
@@ -93,10 +96,11 @@ def provider(monkeypatch):
             scenario = state.scenario
             system = kwargs["system"]
             if system == SOURCE:
-                answer = {"verdict": "relevant", "reason": "Synthetic supported topic fact.", "quote": scenario.fact}
+                answer = {"verdict": "relevant", "reason": "Synthetic supported topic fact.",
+                          "line_span": [scenario.fact_line, scenario.fact_line]}
             elif system == GENERATE:
                 answer = {"additions": [{"section": "Сейчас", "text": scenario.fact, "source": B,
-                                         "quote": scenario.fact}],
+                                         "line_span": [scenario.fact_line, scenario.fact_line]}],
                           "corrections": []}
             elif system == MAIN:
                 answer = {"verdict": "accept", "conserved": True, "supported": True, "corrections_valid": True,
@@ -143,8 +147,12 @@ def _assert_finite_json_profiles(calls, config):
             assert options["num_predict"] == (inc.AUDIT_PREDICT if support_role else 350)
             assert type(options["temperature"]) in (int, float)
         assert options["timeout"] == llm.DOC_STREAM_TIMEOUT
-        assert set(options) == {"model", "system", "temperature", "num_predict", "think",
-                                "truncate", "shift", "timeout"}
+        expected_keys = {"model", "system", "temperature", "num_predict", "think",
+                         "truncate", "shift", "timeout"}
+        if options["system"] in (SOURCE, GENERATE, MAIN):
+            assert isinstance(options.get("output_schema"), dict) and options["output_schema"]
+            expected_keys.add("output_schema")
+        assert set(options) == expected_keys
 
 
 def test_source_and_candidate_reach_bounded_local_provider_with_complete_new_input(provider):
@@ -155,13 +163,14 @@ def test_source_and_candidate_reach_bounded_local_provider_with_complete_new_inp
     assert [call["options"]["system"] for call in provider.calls] == [SOURCE, MAIN, inc.SUPPORT_AUDIT_SYSTEM,
                                                                     inc.TOPIC_AUDIT_SYSTEM]
     source, main, support, topic = provider.calls
-    assert source["payload"]["source_text"] == scenario.source
-    assert main["payload"]["new_sources"] == {B: scenario.source}
+    indexed_source = inc._format_indexed_source(scenario.source)
+    assert source["payload"]["source_text"] == indexed_source
+    assert main["payload"]["new_sources"] == {B: indexed_source}
     assert main["payload"]["candidate"] == scenario.candidate
     assert main["payload"]["existing_dossier"] == scenario.old.parsed.body
     expected_audit = {"topic": scenario.topic, "prior_dossier": scenario.old.parsed.body,
                       "candidate_text": scenario.fact,
-                      "source_quotation": scenario.fact, "source_context": scenario.source}
+                      "source_quotation": scenario.fact_source_line, "source_context": scenario.source}
     assert support["payload"] == topic["payload"] == expected_audit
     assert support["options"]["system"] != topic["options"]["system"]
     assert not support["suffix"] and not topic["suffix"]
@@ -261,9 +270,10 @@ def test_complete_russian_source_fits_utf8_window_and_generation_and_judges_succ
     assert [call["options"]["system"] for call in provider.calls] == [SOURCE, GENERATE, MAIN,
                                                                     inc.SUPPORT_AUDIT_SYSTEM, inc.TOPIC_AUDIT_SYSTEM]
     _assert_finite_json_profiles(provider.calls, config)
+    indexed_source = inc._format_indexed_source(scenario.source)
     for call in provider.calls[:3]:
         supplied = call["payload"].get("source_text") or call["payload"]["new_sources"][B]
-        assert supplied == scenario.source
+        assert supplied == indexed_source
         assert "Запись 56:" in call["prompt"] and "COMPLETE_NEW_SOURCE_TAIL" in supplied
     for call in provider.calls[3:]:
         assert call["payload"]["source_context"] == scenario.source

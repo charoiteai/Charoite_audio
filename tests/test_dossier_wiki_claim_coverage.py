@@ -8,7 +8,7 @@ import json
 import pytest
 
 import dossier_incremental as inc
-from test_dossier_model_contract import A, B, BODY, _claim, _old, _verdict
+from test_dossier_model_contract import A, B, BODY, _claim, _old, _span_claim, _verdict
 
 FACT = "A rain cover was fitted."
 PRIOR = BODY.replace("Keep purple labels.", "Keep purple labels. [[SensorGuide]]")
@@ -50,7 +50,7 @@ def test_unclaimed_link_assertion_is_refused_before_any_independent_audit(monkey
 @pytest.mark.parametrize("citation", [f"[[{B}]]", f"[[Meetings/{B}]]", f"[[{B}|{B}]]"])
 def test_plain_known_provenance_identifier_needs_a_fact_but_no_extra_claim(monkeypatch, citation):
     body = PRIOR.replace("## Как пришли", f"- {FACT} {citation}\n## Как пришли")
-    calls = _check(monkeypatch, body, [_claim()])
+    calls = _check(monkeypatch, body, [_span_claim()])
     assert [call[0] for call in calls] == ["aggregate", "audit"]
     assert calls[-1][1]["text"] == FACT and calls[-1][2] == FACT
     assert f"[[{A}]]" in body and "Sensor is unverified." in body
@@ -59,7 +59,7 @@ def test_plain_known_provenance_identifier_needs_a_fact_but_no_extra_claim(monke
 def test_explicitly_claimed_new_visible_alias_reaches_independent_audit(monkeypatch):
     alias = "[[SensorGuide|A rain cover was fitted.]]"
     body = PRIOR.replace("## Как пришли", f"- {alias} [[{B}]]\n## Как пришли")
-    calls = _check(monkeypatch, body, [_claim(alias)])
+    calls = _check(monkeypatch, body, [_span_claim(alias)])
     assert [call[0] for call in calls] == ["aggregate", "audit"]
     assert calls[-1][1]["text"] == alias and calls[-1][2] == FACT
 
@@ -79,7 +79,7 @@ def test_identifier_only_alias_cannot_fake_new_source_contribution(monkeypatch):
     citation = f"[[{B}|{B}]]"
     body = PRIOR.replace("## Как пришли", citation + "\n## Как пришли")
     audits = []
-    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(_verdict([_claim(citation)])))
+    monkeypatch.setattr(inc, "local_complete", lambda *args, **kwargs: json.dumps(_verdict([_span_claim(citation)])))
     monkeypatch.setattr(inc, "audit_claim", lambda *args, **kwargs: audits.append(args))
     with pytest.raises(inc.Refused, match="does not represent new significant text"):
         inc.validate_candidate("Glasshouse", _old(PRIOR), [B], {B: {"text": FACT}}, {}, body, [])

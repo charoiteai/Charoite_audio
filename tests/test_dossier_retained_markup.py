@@ -8,7 +8,7 @@ import json
 import pytest
 
 import dossier_incremental as inc
-from test_dossier_model_contract import A, B, BODY, _claim, _old, _verdict
+from test_dossier_model_contract import A, B, BODY, _old, _span_claim, _verdict
 
 
 OPEN = f"- Vent A is open. [[{A}]]"
@@ -146,7 +146,7 @@ def test_current_to_history_retention_still_requires_the_correction_ledger(monke
     changes = [{"before": OPEN, "after": replacement, "source": B, "quote": quote}] if declared else []
     if declared:
         assert _check(monkeypatch, BODY, candidate, changes=changes,
-                      claims=[_claim(quote, quote=quote)], source=quote) == ["aggregate", "audit"]
+                      claims=[_span_claim(quote, line_span=[1, 1])], source=quote) == ["aggregate", "audit"]
     else:
         with pytest.raises(inc.Refused, match="prior claim"):
             _check(monkeypatch, BODY, candidate, source=quote)
@@ -181,5 +181,5 @@ def test_unique_current_corrections_accept_full_or_sentence_references(monkeypat
         "## Как пришли\n", "## Как пришли\n" + OPEN + "\n", 1)
     changes = [{"before": before, "after": replacement, "source": B, "quote": quote}]
     assert _check(monkeypatch, prior, candidate, changes=changes,
-                  claims=[_claim(quote, quote=quote)], source=quote) == ["aggregate", "audit"]
+                  claims=[_span_claim(quote, line_span=[1, 1])], source=quote) == ["aggregate", "audit"]
     assert candidate.count(OPEN) == (2 if history_copy else 1)
