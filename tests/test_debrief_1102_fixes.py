@@ -298,9 +298,10 @@ def test_progress_reports_closed_reason_for_short_and_windowed_paths():
         json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная цитата которой нет."], "uncertain": False}]}),
         json.dumps({"paragraphs": [{"text": "Релиз.", "quotes": ["Выдуманная цитата которой нет."], "uncertain": False}]}),
     ])
-    ref.refine(speech, [], "", {}, request=lambda *a: next(answers2), progress=events2.append)
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref.refine(speech, [], "", {}, request=lambda *a: next(answers2), progress=events2.append)
     win2 = [e for e in events2 if e["phase"] == "source_window"]
-    assert len(win2) == 1 and win2[0]["verbatim"] is True and win2[0]["reason"] == "unsupported_quote"
+    assert len(win2) == 1 and win2[0]["verbatim"] is False and win2[0]["reason"] == "unsupported_quote"
 
 
 def test_normalization_cache_boundaries_and_failure_kinds():

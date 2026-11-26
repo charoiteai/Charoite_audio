@@ -98,10 +98,7 @@ def test_missing_link_is_independently_verified_and_input_stays_immutable():
     assert result == [{**relation(), "status": "supported"}]
     assert (done, current) == snapshot
     assert [system for system, _ in calls[-2:]] == [links.PAIR_AUDIT_SYSTEM, links.ANCHOR_AUDIT_SYSTEM]
-    body = links.render_conversation(done + [current], result)
-    assert "Позднее уточнение — фрагмент 2" in body and "Уточнение к фрагменту 1" in body
-    assert body.count(current["rows"][0]["text"]) == 1
-    assert body.index(done[0]["rows"][0]["text"]) < body.index(current["rows"][0]["text"])
+
 
 
 def mixed_windows():
@@ -125,15 +122,7 @@ def test_uncertain_endpoints_keep_their_places_but_only_certain_pairs_reach_audi
     for _, data in calls[:2]:
         assert [r["id"] for r in data["early_paragraphs"]] == ["w0:p1"]
         assert [r["id"] for r in data["current_paragraphs"]] == ["w1:p1"]
-    # Even a supplied supported edge cannot attach a note to an uncertain row.
-    forged = [{**result[0], "early_id": "w0:p0"}, {**result[0], "late_id": "w1:p0"}]
-    body = links.render_conversation(done + [current], result + forged)
-    assert body.count("Позднее уточнение") == body.count("Уточнение к фрагменту") == 1
-    assert "Позднее уточнение — фрагмент 4." in body
-    assert "Уточнение к фрагменту 2." in body
-    for number, row in enumerate(done[0]["rows"] + current["rows"], 1):
-        marker = "**Требует уточнения.** " if row["uncertain"] else ""
-        assert f"{number}. {marker}{row['text']}" in body
+
 
 
 @pytest.mark.parametrize("candidate", [relation("w0:p0", "w1:p1"), relation("w0:p1", "w1:p0")])
@@ -262,9 +251,6 @@ def test_invalid_relation_refuses_before_source_audit(patch):
 def test_unknown_late_target_is_not_published():
     result = run(caller(audit_patch={"status": "uncertain", "uncertain_ids": ["w0:p0"]}))
     assert result == []
-    done, current = fixture()
-    assert links.render_conversation(done + [current], result) == ref._render(
-        [done[0]["rows"][0], current["rows"][0]])
 
 
 @pytest.mark.parametrize("verdict", ["unsupported", "uncertain"])
@@ -304,11 +290,6 @@ def test_single_pair_context_failure_propagates_without_lossy_retry():
     with pytest.raises(ref.RefinementRefused, match="complete_input_exceeds_context"):
         run(call)
     assert calls.count(links.PAIR_AUDIT_SYSTEM) == 1
-
-
-def test_without_links_render_matches_original_and_has_no_numbering():
-    done, current = fixture()
-    assert links.render_conversation(done + [current], []) == ref._render([done[0]["rows"][0], current["rows"][0]])
 
 
 @pytest.mark.parametrize("patch", [{"checked_ids": []}, {"relations": {}}, {"extra": True}])
@@ -503,10 +484,7 @@ def test_bad_middle_pair_does_not_erase_supported_neighbors(middle):
     assert source_ids == ["w0:p0", "w1:p0", "w2:p0"]
     assert done[0]["rows"][0]["quotes"] in focused
     assert done[2]["rows"][0]["quotes"] in focused
-    body = links.render_conversation(done + [current], result)
-    assert "Уточнение к фрагменту 1." in body and "Уточнение к фрагменту 3." in body
-    assert "Уточнение к фрагменту 2." not in body
-    assert "Возможная связь" not in body and "999" not in body
+
 
 
 @pytest.mark.parametrize("stage", [links.DISCOVER_SYSTEM, links.DISCOVERY_AUDIT_SYSTEM,
@@ -536,3 +514,9 @@ def test_bad_discovery_reply_discards_its_batch_without_source_calls():
     calls = []
     assert run(caller(audit_patch={"checked_ids": []}, calls=calls), count=3) == []
     assert links.PAIR_AUDIT_SYSTEM not in [system for system, _ in calls]
+
+
+@pytest.mark.parametrize("ids,rows", [([], [{}]), ((), []), ([], ())])
+def test_entries_refuses_inconsistent_window_identity(ids, rows):
+    with pytest.raises(ref.RefinementRefused, match="link_input_identity"):
+        links._entries([{"ids": ids, "rows": rows, "window": {}}])

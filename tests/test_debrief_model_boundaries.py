@@ -253,7 +253,7 @@ def test_window_with_correction_keeps_verified_paragraph_and_generation_budget()
         return json.dumps({"paragraphs": [{"index": 0, "supported": True}],
             "coverage_complete": True, "corrections_resolved": True,
             "has_cross_window_correction": True, "correction_quotes": [quote], "repair_quotes": []})
-    assert ref._refine_window(window, [], "", call) == [row]
+    assert ref._refine_window(window, [], "", call) == ([row], "verified")
     assert calls == [(ref.WINDOW_SYSTEM, 2000), (ref.WINDOW_AUDIT_SYSTEM, 1000)]
 
 
@@ -305,9 +305,10 @@ def test_split_windows_recompute_speaker_from_canonical_speech(monkeypatch):
         if len(window["text"]) > 700:
             raise ref.RefinementRefused("complete_input_exceeds_context")
         accepted.append(window)
-        return []
+        return [], "noise"
     monkeypatch.setattr(ref, "_refine_window", refine_window)
-    ref._windowed(speech, [], "", lambda *args: pytest.fail("no model expected"), None)
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref._windowed(speech, [], "", lambda *args: pytest.fail("no model expected"), None)
     assert len(accepted) == 2
     assert "".join(window["text"] for window in accepted) == speech
     assert accepted[1]["speaker_at_start"] == "Участник A"
@@ -457,7 +458,7 @@ def test_semantic_repair_uses_full_generation_budget_and_requires_second_audit()
             "coverage_complete": not rejected, "corrections_resolved": True,
             "has_cross_window_correction": False, "correction_quotes": [],
             "repair_quotes": [second] if rejected else []})
-    assert ref._refine_window(window, [], "", call) == [row, addition]
+    assert ref._refine_window(window, [], "", call) == ([row, addition], "verified")
     assert audits == [[row], [row, addition]]
     assert seen == [(ref.WINDOW_SYSTEM, 2000), (ref.WINDOW_AUDIT_SYSTEM, 1000),
                     (ref.WINDOW_REPAIR_SYSTEM, 2000), (ref.WINDOW_AUDIT_SYSTEM, 1000)]
@@ -470,7 +471,7 @@ def test_split_budget_includes_already_pending_windows(monkeypatch):
     def refine_window(window, thread, previous, call):
         if len(window["text"]) > 400:
             raise ref.RefinementRefused("complete_input_exceeds_context")
-        return []
+        return [], "noise"
     monkeypatch.setattr(ref, "_refine_window", refine_window)
     with pytest.raises(ref.RefinementRefused, match="source_window_budget"):
         ref._windowed("x" * 1000, [], "", lambda *a: pytest.fail("no model expected"), events.append)
@@ -484,12 +485,12 @@ def test_exact_512_character_window_can_split_and_progress_never_claims_semantic
         if len(window["text"]) > 256:
             raise ref.RefinementRefused("complete_input_exceeds_context")
         accepted.append(window["text"])
-        return []
+        return [], "noise"
     monkeypatch.setattr(ref, "_refine_window", refine_window)
-    body = ref._windowed("x" * 512, [], "", lambda *a: pytest.fail("no model expected"), events.append)
-    assert isinstance(body, str)
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref._windowed("x" * 512, [], "", lambda *a: pytest.fail("no model expected"), events.append)
     assert accepted == ["x" * 256, "x" * 256]
-    assert events[-1]["phase"] == "complete" and events[-1]["source_windows"] == 2
+    assert events[-1]["phase"] == "source_window" and events[-1]["source_windows"] == 2
     assert all(event["semantic_proof"] is False for event in events)
 
 
@@ -504,7 +505,7 @@ def test_invalid_or_empty_final_speech_refuses_before_any_request(speech):
 def test_unicode_audit_exactly_at_shared_admission_limit_does_not_fall_back():
     speech = "Проверку макета проведут после обсуждения."
     row = {"text": "", "quotes": [speech], "uncertain": False}
-    audit_input = {"final_speech": speech, "paragraphs": [row]}
+    audit_input = {"final_speech": speech, "live_thread": [], "paragraphs": [row]}
     room = 13360 - len(ref.AUDIT_SYSTEM) - len(json.dumps(audit_input, ensure_ascii=False))
     assert room > 0
     row["text"] = "t" * room
@@ -558,7 +559,7 @@ def test_sub_512_character_context_refusal_is_terminal_without_tiny_split(monkey
         seen.append(len(window["text"]))
         if len(window["text"]) > 300:
             raise ref.RefinementRefused("complete_input_exceeds_context")
-        return []
+        return [], "noise"
     monkeypatch.setattr(ref, "_refine_window", refine_window)
     with pytest.raises(ref.RefinementRefused, match="complete_input_exceeds_context"):
         ref._windowed("x" * 511, [], "", lambda *a: pytest.fail("no model expected"), None)
@@ -568,7 +569,7 @@ def test_sub_512_character_context_refusal_is_terminal_without_tiny_split(monkey
 def test_source_ledger_rejects_changed_bytes_even_when_offsets_remain_contiguous(monkeypatch):
     def corrupt_slice(window, thread, previous, call):
         window["text"] = "x" * len(window["text"])
-        return []
+        return [], "noise"
     monkeypatch.setattr(ref, "_refine_window", corrupt_slice)
     events = []
     with pytest.raises(ref.RefinementRefused, match="source_coverage_gap"):
@@ -606,7 +607,8 @@ def test_refine_window_receives_new_speaker_at_exact_header_boundary(monkeypatch
             "has_cross_window_correction": False, "correction_quotes": [], "repair_quotes": []})
 
     monkeypatch.setattr(ref, "_refine_window", observe_window)
-    ref._windowed(speech, [], "", call, None)
+    with pytest.raises(ref.RefinementRefused, match="no_verified_conclusion"):
+        ref._windowed(speech, [], "", call, None)
     target = next(window for window in received if window["start"] == 512)
     assert target["text"].startswith(second_header)
     assert target["speaker_at_start"] == "Участник B"
