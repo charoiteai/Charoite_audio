@@ -380,15 +380,16 @@ def _snap_boundary(speech: str, headers: list[tuple[int, str]], target: int,
     """Snap a cut point strictly inside (low, high) to a speaker header or newline."""
     if high <= low + 1:
         return max(low, min(high, target))
+    target = max(low + 1, min(high - 1, target))
     lo = max(low + 1, target - BOUNDARY_SNAP_CHARS)
     hi = min(high - 1, target + BOUNDARY_SNAP_CHARS)
     near = [pos for pos, _ in headers if lo <= pos <= hi]
     if near:
         return min(near, key=lambda pos: abs(pos - target))
-    cut = speech.rfind("\n", lo, min(high - 1, target) + 1)
+    cut = speech.rfind("\n", lo, target + 1)
     if cut != -1:
-        return min(high - 1, cut + 1)
-    return max(low + 1, min(high - 1, target))
+        return min(hi, cut + 1)
+    return target
 
 
 def _thread_end_ratios(thread: list[dict]) -> list[float]:
