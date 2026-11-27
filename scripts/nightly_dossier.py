@@ -509,6 +509,8 @@ _SPLITTABLE_DETAILS = frozenset({
     telemetry.Detail.CLAIM_SOURCE_MISSING,
     telemetry.Detail.CLAIM_NOT_SUPPORTED,
     telemetry.Detail.CLAIM_NOT_RELEVANT,
+    telemetry.Detail.AUDIT_SUPPORT_REJECTED,
+    telemetry.Detail.AUDIT_TOPIC_REJECTED,
 })
 
 

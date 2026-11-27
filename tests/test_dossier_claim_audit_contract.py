@@ -560,17 +560,17 @@ def test_wikilink_display_quotes_work_across_stages_without_splicing_or_ambiguit
         lambda *a, **k: json.dumps({"verdict": "relevant", "reason": "Table row fact.", "line_span": [2, 2]}),
     )
     assert inc.source_relevance("Glasshouse", _old(), B, {"text": table_source}, {}) is True
-    for bad_source, bad_span in [
-        ("A rain cover was fitted.\n   \n", [2, 2]),
-        ("A rain cover was fitted.", [2, 2]),
-        ("A rain cover was fitted.", [2, 1]),
-        ("A rain cover was fitted.", []),
+    for bad_source, bad_span, expected_problem in [
+        ("A rain cover was fitted.\n   \n", [2, 2], "span_empty"),
+        ("A rain cover was fitted.", [2, 2], "span_out_of_range"),
+        ("A rain cover was fitted.", [2, 1], "span_inverted"),
+        ("A rain cover was fitted.", [], "span_invalid"),
     ]:
         monkeypatch.setattr(
             inc, "local_complete",
             lambda *a, sp=bad_span, **k: json.dumps({"verdict": "relevant", "reason": "Bad span.", "line_span": sp}),
         )
-        with pytest.raises(inc.Refused, match="uncertain or unsupported"):
+        with pytest.raises(inc.Refused, match=rf"^relevance span invalid \({expected_problem}\)$"):
             inc.source_relevance("Glasshouse", _old(), B, {"text": bad_source}, {})
 
     # Direct _check_claims accepts unique plain and unescaped table quotes...
