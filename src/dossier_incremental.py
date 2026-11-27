@@ -779,7 +779,10 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
             return False
         if verdict["verdict"] != "relevant":
             telemetry.detail(telemetry.Detail.RELEVANCE_UNCERTAIN)
-            raise Refused("uncertain or unsupported relevance verdict")
+            raise Refused(
+                "uncertain or unsupported relevance verdict",
+                detail=telemetry.Detail.RELEVANCE_UNCERTAIN,
+            )
         quote, problem = _resolve_line_span(text, verdict["line_span"], max_lines=MAX_RELEVANCE_SPAN_LINES)
         if quote is not None:
             return True
@@ -803,11 +806,12 @@ def source_relevance(theme: str, loaded: dossier.DossierLoad, name: str,
                 problem, line_count=line_count, max_lines=MAX_RELEVANCE_SPAN_LINES,
             ),
         }
-    telemetry.detail(
+    rel_detail = (
         telemetry.Detail.RELEVANCE_QUOTE_EMPTY if last_empty
         else telemetry.Detail.RELEVANCE_QUOTE_MISSING
     )
-    raise Refused(f"relevance span invalid ({last_problem})")
+    telemetry.detail(rel_detail)
+    raise Refused(f"relevance span invalid ({last_problem})", detail=rel_detail)
 
 
 def _inputs(theme: str, loaded: dossier.DossierLoad, names: list[str], files: dict) -> dict:
@@ -986,10 +990,13 @@ def _new_content_positions(loaded: dossier.DossierLoad, body: str, names: list[s
     return required
 
 
-def _rejected_new_claim_pairs(body: str, claims: object, required: set[int]) -> tuple[tuple[str, str], ...]:
+def _rejected_new_claim_pairs(
+    body: str, claims: object, required: set[int],
+) -> tuple[tuple[tuple[str, str], ...], telemetry.Detail | None]:
     if not isinstance(claims, list):
-        return ()
+        return (), None
     found: dict[str, str] = {}
+    first_detail: telemetry.Detail | None = None
     for item in claims:
         if (isinstance(item, dict)
                 and (item.get("relevant") is not True or item.get("supported") is not True)):
@@ -997,14 +1004,16 @@ def _rejected_new_claim_pairs(body: str, claims: object, required: set[int]) -> 
             if (isinstance(text, str)
                     and any(required.intersection(range(m.start(), m.end()))
                             for m in re.finditer(re.escape(text), body))):
+                if first_detail is None:
+                    first_detail = (
+                        telemetry.Detail.CLAIM_NOT_RELEVANT
+                        if item.get("relevant") is not True
+                        else telemetry.Detail.CLAIM_NOT_SUPPORTED
+                    )
                 note = _sanitize_validator_note(item.get("reason"))
                 if text not in found or (not found[text] and note):
                     found[text] = note
-    return tuple(found.items())
-
-
-def _rejected_new_claims(body: str, claims: object, required: set[int]) -> tuple[str, ...]:
-    return tuple(text for text, _ in _rejected_new_claim_pairs(body, claims, required))
+    return tuple(found.items()), first_detail
 
 
 def _verdict_rejected_claim_pairs(
@@ -1012,7 +1021,7 @@ def _verdict_rejected_claim_pairs(
     verdict: dict, detail: telemetry.Detail, last_missing: tuple[str, ...],
 ) -> tuple[tuple[str, str], ...]:
     try:
-        pairs = _rejected_new_claim_pairs(
+        pairs, _ = _rejected_new_claim_pairs(
             body, verdict["claims"], _new_content_positions(loaded, body, names, changes),
         )
     except Refused:
@@ -1023,15 +1032,6 @@ def _verdict_rejected_claim_pairs(
             and verdict["corrections_valid"] is True):
         return tuple((text, "") for text in last_missing)
     return pairs
-
-
-def _verdict_rejected_claims(
-    loaded: dossier.DossierLoad, body: str, names: list[str], changes: list,
-    verdict: dict, detail: telemetry.Detail, last_missing: tuple[str, ...],
-) -> tuple[str, ...]:
-    return tuple(text for text, _ in _verdict_rejected_claim_pairs(
-        loaded, body, names, changes, verdict, detail, last_missing,
-    ))
 
 
 def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
@@ -1051,13 +1051,13 @@ def _check_claims(loaded: dossier.DossierLoad, body: str, names: list[str],
                for key in ("text", "source", "quote", "reason")):
             raise Refused("empty candidate claim evidence")
         if claim["relevant"] is not True or claim["supported"] is not True:
-            detail = (
+            pairs, new_detail = _rejected_new_claim_pairs(body, claims, required)
+            detail = new_detail or (
                 telemetry.Detail.CLAIM_NOT_RELEVANT
                 if claim["relevant"] is not True
                 else telemetry.Detail.CLAIM_NOT_SUPPORTED
             )
             telemetry.detail(detail)
-            pairs = _rejected_new_claim_pairs(body, claims, required)
             raise Refused(
                 "candidate claim is not relevant and supported",
                 detail=detail,
@@ -1281,13 +1281,13 @@ def _resolve_judge_claims(loaded: dossier.DossierLoad, body: str, names: list[st
                for key in ("text", "source", "reason")):
             raise Refused("empty candidate claim evidence")
         if claim["relevant"] is not True or claim["supported"] is not True:
-            detail = (
+            pairs, new_detail = _rejected_new_claim_pairs(body, claims, required)
+            detail = new_detail or (
                 telemetry.Detail.CLAIM_NOT_RELEVANT
                 if claim["relevant"] is not True
                 else telemetry.Detail.CLAIM_NOT_SUPPORTED
             )
             telemetry.detail(detail)
-            pairs = _rejected_new_claim_pairs(body, claims, required)
             raise Refused(
                 "candidate claim is not relevant and supported",
                 detail=detail,
