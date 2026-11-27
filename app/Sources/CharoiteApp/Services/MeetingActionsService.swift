@@ -35,13 +35,14 @@ struct MeetingActionCommand: Equatable, Sendable {
     }
 
     fileprivate static func forgetApply(_ planned: PlannedForget) -> MeetingActionCommand {
-        forget(scope: planned.scope, meetingID: planned.meeting.meetingID, apply: true)
+        forget(scope: planned.scope, meetingID: planned.meeting.meetingID, apply: true, token: planned.token)
     }
 
     private static func forget(
         scope: MeetingForgetScope,
         meetingID: String,
-        apply: Bool
+        apply: Bool,
+        token: String? = nil
     ) -> MeetingActionCommand {
         var args = [
             scope.codeRoot.appendingPathComponent("scripts/forget_meeting.py").path,
@@ -53,7 +54,12 @@ struct MeetingActionCommand: Equatable, Sendable {
         if let importFolder = scope.importFolder {
             args += ["--import-folder", importFolder]
         }
-        if apply { args.append("--yes") }
+        if apply {
+            if let token { args += ["--expected-plan", token] }
+            args.append("--yes")
+        } else {
+            args.append("--plan-json")
+        }
         return MeetingActionCommand(python: scope.python, arguments: args)
     }
 
@@ -139,6 +145,7 @@ struct PlannedForget: Equatable, Sendable {
     let meeting: MeetingProcessingSnapshot
     let scope: MeetingForgetScope
     let planText: String
+    let token: String
 }
 
 enum ForgetPlanOutcome: Equatable, Sendable {
@@ -199,7 +206,20 @@ enum MeetingActionsService {
         guard result.succeeded else {
             return .failed(result.text)
         }
-        return .ready(PlannedForget(meeting: snapshot, scope: scope, planText: result.text))
+        struct Preview: Decodable {
+            let text: String
+            let token: String
+        }
+        guard let data = result.text.data(using: .utf8),
+              let preview = try? JSONDecoder().decode(Preview.self, from: data),
+              preview.token.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
+            return .failed(L.t(
+                "Не удалось проверить план удаления. Обновите Charoite и откройте план заново.",
+                "Could not verify the deletion plan. Update Charoite and reopen the plan.",
+                "无法验证删除计划。请更新 Charoite 并重新打开计划。"))
+        }
+        return .ready(PlannedForget(meeting: snapshot, scope: scope,
+                                    planText: preview.text, token: preview.token))
     }
 
     static func forget(

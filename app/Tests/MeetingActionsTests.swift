@@ -4,6 +4,13 @@ import XCTest
 #if os(macOS)
 @MainActor
 final class MeetingActionsTests: XCTestCase {
+    nonisolated private static func preview(_ text: String = "план") -> String {
+        let data = try! JSONSerialization.data(withJSONObject: [
+            "text": text, "token": String(repeating: "a", count: 64),
+        ])
+        return String(decoding: data, as: UTF8.self)
+    }
+
     private func snapshot(
         id: String,
         title: String = "Встреча",
@@ -78,7 +85,7 @@ final class MeetingActionsTests: XCTestCase {
         var executed: [MeetingActionCommand] = []
         let outcome = await MeetingActionsService.forgetPlan(target, scope: scope) { command in
             await MainActor.run { executed.append(command) }
-            return MeetingActionResult(succeeded: true, text: "план")
+            return MeetingActionResult(succeeded: true, text: Self.preview("план"))
         }
         guard case .ready(let planned) = outcome else {
             return XCTFail("ожидали сухой план, получили \(outcome)")
@@ -92,6 +99,24 @@ final class MeetingActionsTests: XCTestCase {
         XCTAssertFalse(executed[0].arguments.contains("--yes"))
         XCTAssertEqual(executed[0].arguments[1], "2026-08-03_113012")
         XCTAssertEqual(executed[1].arguments.last, "--yes")
+        XCTAssertTrue(executed[0].arguments.contains("--plan-json"))
+        XCTAssertEqual(planned.planText, "план")
+        let tokenIndex = executed[1].arguments.firstIndex(of: "--expected-plan")!
+        XCTAssertEqual(executed[1].arguments[tokenIndex + 1], String(repeating: "a", count: 64))
+    }
+
+    func testForgetRejectsMissingOrMalformedConfirmationToken() async {
+        for output in ["legacy plan", #"{"text":"plan"}"#,
+                       #"{"text":"plan","token":""}"#, #"{"text":"plan","token":"bad"}"#] {
+            let outcome = await MeetingActionsService.forgetPlan(
+                snapshot(id: "2030-01-15_100000"), scope: makeScope()) { _ in
+                    MeetingActionResult(succeeded: true, text: output)
+                }
+            guard case .failed = outcome else {
+                XCTFail("must refuse an unbound plan: \(output)")
+                continue
+            }
+        }
     }
 
     /// Критика DS r3 по #499: посекундный ID уходит скрипту целиком —
@@ -114,7 +139,7 @@ final class MeetingActionsTests: XCTestCase {
         var withFolderCommands: [MeetingActionCommand] = []
         let outcome = await MeetingActionsService.forgetPlan(target, scope: withFolderScope) { cmd in
             await MainActor.run { withFolderCommands.append(cmd) }
-            return MeetingActionResult(succeeded: true, text: "план")
+            return MeetingActionResult(succeeded: true, text: Self.preview("план"))
         }
         guard case .ready(let planned) = outcome else {
             return XCTFail("ожидали сухой план")
@@ -168,7 +193,7 @@ final class MeetingActionsTests: XCTestCase {
         controller.meetingChanged(to: meetingB)
         XCTAssertFalse(controller.actionBusy)
 
-        releasePlanContinuation?.resume(returning: MeetingActionResult(succeeded: true, text: "план для A"))
+        releasePlanContinuation?.resume(returning: MeetingActionResult(succeeded: true, text: Self.preview("план для A")))
         await Task.yield()
         try? await Task.sleep(nanoseconds: 20_000_000)
 
@@ -208,7 +233,7 @@ final class MeetingActionsTests: XCTestCase {
                         }
                     }
                 }
-                return MeetingActionResult(succeeded: true, text: "свежий план A")
+                return MeetingActionResult(succeeded: true, text: Self.preview("свежий план A"))
             })
 
         controller.appear(with: meetingA)
@@ -220,7 +245,7 @@ final class MeetingActionsTests: XCTestCase {
         controller.meetingChanged(to: meetingB)
         controller.meetingChanged(to: meetingA)
 
-        releaseFirstPlan?.resume(returning: MeetingActionResult(succeeded: true, text: "устаревший план A"))
+        releaseFirstPlan?.resume(returning: MeetingActionResult(succeeded: true, text: Self.preview("устаревший план A")))
         await Task.yield()
         try? await Task.sleep(nanoseconds: 20_000_000)
 
@@ -251,7 +276,7 @@ final class MeetingActionsTests: XCTestCase {
             scopeProvider: { scope },
             runner: { command in
                 await MainActor.run { commands.append(command) }
-                return MeetingActionResult(succeeded: true, text: "ok")
+                return MeetingActionResult(succeeded: true, text: Self.preview("ok"))
             })
 
         controller.appear(with: meetingA)
@@ -309,7 +334,7 @@ final class MeetingActionsTests: XCTestCase {
                     if command.arguments.contains("--yes") {
                         await MainActor.run { executedApply = true }
                     }
-                    return MeetingActionResult(succeeded: true, text: "план")
+                    return MeetingActionResult(succeeded: true, text: Self.preview("план"))
                 })
             controller.appear(with: meetingA)
             controller.prepareForget(for: meetingA)
@@ -338,7 +363,7 @@ final class MeetingActionsTests: XCTestCase {
                 if command.arguments.contains("--yes") {
                     await MainActor.run { capturedCommand = command }
                 }
-                return MeetingActionResult(succeeded: true, text: "план")
+                return MeetingActionResult(succeeded: true, text: Self.preview("план"))
             })
         pinnedController.appear(with: meetingA)
         pinnedController.prepareForget(for: meetingA)
@@ -378,7 +403,7 @@ final class MeetingActionsTests: XCTestCase {
                         }
                     }
                 }
-                return MeetingActionResult(succeeded: true, text: "план A")
+                return MeetingActionResult(succeeded: true, text: Self.preview("план A"))
             })
 
         controller.appear(with: meetingA)
