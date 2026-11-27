@@ -5,6 +5,37 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.106.0](https://github.com/charoiteai/Charoite_audio/compare/v0.105.0...v0.106.0) (2026-11-27)
+
+
+### Features
+
+* **debrief:** add local refinement engine, link verifier, strict-JSON fallback, and mutator RSS cap ([#941](https://github.com/charoiteai/Charoite_audio/issues/941)) ([3791b3b](https://github.com/charoiteai/Charoite_audio/commit/3791b3bf14251861579014adbfb3507f89ee76d5))
+* **debrief:** integrate guarded Stop pipeline and verified Analysis tab UI ([#942](https://github.com/charoiteai/Charoite_audio/issues/942)) ([c18741f](https://github.com/charoiteai/Charoite_audio/commit/c18741f0967435809f35cad4b04bb1cf1f3d2d19))
+* **debrief:** show a verified conclusion from the live thread ([#963](https://github.com/charoiteai/Charoite_audio/issues/963)) ([0bb3380](https://github.com/charoiteai/Charoite_audio/commit/0bb33807e142cadf1ac25db047f21d8458f1fc68))
+* **dossier:** break down semantic_rejected telemetry and add safe structured append retry feedback ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#957](https://github.com/charoiteai/Charoite_audio/issues/957)) ([81b5035](https://github.com/charoiteai/Charoite_audio/commit/81b5035487d3ebc6c27a3c194d45fb6151a8ba8b))
+* **dossier:** enforce Ollama JSON Schema and 1-based line_span anchors ([#965](https://github.com/charoiteai/Charoite_audio/issues/965)) ([824fbb0](https://github.com/charoiteai/Charoite_audio/commit/824fbb0dc87f3cff2124b85e42d02e8528400f8e))
+* **dossier:** require anchor quotes in additions, pass untrusted anchors to judge, and extend semantic can_split ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#960](https://github.com/charoiteai/Charoite_audio/issues/960)) ([2bf40d4](https://github.com/charoiteai/Charoite_audio/commit/2bf40d4425cf8863bff09918a1fb51c457737399))
+* **dossier:** switch append generation to structured JSON patch ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#946](https://github.com/charoiteai/Charoite_audio/issues/946)) ([4bde1ce](https://github.com/charoiteai/Charoite_audio/commit/4bde1ce2bd08a2f44a829bc70fece16bb0023f69))
+
+
+### Bug Fixes
+
+* **app:** bind meeting forget confirmation to planned snapshot and scope ([#936](https://github.com/charoiteai/Charoite_audio/issues/936)) ([2b61b8a](https://github.com/charoiteai/Charoite_audio/commit/2b61b8a871f8eaf53adb063af0243aede72df3f6))
+* **debrief:** normalize quote matching, enable JSON schemas, and fix audit boundary ([#1102](https://github.com/charoiteai/Charoite_audio/issues/1102)) ([#948](https://github.com/charoiteai/Charoite_audio/issues/948)) ([29a9db0](https://github.com/charoiteai/Charoite_audio/commit/29a9db0f67ee7930986ce0484c9a3db7eca75bda))
+* **debrief:** recover short drafts and preserve verified paragraphs ([#962](https://github.com/charoiteai/Charoite_audio/issues/962)) ([99f5c11](https://github.com/charoiteai/Charoite_audio/commit/99f5c1156915b4636cb73769f170c27da70a2f63))
+* **dossier:** canonicalize open-text quotes and add bounded semantic_check quote_feedback retry ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#950](https://github.com/charoiteai/Charoite_audio/issues/950)) ([f933ac4](https://github.com/charoiteai/Charoite_audio/commit/f933ac40e54e35bd5079f450730dd6ce8b24d13c))
+* **dossier:** fold trivial wikilink aliases, retry mismatched relevance quotes, and scale append num_predict ([#944](https://github.com/charoiteai/Charoite_audio/issues/944)) ([b262322](https://github.com/charoiteai/Charoite_audio/commit/b2623223d0ba8f5942ae861509d4cd611f051260))
+* **dossier:** forward sanitized validator notes on retry, harden relevance spans, and split audit refusals ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#967](https://github.com/charoiteai/Charoite_audio/issues/967)) ([d0c0c46](https://github.com/charoiteai/Charoite_audio/commit/d0c0c461c775b670847ac856a6af97f6df871796))
+* **dossier:** harden quote matching, quote_feedback retry, open-item contract, and 65k context step ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#958](https://github.com/charoiteai/Charoite_audio/issues/958)) ([82b0a2a](https://github.com/charoiteai/Charoite_audio/commit/82b0a2ab21d46050dcd845c1308d5e0467695cf4))
+* **dossier:** match inline emphasis quotes, canonicalize wikilink sources, add context fallback and stage telemetry ([#943](https://github.com/charoiteai/Charoite_audio/issues/943)) ([6802d66](https://github.com/charoiteai/Charoite_audio/commit/6802d66e800eabdc1916c8351a5f70e87efc02dc))
+* **dossier:** normalize patch speaker labels, omit anonymous people entries, and raise AUDIT_PREDICT to 4096 ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#947](https://github.com/charoiteai/Charoite_audio/issues/947)) ([0306b76](https://github.com/charoiteai/Charoite_audio/commit/0306b761947f18e2ce6250c34e7fa00a33524bbc))
+* **dossier:** raise append/judge output ceilings, add schema feedback, and fix quote hints ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#961](https://github.com/charoiteai/Charoite_audio/issues/961)) ([82edc73](https://github.com/charoiteai/Charoite_audio/commit/82edc73d4698fc9126a1740a41089e9fe414be6a))
+* **dossier:** raise MAIN_JUDGE_PREDICT to 4096, tighten quote copying, and separate claim_source_missing ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#949](https://github.com/charoiteai/Charoite_audio/issues/949)) ([6086452](https://github.com/charoiteai/Charoite_audio/commit/6086452b31e2bc61629caa0d4eaf5351ac18064e))
+* **dossier:** set APPEND_PREDICT=2800, split batch JSON truncation, harden quote matching and retry feedback ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#959](https://github.com/charoiteai/Charoite_audio/issues/959)) ([ea4e984](https://github.com/charoiteai/Charoite_audio/commit/ea4e984a63c804148ff99cb7eb2bb89f88afb3ba))
+* **dossier:** stop quote echo on retries, align diarization rule, and add stage-progress retry budget ([#990](https://github.com/charoiteai/Charoite_audio/issues/990)) ([#964](https://github.com/charoiteai/Charoite_audio/issues/964)) ([be48444](https://github.com/charoiteai/Charoite_audio/commit/be484445a775b08b7ee77b71e3f2b2b11af22103))
+* **dossier:** use DOC_STREAM_TIMEOUT, report missing citations on retry, and split unattributed multi-source batches ([#945](https://github.com/charoiteai/Charoite_audio/issues/945)) ([1a2bc3f](https://github.com/charoiteai/Charoite_audio/commit/1a2bc3fb0337d79a9ab17fdd103b2722a144fd68))
+
 ## [0.105.0](https://github.com/charoiteai/Charoite_audio/compare/v0.104.0...v0.105.0) (2026-11-16)
 
 
